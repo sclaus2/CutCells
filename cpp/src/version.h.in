@@ -1,0 +1,11 @@
+// Copyright (c) 2022 ONERA 
+// Authors: Susanne Claus 
+// This file is part of CutCells
+//
+// SPDX-License-Identifier:    LGPL-3.0-or-later
+
+#pragma once
+
+#define CUTCELLS_VERSION @PROJECT_VERSION@
+#define CUTCELLS_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define CUTCELLS_VERSION_MINOR @PROJECT_VERSION_MINOR@
