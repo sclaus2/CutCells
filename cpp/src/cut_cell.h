@@ -44,6 +44,8 @@ namespace cutcells
         //     type _sub_cell_type;
         // };
 
+        void str(const CutCell &cut_cell);  
+
         void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
                  const std::span<const double> ls_values, const std::string& cut_type_str,
                 CutCell& cut_cell, bool triangulate=false);

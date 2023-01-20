@@ -5,6 +5,8 @@
 // SPDX-License-Identifier:    LGPL-3.0-or-later
 #pragma once
 
+#include <string>
+
 namespace cutcells
 {
     namespace cell
@@ -84,6 +86,25 @@ namespace cutcells
             }
 
             return num_vertices;
+        }
+
+        inline std::string cell_type_to_str(type cell_type)
+        {
+            std::string type_str;
+            switch(cell_type)
+            {
+                case type::interval:      type_str = "interval";
+                                          break;
+                case type::triangle:      type_str = "triangle";
+                                          break;
+                case type::quadrilateral: type_str = "quadrilateral";
+                                          break;
+                case type::tetrahedron:   type_str = "tetrahedron";
+                                          break;
+                case type::prism:         type_str = "prism";
+                                          break;
+            }
+            return type_str;
         }
     }
 }
