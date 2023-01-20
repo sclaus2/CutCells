@@ -27,6 +27,8 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.cpp
+
 )
 
 

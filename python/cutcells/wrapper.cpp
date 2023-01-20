@@ -13,6 +13,7 @@
 
 #include <cutcells/cell_flags.h>
 #include <cutcells/cut_cell.h>
+#include <cutcells/write_vtk.h>
 
 namespace py = pybind11;
 
@@ -66,7 +67,8 @@ PYBIND11_MODULE(_cutcellscpp, m)
           [](const cell::CutCell& self) {
             return py::array_t<double>(self._vertex_coords.size(), self._vertex_coords.data(), py::cast(self));
           })
-        .def("str", [](const cell::CutCell& self) {cell::str(self); return ;});
+        .def("str", [](const cell::CutCell& self) {cell::str(self); return ;})
+        .def("write_vtk", [](cell::CutCell& self, std::string fname) {io::write_vtk(fname,self); return ;});
 
 //FIXME: does this copy the cut cell? 
   m.def("cut", [](cell::type cell_type, const py::array_t<double>& vertex_coordinates, const int gdim, 
