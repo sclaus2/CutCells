@@ -12,6 +12,7 @@
 #include <span>
 
 #include <cutcells/cell_flags.h>
+#include <cutcells/cell_types.h>
 #include <cutcells/cut_cell.h>
 #include <cutcells/write_vtk.h>
 
@@ -65,7 +66,70 @@ PYBIND11_MODULE(_cutcellscpp, m)
         .def_property_readonly(
           "vertex_coords",
           [](const cell::CutCell& self) {
-            return py::array_t<double>(self._vertex_coords.size(), self._vertex_coords.data(), py::cast(self));
+            int num_points = self._vertex_coords.size()/self._gdim;
+            py::array_t<double> vertex_coords(3*num_points);
+            py::buffer_info buf1 = vertex_coords.request();
+            double *ptr1 = static_cast<double *>(buf1.ptr);
+
+            int idx = 0;
+
+            for(int i=0;i<num_points;i++)
+            {
+              double x = self._vertex_coords[i*self._gdim];
+              double y = self._vertex_coords[i*self._gdim+1];
+              double z = 0;
+              if(self._gdim==3)
+              {
+                  z = self._vertex_coords[i*self._gdim+2];
+              }
+              ptr1[idx] = x;
+              idx++;
+              ptr1[idx] = y;
+              idx++;
+              ptr1[idx] = z;
+              idx++;
+            }
+
+            return vertex_coords; 
+          })
+        .def_property_readonly(
+          "connectivity",
+          [](const cell::CutCell& self) {
+              int size = 0;
+              for(int i=0;i<self._connectivity.size();i++)
+              {
+                size+= self._connectivity[i].size() + 1;
+              }
+
+              py::array_t<int> connectivity(size); 
+              py::buffer_info buf1 = connectivity.request();
+              int *ptr1 = static_cast<int *>(buf1.ptr);
+
+              int idx = 0;
+              for(int i=0;i<self._connectivity.size();i++)
+              {
+                ptr1[idx] = self._connectivity[i].size();
+                idx++;
+                for(int j=0;j<self._connectivity[i].size();j++)
+                {
+                  ptr1[idx] = self._connectivity[i][j];
+                  idx++;
+                }
+              }
+              return connectivity;
+          })
+        .def_property_readonly(
+          "types", 
+          [](const cell::CutCell& self) {
+              py::array_t<int> types(self._types.size()); 
+              py::buffer_info buf1 = types.request();
+              int *ptr1 = static_cast<int *>(buf1.ptr);
+
+              for(int i=0;i<self._types.size();i++)
+              {
+                ptr1[i] = static_cast<int>(map_cell_type_to_vtk(self._types[i]));
+              }
+              return types;
           })
         .def("str", [](const cell::CutCell& self) {cell::str(self); return ;})
         .def("write_vtk", [](cell::CutCell& self, std::string fname) {io::write_vtk(fname,self); return ;});
