@@ -33,6 +33,6 @@ grid_int = pv.UnstructuredGrid(cut_cell_int.connectivity, cut_cell_int.types, cu
 grid_ext = pv.UnstructuredGrid(cut_cell_ext.connectivity, cut_cell_ext.types, cut_cell_ext.vertex_coords)
 
 plotter = pv.Plotter(off_screen=True)
-plotter.add_mesh(grid_int, color="blue",show_edges=True)
+plotter.add_mesh(grid_int, color="blue",show_edges=True, opacity=0.5)
 plotter.add_mesh(grid_ext, color="red",show_edges=True, opacity=0.5)
-plotter.show(screenshot='cut_triangle.png')
+plotter.show(screenshot='cut_tetra.png')
