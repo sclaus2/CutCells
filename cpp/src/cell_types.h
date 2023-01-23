@@ -6,6 +6,7 @@
 #pragma once
 
 #include <string>
+#include <stdexcept>
 
 namespace cutcells
 {
@@ -51,18 +52,24 @@ namespace cutcells
 
             switch(cell_type)
             {
-                case type::point: vtk_type = vtk_types::VTK_VERTEX;
-                                  break;
-                case type::interval: vtk_type=vtk_types::VTK_LINE;
-                                     break;
-                case type::triangle: vtk_type=vtk_types::VTK_TRIANGLE;
-                                     break;
-                case type::quadrilateral: vtk_type=vtk_types::VTK_QUAD;
-                                          break;
-                case type::tetrahedron: vtk_type=vtk_types::VTK_TETRA;
-                                     break;
-                case type::prism: vtk_type=vtk_types::VTK_WEDGE;
-                                          break;
+                case type::point:           vtk_type = vtk_types::VTK_VERTEX;
+                                            break;
+                case type::interval:        vtk_type=vtk_types::VTK_LINE;
+                                            break;
+                case type::triangle:        vtk_type=vtk_types::VTK_TRIANGLE;
+                                            break;
+                case type::quadrilateral:   vtk_type=vtk_types::VTK_QUAD;
+                                            break;
+                case type::tetrahedron:     vtk_type=vtk_types::VTK_TETRA;
+                                            break;
+                case type::hexahedron:      vtk_type=vtk_types::VTK_HEXAHEDRON;
+                                            break;
+                case type::prism:           vtk_type=vtk_types::VTK_WEDGE;
+                                            break;
+                case type::pyramid:         vtk_type=vtk_types::VTK_PYRAMID;
+                                            break;
+                default: throw std::invalid_argument("cell type not recognised in map_cell_type_to_vtk of cell_types.h");
+                                            break;
             }
 
             return vtk_type;
@@ -73,6 +80,8 @@ namespace cutcells
             int num_vertices = 0;
             switch(cell_type)
             {
+                case type::point:         num_vertices = 1;
+                                          break;
                 case type::interval:      num_vertices = 2;
                                           break;
                 case type::triangle:      num_vertices = 3;
@@ -81,8 +90,14 @@ namespace cutcells
                                           break;
                 case type::tetrahedron:   num_vertices = 4;
                                           break;
+                case type::hexahedron:    num_vertices = 8;
+                                          break;
                 case type::prism:         num_vertices = 6;
                                           break;
+                case type::pyramid:       num_vertices = 5;
+                                          break;
+                default: throw std::invalid_argument("cell type not recognised in get_num_vertices of cell_types.h");
+                         break;
             }
 
             return num_vertices;
@@ -93,6 +108,8 @@ namespace cutcells
             std::string type_str;
             switch(cell_type)
             {
+                case type::point:         type_str = "point";
+                                          break;
                 case type::interval:      type_str = "interval";
                                           break;
                 case type::triangle:      type_str = "triangle";
@@ -101,8 +118,14 @@ namespace cutcells
                                           break;
                 case type::tetrahedron:   type_str = "tetrahedron";
                                           break;
+                case type::hexahedron:    type_str = "hexahedron";
+                                          break;
                 case type::prism:         type_str = "prism";
                                           break;
+                case type::pyramid:       type_str = "pyramid";
+                                          break;
+                default: throw std::invalid_argument("cell type not recognised in cell_type_to_str of cell_types.h");
+                         break;
             }
             return type_str;
         }

@@ -23,6 +23,9 @@ namespace cutcells
             // Geometric Dimension of Cell 
             int _gdim; 
 
+            // Topological Dimension of Cell
+            int _tdim;
+
             // Coordinates of vertices of cut cell
             std::vector<double> _vertex_coords; 
 

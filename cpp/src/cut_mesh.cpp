@@ -11,42 +11,55 @@ namespace cutcells::mesh
     void str(CutMesh &cut_mesh)
     {
         std::cout << "CutMesh: " << std::endl;
+        int cnt = 0;
 
-        std::cout << "vertex coordinates=[";
-        for(auto &i: cut_mesh._vertex_coordinates)
+        for(auto &cell: cut_mesh._cut_cells)
         {
-            std::cout << i << ", ";
-        }
-        std::cout << "]" << std::endl;
-
-        std::cout << "cut cells=[";
-        for(int i=0;i<cut_mesh._cut_cells.size();i++)
-        {
-            std::cout << i << ": ";
-            for(int j=0;j<cut_mesh._cut_cells[i].size();j++)
+            std::cout << "Cut Cell ";
+            std::cout << cnt << ": ";
+            cnt++;
+            std::cout << "vertex coordinates=[";
+            for(auto &i: cell._vertex_coords)
             {
-                    std::cout << cut_mesh._cut_cells[i][j] << ", ";
+                std::cout << i << ", ";
             }
-            std::cout << std::endl;
+            std::cout << "]" << std::endl;
+            std::cout << "connectivity=[";
+            for(int i=0;i<cell._connectivity.size();i++)
+            {
+                std::cout << i << ": ";
+                for(int j=0;j<cell._connectivity[i].size();j++)
+                {
+                    std::cout << cell._connectivity[i][j] << ", ";
+                }
+                std::cout << std::endl;
+            }
+            std::cout << "]" << std::endl;
         }
-        std::cout << "]" << std::endl;
+
+        std::cout << "Cell Types= ";
+        for(auto &type : cut_mesh._types)
+        {
+            std::cout << cell_type_to_str(type) << ", ";
+        }
+        std::cout << std::endl;
 
         std::cout << "Parent map=[";
-        for(int i=0;i<cut_mesh._parent_element_map.size();i++)
+        for(int i=0;i<cut_mesh._parent_map.size();i++)
         {
-            std::cout << i << ": " << cut_mesh._parent_element_map[i] << std::endl;
+            std::cout << i << ": " << cut_mesh._parent_map[i] << std::endl;
         }
         std::cout << "]" << std::endl;
     }
 
-    // inverse map of parent_element_map
-    std::unordered_map<int, std::vector<int>> create_parent_cut_cells_map(const std::span<int> parent_element_map)
+    // inverse map of parent_map
+    std::unordered_map<int, std::vector<int>> create_parent_cut_cells_map(const std::span<int> parent_map)
     {
         std::unordered_map<int, std::vector<int>> parent_cut_cell_map;
 
-        for(std::size_t i=0; i< parent_element_map.size();i++)
+        for(std::size_t i=0; i< parent_map.size();i++)
         {
-            parent_cut_cell_map[parent_element_map[i]].push_back(i);
+            parent_cut_cell_map[parent_map[i]].push_back(i);
         }
 
         return parent_cut_cell_map;

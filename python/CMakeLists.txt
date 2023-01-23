@@ -1,13 +1,18 @@
 cmake_minimum_required(VERSION 3.16)
 
-PROJECT(cutcells_pybind11 VERSION "0.5.2.0"  LANGUAGES CXX)
+PROJECT(cutcells_pybind11 VERSION "0.1"  LANGUAGES CXX)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(CutCells REQUIRED)
+if (TARGET cutcells)
+  add_library(CUTCELLS::cutcells ALIAS cutcells)
+else()
+  # Find CutCells (C++)
+  find_package(CutCells REQUIRED)
+endif()
 
 # Correct COMPONENT specification Development.Module added only in CMake 3.18
 # and above.

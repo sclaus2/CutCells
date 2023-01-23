@@ -423,6 +423,7 @@ namespace tetrahedron{
         
         if(cut_type_str=="phi=0")
         {
+            cut_cell._tdim = 2;
             int flag_interior = get_entity_flag(ls_values, false);
             // Copy vertex coordinates into cut_cell
             int num_intersection_points = get_num_intersection_points(flag_interior);
@@ -436,6 +437,7 @@ namespace tetrahedron{
         }
         else if(cut_type_str=="phi<0")
         {
+            cut_cell._tdim = 3;
             int flag_interior = get_entity_flag(ls_values, false);
             create_sub_cell_vertex_coords(flag_interior, vertex_coordinates, gdim, intersection_points, 
                         cut_cell._vertex_coords, vertex_case_map);
@@ -445,6 +447,7 @@ namespace tetrahedron{
         }
         else if(cut_type_str=="phi>0")
         {
+            cut_cell._tdim = 3;
             //Determine exterior sub-cells
             int flag_exterior = get_entity_flag(ls_values, true);
             create_sub_cell_vertex_coords(flag_exterior, vertex_coordinates, gdim, intersection_points, 

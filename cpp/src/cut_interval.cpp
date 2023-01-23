@@ -125,6 +125,7 @@ namespace cutcells::cell
             
             if(cut_type_str=="phi=0")
             {
+                cut_cell._tdim = 0;
                 cut_cell._vertex_coords.resize(intersection_points.size());
                 for(int i=0;i<intersection_points.size();i++)
                 {
@@ -135,6 +136,7 @@ namespace cutcells::cell
             }
             else if(cut_type_str=="phi<0")
             {
+                cut_cell._tdim = 1;
                 int flag_interior = get_entity_flag(ls_values, false);
                 create_sub_cell_vertex_coords(flag_interior, vertex_coordinates, gdim, intersection_points, 
                             cut_cell._vertex_coords, vertex_case_map);
@@ -144,6 +146,7 @@ namespace cutcells::cell
             }
             else if(cut_type_str=="phi>0")
             {
+                cut_cell._tdim = 1;
                 //Determine exterior sub-cells
                 int flag_exterior = get_entity_flag(ls_values, true);
                 create_sub_cell_vertex_coords(flag_exterior, vertex_coordinates, gdim, intersection_points, 
