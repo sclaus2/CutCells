@@ -2,7 +2,7 @@
 // Authors: Susanne Claus 
 // This file is part of CutCells
 //
-// SPDX-License-Identifier:    LGPL-3.0-or-later
+// SPDX-License-Identifier:    MIT
 #pragma once
 
 #include <span>
@@ -18,10 +18,6 @@ namespace cutcells::cell
         int get_num_intersection_points(const int &flag);
 
         int get_num_sub_elements(const int &flag, bool triangulate);
-        
-        // void compute_intersection_points(const std::span<const double> vertex_coordinates, const int gdim, 
-        //                                  const std::span<const double> ls_values, const int flag, std::vector<double>& intersection_points, 
-        //                                  std::unordered_map<int,int>& vertex_case_map);
 
         // get interface cut
         void cut(const std::span<const double> vertex_coordinates, const int gdim, 

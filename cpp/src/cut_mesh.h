@@ -2,7 +2,7 @@
 // Authors: Susanne Claus 
 // This file is part of CutCells
 //
-// SPDX-License-Identifier:    LGPL-3.0-or-later
+// SPDX-License-Identifier:    MIT
 #pragma once
 
 #include <iostream>
@@ -15,32 +15,27 @@
 
 namespace cutcells::mesh
 {
-    // QuadratureRule on reference element for CutCell
-    struct QuadratureRule
-    {
-        std::vector<double> _points; 
-        std::vector<double> _weights;
-    };
-
-    // Collection of cut cells that have been cut with regards to a parent mesh/entities
+    /// Collection of cut cells that have been cut with regards to a parent mesh/entities
     struct CutMesh
     {
-            // vector of all cut cells 
+            /// vector of all cut cells 
             std::vector<cell::CutCell> _cut_cells;
-            // map of cut cell id to parent cell id 
-            // this vector contains all cells that are cut
+            /// map of cut cell id to parent cell id 
+            /// this vector contains all cells that are cut
             std::vector<int> _parent_map;
-            // the types of elements contained in all cut_cells
+            /// the types of elements contained in all cut_cells
             std::vector<cell::type> _types;
-            // vector that are to be filled with quadrature rules in reference coordinates for each cut_cell
-            std::vector<QuadratureRule> _quadrature_rules;
 
-            //Total number of vertices 
+            /// Total number of vertices in CutMesh
             int _num_vertices;
     };
 
+    /// @brief  Print information about cut_mesh to screen
+    /// @param cut_mesh 
     void str(CutMesh &cut_mesh);
 
-    // inverse map of parent_element_map
-    std::unordered_map<int, std::vector<int>> create_parent_cut_cells_map(std::span<int> parent_element_map);
+    /// @brief Get inverse map of parent_map 
+    /// @param parent_map: map from cutcell index to parent cell index. 
+    /// @return inverse map from parent cell index to cut cell index 
+    std::unordered_map<int, std::vector<int>> create_parent_cut_cells_map(std::span<int> parent_map);
 }

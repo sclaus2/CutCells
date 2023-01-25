@@ -1,8 +1,9 @@
-// Copyright (C) 2017 Chris N. Richardson and Garth N. Wells
+// Copyright (c) 2022 ONERA 
+// Authors: Susanne Claus 
+// This file is part of CutCells
 //
-// This file is part of DOLFINx (https://www.fenicsproject.org)
-//
-// SPDX-License-Identifier:    LGPL-3.0-or-later
+// SPDX-License-Identifier:    MIT
+
 
 #include <iostream>
 #include <pybind11/numpy.h>
@@ -45,7 +46,7 @@ PYBIND11_MODULE(_cutcellscpp, m)
   m.doc() = "CutCells Python interface";
 
   m.def("classify_cell_domain", [](const py::array_t<double>& ls_values){
-          cell::domain domain_id = cell::classify_cell_domain(std::span{ls_values.data(),ls_values.size()});
+          cell::domain domain_id = cell::classify_cell_domain(std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())});
           auto domain_str = cell_domain_to_str(domain_id);
           return domain_str;
         }
@@ -134,11 +135,10 @@ PYBIND11_MODULE(_cutcellscpp, m)
         .def("str", [](const cell::CutCell& self) {cell::str(self); return ;})
         .def("write_vtk", [](cell::CutCell& self, std::string fname) {io::write_vtk(fname,self); return ;});
 
-//FIXME: does this copy the cut cell? 
   m.def("cut", [](cell::type cell_type, const py::array_t<double>& vertex_coordinates, const int gdim, 
              const py::array_t<double>& ls_values, const std::string& cut_type_str, bool triangulate){
               cell::CutCell cut_cell;
-              cell::cut(cell_type, std::span{vertex_coordinates.data(),vertex_coordinates.size()}, gdim, std::span{ls_values.data(),ls_values.size()}, cut_type_str, cut_cell);
+              cell::cut(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, cut_cell, triangulate);
               return cut_cell;
              }
              , "cut a cell");

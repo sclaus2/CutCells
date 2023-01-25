@@ -2,7 +2,7 @@
 // Authors: Susanne Claus 
 // This file is part of CutCells
 //
-// SPDX-License-Identifier:    LGPL-3.0-or-later
+// SPDX-License-Identifier:    MIT
 
 #include "cut_tetrahedron.h"
 #include "cut_interval.h"
@@ -80,27 +80,6 @@ namespace{
         type::quadrilateral,                  // 15
     };
 
-    // int tetrahedron_interface_element[15][4] =  
-    // {
-    //     { { -1, -1, -1, -1, -1, -1, -1 } }, //0
-    //     { { 3, 0, 2, -1, -1, -1, -1 } },    // 1
-    //     { { 1, 0, 4, -1, -1, -1, -1 } },    // 2
-    //     { { 2, 3, 4, 2, 4, 1, -1 } },       // 3 
-    //     { { 2, 1, 5, -1, -1, -1, -1 } },    // 4
-    //     { { 5, 3, 1, 1, 3, 0, -1 } },       // 5 
-    //     { { 2, 0, 5, 5, 0, 4, -1 } },       // 6 
-    //     { { 5, 3, 4, -1, -1, -1, -1 } },    // 7 
-    //     { { 4, 3, 5, -1, -1, -1, -1 } },    // 8 
-    //     { { 4, 0, 5, 5, 0, 2, -1 } },       // 9
-    //     { { 5, 0, 3, 1, 0, 5, -1 } },       // 10
-    //     { { 2, 5, 1, -1, -1, -1, -1 } },    // 11 
-    //     { { 4, 3, 1, 1, 3, 2, -1 } },       // 12
-    //     { { 4, 0, 1, -1, -1, -1, -1 } },    // 13
-    //     { { 2, 0, 3, -1, -1, -1, -1 } },    // 14
-    //     { { -1, -1, -1, -1, -1, -1, -1 } }, // 15
-    // };
-
-
     // List of vertex ids that form sub elements created by intersection. 
     // Intersection points are numbered with 0,1,2...
     // original vertices are numbered by 100, 101, ...
@@ -135,23 +114,6 @@ namespace{
         {  100, 101, 102, 103, -1, -1}   // 15
     };
 
-        //     { { 0, 0, 0, 0, 0, 0, 0 } },        // 0
-        // { { 4, 0, 3, 2, 100, 0, 0 } },      // 1
-        // { { 4, 0, 1, 4, 101, 0, 0 } },      // 2
-        // { { 6, 101, 1, 4, 100, 2, 3 } },    // 3
-        // { { 4, 1, 2, 5, 102, 0, 0 } },      // 4
-        // { { 6, 102, 5, 1, 100, 3, 0 } },    // 5
-        // { { 6, 102, 2, 5, 101, 0, 4 } },    // 6
-        // { { 6, 3, 4, 5, 100, 101, 102 } },  // 7
-        // { { 4, 3, 4, 5, 103, 0, 0 } },      // 8
-        // { { 6, 103, 4, 5, 100, 0, 2 } },    // 9
-        // { { 6, 103, 5, 3, 101, 1, 0 } },    // 10
-        // { { 6, 100, 101, 103, 2, 1, 5 } },  // 11
-        // { { 6, 2, 102, 1, 3, 103, 4 } },    // 12
-        // { { 6, 0, 1, 4, 100, 102, 103 } },  // 13
-        // { { 6, 0, 3, 2, 101, 103, 102 } },  // 14
-        // { { 4, 100, 101, 102, 103, 0, 0 } } // 15
-
     // List of cell types for each sub-element produced in each cut case
     type tetrahedron_sub_element_cell_types[16] = 
     {   type::tetrahedron,                    // 0
@@ -181,7 +143,7 @@ namespace tetrahedron{
         return cell::get_num_vertices(interface_sub_element_cell_types[flag]);; 
     }
 
-    //for triangles the number of sub-elements without triangulation is 1
+    // for triangles the number of sub-elements without triangulation is 1
     int get_num_sub_elements(const int &flag, bool triangulate)
     {   
         type cell_type = tetrahedron_sub_element_cell_types[flag];
@@ -502,7 +464,7 @@ namespace tetrahedron{
     {
         int flag_interior = get_entity_flag(ls_values, false);
 
-        //throw error if cell is not intersected, only intersected cells should land here 
+        // throw error if cell is not intersected, only intersected cells should land here 
         if(flag_interior ==0 || flag_interior == 15)
         {
             throw std::invalid_argument("tetrahedron is not intersected and therefore cannot be cut");

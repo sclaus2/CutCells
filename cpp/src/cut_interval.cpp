@@ -2,7 +2,7 @@
 // Authors: Susanne Claus 
 // This file is part of CutCells
 //
-// SPDX-License-Identifier:    LGPL-3.0-or-later
+// SPDX-License-Identifier:    MIT
 #include "cut_interval.h"
 #include "cell_flags.h"
 #include <unordered_map>

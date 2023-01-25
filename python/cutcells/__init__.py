@@ -2,5 +2,5 @@
 # Authors: Susanne Claus 
 # This file is part of CutCells
 #
-# SPDX-License-Identifier:    LGPL-3.0-or-later
+# SPDX-License-Identifier:    MIT
 from ._cutcellscpp import (classify_cell_domain, CellType, CutCell, cut)

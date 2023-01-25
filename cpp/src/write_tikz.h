@@ -2,7 +2,7 @@
 // Authors: Susanne Claus 
 // This file is part of CutCells
 //
-// SPDX-License-Identifier:    LGPL-3.0-or-later
+// SPDX-License-Identifier:    MIT
 #pragma once
 
  
@@ -12,7 +12,7 @@
 
 namespace cutcells::io
 {
-    inline write_tikz(std::string filename, const std::span<const double> element_vertex_coords,  const std::vector<std::vector<int>> elements,
+    inline void write_tikz(std::string filename, const std::span<const double> element_vertex_coords,  const std::vector<std::vector<int>> elements,
     const std::span<const double> bg_vertex_coords,  const std::vector<std::vector<int>> bg_elements, const std::span<const double> ls_values, const int gdim)
     {
         std::ofstream ofs;

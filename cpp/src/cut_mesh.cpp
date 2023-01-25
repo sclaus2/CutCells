@@ -2,7 +2,7 @@
 // Authors: Susanne Claus 
 // This file is part of CutCells
 //
-// SPDX-License-Identifier:    LGPL-3.0-or-later
+// SPDX-License-Identifier:    MIT
 
 #include "cut_mesh.h"
 
@@ -32,7 +32,6 @@ namespace cutcells::mesh
                 {
                     std::cout << cell._connectivity[i][j] << ", ";
                 }
-                std::cout << std::endl;
             }
             std::cout << "]" << std::endl;
         }
@@ -52,7 +51,6 @@ namespace cutcells::mesh
         std::cout << "]" << std::endl;
     }
 
-    // inverse map of parent_map
     std::unordered_map<int, std::vector<int>> create_parent_cut_cells_map(const std::span<int> parent_map)
     {
         std::unordered_map<int, std::vector<int>> parent_cut_cell_map;

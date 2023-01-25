@@ -1,16 +1,12 @@
 import cutcells
 import numpy as np
-import pyvista as pv 
+import pyvista as pv
 
 ls_values = np.array([0.1,-0.1,0.2, 0.4])
 vertex_coordinates = np.array([1.,1.,1., 1.,-1., -1., -1, 1., -1., -1., -1, 1])
 
-domain_id = cutcells.classify_cell_domain(ls_values)
-
-print ("domain_id =", domain_id)
-
 cell_type = cutcells.CellType.tetrahedron
-triangulate = False
+triangulate = True
 gdim = 3
 
 cut_cell_int = cutcells.cut(cell_type, vertex_coordinates,  gdim, ls_values, "phi<0", triangulate)
@@ -27,12 +23,10 @@ cut_cell.write_vtk("interface.vtu")
 
 pv.start_xvfb()
 
-#grid = pv.UnstructuredGrid(cells, celltypes, points)
-
 grid_int = pv.UnstructuredGrid(cut_cell_int.connectivity, cut_cell_int.types, cut_cell_int.vertex_coords)
 grid_ext = pv.UnstructuredGrid(cut_cell_ext.connectivity, cut_cell_ext.types, cut_cell_ext.vertex_coords)
 
-plotter = pv.Plotter(off_screen=True)
-plotter.add_mesh(grid_int, color="blue",show_edges=True, opacity=0.5)
-plotter.add_mesh(grid_ext, color="red",show_edges=True, opacity=0.5)
-plotter.show(screenshot='cut_tetra.png')
+#plotter = pv.Plotter(off_screen=True)
+#plotter.add_mesh(exploded, color="blue",show_edges=True, opacity=0.5)
+#plotter.add_mesh(grid_ext, color="red",show_edges=True, opacity=0.5)
+#plotter.show(screenshot='cut_tetra.png')

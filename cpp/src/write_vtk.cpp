@@ -2,7 +2,7 @@
 // Authors: Susanne Claus 
 // This file is part of CutCells
 //
-// SPDX-License-Identifier:    LGPL-3.0-or-later
+// SPDX-License-Identifier:    MIT
 
 #include <iostream>
 #include <fstream>
@@ -85,12 +85,6 @@ namespace cutcells::io
                 << "\t</UnstructuredGrid>\n"
                 << "</VTKFile>\n";
 
-//               <PointData Scalars=”Temperature” Vectors=”Velocity”>
-//     <DataArray Name=”Velocity” .../>
-//     <DataArray Name=”Temperature” .../>
-//     <DataArray Name=”Pressure” .../>
-//   </PointData>
-        
             ofs.close();
         }
         else std:: cout << "Unable to open file " << filename << " to write" << std::endl;

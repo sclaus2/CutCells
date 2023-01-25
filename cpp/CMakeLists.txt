@@ -18,6 +18,12 @@ include(FeatureSummary)
 # Source files
 add_subdirectory(src)
 
+set_target_properties(cutcells PROPERTIES PRIVATE_HEADER "${HEADERS}")
+target_include_directories(cutcells PUBLIC
+  $<INSTALL_INTERFACE:include>
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR};${CMAKE_CURRENT_SOURCE_DIR}>")
+
+
 install(FILES ${HEADERS} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cutcells/${DIR}
 COMPONENT Development)
 

@@ -2,7 +2,7 @@
 // Authors: Susanne Claus 
 // This file is part of CutCells
 //
-// SPDX-License-Identifier:    LGPL-3.0-or-later
+// SPDX-License-Identifier:    MIT
 
 #include "cut_triangle.h"
 #include "cut_interval.h"
@@ -16,7 +16,6 @@
 
 namespace cutcells::cell
 {
-
 // Look up tables for intersection
 namespace{
     // Choose numbering of edges for cutting in accordance with numbering of vtk

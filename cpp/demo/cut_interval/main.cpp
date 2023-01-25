@@ -31,19 +31,19 @@ int main()
     {
         cell::CutCell cut_cell;
         cell::cut(cell_type, vertex_coordinates, gdim, ls_values, "phi=0", cut_cell);
-        std::string fname = "./results/interface.tex";
+        std::string fname = "interface.tex";
         io::write_tikz(fname,cut_cell._vertex_coords,cut_cell._connectivity,vertex_coordinates,bg_elements,ls_values,gdim);
 
         cell::cut(cell_type, vertex_coordinates, gdim, ls_values, "phi<0", cut_cell);
-        fname = "./results/interior.tex";
+        fname = "interior.tex";
         io::write_tikz(fname,cut_cell._vertex_coords,cut_cell._connectivity,vertex_coordinates,bg_elements,ls_values,gdim);
-        fname = "./results/interior.vtu";
+        fname = "interior.vtu";
         io::write_vtk(fname,cut_cell._vertex_coords,cut_cell._connectivity,cut_cell._types,ls_values,gdim);
 
         cell::cut(cell_type, vertex_coordinates, gdim, ls_values, "phi>0", cut_cell, false);
-        fname = "./results/exterior.tex";
+        fname = "exterior.tex";
         io::write_tikz(fname,cut_cell._vertex_coords,cut_cell._connectivity,vertex_coordinates,bg_elements,ls_values,gdim);
-        fname = "./results/exterior.vtu";
+        fname = "exterior.vtu";
         io::write_vtk(fname,cut_cell._vertex_coords,cut_cell._connectivity,cut_cell._types,ls_values,gdim);
     }
 }
