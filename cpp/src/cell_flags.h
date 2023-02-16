@@ -61,7 +61,7 @@ namespace cutcells
             {
                 if(outside)
                 {
-                    if (ls_values[i] > 0.0)
+                    if (ls_values[i] >= 0.0)
                     {
                         index |= multiplier; 
                     } 
