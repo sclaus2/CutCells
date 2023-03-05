@@ -33,6 +33,9 @@ namespace cutcells
 
             /// Cell type of cut cells
             std::vector<type> _types;
+
+            /// Parent index for cell, pair of indices for interfaces
+            std::vector<std::int32_t> _parent_cell_index;
         
         };
         

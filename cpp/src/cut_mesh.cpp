@@ -8,9 +8,9 @@
 
 namespace cutcells::mesh
 {
-    void str(CutMesh &cut_mesh)
+    void str(CutCells &cut_mesh)
     {
-        std::cout << "CutMesh: " << std::endl;
+        std::cout << "CutCells: " << std::endl;
         int cnt = 0;
 
         for(auto &cell: cut_mesh._cut_cells)

@@ -372,7 +372,7 @@ namespace triangle{
         // throw error if cell is not intersected, only intersected cells should land here 
         if(flag_interior ==0 || flag_interior == 7)
         {
-            throw std::invalid_argument("triangle is not intersected and therefore cannot be cut");
+            throw std::invalid_argument("triangle is not registered as intersected and therefore cannot be cut (possible corner case not implemented yet)");
         }
 
         // Compute intersection points these are required for any cut cell part (interface, interior, exterior)
