@@ -9,6 +9,7 @@
 #include "cut_triangle.h"
 #include "cut_interval.h"
 #include "cell_flags.h"
+#include "cell_subdivision.h"
 #include "utils.h"
 
 #include <cassert>
@@ -82,6 +83,102 @@ namespace cutcells::cell{
             case type::triangle: triangle::cut(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
                                  break;
         }
+    }
+
+    CutCell higher_order_cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
+             const std::span<const double> ls_values, const std::string& cut_type_str,
+             bool triangulate)
+    {
+      cutcells::cell::domain cell_domain = cutcells::cell::classify_cell_domain(ls_values);
+
+      if(cell_domain == cutcells::cell::domain::intersected)
+      {
+        std::size_t num_sub_cells = 0;
+        switch(cell_type)
+        {
+          case cutcells::cell::type::triangle: {num_sub_cells = cutcells::cell::triangle_subdivision_table.size();
+                                        break;}
+          case cutcells::cell::type::tetrahedron: {num_sub_cells = cutcells::cell::tetrahedron_subdivision_table.size();
+                                        break;}
+        }
+
+        std::vector<cutcells::cell::CutCell> sub_cut_cells;
+
+        int sub_cut_cell_id = 0;
+
+        //Iterate over sub cells
+        for(std::size_t i=0;i<num_sub_cells;i++)
+        {
+          const std::size_t num_vertices = cutcells::cell::get_num_vertices(cell_type);
+          std::span<int> sub_tet;
+
+          switch(cell_type)
+          {
+            case cutcells::cell::type::triangle: {sub_tet = cutcells::cell::triangle_subdivision_table[i];
+                                          break;}
+            case cutcells::cell::type::tetrahedron: {sub_tet = cutcells::cell::tetrahedron_subdivision_table[i];
+                                          break;}
+          }
+
+          std::vector<double> sub_ls_values(num_vertices);
+          std::vector<double> sub_vertex_coordinates(num_vertices*gdim);
+
+          for(std::size_t j=0;j<num_vertices;j++)
+          {
+            std::size_t vertex_id = sub_tet[j];
+            sub_ls_values[j] = ls_values[vertex_id];
+
+            for(std::size_t k=0;k<gdim;k++)
+            {
+              sub_vertex_coordinates[j*gdim+k] = vertex_coordinates[vertex_id*gdim+k];
+            }
+          }
+
+          //Determine if sub_cell is intersected or inside or outside
+          cutcells::cell::domain cell_domain = cutcells::cell::classify_cell_domain(sub_ls_values);
+
+          switch(cell_domain)
+          {
+            case cutcells::cell::domain::intersected:
+            {
+              cutcells::cell::CutCell tmp_cut_cell;
+              cutcells::cell::cut(cell_type, sub_vertex_coordinates, gdim, sub_ls_values, cut_type_str, tmp_cut_cell, triangulate);
+              sub_cut_cells.push_back(tmp_cut_cell);
+              sub_cut_cells[sub_cut_cell_id]._parent_cell_index.push_back(-1);
+              sub_cut_cell_id++;
+              break;
+            }
+            case cutcells::cell::domain::inside:
+            {
+              if(cut_type_str=="phi<0")
+              {
+                cutcells::cell::CutCell tmp_cut_cell = cutcells::cell::create_cut_cell(cell_type, sub_vertex_coordinates, gdim);
+                sub_cut_cells.push_back(tmp_cut_cell);
+                sub_cut_cells[sub_cut_cell_id]._parent_cell_index.push_back(-1);
+                sub_cut_cell_id++;
+              }
+              break;
+            }
+            case cutcells::cell::domain::outside:
+            {
+              if(cut_type_str=="phi>0")
+              {
+                cutcells::cell::CutCell tmp_cut_cell = cutcells::cell::create_cut_cell(cell_type, sub_vertex_coordinates, gdim);
+                sub_cut_cells.push_back(tmp_cut_cell);
+                sub_cut_cells[sub_cut_cell_id]._parent_cell_index.push_back(-1);
+                sub_cut_cell_id++;
+              }
+              break;
+            }
+          }
+        }
+        cutcells::cell::CutCell merged_cut_cell = cutcells::cell::merge(sub_cut_cells);
+        return merged_cut_cell;
+      }
+      else
+      {
+        throw std::invalid_argument("cell is not intersected and therefore cannot be cut");
+      }
     }
 
     /// Merge vector of CutCell objects into one CutCell

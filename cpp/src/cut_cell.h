@@ -49,6 +49,10 @@ namespace cutcells
              const std::span<const double> ls_values, const std::vector<std::string>& cut_type_str,
              std::vector<CutCell>& cut_cell, bool triangulate=false);
 
+        CutCell higher_order_cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
+             const std::span<const double> ls_values, const std::string& cut_type_str,
+             bool triangulate=false);
+
         CutCell merge(std::vector<CutCell> cut_cell_vec);
 
         CutCell create_cut_cell(const type& cell_type, std::span<const double> vertex_coords, const int& gdim);
