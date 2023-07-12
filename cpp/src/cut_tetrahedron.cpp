@@ -382,7 +382,7 @@ namespace tetrahedron{
                          std::unordered_map<int,int>& vertex_case_map)
     {
         cut_cell._gdim = gdim;
-        
+
         if(cut_type_str=="phi=0")
         {
             cut_cell._tdim = 2;
@@ -458,13 +458,13 @@ namespace tetrahedron{
     }
 
     // cut tetrahedron
-    void cut(const std::span<const double> vertex_coordinates, const int gdim, 
+    void cut(const std::span<const double> vertex_coordinates, const int gdim,
              const std::span<const double> ls_values, const std::string& cut_type_str,
              CutCell& cut_cell, bool triangulate)
     {
         int flag_interior = get_entity_flag(ls_values, false);
 
-        // throw error if cell is not intersected, only intersected cells should land here 
+        // throw error if cell is not intersected, only intersected cells should land here
         if(flag_interior ==0 || flag_interior == 15)
         {
             throw std::invalid_argument("tetrahedron is not intersected and therefore cannot be cut");
@@ -472,16 +472,16 @@ namespace tetrahedron{
 
         // Compute intersection points these are required for any cut cell part (interface, interior, exterior)
         // get the number of intersection points
-        std::vector<double> intersection_points; 
-        // the vertex case map, 
-        // first few entries map from intersected edge to intersection point number 
+        std::vector<double> intersection_points;
+        // the vertex case map,
+        // first few entries map from intersected edge to intersection point number
         // next entries map from orginal vertex id to number of vertex in vertex_coordinates of CutCell (renumbered to go from 0,...,N)
-        // example: intersected edges 0 -> 0, 2 -> 1 
+        // example: intersected edges 0 -> 0, 2 -> 1
         //          then orginal vertex 101 -> 2 , 102 -> 3 etc.
-        std::unordered_map<int,int> vertex_case_map;       
+        std::unordered_map<int,int> vertex_case_map;
         compute_intersection_points(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
 
-        create_cut_cell(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, 
+        create_cut_cell(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell,
                         triangulate, intersection_points, vertex_case_map);
     }
 }

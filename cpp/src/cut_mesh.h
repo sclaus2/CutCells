@@ -54,4 +54,7 @@ namespace cutcells::mesh
     /// @param parent_map: map from cutcell index to parent cell index. 
     /// @return inverse map from parent cell index to cut cell index 
     std::unordered_map<int, std::vector<int>> create_parent_cut_cells_map(std::span<int> parent_map);
+
+    //Get number of cells in CutMesh
+    int get_num_cells(const cutcells::mesh::CutCells& cut_mesh);
 }

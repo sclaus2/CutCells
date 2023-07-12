@@ -16,18 +16,18 @@ namespace cutcells
         enum class domain
         {
             unset = -1,
-            inside = 0,  
-            intersected = 1,  
+            inside = 0,
+            intersected = 1,
             outside = 2
         };
 
         enum class cut_type
         {
             unset = -1,
-            philt0 = 0, 
+            philt0 = 0,
             phieq0 = 1,
             phigt0 = 2
-        }; 
+        };
 
         inline cut_type string_to_cut_type(std::string type_str)
         {
@@ -55,8 +55,8 @@ namespace cutcells
 
         inline int get_entity_flag(const std::span<const double> ls_values, bool outside)
         {
-            int index = 0; 
-            int multiplier = 1; 
+            int index = 0;
+            int multiplier = 1;
 
             int ulp = 2;
             //approximate tolerance

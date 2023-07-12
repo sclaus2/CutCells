@@ -11,12 +11,14 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR})
 set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_types.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_flags.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cell_subdivision.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_triangle.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_interval.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.h
   ${CMAKE_CURRENT_SOURCE_DIR}/triangulation.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/utils.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_tikz.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.h
   PARENT_SCOPE)

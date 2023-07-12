@@ -9,10 +9,12 @@
 #include "cut_triangle.h"
 #include "cut_interval.h"
 #include "cell_flags.h"
+#include "utils.h"
 
 #include <cassert>
 #include <set>
 #include <unordered_map>
+#include <map>
 
 
 namespace cutcells::cell{
@@ -80,6 +82,119 @@ namespace cutcells::cell{
             case type::triangle: triangle::cut(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
                                  break;
         }
+    }
+
+    /// Merge vector of CutCell objects into one CutCell
+    /// This merging operation is intended to merge several cutcells with the same parent cell
+    /// of the same geometrical and topological dimension
+    /// this is needed for linearly approximated high order cuts
+    CutCell merge(std::vector<CutCell> cut_cell_vec)
+    {
+      CutCell merged_cut_cell;
+      std::size_t gdim = cut_cell_vec[0]._gdim;
+      std::size_t tdim = cut_cell_vec[0]._tdim;
+
+      merged_cut_cell._gdim=gdim;
+      merged_cut_cell._tdim=tdim;
+      merged_cut_cell._parent_cell_index = cut_cell_vec[0]._parent_cell_index;
+
+      //Count the total number of cells in vector
+      int num_cells =0;
+      for(auto & cut_cell : cut_cell_vec)
+      {
+        num_cells += cut_cell._connectivity.size();
+      }
+
+      merged_cut_cell._connectivity.resize(num_cells);
+      merged_cut_cell._types.resize(num_cells);
+
+      int merged_vertex_id = 0;
+      int sub_cell_offset=0;
+      int vertex_counter = 0;
+
+      //all cutcells in vector above should have the same gdim and tdim
+      for(auto & cut_cell : cut_cell_vec)
+      {
+        //check that current cut_cell has same dimensions and parent
+        if((cut_cell._gdim!=gdim)||(cut_cell._tdim!=tdim)||(cut_cell._parent_cell_index[0]!=merged_cut_cell._parent_cell_index[0]))
+        {
+          std::cout << "gdim: (" << gdim << ", " << cut_cell._gdim << ")" << std::endl;
+          std::cout << "tdim: (" << tdim << ", " << cut_cell._tdim << ")" << std::endl;
+          std::cout << "parent_cell: (" << merged_cut_cell._parent_cell_index[0] << ", " << cut_cell._parent_cell_index[0] << ")" << std::endl;
+          throw std::runtime_error ("Error in merging cutcells have differing dimensions or parent cell");
+        }
+
+        int num_cut_cell_vertices = cut_cell._vertex_coords.size()/gdim;
+        int local_num_cells = cut_cell._connectivity.size();
+
+        //Map from vertex id in current cutcell to merged cutcell
+        std::map<int,int> local_merged_vertex_ids;
+
+        for(int local_id=0;local_id<num_cut_cell_vertices;local_id++)
+        {
+          //check if vertex already exists to avoid doubling of vertices
+          int id = cutcells::utils::vertex_exists(merged_cut_cell._vertex_coords, cut_cell._vertex_coords, local_id, gdim);
+
+          if(id==-1) //not found
+          {
+            //add vertex
+            merged_vertex_id=vertex_counter;
+            vertex_counter++;
+
+            for(int j=0;j<gdim;j++)
+            {
+              merged_cut_cell._vertex_coords.push_back(cut_cell._vertex_coords[local_id*gdim+j]);
+            }
+          }
+          else //found
+          {
+            //take already existing vertex for local mapping
+            merged_vertex_id = id;
+          }
+          //offset is vertex_id
+          local_merged_vertex_ids[local_id] = merged_vertex_id;
+        }
+
+        for(int i=0;i<cut_cell._connectivity.size();i++)
+        {
+          for(int j=0;j<cut_cell._connectivity[i].size();j++)
+          {
+              int64_t index = cut_cell._connectivity[i][j];
+              merged_cut_cell._connectivity[sub_cell_offset+i].push_back(local_merged_vertex_ids[index]);
+          }
+          merged_cut_cell._types[sub_cell_offset+i]=cut_cell._types[i];
+        }
+
+        sub_cell_offset+=local_num_cells;
+      }
+
+      return merged_cut_cell;
+    }
+
+    //create a cut cell from vertex coordinates and type and gdim
+    CutCell create_cut_cell(const type& cell_type, std::span<const double> vertex_coords, const int& gdim)
+    {
+      CutCell cut_cell;
+      cut_cell._vertex_coords.resize(vertex_coords.size());
+      for(std::size_t i=0;i<vertex_coords.size();i++)
+      {
+        cut_cell._vertex_coords[i] = vertex_coords[i];
+      }
+
+      cut_cell._gdim = gdim;
+      cut_cell._tdim = get_tdim(cell_type);
+
+      cut_cell._connectivity.resize(1);
+      int num_vertices = vertex_coords.size()/gdim;
+      cut_cell._types.push_back(cell_type);
+
+      cut_cell._connectivity[0].resize(num_vertices);
+      for(std::size_t i=0;i<num_vertices;i++)
+      {
+        cut_cell._connectivity[0][i] = i;
+      }
+
+      return cut_cell;
     }
 
 }

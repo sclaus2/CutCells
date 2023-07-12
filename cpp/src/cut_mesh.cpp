@@ -62,4 +62,15 @@ namespace cutcells::mesh
 
         return parent_cut_cell_map;
     }
+
+    int get_num_cells(const cutcells::mesh::CutCells& cut_mesh)
+    {
+      int num_cells = 0;
+
+      for(auto & cut_cell : cut_mesh._cut_cells)
+      {
+        num_cells += cut_cell._connectivity.size();
+      }
+      return num_cells;
+    }
 }

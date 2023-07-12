@@ -103,6 +103,34 @@ namespace cutcells
             return num_vertices;
         }
 
+        inline int get_tdim(type cell_type)
+        {
+            int tdim = 0;
+            switch(cell_type)
+            {
+                case type::point:         tdim = 0;
+                                          break;
+                case type::interval:      tdim = 1;
+                                          break;
+                case type::triangle:      tdim = 2;
+                                          break;
+                case type::quadrilateral: tdim = 2;
+                                          break;
+                case type::tetrahedron:   tdim = 3;
+                                          break;
+                case type::hexahedron:    tdim = 3;
+                                          break;
+                case type::prism:         tdim = 3;
+                                          break;
+                case type::pyramid:       tdim = 3;
+                                          break;
+                default: throw std::invalid_argument("cell type not recognised in get_num_vertices of cell_types.h");
+                         break;
+            }
+
+            return tdim;
+        }
+
         inline std::string cell_type_to_str(type cell_type)
         {
             std::string type_str;

@@ -19,14 +19,14 @@ namespace cutcells
         /// @brief Stores the sub-cells resulting from cutting a cell
         struct CutCell
         {
-            /// Geometric Dimension of Cell 
-            int _gdim; 
+            /// Geometric Dimension of Cell
+            int _gdim;
 
             /// Topological Dimension of Cell
             int _tdim;
 
             /// Coordinates of vertices of cut cell
-            std::vector<double> _vertex_coords; 
+            std::vector<double> _vertex_coords;
 
             /// Vertex ids of cut cells
             std::vector<std::vector<int>> _connectivity;
@@ -36,10 +36,10 @@ namespace cutcells
 
             /// Parent index for cell, pair of indices for interfaces
             std::vector<std::int32_t> _parent_cell_index;
-        
+
         };
-        
-        void str(const CutCell &cut_cell);  
+
+        void str(const CutCell &cut_cell);
 
         void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
                  const std::span<const double> ls_values, const std::string& cut_type_str,
@@ -48,6 +48,10 @@ namespace cutcells
         void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
              const std::span<const double> ls_values, const std::vector<std::string>& cut_type_str,
              std::vector<CutCell>& cut_cell, bool triangulate=false);
+
+        CutCell merge(std::vector<CutCell> cut_cell_vec);
+
+        CutCell create_cut_cell(const type& cell_type, std::span<const double> vertex_coords, const int& gdim);
     }
 
 }
