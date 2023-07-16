@@ -70,6 +70,8 @@ namespace cutcells::cell{
                                  break;
             case type::tetrahedron: tetrahedron::cut(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
                                  break;
+            default: throw std::invalid_argument("Only intervals, triangles and tetrahedra are implemented for cutting so far.");
+                                break;
         }
     }
 
@@ -85,10 +87,27 @@ namespace cutcells::cell{
         }
     }
 
+    //Cutting of 2nd order triangles (6-node) and tetrahedra (10-node)
     CutCell higher_order_cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
              const std::span<const double> ls_values, const std::string& cut_type_str,
              bool triangulate)
     {
+      switch(cell_type)
+      {
+        case cutcells::cell::type::triangle:
+        { if(ls_values.size()!=6)
+              throw std::invalid_argument("more than 6 level set values, only 2nd order triangles are supported");
+          break;
+        }
+        case cutcells::cell::type::tetrahedron:
+        { if(ls_values.size()!=10)
+             throw std::invalid_argument("more than 10 level set values, only 2nd order tetrahedra are supported");
+          break;
+        }
+        default: throw std::invalid_argument("Only intervals, triangles and tetrahedra are implemented for cutting so far.");
+                break;
+      }
+
       cutcells::cell::domain cell_domain = cutcells::cell::classify_cell_domain(ls_values);
 
       if(cell_domain == cutcells::cell::domain::intersected)

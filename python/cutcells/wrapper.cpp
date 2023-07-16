@@ -142,4 +142,11 @@ PYBIND11_MODULE(_cutcellscpp, m)
               return cut_cell;
              }
              , "cut a cell");
+
+  m.def("higher_order_cut", [](cell::type cell_type, const py::array_t<double>& vertex_coordinates, const int gdim,
+             const py::array_t<const double>& ls_values, const std::string& cut_type_str, bool triangulate){
+              cell::CutCell cut_cell = cell::higher_order_cut(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, triangulate);
+              return cut_cell;
+             }
+             , "cut a second order cell");
 }

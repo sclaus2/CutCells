@@ -28,19 +28,19 @@ int main()
     0.,0.5,0.,
     0.5,0.,0.};
 
-    cutcells::cell::CutCell cut_cell_interface =  cutcells::cell::higher_order_cut(cell_type,  vertex_coordinates,  gdim, 
+    cutcells::cell::CutCell cut_cell_interface =  cutcells::cell::higher_order_cut(cell_type,  vertex_coordinates,  gdim,
       ls_values, "phi=0");
 
     std::string fname = "interface.vtu";
     cutcells::io::write_vtk(fname,cut_cell_interface);
 
-    cutcells::cell::CutCell cut_cell_interior =  cutcells::cell::higher_order_cut(cell_type,  vertex_coordinates,  gdim, 
+    cutcells::cell::CutCell cut_cell_interior =  cutcells::cell::higher_order_cut(cell_type,  vertex_coordinates,  gdim,
       ls_values, "phi<0");
 
     fname = "interior.vtu";
     cutcells::io::write_vtk(fname,cut_cell_interior);
 
-    cutcells::cell::CutCell cut_cell_exterior =  cutcells::cell::higher_order_cut(cell_type,  vertex_coordinates,  gdim, 
+    cutcells::cell::CutCell cut_cell_exterior =  cutcells::cell::higher_order_cut(cell_type,  vertex_coordinates,  gdim,
       ls_values, "phi>0");
 
     fname = "exterior.vtu";

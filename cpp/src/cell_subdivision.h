@@ -5,6 +5,8 @@
 // SPDX-License-Identifier:    MIT
 #include <array>
 
+//These tables describe the subdivision of cells by inserting one node at each edge 
+//of the cell
 namespace cutcells::cell
 {
   std::array<std::array<int, 2>, 2>  interval_subdivision_table{
