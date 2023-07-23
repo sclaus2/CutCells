@@ -56,6 +56,12 @@ namespace cutcells
         CutCell merge(std::vector<CutCell> cut_cell_vec);
 
         CutCell create_cut_cell(const type& cell_type, std::span<const double> vertex_coords, const int& gdim);
+
+         void cut_cut_cell(cutcells::cell::CutCell &cut_cell,
+                    std::span<const double> ls_vals_all,
+                    const int& parent_cell_index,
+                    const std::string& cut_type_str,
+                    bool triangulate);
     }
 
 }

@@ -56,9 +56,9 @@ namespace cutcells::cell{
         std::cout << "]" << std::endl;
     }
 
-    /// Cut a cell of type cell_type with the level set values in its vertices and 
+    /// Cut a cell of type cell_type with the level set values in its vertices and
     /// return a list of elements and their cell types
-    void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
+    void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim,
              const std::span<const double> ls_values, const std::string& cut_type_str,
              CutCell& cut_cell, bool triangulate)
     {
@@ -74,7 +74,6 @@ namespace cutcells::cell{
                                 break;
         }
     }
-
 
     void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
              const std::span<const double> ls_values, const std::vector<std::string>& cut_type_str,
@@ -206,6 +205,12 @@ namespace cutcells::cell{
     /// this is needed for linearly approximated high order cuts
     CutCell merge(std::vector<CutCell> cut_cell_vec)
     {
+      //nothing to merge if only one cell in vector
+      if(cut_cell_vec.size()==1)
+      {
+        return cut_cell_vec[0];
+      }
+
       CutCell merged_cut_cell;
       std::size_t gdim = cut_cell_vec[0]._gdim;
       std::size_t tdim = cut_cell_vec[0]._tdim;
@@ -231,6 +236,10 @@ namespace cutcells::cell{
       //all cutcells in vector above should have the same gdim and tdim
       for(auto & cut_cell : cut_cell_vec)
       {
+        if(cut_cell._vertex_coords.size()==0)
+        {
+          continue;
+        }
         //check that current cut_cell has same dimensions and parent
         if((cut_cell._gdim!=gdim)||(cut_cell._tdim!=tdim)||(cut_cell._parent_cell_index[0]!=merged_cut_cell._parent_cell_index[0]))
         {
@@ -241,6 +250,7 @@ namespace cutcells::cell{
         }
 
         int num_cut_cell_vertices = cut_cell._vertex_coords.size()/gdim;
+
         int local_num_cells = cut_cell._connectivity.size();
 
         //Map from vertex id in current cutcell to merged cutcell
@@ -312,5 +322,81 @@ namespace cutcells::cell{
 
       return cut_cell;
     }
+
+  //cut a cut_cell and return result in cut_cell
+  //used for recursive cutting
+  void cut_cut_cell(cutcells::cell::CutCell &cut_cell,
+                    std::span<const double> ls_vals_all,
+                    const int& parent_cell_index,
+                    const std::string& cut_type_str,
+                    bool triangulate)
+  {
+    int num_cells = cut_cell._connectivity.size();
+    int gdim = cut_cell._gdim;
+
+    std::vector<cutcells::cell::CutCell> cut_cells(num_cells);
+
+    // std::cout << "ls_vals calculated " << ls_vals_all.size() << std::endl;
+    // std::cout << "num_cells= " << num_cells << std::endl;
+    //std::cout << "level_set_i=" << level_set_i << std::endl;
+    int cut_cell_id = 0;
+
+    //iterate over cells in cut_cell and cut each one
+    for(std::size_t j=0;j<num_cells;j++)
+    {
+      int num_vertices = cut_cell._connectivity[j].size();
+      auto cut_cell_type = cut_cell._types[j];
+      //std::cout << "num_vertices" << num_vertices << std::endl;
+      std::vector<double> vertex_coords(num_vertices*gdim);
+      std::vector<double> ls_vals(num_vertices);
+
+      for(std::size_t k=0;k<num_vertices;k++)
+      {
+        int vertex_id = cut_cell._connectivity[j][k];
+        for(std::size_t l=0;l<gdim;l++)
+        {
+          vertex_coords[k*gdim+l] = cut_cell._vertex_coords[vertex_id*gdim+l];
+          //std::cout << "vertex_coords=" << vertex_coords[k*gdim+l] << std::endl;
+        }
+
+        ls_vals[k] = ls_vals_all[vertex_id];
+      }
+
+      // std::cout << "ready to cut cell" << std::endl;
+      if(cutcells::cell::is_intersected(ls_vals))
+      {
+        cutcells::cell::cut(cut_cell_type, vertex_coords, gdim, ls_vals, cut_type_str, cut_cells[cut_cell_id], triangulate);
+        cut_cells[cut_cell_id]._parent_cell_index.push_back(parent_cell_index);
+        cut_cell_id++;
+      }
+      else{
+        //std::cout << "Warning subcell is not cut!!!!!!!!!!!!!!!!!!!" << std::endl;
+        //sub-cell completely inside
+        if(cut_type_str=="phi<0")
+        {
+          cut_cells[cut_cell_id] = create_cut_cell(cut_cell_type, vertex_coords, gdim);
+          cut_cells[cut_cell_id]._parent_cell_index.push_back(parent_cell_index);
+          cut_cell_id++;
+        }
+        //sub-cell completely outside
+        else
+        {
+          cut_cells.pop_back();
+        }
+      }
+    }
+
+    //std::cout << "merging cells " << cut_cells.size() << std::endl;
+    if(cut_cells.size()>1)
+    {
+      //Merge cut_cells into one cut cell to cut them again
+      cut_cell = cutcells::cell::merge(cut_cells);
+      //std::cout << "Cells merged" << std::endl;
+    }
+    else
+    {
+      cut_cell = cut_cells[0];
+    }
+  }
 
 }

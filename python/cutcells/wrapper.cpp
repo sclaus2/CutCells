@@ -15,6 +15,7 @@
 #include <cutcells/cell_flags.h>
 #include <cutcells/cell_types.h>
 #include <cutcells/cut_cell.h>
+#include <cutcells/cut_mesh.h>
 #include <cutcells/write_vtk.h>
 
 namespace py = pybind11;
@@ -91,7 +92,7 @@ PYBIND11_MODULE(_cutcellscpp, m)
               idx++;
             }
 
-            return vertex_coords; 
+            return vertex_coords;
           })
         .def_property_readonly(
           "connectivity",
@@ -102,7 +103,7 @@ PYBIND11_MODULE(_cutcellscpp, m)
                 size+= self._connectivity[i].size() + 1;
               }
 
-              py::array_t<int> connectivity(size); 
+              py::array_t<int> connectivity(size);
               py::buffer_info buf1 = connectivity.request();
               int *ptr1 = static_cast<int *>(buf1.ptr);
 
@@ -120,9 +121,9 @@ PYBIND11_MODULE(_cutcellscpp, m)
               return connectivity;
           })
         .def_property_readonly(
-          "types", 
+          "types",
           [](const cell::CutCell& self) {
-              py::array_t<int> types(self._types.size()); 
+              py::array_t<int> types(self._types.size());
               py::buffer_info buf1 = types.request();
               int *ptr1 = static_cast<int *>(buf1.ptr);
 
@@ -134,6 +135,46 @@ PYBIND11_MODULE(_cutcellscpp, m)
           })
         .def("str", [](const cell::CutCell& self) {cell::str(self); return ;})
         .def("write_vtk", [](cell::CutCell& self, std::string fname) {io::write_vtk(fname,self); return ;});
+
+  py::class_<mesh::CutCells>(m, "CutCells", "Cut Cells")
+        .def(py::init<>())
+        .def_property_readonly(
+          "cut_cells",
+          [](const mesh::CutCells& self) {
+              return self._cut_cells;
+          })
+        .def_property_readonly(
+          "parent_map",
+          [](const mesh::CutCells& self) {
+              py::array_t<int> parent_map(self._parent_map.size());
+              py::buffer_info buf1 = parent_map.request();
+              int *ptr1 = static_cast<int *>(buf1.ptr);
+
+              for(int i=0;i<self._parent_map.size();i++)
+              {
+                ptr1[i] = static_cast<int>(self._parent_map[i]);
+              }
+              return parent_map;
+          })
+        .def_property_readonly(
+          "types",
+          [](const mesh::CutCells& self) {
+              py::array_t<int> types(self._types.size());
+              py::buffer_info buf1 = types.request();
+              int *ptr1 = static_cast<int *>(buf1.ptr);
+
+              for(int i=0;i<self._types.size();i++)
+              {
+                ptr1[i] = static_cast<int>(map_cell_type_to_vtk(self._types[i]));
+              }
+              return types;
+          })
+        .def_property_readonly(
+          "num_vertices",
+          [](const mesh::CutCells& self) {
+              return self._num_vertices;
+          })
+        .def("str", [](const mesh::CutCells& self) {mesh::str(self); return ;});
 
   m.def("cut", [](cell::type cell_type, const py::array_t<double>& vertex_coordinates, const int gdim, 
              const py::array_t<double>& ls_values, const std::string& cut_type_str, bool triangulate){

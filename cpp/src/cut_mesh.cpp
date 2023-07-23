@@ -8,7 +8,7 @@
 
 namespace cutcells::mesh
 {
-    void str(CutCells &cut_mesh)
+    void str(const CutCells &cut_mesh)
     {
         std::cout << "CutCells: " << std::endl;
         int cnt = 0;

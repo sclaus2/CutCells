@@ -48,7 +48,7 @@ namespace cutcells::mesh
 
     /// @brief  Print information about cut_mesh to screen
     /// @param cut_mesh 
-    void str(CutCells &cut_mesh);
+    void str(const CutCells &cut_mesh);
 
     /// @brief Get inverse map of parent_map 
     /// @param parent_map: map from cutcell index to parent cell index. 
