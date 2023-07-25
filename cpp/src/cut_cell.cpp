@@ -362,23 +362,39 @@ namespace cutcells::cell{
         ls_vals[k] = ls_vals_all[vertex_id];
       }
 
+      cutcells::cell::domain cell_domain = cutcells::cell::classify_cell_domain(ls_vals);
       // std::cout << "ready to cut cell" << std::endl;
-      if(cutcells::cell::is_intersected(ls_vals))
+      if(cell_domain == cutcells::cell::domain::intersected)
       {
         cutcells::cell::cut(cut_cell_type, vertex_coords, gdim, ls_vals, cut_type_str, cut_cells[cut_cell_id], triangulate);
         cut_cells[cut_cell_id]._parent_cell_index.push_back(parent_cell_index);
         cut_cell_id++;
       }
-      else{
-        //std::cout << "Warning subcell is not cut!!!!!!!!!!!!!!!!!!!" << std::endl;
-        //sub-cell completely inside
-        if(cut_type_str=="phi<0")
+      // cell is completely inside
+      else if(cell_domain == cutcells::cell::domain::inside)
+      {
+        //and I asked for inside part
+        if((cut_type_str=="phi<0"))
         {
           cut_cells[cut_cell_id] = create_cut_cell(cut_cell_type, vertex_coords, gdim);
           cut_cells[cut_cell_id]._parent_cell_index.push_back(parent_cell_index);
           cut_cell_id++;
         }
-        //sub-cell completely outside
+        else
+        {
+          cut_cells.pop_back();
+        }
+      }
+      //cell is completely outside
+      else if(cell_domain == cutcells::cell::domain::outside)
+      {
+        //and I asked for outside part
+        if((cut_type_str=="phi>0"))
+        {
+          cut_cells[cut_cell_id] = create_cut_cell(cut_cell_type, vertex_coords, gdim);
+          cut_cells[cut_cell_id]._parent_cell_index.push_back(parent_cell_index);
+          cut_cell_id++;
+        }
         else
         {
           cut_cells.pop_back();
@@ -399,4 +415,4 @@ namespace cutcells::cell{
     }
   }
 
-}
+}//end of namespace
