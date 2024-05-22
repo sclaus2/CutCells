@@ -8,11 +8,13 @@
 #include "cut_interval.h"
 #include "cell_flags.h"
 #include "triangulation.h"
+#include "span_math.h"
 
 #include <cassert>
 #include <stdexcept>
 #include <iostream>
 #include <unordered_map>
+#include <cmath>
 
 namespace cutcells::cell
 {
@@ -140,12 +142,12 @@ namespace tetrahedron{
     int get_num_intersection_points(const int &flag)
     {
         // number of intersection points depends if intersection is triangle or quadrilateral
-        return cell::get_num_vertices(interface_sub_element_cell_types[flag]);; 
+        return cell::get_num_vertices(interface_sub_element_cell_types[flag]);
     }
 
     // for triangles the number of sub-elements without triangulation is 1
     int get_num_sub_elements(const int &flag, bool triangulate)
-    {   
+    {
         type cell_type = tetrahedron_sub_element_cell_types[flag];
         int num_sub_elements = 1;
 
@@ -157,7 +159,7 @@ namespace tetrahedron{
     }
 
     int get_num_interface_elements(const int &flag, bool triangulate)
-    {   
+    {
         type cell_type = interface_sub_element_cell_types[flag];
         int num_sub_elements = 1;
 
@@ -168,14 +170,14 @@ namespace tetrahedron{
         return num_sub_elements;
     }
 
-    void compute_intersection_points(const std::span<const double> vertex_coordinates, const int gdim, 
-             const std::span<const double> ls_values, const int flag, std::vector<double>& intersection_points, 
+    void compute_intersection_points(const std::span<const double> vertex_coordinates, const int gdim,
+             const std::span<const double> ls_values, const int flag, std::vector<double>& intersection_points,
              std::unordered_map<int,int>& vertex_case_map)
     {
         // vertex ids will be edges[edge_0][0] edges[edge_0][1]
-        // get vertex coordinates and interpolate 
+        // get vertex coordinates and interpolate
         int num_intersection_points = get_num_intersection_points(flag);
-        
+
         intersection_points.resize(num_intersection_points*gdim);
 
         std::vector<double> v0(gdim);
@@ -185,10 +187,10 @@ namespace tetrahedron{
         for(int ip=0; ip<num_intersection_points; ip++)
         {
             // edge has two vertices
-            // intersection points are listed first in triangle case table 
+            // intersection points are listed first in triangle case table
             // therefore the first two entries are the intersected edges
             int vertex_id_0 = edges[tetrahedron_intersected_edges[flag][ip]][0];
-            int vertex_id_1 = edges[tetrahedron_intersected_edges[flag][ip]][1]; 
+            int vertex_id_1 = edges[tetrahedron_intersected_edges[flag][ip]][1];
 
             for(int j=0;j<gdim;j++)
             {
@@ -216,8 +218,8 @@ namespace tetrahedron{
 
     }
 
-    void create_sub_cell_vertex_coords(const int& flag, const std::span<const double> vertex_coordinates, const int gdim, 
-                                       const std::span<const double> intersection_points, 
+    void create_sub_cell_vertex_coords(const int& flag, const std::span<const double> vertex_coordinates, const int gdim,
+                                       const std::span<const double> intersection_points,
                                        std::vector<double>& coords, std::unordered_map<int,int>& vertex_case_map)
     {
         int num_intersection_points = intersection_points.size()/gdim;
@@ -233,8 +235,8 @@ namespace tetrahedron{
         }
 
         int ncols = 6;
-        int offset = num_intersection_points; 
-        int cnt = num_intersection_points; 
+        int offset = num_intersection_points;
+        int cnt = num_intersection_points;
         int k = 0;
 
         for(int i=0;i<ncols;i++)
@@ -243,8 +245,8 @@ namespace tetrahedron{
            {
             //intersection point which is alreay added or is not a vertex
            }
-           else 
-           {    
+           else
+           {
                 int vertex_id = tetrahedron_sub_element[flag][i];
                 vertex_case_map[vertex_id] = cnt;
                 cnt++;
@@ -277,10 +279,10 @@ namespace tetrahedron{
             else
             {
                 interface_cell_types[i] = sub_cell_type;
-            }     
+            }
         }
 
-        // collect all vertices of sub-elements 
+        // collect all vertices of sub-elements
         if(sub_cell_type == type::quadrilateral && triangulate == true)
         {
             std::vector<std::vector<int>> triangles;
@@ -483,6 +485,24 @@ namespace tetrahedron{
 
         create_cut_cell(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell,
                         triangulate, intersection_points, vertex_case_map);
+    }
+
+    double volume(const std::span<const double> vertex_coordinates, const int gdim)
+    {
+      const auto a = vertex_coordinates.subspan(0, gdim);
+      const auto b = vertex_coordinates.subspan(gdim, gdim);
+      const auto c = vertex_coordinates.subspan(2*gdim, gdim);
+      const auto d = vertex_coordinates.subspan(3*gdim, gdim);
+
+      const auto ad = cutcells::math::subtract(a,d);
+      const auto bd = cutcells::math::subtract(b,d);
+      const auto cd = cutcells::math::subtract(c,d);
+
+      const auto bdxcd = cutcells::math::cross(bd,cd);
+
+      double volume = abs(cutcells::math::dot(ad,bdxcd))/6.0;
+
+      return volume;
     }
 }
 }

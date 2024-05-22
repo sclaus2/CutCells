@@ -41,6 +41,9 @@ namespace cutcells
 
         void str(const CutCell &cut_cell);
 
+        void sub_cell_vertices(const CutCell &cut_cell, const int& id, std::vector<double>& vertex_coordinates);
+        double volume(const CutCell &cut_cell);
+
         void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
                  const std::span<const double> ls_values, const std::string& cut_type_str,
                 CutCell& cut_cell, bool triangulate=false);

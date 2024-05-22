@@ -56,6 +56,51 @@ namespace cutcells::cell{
         std::cout << "]" << std::endl;
     }
 
+    void sub_cell_vertices(const CutCell &cut_cell, const int& id, std::vector<double>& vertex_coordinates)
+    {
+        int gdim = cut_cell._gdim;
+        int num_vertices = cut_cell._connectivity[id].size();
+        vertex_coordinates.resize(num_vertices*gdim);
+        int local_vertex_id = 0;
+
+        for(std::size_t j=0;j<num_vertices;j++)
+        {
+          int vertex_id = cut_cell._connectivity[id][j];
+          for(std::size_t k=0;k<gdim;k++)
+          {
+            vertex_coordinates[local_vertex_id*gdim+k] = cut_cell._vertex_coords[vertex_id*gdim+k];
+          }
+          local_vertex_id++;
+        }
+    }
+
+    double volume(const CutCell &cut_cell)
+    {
+      int gdim = cut_cell._gdim;
+      double vol = 0;
+      std::size_t num_elements=cut_cell._connectivity.size();
+
+      for(std::size_t el = 0; el < num_elements; el++)
+      {
+        std::vector<double> vertex_coordinates;
+        sub_cell_vertices(cut_cell, el,vertex_coordinates);
+
+        switch(cut_cell._types[el])
+        {
+            case type::interval: vol +=interval::volume(vertex_coordinates,gdim);
+                                 break;
+            case type::triangle: vol +=triangle::volume(vertex_coordinates,gdim);
+                                 break;
+            case type::tetrahedron: vol +=tetrahedron::volume(vertex_coordinates,gdim);
+                                 break;
+            default: throw std::invalid_argument("Only intervals, triangles and tetrahedra are implemented for volume computations so far.");
+                                break;
+        }
+      }
+
+      return vol;
+    }
+
     /// Cut a cell of type cell_type with the level set values in its vertices and
     /// return a list of elements and their cell types
     void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim,
@@ -75,7 +120,7 @@ namespace cutcells::cell{
         }
     }
 
-    void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
+    void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim,
              const std::span<const double> ls_values, const std::vector<std::string>& cut_type_str,
              std::vector<CutCell>& cut_cell, bool triangulate)
     {

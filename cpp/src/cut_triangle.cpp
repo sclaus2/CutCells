@@ -8,11 +8,13 @@
 #include "cut_interval.h"
 #include "cell_flags.h"
 #include "triangulation.h"
+#include "span_math.h"
 
 #include <cassert>
 #include <stdexcept>
 #include <iostream>
 #include <unordered_map>
+#include<cmath>
 
 namespace cutcells::cell
 {
@@ -389,5 +391,21 @@ namespace triangle{
                             triangulate, intersection_points, vertex_case_map);
         }
     };
+
+    double volume(const std::span<const double> vertex_coordinates, const int gdim)
+    {
+      const auto p0 = vertex_coordinates.subspan(0, gdim);
+      const auto p1 = vertex_coordinates.subspan(gdim, gdim);
+      const auto p2 = vertex_coordinates.subspan(2*gdim, gdim);
+
+      double a = cutcells::math::distance(p0, p1);
+      double b = cutcells::math::distance(p0, p2);
+      double c = cutcells::math::distance(p1, p2);
+
+      double s = (a+b+c)/2.0;
+      double area = sqrt(s*(s-a)*(s-b)*(s-c));
+
+      return area;
+    }
 }
 }

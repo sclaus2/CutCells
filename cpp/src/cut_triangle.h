@@ -27,6 +27,8 @@ namespace cutcells::cell
         void cut(const std::span<const double> vertex_coordinates, const int gdim, 
              const std::span<const double> ls_values, const std::vector<std::string>& cut_type_str,
              std::vector<CutCell>& cut_cell, bool triangulate);
+
+        double volume(const std::span<const double> vertex_coordinates, const int gdim);
     }
 }
 

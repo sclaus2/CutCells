@@ -18,6 +18,7 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/triangulation.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/span_math.h
   ${CMAKE_CURRENT_SOURCE_DIR}/utils.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_tikz.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.h

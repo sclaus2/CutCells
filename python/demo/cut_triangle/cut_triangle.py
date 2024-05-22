@@ -14,14 +14,17 @@ triangulate = True
 gdim = 2
 
 cut_cell_int = cutcells.cut(cell_type, vertex_coordinates,  gdim, ls_values, "phi<0", triangulate)
-#print(cut_cell.str())
+print(cut_cell_int.str())
 cut_cell_int.write_vtk("interior.vtu")
+vol = cut_cell_int.volume()
+print("Volume(int)=", vol)
 
 cut_cell_ext = cutcells.cut(cell_type, vertex_coordinates,  gdim, ls_values, "phi>0", triangulate)
-#print(cut_cell.str())
+print(cut_cell.str())
 cut_cell_ext.write_vtk("exterior.vtu")
+vol2 = cut_cell_int.volume()
+print("Volume(ext)=", vol2)
 
-#pv.OFF_SCREEN = True
 pv.start_xvfb()
 
 grid_int = pv.UnstructuredGrid(cut_cell_int.connectivity, cut_cell_int.types, cut_cell_int.vertex_coords)

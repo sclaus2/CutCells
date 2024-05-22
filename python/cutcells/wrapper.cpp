@@ -134,6 +134,7 @@ PYBIND11_MODULE(_cutcellscpp, m)
               return types;
           })
         .def("str", [](const cell::CutCell& self) {cell::str(self); return ;})
+        .def("volume", [](const cell::CutCell& self) {return cell::volume(self);})
         .def("write_vtk", [](cell::CutCell& self, std::string fname) {io::write_vtk(fname,self); return ;});
 
   py::class_<mesh::CutCells>(m, "CutCells", "Cut Cells")

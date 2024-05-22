@@ -5,6 +5,7 @@
 // SPDX-License-Identifier:    MIT
 #include "cut_interval.h"
 #include "cell_flags.h"
+#include "span_math.h"
 #include <unordered_map>
 
 namespace cutcells::cell
@@ -181,7 +182,7 @@ namespace cutcells::cell
 
             for(auto i=0;i<gdim;i++)
                 p0[i] = vertex_coordinates[i];
-            
+
             for(auto i=0;i<gdim;i++)
                 p1[i] = vertex_coordinates[gdim+i];
 
@@ -190,5 +191,14 @@ namespace cutcells::cell
             //Create the cut cell depending on which cut is requested
             create_cut_cell(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, intersection_point);
         };
+
+      double volume(const std::span<const double> vertex_coordinates, const int gdim)
+      {
+          const auto p0 = vertex_coordinates.subspan(0, gdim);
+          const auto p1 = vertex_coordinates.subspan(gdim, gdim);
+
+          double length =  cutcells::math::distance(p0, p1);
+          return length;
+      }
     }
 }
