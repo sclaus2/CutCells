@@ -1,5 +1,5 @@
 # CutCells
-a library to compute intersections between mesh cells and implicit functions using marching cubes/tetrahedra algorithms. 
+a library to compute intersections between mesh cells and implicit (level set) functions using marching cubes/tetrahedra algorithms. The current version supports intervals, triangles and tetrahedra. Future versions will include quadrilaterals, hexahedra, pyramids and prisms. This library is used as a basis for computing of integrals in immersed boundary methods/cut finite element methods.
 
 # Installation
 
@@ -55,5 +55,7 @@ CutCells requires a C++20 compiler and depends on the C++ standard template libr
 For the python interface, CutCells requires [`pybind11`](https://github.com/pybind/pybind11, install with [`python3 -m pip install pybind11`]). 
 
 At runtime for the python examples, CutCells requires [`numpy`](https://numpy.org) and if visualizations of cuts are required [`pyvista`](https://pyvista.org/).
+
+The library contains python tests using `pytest` in `python/tests`.
 
 
