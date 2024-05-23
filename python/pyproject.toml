@@ -1,0 +1,29 @@
+[build-system]
+requires = ["scikit-build-core[pyproject]>=0.5.0", "nanobind>=1.6.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "cutcells"
+version = "0.1"
+description = "CutCells Python interface"
+readme = "../README.md"
+requires-python = ">=3.9"
+license = { file = "../LICENSE" }
+authors = [
+    { email = "susanne.claus@onera.fr" },
+    { name = "Susanne Claus" },
+]
+dependencies = ["numpy>=1.21"]
+
+[project.optional-dependencies]
+docs = ["markdown"]
+lint = ["ruff"]
+optional = ["pyvista"]
+test = ["pytest", "numpy"]
+ci = ["mypy", "pytest-xdist", "cutcells[test]"]
+
+[tool.scikit-build]
+minimum-version = "0.5"
+cmake.minimum-version = "3.19.0"
+wheel.packages = ["cutcells"]
+wheel.license-files = ["../LICENSE"]

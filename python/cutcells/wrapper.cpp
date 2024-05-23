@@ -6,10 +6,11 @@
 
 
 #include <iostream>
-#include <pybind11/numpy.h>
-#include <pybind11/operators.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
+#include <nanobind/stl/map.h>
 #include <span>
 
 #include <cutcells/cell_flags.h>
@@ -18,7 +19,7 @@
 #include <cutcells/cut_mesh.h>
 #include <cutcells/write_vtk.h>
 
-namespace py = pybind11;
+namespace nb = nanobind;
 
 using namespace cutcells;
 
@@ -38,22 +39,49 @@ const std::string& cell_domain_to_str(cell::domain domain_id)
   return it->second;
 }
 
+template <typename V>
+auto as_nbarray(V&& x, std::size_t ndim, const std::size_t* shape)
+{
+  using _V = std::decay_t<V>;
+  _V* ptr = new _V(std::move(x));
+  return nb::ndarray<typename _V::value_type, nb::numpy>(
+      ptr->data(), ndim, shape,
+      nb::capsule(ptr, [](void* p) noexcept { delete (_V*)p; }));
+}
+
+template <typename V>
+auto as_nbarray(V&& x, const std::initializer_list<std::size_t> shape)
+{
+  return as_nbarray(x, shape.size(), shape.begin());
+}
+
+template <typename V>
+auto as_nbarray(V&& x)
+{
+  return as_nbarray(std::move(x), {x.size()});
+}
+
+template <typename V, std::size_t U>
+auto as_nbarrayp(std::pair<V, std::array<std::size_t, U>>&& x)
+{
+  return as_nbarray(std::move(x.first), x.second.size(), x.second.data());
+}
+
 } // namespace
 
-
-PYBIND11_MODULE(_cutcellscpp, m)
+NB_MODULE(_cutcellscpp, m)
 {
   // Create module for C++ wrappers
   m.doc() = "CutCells Python interface";
 
-  m.def("classify_cell_domain", [](const py::array_t<double>& ls_values){
+  m.def("classify_cell_domain", [](nb::ndarray<const double>& ls_values){
           cell::domain domain_id = cell::classify_cell_domain(std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())});
           auto domain_str = cell_domain_to_str(domain_id);
           return domain_str;
         }
         , "classify a cell domain");
 
-  py::enum_<cell::type>(m, "CellType")
+  nb::enum_<cell::type>(m, "CellType")
     .value("point", cell::type::point)
     .value("interval", cell::type::interval)
     .value("triangle", cell::type::triangle)
@@ -63,130 +91,115 @@ PYBIND11_MODULE(_cutcellscpp, m)
     .value("prism", cell::type::prism)
     .value("pyramid", cell::type::pyramid);
 
-  py::class_<cell::CutCell>(m, "CutCell", "Cut Cell")
-        .def(py::init<>())
-        .def_property_readonly(
+  nb::class_<cell::CutCell>(m, "CutCell", "Cut Cell")
+        .def(nb::init<>())
+        //shape and classes for cutcell vertex coords, connectivity and types are for visualization with pyvista
+        .def_prop_ro(
           "vertex_coords",
           [](const cell::CutCell& self) {
-            int num_points = self._vertex_coords.size()/self._gdim;
-            py::array_t<double> vertex_coords(3*num_points);
-            py::buffer_info buf1 = vertex_coords.request();
-            double *ptr1 = static_cast<double *>(buf1.ptr);
+            const unsigned long num_vertices = self._vertex_coords.size()/self._gdim;
+            std::vector<double> vertex_coords(3*num_vertices);
 
             int idx = 0;
 
-            for(int i=0;i<num_points;i++)
+            for(unsigned long i=0;i<num_vertices;i++)
             {
-              double x = self._vertex_coords[i*self._gdim];
-              double y = self._vertex_coords[i*self._gdim+1];
               double z = 0;
+
               if(self._gdim==3)
               {
                   z = self._vertex_coords[i*self._gdim+2];
               }
-              ptr1[idx] = x;
+              vertex_coords[idx] = self._vertex_coords[i*self._gdim];
               idx++;
-              ptr1[idx] = y;
+              vertex_coords[idx] = self._vertex_coords[i*self._gdim+1];
               idx++;
-              ptr1[idx] = z;
+              vertex_coords[idx] = z;
               idx++;
             }
 
             return vertex_coords;
-          })
-        .def_property_readonly(
+            // nb::ndarray<nb::numpy, const double>(
+            // /* data = */ vertex_coords.data(),
+            // /* shape pointer = */ { num_vertices,3 },
+            // /* owner = */ nb::handle());
+            // //vertex_coords;
+        }) //owner is self , nb::rv_policy::reference_internal
+        .def_prop_ro(
           "connectivity",
           [](const cell::CutCell& self) {
-              int size = 0;
-              for(int i=0;i<self._connectivity.size();i++)
-              {
-                size+= self._connectivity[i].size() + 1;
-              }
+            nb::list inner;
 
-              py::array_t<int> connectivity(size);
-              py::buffer_info buf1 = connectivity.request();
-              int *ptr1 = static_cast<int *>(buf1.ptr);
-
-              int idx = 0;
-              for(int i=0;i<self._connectivity.size();i++)
+            for(std::size_t i=0;i<self._connectivity.size();i++)
+            {
+              inner.append(self._connectivity[i].size());
+              for(std::size_t j=0;j<self._connectivity[i].size();j++)
               {
-                ptr1[idx] = self._connectivity[i].size();
-                idx++;
-                for(int j=0;j<self._connectivity[i].size();j++)
-                {
-                  ptr1[idx] = self._connectivity[i][j];
-                  idx++;
-                }
+                inner.append(self._connectivity[i][j]);
               }
-              return connectivity;
+            }
+            return inner;
           })
-        .def_property_readonly(
+        .def_prop_ro(
           "types",
           [](const cell::CutCell& self) {
-              py::array_t<int> types(self._types.size());
-              py::buffer_info buf1 = types.request();
-              int *ptr1 = static_cast<int *>(buf1.ptr);
+            //allocate memory
+            nb::list types;
 
-              for(int i=0;i<self._types.size();i++)
+              for(std::size_t i=0;i<self._types.size();i++)
               {
-                ptr1[i] = static_cast<int>(map_cell_type_to_vtk(self._types[i]));
+                types.append(static_cast<int>(map_cell_type_to_vtk(self._types[i])));
               }
+
               return types;
           })
         .def("str", [](const cell::CutCell& self) {cell::str(self); return ;})
         .def("volume", [](const cell::CutCell& self) {return cell::volume(self);})
         .def("write_vtk", [](cell::CutCell& self, std::string fname) {io::write_vtk(fname,self); return ;});
 
-  py::class_<mesh::CutCells>(m, "CutCells", "Cut Cells")
-        .def(py::init<>())
-        .def_property_readonly(
+  nb::class_<mesh::CutCells>(m, "CutCells", "Cut Cells")
+        .def(nb::init<>())
+        .def_prop_ro(
           "cut_cells",
           [](const mesh::CutCells& self) {
               return self._cut_cells;
           })
-        .def_property_readonly(
+        .def_prop_ro(
           "parent_map",
           [](const mesh::CutCells& self) {
-              py::array_t<int> parent_map(self._parent_map.size());
-              py::buffer_info buf1 = parent_map.request();
-              int *ptr1 = static_cast<int *>(buf1.ptr);
-
-              for(int i=0;i<self._parent_map.size();i++)
-              {
-                ptr1[i] = static_cast<int>(self._parent_map[i]);
-              }
-              return parent_map;
+            return as_nbarray(std::move(self._parent_map));
           })
-        .def_property_readonly(
+        .def_prop_ro(
           "types",
           [](const mesh::CutCells& self) {
-              py::array_t<int> types(self._types.size());
-              py::buffer_info buf1 = types.request();
-              int *ptr1 = static_cast<int *>(buf1.ptr);
+            std::vector<int> types(self._types.size());
 
-              for(int i=0;i<self._types.size();i++)
+              for(std::size_t i=0;i<self._types.size();i++)
               {
-                ptr1[i] = static_cast<int>(map_cell_type_to_vtk(self._types[i]));
+                types[i] = static_cast<int>(map_cell_type_to_vtk(self._types[i]));
               }
-              return types;
+              return nb::ndarray<nb::numpy, int>(
+                /* data = */ types.data(),
+                /* shape = */ { types.size() },
+                /* owner = */ nb::handle());
           })
-        .def_property_readonly(
+        .def_prop_ro(
           "num_vertices",
           [](const mesh::CutCells& self) {
               return self._num_vertices;
           })
         .def("str", [](const mesh::CutCells& self) {mesh::str(self); return ;});
 
-  m.def("cut", [](cell::type cell_type, const py::array_t<double>& vertex_coordinates, const int gdim, 
-             const py::array_t<double>& ls_values, const std::string& cut_type_str, bool triangulate){
+  m.def("cut", [](cell::type cell_type, const nb::ndarray<double>& vertex_coordinates, const int gdim, 
+             const nb::ndarray<double>& ls_values, const std::string& cut_type_str, bool triangulate){
               cell::CutCell cut_cell;
               cell::cut(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, cut_cell, triangulate);
               return cut_cell;
              }
              , "cut a cell");
 
-  m.def("higher_order_cut", [](cell::type cell_type, const py::array_t<double>& vertex_coordinates, const int gdim,
-             const py::array_t<const double>& ls_values, const std::string& cut_type_str, bool triangulate){
+  m.def("higher_order_cut", [](cell::type cell_type, const nb::ndarray<double>& vertex_coordinates, const int gdim,
+             const nb::ndarray<const double>& ls_values, const std::string& cut_type_str, bool triangulate){
               cell::CutCell cut_cell = cell::higher_order_cut(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, triangulate);
               return cut_cell;
              }
