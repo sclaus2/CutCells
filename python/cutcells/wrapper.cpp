@@ -119,12 +119,7 @@ NB_MODULE(_cutcellscpp, m)
             }
 
             return vertex_coords;
-            // nb::ndarray<nb::numpy, const double>(
-            // /* data = */ vertex_coords.data(),
-            // /* shape pointer = */ { num_vertices,3 },
-            // /* owner = */ nb::handle());
-            // //vertex_coords;
-        }) //owner is self , nb::rv_policy::reference_internal
+        })
         .def_prop_ro(
           "connectivity",
           [](const cell::CutCell& self) {
