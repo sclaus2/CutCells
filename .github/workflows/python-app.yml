@@ -37,7 +37,7 @@ jobs:
     - name: Install CutCells Python wrapper
       run: |
         cd python
-        pip install .
+        pip install .[test]
     - name: Test with pytest
       run: |
         cd python
