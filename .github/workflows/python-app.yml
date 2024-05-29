@@ -41,12 +41,4 @@ jobs:
     - name: Test with pytest
       run: |
         cd python
-        pytest tests/
-
-
-
-
-          - name: Run units tests
-            run: |
-              pip install pytest-xdist # in ci extras, but most not needed.
-              pytest -n auto --durations 20 test/
+        pytest tests
