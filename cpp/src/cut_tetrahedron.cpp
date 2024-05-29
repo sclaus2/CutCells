@@ -498,7 +498,15 @@ namespace tetrahedron{
       const auto bd = cutcells::math::subtract(b,d);
       const auto cd = cutcells::math::subtract(c,d);
 
+      std::cout << "a:" << cutcells::math::print(a);
+      std::cout << "b:" << cutcells::math::print(b);
+      std::cout << "c:" << cutcells::math::print(c);
+      std::cout << "d:" << cutcells::math::print(d);
+
+
       const auto bdxcd = cutcells::math::cross(bd,cd);
+
+      std::cout << "bdxcd:" << cutcells::math::print(bdxcd);
 
       double volume = abs(cutcells::math::dot(ad,bdxcd))/6.0;
 

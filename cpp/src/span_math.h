@@ -6,6 +6,8 @@
 #pragma once
 
 #include <span>
+#include <string>
+#include <sstream>
 #include <cassert>
 
 namespace cutcells
@@ -69,6 +71,18 @@ namespace cutcells
           result = 0.0;
 
         return result;
+      }
+
+      static std::string print(std::span<const double> a)
+      {
+        std::ostringstream str_out;
+
+        for(std::size_t i=0; i< a.size();i++)
+        {
+          str_out << a[i] << ", ";
+        }
+        str_out << std::endl;
+        return str_out.str();
       }
     }
 }
