@@ -92,6 +92,7 @@ namespace cutcells::cell{
             case type::triangle: vol +=triangle::volume(vertex_coordinates,gdim);
                                  break;
             case type::tetrahedron: vol +=tetrahedron::volume(vertex_coordinates,gdim);
+                                  std::cout << "vol=" << vol << std::endl;
                                  break;
             default: throw std::invalid_argument("Only intervals, triangles and tetrahedra are implemented for volume computations so far.");
                                 break;
