@@ -1,4 +1,7 @@
 # CutCells
+
+[![CutCells CI](https://github.com/sclaus2/cutcells/actions/workflows/python-app.yml/badge.svg)](https://github.com/sclaus2/cutcells/actions/workflows/python-app.yml)
+
 a library to compute intersections between mesh cells and implicit (level set) functions using marching cubes/tetrahedra algorithms. The current version supports intervals, triangles and tetrahedra. Future versions will include quadrilaterals, hexahedra, pyramids and prisms. This library is used as a basis for the computation of integrals in immersed boundary methods/cut finite element methods.
 
 # Installation
