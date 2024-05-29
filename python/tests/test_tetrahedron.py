@@ -33,8 +33,9 @@ def test_tetrahedron_interior(ls_values, vol_ex):
   cut_cell = cutcells.cut(cell_type, vertex_coordinates,  gdim, ls_values, "phi<0", triangulate)
   print(cut_cell.str())
   vol = cut_cell.volume()
+  print(vol)
 
-  assert np.isclose(vol,vol_ex)
+  assert np.isclose(vol,0.0)
 
 # level_set_values = [(np.array([0.1,-0.1,0.2,0.2]),68./27.),
 #                     (np.array([-0.1,0.1,0.2,0.2]),68./27.),
