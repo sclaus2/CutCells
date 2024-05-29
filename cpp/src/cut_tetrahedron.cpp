@@ -508,9 +508,11 @@ namespace tetrahedron{
 
       std::cout << "bdxcd:" << cutcells::math::print(bdxcd);
 
-      double volume = abs(cutcells::math::dot(ad,bdxcd))/6.0;
+      double vol = abs(cutcells::math::dot(ad,bdxcd))/6.0;
 
-      return volume;
+      std::cout << "volume:" << vol << std::endl;
+
+      return vol;
     }
 }
 }
