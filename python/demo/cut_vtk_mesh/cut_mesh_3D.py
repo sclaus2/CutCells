@@ -11,14 +11,15 @@ def level_set(x):
   value = np.sqrt(value)-r
   return value
 
-def create_rectangle_mesh(x0,y0,x1,y1,Nx,Ny):
+def create_box_mesh(x0,y0,z0,x1,y1,z1,Nx,Ny,Nz):
   x = np.linspace(x0, x1, num=Nx)
   y = np.linspace(y0,y1, num=Ny)
+  z = np.linspace(z0,z1, num=Nz)
   #produce grid of points by tensor product
-  xx, yy, zz = np.meshgrid(x, y, [0])
+  xx, yy, zz = np.meshgrid(x, y, z)
   points = np.c_[xx.reshape(-1), yy.reshape(-1), zz.reshape(-1)]
   poly_points = pv.PolyData(points)
-  poly_mesh = poly_points.delaunay_2d()
+  poly_mesh = poly_points.delaunay_3d()
   grid = pv.UnstructuredGrid(poly_mesh)
 
   return grid
@@ -26,7 +27,7 @@ def create_rectangle_mesh(x0,y0,x1,y1,Nx,Ny):
 def mark_cells(mesh):
   cells = mesh.cells
   points = mesh.points
-  ls_values = np.zeros(3)
+  ls_values = np.zeros(len(points))
   inside_cells = np.empty(0, dtype=int)
   intersected_cells = np.empty(0, dtype=int)
 
@@ -51,7 +52,7 @@ def mark_cells(mesh):
   return inside_cells, intersected_cells
 
 def create_cut_mesh(mesh,inner_mesh, intersected_cells):
-  cell_type = cutcells.CellType.triangle
+  cell_type = cutcells.CellType.tetrahedron
   triangulate = True
   gdim = 3
 
@@ -72,7 +73,7 @@ def create_cut_mesh(mesh,inner_mesh, intersected_cells):
 
 
 N = 10
-grid = create_rectangle_mesh(-1,-1,1,1,N,N)
+grid = create_box_mesh(-1,-1,-1, 1,1,1, N,N,N)
 
 inside_cells, intersected_cells = mark_cells(grid)
 
