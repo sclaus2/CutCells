@@ -25,7 +25,7 @@ int main()
 
     std::cout << "Cell domain=" << domain_type_to_string(cell_domain) << std::endl;
 
-    std::cout << "Flag=" << get_entity_flag(ls_values, false) << std::endl;
+    std::cout << "Flag=" << cell::get_entity_flag(ls_values, false) << std::endl;
 
     if(cell_domain == cell::domain::intersected)
     {
@@ -38,12 +38,12 @@ int main()
         fname = "interior.tex";
         io::write_tikz(fname,cut_cell._vertex_coords,cut_cell._connectivity,vertex_coordinates,bg_elements,ls_values,gdim);
         fname = "interior.vtu";
-        io::write_vtk(fname,cut_cell._vertex_coords,cut_cell._connectivity,cut_cell._types,ls_values,gdim);
+        io::write_vtk(fname,cut_cell);
 
         cell::cut(cell_type, vertex_coordinates, gdim, ls_values, "phi>0", cut_cell, false);
         fname = "exterior.tex";
         io::write_tikz(fname,cut_cell._vertex_coords,cut_cell._connectivity,vertex_coordinates,bg_elements,ls_values,gdim);
         fname = "exterior.vtu";
-        io::write_vtk(fname,cut_cell._vertex_coords,cut_cell._connectivity,cut_cell._types,ls_values,gdim);
+        io::write_vtk(fname,cut_cell);
     }
 }
