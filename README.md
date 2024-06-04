@@ -39,10 +39,10 @@ and then
 python3 -m pip install .
 ```
 
-## Running demons 
+## Running demons
 
-There are demons for both the C++ and the python interface. 
-For the C++ interface the demos are located in `cpp/demo`. The C++ demos are built with 
+There are demons for both the C++ and the python interface.
+For the C++ interface the demos are located in `cpp/demo`. The C++ demos are built with
 ```console
 cmake -DCMAKE_BUILD_TYPE=Release -B build-dir -S .
 cmake --build build-dir
@@ -50,15 +50,15 @@ cmake --install build-dir
 ```
 in the corresponding demo folder, e.g. `cpp/demo/cut_triangle`
 
-The python demos are located in `cpp/demo`. 
+The python demos are located in `python/demo`.
 
 ## Dependencies
 
-CutCells requires a C++20 compiler and depends on the C++ standard template library. 
-For the python interface, CutCells requires [`pybind11`](https://github.com/pybind/pybind11, install with [`python3 -m pip install pybind11`]). 
+CutCells requires a C++20 compiler and depends on the C++ standard template library.
+For the python interface, CutCells requires [`nanobind`](https://github.com/wjakob/nanobind).
 
-At runtime for the python examples, CutCells requires [`numpy`](https://numpy.org) and if visualizations of cuts are required [`pyvista`](https://pyvista.org/).
+At runtime for the python examples, CutCells requires [`numpy`](https://numpy.org) and [`pyvista`](https://pyvista.org/) for visualizations.
 
-The library contains python tests using `pytest` in `python/tests`.
+The library contains python `pytest` tests in `python/tests`.
 
 
