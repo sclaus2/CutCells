@@ -56,6 +56,8 @@ def create_cut_mesh(mesh,inner_mesh, intersected_cells):
   triangulate = True
   gdim = 3
 
+  cut_cells = []
+
   for cell_id in intersected_cells:
     c = mesh.get_cell(cell_id)
     vertex_coordinates = c.points.flatten()
@@ -66,8 +68,11 @@ def create_cut_mesh(mesh,inner_mesh, intersected_cells):
       ls_values[j] = level_set(point)
       j = j+1
     cut_cell_int = cutcells.cut(cell_type, vertex_coordinates,  gdim, ls_values, "phi<0", triangulate)
-    grid_cell = pv.UnstructuredGrid(cut_cell_int.connectivity, cut_cell_int.types, cut_cell_int.vertex_coords)
-    inner_mesh = inner_mesh.merge(grid_cell)
+    cut_cells.append(cut_cell_int)
+
+  cut_mesh = cutcells.create_cut_mesh(cut_cells)
+  grid_cell = pv.UnstructuredGrid(cut_mesh.connectivity, cut_mesh.types, cut_mesh.vertex_coords)
+  inner_mesh = inner_mesh.merge(grid_cell)
 
   return inner_mesh
 
@@ -82,5 +87,12 @@ extract = grid.extract_cells(inside_cells)
 mesh = create_cut_mesh(grid,extract,intersected_cells)
 
 mesh.plot(cpos="xy", show_edges=True)
+pl = pv.Plotter()
+pl.add_mesh(grid, show_edges=True, style = 'wireframe')
+pl.add_mesh(mesh, show_edges=True)
+pl.camera_position = 'xy'
+pl.show()
+pl.screenshot('mesh3D.png') 
+
 
 

@@ -8,7 +8,7 @@
 namespace cutcells::utils
 {
     //Check if two vertices are equal
-    bool equal(std::span<const double> coord1, const int &id1,
+    static bool equal(std::span<const double> coord1, const int &id1,
                       std::span<const double> coord2, const int &id2, const int& gdim)
     {
       double tol = 1e-12;
@@ -34,7 +34,7 @@ namespace cutcells::utils
 
     // check if vertex coordinate exists in geom vector
     // and if vertex exists return its id in geom otherwise return -1
-    int vertex_exists(std::span<const double> geom, std::span<const double> coords, const int &id2, const int &gdim)
+    static int vertex_exists(std::span<const double> geom, std::span<const double> coords, const int &id2, const int &gdim)
     {
       int num_vertices_geom = geom.size()/gdim;
 

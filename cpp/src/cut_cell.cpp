@@ -245,7 +245,8 @@ namespace cutcells::cell{
     }
 
     /// Merge vector of CutCell objects into one CutCell
-    /// This merging operation is intended to merge several cutcells with the same parent cell
+    /// This merging operation is intended to merge several cutcells
+    /// with the same parent element
     /// of the same geometrical and topological dimension
     /// this is needed for linearly approximated high order cuts
     CutCell merge(std::vector<CutCell> cut_cell_vec)
@@ -262,7 +263,11 @@ namespace cutcells::cell{
 
       merged_cut_cell._gdim=gdim;
       merged_cut_cell._tdim=tdim;
-      merged_cut_cell._parent_cell_index = cut_cell_vec[0]._parent_cell_index;
+
+      for(std::size_t i=0;i<cut_cell_vec[0]._parent_cell_index.size();i++)
+      {
+        merged_cut_cell._parent_cell_index.push_back(cut_cell_vec[0]._parent_cell_index[i]);
+      }
 
       //Count the total number of cells in vector
       int num_cells =0;
@@ -368,9 +373,9 @@ namespace cutcells::cell{
       return cut_cell;
     }
 
-  //cut a cut_cell and return result in cut_cell
+  //cut a CutCell and return result in cut_cell
   //used for recursive cutting
-  void cut_cut_cell(cutcells::cell::CutCell &cut_cell,
+  void recursive_cut(cutcells::cell::CutCell &cut_cell,
                     std::span<const double> ls_vals_all,
                     const int& parent_cell_index,
                     const std::string& cut_type_str,

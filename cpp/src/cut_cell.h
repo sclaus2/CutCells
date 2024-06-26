@@ -17,6 +17,7 @@ namespace cutcells
     namespace cell
     {
         /// @brief Stores the sub-cells resulting from cutting a cell
+        // Note: can also be used to merge range of cutcells into one mesh representation
         struct CutCell
         {
             /// Geometric Dimension of Cell
@@ -29,6 +30,7 @@ namespace cutcells
             std::vector<double> _vertex_coords;
 
             /// Vertex ids of cut cells
+            /// @todo: maybe change this to connectivity and offset vectors
             std::vector<std::vector<int>> _connectivity;
 
             /// Cell type of cut cells
@@ -60,11 +62,11 @@ namespace cutcells
 
         CutCell create_cut_cell(const type& cell_type, std::span<const double> vertex_coords, const int& gdim);
 
-         void cut_cut_cell(cutcells::cell::CutCell &cut_cell,
-                    std::span<const double> ls_vals_all,
-                    const int& parent_cell_index,
-                    const std::string& cut_type_str,
-                    bool triangulate);
+        void recursive_cut(cutcells::cell::CutCell &cut_cell,
+                  std::span<const double> ls_vals_all,
+                  const int& parent_cell_index,
+                  const std::string& cut_type_str,
+                  bool triangulate);
     }
 
 }

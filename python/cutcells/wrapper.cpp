@@ -152,38 +152,71 @@ NB_MODULE(_cutcellscpp, m)
         .def("volume", [](const cell::CutCell& self) {return cell::volume(self);})
         .def("write_vtk", [](cell::CutCell& self, std::string fname) {io::write_vtk(fname,self); return ;});
 
-  nb::class_<mesh::CutCells>(m, "CutCells", "Cut Cells")
+  nb::class_<mesh::CutMesh>(m, "CutMesh", "Cut Mesh")
         .def(nb::init<>())
+        //shape and classes for cutcell vertex coords, connectivity and types are for visualization with pyvista
         .def_prop_ro(
-          "cut_cells",
-          [](const mesh::CutCells& self) {
-              return self._cut_cells;
-          })
+          "vertex_coords",
+          [](const mesh::CutMesh& self) {
+            const unsigned long num_vertices = self._vertex_coords.size()/self._gdim;
+            std::vector<double> vertex_coords(3*num_vertices);
+
+            int idx = 0;
+
+            for(unsigned long i=0;i<num_vertices;i++)
+            {
+              double z = 0;
+
+              if(self._gdim==3)
+              {
+                  z = self._vertex_coords[i*self._gdim+2];
+              }
+              vertex_coords[idx] = self._vertex_coords[i*self._gdim];
+              idx++;
+              vertex_coords[idx] = self._vertex_coords[i*self._gdim+1];
+              idx++;
+              vertex_coords[idx] = z;
+              idx++;
+            }
+
+            return vertex_coords;
+        })
         .def_prop_ro(
-          "parent_map",
-          [](const mesh::CutCells& self) {
-            return as_nbarray(std::move(self._parent_map));
+          "connectivity",
+          [](const mesh::CutMesh& self) {
+            nb::list inner;
+
+            for(std::size_t i=0;i<self._connectivity.size();i++)
+            {
+              std::size_t num_vertices = self._connectivity[i].size();
+              inner.append(num_vertices);
+
+              for(std::size_t j=0;j<num_vertices;j++)
+              {
+                inner.append(self._connectivity[i][j]);
+              }
+            }
+            return inner;
           })
         .def_prop_ro(
           "types",
-          [](const mesh::CutCells& self) {
-            std::vector<int> types(self._types.size());
+          [](const mesh::CutMesh& self) {
+            //allocate memory
+            nb::list types;
 
               for(std::size_t i=0;i<self._types.size();i++)
               {
-                types[i] = static_cast<int>(map_cell_type_to_vtk(self._types[i]));
+                types.append(static_cast<int>(map_cell_type_to_vtk(self._types[i])));
               }
-              return nb::ndarray<nb::numpy, int>(
-                /* data = */ types.data(),
-                /* shape = */ { types.size() },
-                /* owner = */ nb::handle());
-          })
-        .def_prop_ro(
-          "num_vertices",
-          [](const mesh::CutCells& self) {
-              return self._num_vertices;
-          })
-        .def("str", [](const mesh::CutCells& self) {mesh::str(self); return ;});
+
+              return types;
+          });
+
+
+  m.def("create_cut_mesh", [](std::vector<const cell::CutCell>& cut_cells){
+              return mesh::create_cut_mesh(cut_cells);
+             }
+             , "Creating a cut mesh");
 
   m.def("cut", [](cell::type cell_type, const nb::ndarray<double>& vertex_coordinates, const int gdim, 
              const nb::ndarray<double>& ls_values, const std::string& cut_type_str, bool triangulate){
