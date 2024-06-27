@@ -78,7 +78,7 @@ namespace cutcells::mesh
     }
 
     //create cutmesh from cutcells by merging all cut cells
-    cutcells::mesh::CutMesh create_cut_mesh(std::vector<const cell::CutCell>& cut_cells)
+    cutcells::mesh::CutMesh create_cut_mesh(std::vector<cell::CutCell>& cut_cells)
     {
       CutMesh cut_mesh;
 

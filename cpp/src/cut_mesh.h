@@ -87,5 +87,5 @@ namespace cutcells::mesh
     //Get number of cells in CutMesh
     int get_num_cells(const cutcells::mesh::CutCells& cut_mesh);
 
-    cutcells::mesh::CutMesh create_cut_mesh(std::vector<const cell::CutCell>& cut_cells);
+    cutcells::mesh::CutMesh create_cut_mesh(std::vector<cell::CutCell>& cut_cells);
 }
