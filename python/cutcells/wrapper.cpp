@@ -213,7 +213,7 @@ NB_MODULE(_cutcellscpp, m)
           });
 
 
-  m.def("create_cut_mesh", [](std::vector<const cell::CutCell>& cut_cells){
+  m.def("create_cut_mesh", [](std::vector<cell::CutCell>& cut_cells){
               return mesh::create_cut_mesh(cut_cells);
              }
              , "Creating a cut mesh");
