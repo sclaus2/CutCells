@@ -5,6 +5,8 @@
 // SPDX-License-Identifier:    MIT
 #pragma once
 
+#include <cmath>
+
 namespace cutcells::utils
 {
     //Check if two vertices are equal
