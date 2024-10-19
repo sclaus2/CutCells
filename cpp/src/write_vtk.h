@@ -15,5 +15,5 @@ namespace cutcells::io
                     const std::span<cell::type> element_types, 
                     const int gdim);
 
-    void write_vtk(std::string filename, cell::CutCell& cut_cell);
+    void write_vtk(std::string filename, cell::CutCell<double>& cut_cell);
 }

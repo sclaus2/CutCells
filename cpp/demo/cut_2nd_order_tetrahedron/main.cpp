@@ -10,14 +10,16 @@
 #include <iostream>
 #include <string>
 
+using T=double;
+
 int main()
 {
     std::size_t gdim = 3;
     //second order triangle test case
-    std::vector<double> ls_values = {-0.1,-0.1,-0.2,-0.3, 0.4, 0.2, 0.3, 0.4, 0.2, 0.3};
+    std::vector<T> ls_values = {-0.1,-0.1,-0.2,-0.3, 0.4, 0.2, 0.3, 0.4, 0.2, 0.3};
 
     cutcells::cell::type cell_type = cutcells::cell::type::tetrahedron;
-    std::vector<double> vertex_coordinates = {0.,0.,0.,
+    std::vector<T> vertex_coordinates = {0.,0.,0.,
     1.,0.,0.,
     0.,1.,0.,
     0.,0.,1.,
@@ -28,19 +30,19 @@ int main()
     0.,0.5,0.,
     0.5,0.,0.};
 
-    cutcells::cell::CutCell cut_cell_interface =  cutcells::cell::higher_order_cut(cell_type,  vertex_coordinates,  gdim,
+    cutcells::cell::CutCell<T> cut_cell_interface =  cutcells::cell::higher_order_cut<T>(cell_type,  vertex_coordinates,  gdim,
       ls_values, "phi=0");
 
     std::string fname = "interface.vtu";
     cutcells::io::write_vtk(fname,cut_cell_interface);
 
-    cutcells::cell::CutCell cut_cell_interior =  cutcells::cell::higher_order_cut(cell_type,  vertex_coordinates,  gdim,
+    cutcells::cell::CutCell<T> cut_cell_interior =  cutcells::cell::higher_order_cut<T>(cell_type,  vertex_coordinates,  gdim,
       ls_values, "phi<0");
 
     fname = "interior.vtu";
     cutcells::io::write_vtk(fname,cut_cell_interior);
 
-    cutcells::cell::CutCell cut_cell_exterior =  cutcells::cell::higher_order_cut(cell_type,  vertex_coordinates,  gdim,
+    cutcells::cell::CutCell<T> cut_cell_exterior =  cutcells::cell::higher_order_cut<T>(cell_type,  vertex_coordinates,  gdim,
       ls_values, "phi>0");
 
     fname = "exterior.vtu";

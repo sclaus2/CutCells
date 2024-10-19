@@ -11,6 +11,7 @@
 #include <vector>
 #include <span>
 #include <string>
+#include <concepts>
 
 namespace cutcells
 {
@@ -18,6 +19,7 @@ namespace cutcells
     {
         /// @brief Stores the sub-cells resulting from cutting a cell
         // Note: can also be used to merge range of cutcells into one mesh representation
+        template <std::floating_point T>
         struct CutCell
         {
             /// Geometric Dimension of Cell
@@ -27,7 +29,7 @@ namespace cutcells
             int _tdim;
 
             /// Coordinates of vertices of cut cell
-            std::vector<double> _vertex_coords;
+            std::vector<T> _vertex_coords;
 
             /// Vertex ids of cut cells
             /// @todo: maybe change this to connectivity and offset vectors
@@ -41,29 +43,39 @@ namespace cutcells
 
         };
 
-        void str(const CutCell &cut_cell);
+        template <std::floating_point T>
+        void str(const CutCell<T> &cut_cell);
 
-        void sub_cell_vertices(const CutCell &cut_cell, const int& id, std::vector<double>& vertex_coordinates);
-        double volume(const CutCell &cut_cell);
+        template <std::floating_point T>
+        void sub_cell_vertices(const CutCell<T> &cut_cell, const int& id, std::vector<T>& vertex_coordinates);
 
-        void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
-                 const std::span<const double> ls_values, const std::string& cut_type_str,
-                CutCell& cut_cell, bool triangulate=false);
+        template <std::floating_point T>
+        T volume(const CutCell<T> &cut_cell);
 
-        void cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
-             const std::span<const double> ls_values, const std::vector<std::string>& cut_type_str,
-             std::vector<CutCell>& cut_cell, bool triangulate=false);
+        template <std::floating_point T>
+        void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+                 const std::span<const T> ls_values, const std::string& cut_type_str,
+                CutCell<T>& cut_cell, bool triangulate=false);
 
-        CutCell higher_order_cut(const type cell_type, const std::span<const double> vertex_coordinates, const int gdim, 
-             const std::span<const double> ls_values, const std::string& cut_type_str,
+        template <std::floating_point T>
+        void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::vector<std::string>& cut_type_str,
+             std::vector<CutCell<T>>& cut_cell, bool triangulate=false);
+
+        template <std::floating_point T>
+        CutCell<T> higher_order_cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::string& cut_type_str,
              bool triangulate=false);
 
-        CutCell merge(std::vector<CutCell> cut_cell_vec);
+        template <std::floating_point T>
+        CutCell<T> merge(std::vector<CutCell<T>> cut_cell_vec);
 
-        CutCell create_cut_cell(const type& cell_type, std::span<const double> vertex_coords, const int& gdim);
+        template <std::floating_point T>
+        CutCell<T> create_cut_cell(const type& cell_type, std::span<const T> vertex_coords, const int& gdim);
 
-        void recursive_cut(cutcells::cell::CutCell &cut_cell,
-                  std::span<const double> ls_vals_all,
+        template <std::floating_point T>
+        void recursive_cut(cutcells::cell::CutCell<T> &cut_cell,
+                  std::span<const T> ls_vals_all,
                   const int& parent_cell_index,
                   const std::string& cut_type_str,
                   bool triangulate);

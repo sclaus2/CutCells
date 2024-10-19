@@ -20,15 +20,18 @@ namespace cutcells::cell
         int get_num_sub_elements(const int &flag, bool triangulate);
 
         // get interface cut
-        void cut(const std::span<const double> vertex_coordinates, const int gdim, 
-                 const std::span<const double> ls_values, const std::string& cut_type_str,
-                 CutCell& cut_cell, bool triangulate);
+        template <std::floating_point T>
+        void cut(const std::span<const T> vertex_coordinates, const int gdim,
+                 const std::span<const T> ls_values, const std::string& cut_type_str,
+                 CutCell<T>& cut_cell, bool triangulate);
 
-        void cut(const std::span<const double> vertex_coordinates, const int gdim, 
-             const std::span<const double> ls_values, const std::vector<std::string>& cut_type_str,
-             std::vector<CutCell>& cut_cell, bool triangulate);
+        template <std::floating_point T>
+        void cut(const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::vector<std::string>& cut_type_str,
+             std::vector<CutCell<T>>& cut_cell, bool triangulate);
 
-        double volume(const std::span<const double> vertex_coordinates, const int gdim);
+        template <std::floating_point T>
+        T volume(const std::span<const T> vertex_coordinates, const int gdim);
     }
 }
 

@@ -11,7 +11,8 @@
 
 namespace cutcells::mesh
 {
-    void str(const CutCells &cut_mesh)
+    template <std::floating_point T>
+    void str(const CutCells<T> &cut_mesh)
     {
         std::cout << "CutCells: " << std::endl;
         int cnt = 0;
@@ -66,7 +67,8 @@ namespace cutcells::mesh
         return parent_cut_cell_map;
     }
 
-    int get_num_cells(const cutcells::mesh::CutCells& cut_mesh)
+    template <std::floating_point T>
+    int get_num_cells(const cutcells::mesh::CutCells<T>& cut_mesh)
     {
       int num_cells = 0;
 
@@ -78,9 +80,10 @@ namespace cutcells::mesh
     }
 
     //create cutmesh from cutcells by merging all cut cells
-    cutcells::mesh::CutMesh create_cut_mesh(std::vector<cell::CutCell>& cut_cells)
+    template <std::floating_point T>
+    cutcells::mesh::CutMesh<T> create_cut_mesh(std::vector<cell::CutCell<T>>& cut_cells)
     {
-      CutMesh cut_mesh;
+      CutMesh<T> cut_mesh;
 
       std::size_t gdim = cut_cells[0]._gdim;
       std::size_t tdim = cut_cells[0]._tdim;
@@ -130,7 +133,7 @@ namespace cutcells::mesh
         for(int local_id=0;local_id<num_cut_cell_vertices;local_id++)
         {
           //check if vertex already exists to avoid doubling of vertices
-          int id = cutcells::utils::vertex_exists(cut_mesh._vertex_coords, cut_cell._vertex_coords, local_id, gdim);
+          int id = cutcells::utils::vertex_exists<T>(cut_mesh._vertex_coords, cut_cell._vertex_coords, local_id, gdim);
 
           if(id==-1) //not found
           {
@@ -177,4 +180,13 @@ namespace cutcells::mesh
 
       return cut_mesh;
     }
+
+//-----------------------------------------------------------------------------
+    template void str(const CutCells<double> &cut_mesh);
+    template void str(const CutCells<float> &cut_mesh);
+
+    template cutcells::mesh::CutMesh<double> create_cut_mesh(std::vector<cell::CutCell<double>>& cut_cells);
+    template cutcells::mesh::CutMesh<float> create_cut_mesh(std::vector<cell::CutCell<float>>& cut_cells);
+
+//-----------------------------------------------------------------------------
 }

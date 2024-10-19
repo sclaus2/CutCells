@@ -16,14 +16,14 @@ namespace cutcells::io
     const std::span<const double> bg_vertex_coords,  const std::vector<std::vector<int>> bg_elements, const std::span<const double> ls_values, const int gdim)
     {
         std::ofstream ofs;
-        ofs.open(filename.c_str(), std::ios::out );  
+        ofs.open(filename.c_str(), std::ios::out );
 
         double scale = 10;
- 
+
         if(ofs)
         {
-            ofs << "\\documentclass[tikz]{standalone}\n" 
-                << "\\usepackage{pgflibraryshapes}\n" 
+            ofs << "\\documentclass[tikz]{standalone}\n"
+                << "\\usepackage{pgflibraryshapes}\n"
                 << "\\usetikzlibrary{backgrounds}\n"
                 << "\\usetikzlibrary{arrows}\n"
                 << "\\begin{document}\n";
@@ -52,7 +52,6 @@ namespace cutcells::io
                         ofs << "\\node[coordinate] (B" << vertex_id << ") at (" << x << "," << y << ","<< z << ") {};" << std::endl;
                     }
 
-                    
                 }
             }
 
@@ -60,11 +59,11 @@ namespace cutcells::io
             {
                 ofs << "\\draw";
                 for(auto& vertex_id: element)
-                {                    
+                {
                     ofs << "(B" << vertex_id << ") -- ";
 
                 }
-                ofs << "(B" << element[0] << ");\n\n"; 
+                ofs << "(B" << element[0] << ");\n\n";
             }
 
             for(auto& element: bg_elements)
@@ -80,9 +79,9 @@ namespace cutcells::io
                         z = bg_vertex_coords[vertex_id*gdim+2];
                     }
 
-                    ofs << "\\node"; 
+                    ofs << "\\node";
                     if(ls_values[vertex_id]<0)
-                        ofs << "[circle, fill=black]"; 
+                        ofs << "[circle, fill=black]";
                     else
                         ofs << "[circle, draw]";
 
@@ -133,15 +132,15 @@ namespace cutcells::io
             {
                 ofs << "\\draw[fill opacity=0.7,fill=green!80!blue,thick,draw=green!80!black]";
                 for(auto& vertex_id: element)
-                {                    
-                    ofs << "(V" << k << ") -- ";
-                    k++;
+                {
+                  ofs << "(V" << k << ") -- ";
+                  k++;
                 }
-                ofs << "(V" << 0 << ");\n\n"; 
+                ofs << "(V" << 0 << ");\n\n";
             }
 
             ofs << "\\end{tikzpicture}\n\\end{document}" << std::endl;
-        
+
             ofs.close();
         }
         else std:: cout << "Unable to open file " << filename << " to write" << std::endl;

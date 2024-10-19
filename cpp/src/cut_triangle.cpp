@@ -76,12 +76,12 @@ namespace triangle{
     int get_num_intersection_points(const int &flag)
     {
         // number of intersection points for intersected triangle is always 2
-        return 2; 
+        return 2;
     }
 
     //for triangles the number of sub-elements without triangulation is 1
     int get_num_sub_elements(const int &flag, bool triangulate)
-    {   
+    {
         type cell_type = triangle_sub_element_cell_types[flag];
         int num_sub_elements = 1;
 
@@ -92,19 +92,20 @@ namespace triangle{
         return num_sub_elements;
     }
 
-    void compute_intersection_points(const std::span<const double> vertex_coordinates, const int gdim, 
-             const std::span<const double> ls_values, const int flag, std::vector<double>& intersection_points, 
+    template <std::floating_point T>
+    void compute_intersection_points(const std::span<const T> vertex_coordinates, const int gdim, 
+             const std::span<const T> ls_values, const int flag, std::vector<T>& intersection_points, 
              std::unordered_map<int,int>& vertex_case_map)
     {
         // vertex ids will be edges[edge_0][0] edges[edge_0][1]
         // get vertex coordinates and interpolate 
         int num_intersection_points = get_num_intersection_points(flag);
-        
+
         intersection_points.resize(num_intersection_points*gdim);
 
-        std::vector<double> v0(gdim);
-        std::vector<double> v1(gdim);
-        std::vector<double> intersection_point(gdim);
+        std::vector<T> v0(gdim);
+        std::vector<T> v1(gdim);
+        std::vector<T> intersection_point(gdim);
 
         for(int ip=0; ip<num_intersection_points; ip++)
         {
@@ -120,10 +121,10 @@ namespace triangle{
                 v1[j] = vertex_coordinates[vertex_id_1*gdim+j];
             }
 
-            double ls0 = ls_values[vertex_id_0];
-            double ls1 = ls_values[vertex_id_1];
+            T ls0 = ls_values[vertex_id_0];
+            T ls1 = ls_values[vertex_id_1];
 
-            interval::compute_intersection_point(0.0, v0, v1,ls0, ls1, intersection_point);
+            interval::compute_intersection_point<T>(0.0, v0, v1,ls0, ls1, intersection_point);
 
             for(int j=0;j<gdim;j++)
             {
@@ -135,9 +136,10 @@ namespace triangle{
         vertex_case_map[triangle_intersected_edges[flag][1]] = 1;
     }
 
-    void create_sub_cell_vertex_coords(const int& flag, const std::span<const double> vertex_coordinates, const int gdim, 
-                                       const std::span<const double> intersection_points, 
-                                       std::vector<double>& coords, std::unordered_map<int,int>& vertex_case_map)
+    template <std::floating_point T>
+    void create_sub_cell_vertex_coords(const int& flag, const std::span<const T> vertex_coordinates, const int gdim, 
+                                       const std::span<const T> intersection_points, 
+                                       std::vector<T>& coords, std::unordered_map<int,int>& vertex_case_map)
     {
         int num_intersection_points = intersection_points.size()/gdim;
         type cell_type = triangle_sub_element_cell_types[flag];
@@ -152,8 +154,8 @@ namespace triangle{
         }
 
         int ncols = 4;
-        int offset = num_intersection_points; 
-        int cnt = num_intersection_points; 
+        int offset = num_intersection_points;
+        int cnt = num_intersection_points;
         int k = 0;
 
         for(int i=0;i<ncols;i++)
@@ -162,8 +164,8 @@ namespace triangle{
            {
             //intersection point which is alreay added or is not a vertex
            }
-           else 
-           {    
+           else
+           {
                 int vertex_id = triangle_sub_element[flag][i];
                 vertex_case_map[triangle_sub_element[flag][i]] = cnt;
                 cnt++;
@@ -248,20 +250,21 @@ namespace triangle{
                     {
                         //vertex is -1, move on to next element
                     }
-                } 
+                }
             }
         }
     }
 
-    void create_cut_cell(const std::span<const double> vertex_coordinates, 
-                         const int gdim,  const std::span<const double> ls_values,
+    template <std::floating_point T>
+    void create_cut_cell(const std::span<const T> vertex_coordinates, 
+                         const int gdim,  const std::span<const T> ls_values,
                          const std::string& cut_type_str,
-                         CutCell& cut_cell, bool triangulate, 
-                         const std::span<const double> intersection_points, 
+                         CutCell<T>& cut_cell, bool triangulate, 
+                         const std::span<const T> intersection_points, 
                          std::unordered_map<int,int>& vertex_case_map)
     {
         cut_cell._gdim = gdim;
-        
+
         if(cut_type_str=="phi=0")
         {
             cut_cell._tdim = 1;
@@ -301,8 +304,8 @@ namespace triangle{
             throw std::invalid_argument("cutting type unknown");
         }
     }
-
-    void str(CutCell& cut_cell, std::unordered_map<int,int>& vertex_case_map)
+    template <std::floating_point T>
+    void str(CutCell<T>& cut_cell, std::unordered_map<int,int>& vertex_case_map)
     {
         std::cout << "vertex case map=[";
         for(auto& it: vertex_case_map)
@@ -337,9 +340,10 @@ namespace triangle{
     }
 
     // cut triangle
-    void cut(const std::span<const double> vertex_coordinates, const int gdim, 
-             const std::span<const double> ls_values, const std::string& cut_type_str,
-             CutCell& cut_cell, bool triangulate)
+    template <std::floating_point T>
+    void cut(const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::string& cut_type_str,
+             CutCell<T>& cut_cell, bool triangulate)
     {
         int flag_interior = get_entity_flag(ls_values, false);
 
@@ -351,23 +355,24 @@ namespace triangle{
 
         // Compute intersection points these are required for any cut cell part (interface, interior, exterior)
         // get the number of intersection points
-        std::vector<double> intersection_points; 
-        // the vertex case map, 
+        std::vector<T> intersection_points;
+        // the vertex case map,
         // first few entries map from intersected edge to intersection point number 
         // next entries map from orginal vertex id to number of vertex in vertex_coordinates of CutCell (renumbered to go from 0,...,N)
-        // example: intersected edges 0 -> 0, 2 -> 1 
+        // example: intersected edges 0 -> 0, 2 -> 1
         //          then orginal vertex 101 -> 2 , 102 -> 3 etc.
-        std::unordered_map<int,int> vertex_case_map;       
-        compute_intersection_points(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
+        std::unordered_map<int,int> vertex_case_map;
+        compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
 
-        create_cut_cell(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, 
+        create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, 
                         triangulate, intersection_points, vertex_case_map);
     };
 
     // cut triangle version with vector of string in case multiple parts of the cut-cell are needed (very common)
-    void cut(const std::span<const double> vertex_coordinates, const int gdim, 
-             const std::span<const double> ls_values, const std::vector<std::string>& cut_type_str,
-             std::vector<CutCell>& cut_cell, bool triangulate)
+    template <std::floating_point T>
+    void cut(const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::vector<std::string>& cut_type_str,
+             std::vector<CutCell<T>>& cut_cell, bool triangulate)
     {
         int flag_interior = get_entity_flag(ls_values, false);
 
@@ -379,33 +384,47 @@ namespace triangle{
 
         // Compute intersection points these are required for any cut cell part (interface, interior, exterior)
         // get the number of intersection points
-        std::vector<double> intersection_points; 
-        std::unordered_map<int,int> vertex_case_map;       
-        compute_intersection_points(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
+        std::vector<T> intersection_points;
+        std::unordered_map<int,int> vertex_case_map;
+        compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
 
         cut_cell.resize(cut_type_str.size());
 
         for(int i=0;i<cut_type_str.size();i++)
         {
-            create_cut_cell(vertex_coordinates, gdim, ls_values, cut_type_str[i], cut_cell[i], 
+            create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str[i], cut_cell[i], 
                             triangulate, intersection_points, vertex_case_map);
         }
     };
 
-    double volume(const std::span<const double> vertex_coordinates, const int gdim)
+    template <std::floating_point T>
+    T volume(const std::span<const T> vertex_coordinates, const int gdim)
     {
       const auto p0 = vertex_coordinates.subspan(0, gdim);
       const auto p1 = vertex_coordinates.subspan(gdim, gdim);
       const auto p2 = vertex_coordinates.subspan(2*gdim, gdim);
 
-      double a = cutcells::math::distance(p0, p1);
-      double b = cutcells::math::distance(p0, p2);
-      double c = cutcells::math::distance(p1, p2);
+      T a = cutcells::math::distance(p0, p1);
+      T b = cutcells::math::distance(p0, p2);
+      T c = cutcells::math::distance(p1, p2);
 
-      double s = (a+b+c)/2.0;
-      double area = sqrt(s*(s-a)*(s-b)*(s-c));
+      T s = (a+b+c)/2.0;
+      T area = sqrt(s*(s-a)*(s-b)*(s-c));
 
       return area;
     }
+
+    //-----------------------------------------------------------------------------
+    template void cut(const std::span<const double> vertex_coordinates, const int gdim,
+            const std::span<const double> ls_values, const std::string& cut_type_str,
+            CutCell<double>& cut_cell, bool triangulate);
+    template void cut(const std::span<const float> vertex_coordinates, const int gdim,
+              const std::span<const float> ls_values, const std::string& cut_type_str,
+              CutCell<float>& cut_cell, bool triangulate);
+
+    template double volume(const std::span<const double> vertex_coordinates, const int gdim);
+    template float volume(const std::span<const float> vertex_coordinates, const int gdim);
+
+    //-----------------------------------------------------------------------------
 }
 }

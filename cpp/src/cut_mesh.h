@@ -16,10 +16,11 @@
 namespace cutcells::mesh
 {
     /// Collection of cut cells that have been cut with regards to a parent mesh/entities
+    template <std::floating_point T>
     struct CutCells
     {
             /// vector of all cut cells
-            std::vector<cell::CutCell> _cut_cells;
+            std::vector<cell::CutCell<T>> _cut_cells;
             /// map of cut cell id to parent cell id
             /// this vector contains all cells that are cut
             std::vector<std::int32_t> _parent_map;
@@ -31,10 +32,11 @@ namespace cutcells::mesh
     };
 
     /// Collection of cut cells that have been cut with regards to a parent mesh/entities
+    template <std::floating_point T>
     struct CutInterface
     {
             /// vector of all cut cells
-            std::vector<cell::CutCell> _cut_cells;
+            std::vector<cell::CutCell<T>> _cut_cells;
             /// map of cut cell id to parent cell ids (2 for interface)
             /// this vector contains all cells that are cut
             std::vector<std::pair<std::int32_t, std::int32_t>> _parent_map;
@@ -47,6 +49,7 @@ namespace cutcells::mesh
     };
 
     // Class to represent mesh formed by cutcells in different parent cells
+    template <std::floating_point T>
     struct CutMesh
     {
       /// Geometric Dimension of Cell
@@ -62,7 +65,7 @@ namespace cutcells::mesh
       int _num_vertices;
 
       /// Coordinates of vertices of cut cell
-      std::vector<double> _vertex_coords;
+      std::vector<T> _vertex_coords;
 
       /// Vertex ids of cut cells
       /// @todo: maybe change this to connectivity and offset vectors
@@ -77,7 +80,8 @@ namespace cutcells::mesh
 
     /// @brief  Print information about cut_mesh to screen
     /// @param cut_mesh
-    void str(const CutCells &cut_mesh);
+    template <std::floating_point T>
+    void str(const CutCells<T> &cut_mesh);
 
     /// @brief Get inverse map of parent_map
     /// @param parent_map: map from cutcell index to parent cell index.
@@ -85,7 +89,9 @@ namespace cutcells::mesh
     std::unordered_map<int, std::vector<int>> create_parent_cut_cells_map(std::span<int> parent_map);
 
     //Get number of cells in CutMesh
-    int get_num_cells(const cutcells::mesh::CutCells& cut_mesh);
+    template <std::floating_point T>
+    int get_num_cells(const cutcells::mesh::CutCells<T>& cut_mesh);
 
-    cutcells::mesh::CutMesh create_cut_mesh(std::vector<cell::CutCell>& cut_cells);
+    template <std::floating_point T>
+    cutcells::mesh::CutMesh<T> create_cut_mesh(std::vector<cell::CutCell<T>>& cut_cells);
 }

@@ -48,7 +48,7 @@ namespace cutcells
 
         inline vtk_types map_cell_type_to_vtk(type cell_type)
         {
-            vtk_types vtk_type; 
+            vtk_types vtk_type;
 
             switch(cell_type)
             {

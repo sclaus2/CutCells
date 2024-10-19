@@ -14,13 +14,16 @@ namespace cutcells::cell
 {
     namespace interval{
         // cut interval by linear interpolation to obtain intersection point
-        void compute_intersection_point(const double &level, const std::span<const double> p0, const std::span<const double> p1,
-                 const double& v0, const double& v1, std::vector<double>& intersection_point, const int & offset=0);
+        template <std::floating_point T>
+        void compute_intersection_point(const T &level, std::span<const T> p0, std::span<const T> p1,
+                 const T& v0, const T& v1, std::vector<T>& intersection_point, const int & offset=0);
 
-        void cut(const std::span<const double> vertex_coordinates, const int gdim, 
-                const std::span<const double> ls_values, const std::string& cut_type_str,
-                CutCell& cut_cell);
-        
-        double volume(const std::span<const double> vertex_coordinates, const int gdim);
+        template <std::floating_point T>
+        void cut(const std::span<const T> vertex_coordinates, const int gdim,
+                const std::span<const T> ls_values, const std::string& cut_type_str,
+                CutCell<T>& cut_cell);
+
+        template <std::floating_point T>
+        T volume(const std::span<const T> vertex_coordinates, const int gdim);
     }
 }

@@ -29,7 +29,7 @@ const std::string& cell_domain_to_str(cell::domain domain_id)
 {
   static const std::map<cell::domain, std::string> type_to_name
       = {{cell::domain::inside, "inside"},
-         {cell::domain::intersected, "intersected"}, 
+         {cell::domain::intersected, "intersected"},
          {cell::domain::outside, "outside"}};
 
   auto it = type_to_name.find(domain_id);
@@ -67,44 +67,32 @@ auto as_nbarrayp(std::pair<V, std::array<std::size_t, U>>&& x)
   return as_nbarray(std::move(x.first), x.second.size(), x.second.data());
 }
 
-} // namespace
-
-NB_MODULE(_cutcellscpp, m)
+template <typename T>
+void declare_float(nb::module_& m, std::string type)
 {
-  // Create module for C++ wrappers
-  m.doc() = "CutCells Python interface";
-
-  m.def("classify_cell_domain", [](nb::ndarray<const double>& ls_values){
-          cell::domain domain_id = cell::classify_cell_domain(std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())});
+    std::string classify_cell_domain_name = "classify_cell_domain_" + type;
+    m.def("classify_cell_domain", [](nb::ndarray<const T>& ls_values){
+          cell::domain domain_id = cell::classify_cell_domain<T>(std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())});
           auto domain_str = cell_domain_to_str(domain_id);
           return domain_str;
         }
         , "classify a cell domain");
 
-  nb::enum_<cell::type>(m, "CellType")
-    .value("point", cell::type::point)
-    .value("interval", cell::type::interval)
-    .value("triangle", cell::type::triangle)
-    .value("tetrahedron", cell::type::tetrahedron)
-    .value("quadrilateral", cell::type::quadrilateral)
-    .value("hexahedron", cell::type::hexahedron)
-    .value("prism", cell::type::prism)
-    .value("pyramid", cell::type::pyramid);
-
-  nb::class_<cell::CutCell>(m, "CutCell", "Cut Cell")
+    std::string name = "CutCell_" + type;
+    nb::class_<cell::CutCell<T>>(m, name.c_str(), "Cut Cell")
         .def(nb::init<>())
         //shape and classes for cutcell vertex coords, connectivity and types are for visualization with pyvista
         .def_prop_ro(
           "vertex_coords",
-          [](const cell::CutCell& self) {
+          [](const cell::CutCell<T>& self) {
             const unsigned long num_vertices = self._vertex_coords.size()/self._gdim;
-            std::vector<double> vertex_coords(3*num_vertices);
+            std::vector<T> vertex_coords(3*num_vertices);
 
             int idx = 0;
 
             for(unsigned long i=0;i<num_vertices;i++)
             {
-              double z = 0;
+              T z = 0;
 
               if(self._gdim==3)
               {
@@ -122,7 +110,7 @@ NB_MODULE(_cutcellscpp, m)
         })
         .def_prop_ro(
           "connectivity",
-          [](const cell::CutCell& self) {
+          [](const cell::CutCell<T>& self) {
             nb::list inner;
 
             for(std::size_t i=0;i<self._connectivity.size();i++)
@@ -137,7 +125,7 @@ NB_MODULE(_cutcellscpp, m)
           })
         .def_prop_ro(
           "types",
-          [](const cell::CutCell& self) {
+          [](const cell::CutCell<T>& self) {
             //allocate memory
             nb::list types;
 
@@ -148,24 +136,25 @@ NB_MODULE(_cutcellscpp, m)
 
               return types;
           })
-        .def("str", [](const cell::CutCell& self) {cell::str(self); return ;})
-        .def("volume", [](const cell::CutCell& self) {return cell::volume(self);})
-        .def("write_vtk", [](cell::CutCell& self, std::string fname) {io::write_vtk(fname,self); return ;});
+        .def("str", [](const cell::CutCell<T>& self) {cell::str(self); return ;})
+        .def("volume", [](const cell::CutCell<T>& self) {return cell::volume(self);})
+        .def("write_vtk", [](cell::CutCell<double>& self, std::string fname) {io::write_vtk(fname,self); return ;});
 
-  nb::class_<mesh::CutMesh>(m, "CutMesh", "Cut Mesh")
+  name = "CutMesh_" + type;
+  nb::class_<mesh::CutMesh<T>>(m, name.c_str(), "Cut Mesh")
         .def(nb::init<>())
         //shape and classes for cutcell vertex coords, connectivity and types are for visualization with pyvista
         .def_prop_ro(
           "vertex_coords",
-          [](const mesh::CutMesh& self) {
+          [](const mesh::CutMesh<T>& self) {
             const unsigned long num_vertices = self._vertex_coords.size()/self._gdim;
-            std::vector<double> vertex_coords(3*num_vertices);
+            std::vector<T> vertex_coords(3*num_vertices);
 
             int idx = 0;
 
             for(unsigned long i=0;i<num_vertices;i++)
             {
-              double z = 0;
+              T z = 0;
 
               if(self._gdim==3)
               {
@@ -183,7 +172,7 @@ NB_MODULE(_cutcellscpp, m)
         })
         .def_prop_ro(
           "connectivity",
-          [](const mesh::CutMesh& self) {
+          [](const mesh::CutMesh<T>& self) {
             nb::list inner;
 
             for(std::size_t i=0;i<self._connectivity.size();i++)
@@ -200,7 +189,7 @@ NB_MODULE(_cutcellscpp, m)
           })
         .def_prop_ro(
           "types",
-          [](const mesh::CutMesh& self) {
+          [](const mesh::CutMesh<T>& self) {
             //allocate memory
             nb::list types;
 
@@ -212,24 +201,48 @@ NB_MODULE(_cutcellscpp, m)
               return types;
           });
 
-
-  m.def("create_cut_mesh", [](std::vector<cell::CutCell>& cut_cells){
+  name = "create_cut_mesh_" + type;
+  m.def("create_cut_mesh", [](std::vector<cell::CutCell<T>>& cut_cells){
               return mesh::create_cut_mesh(cut_cells);
              }
              , "Creating a cut mesh");
 
-  m.def("cut", [](cell::type cell_type, const nb::ndarray<double>& vertex_coordinates, const int gdim, 
-             const nb::ndarray<double>& ls_values, const std::string& cut_type_str, bool triangulate){
-              cell::CutCell cut_cell;
-              cell::cut(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, cut_cell, triangulate);
+  name = "cut_" + type;
+  m.def("cut", [](cell::type cell_type, const nb::ndarray<T>& vertex_coordinates, const int gdim,
+             const nb::ndarray<T>& ls_values, const std::string& cut_type_str, bool triangulate){
+              cell::CutCell<T> cut_cell;
+              cell::cut<T>(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, cut_cell, triangulate);
               return cut_cell;
              }
              , "cut a cell");
 
-  m.def("higher_order_cut", [](cell::type cell_type, const nb::ndarray<double>& vertex_coordinates, const int gdim,
-             const nb::ndarray<const double>& ls_values, const std::string& cut_type_str, bool triangulate){
-              cell::CutCell cut_cell = cell::higher_order_cut(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, triangulate);
+  name = "higher_order_cut_" + type;
+  m.def("higher_order_cut", [](cell::type cell_type, const nb::ndarray<T>& vertex_coordinates, const int gdim,
+             const nb::ndarray<const T>& ls_values, const std::string& cut_type_str, bool triangulate){
+              cell::CutCell<T> cut_cell = cell::higher_order_cut<T>(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, triangulate);
               return cut_cell;
              }
              , "cut a second order cell");
+
+}
+
+} // namespace
+
+NB_MODULE(_cutcellscpp, m)
+{
+  // Create module for C++ wrappers
+  m.doc() = "CutCells Python interface";
+
+  nb::enum_<cell::type>(m, "CellType")
+    .value("point", cell::type::point)
+    .value("interval", cell::type::interval)
+    .value("triangle", cell::type::triangle)
+    .value("tetrahedron", cell::type::tetrahedron)
+    .value("quadrilateral", cell::type::quadrilateral)
+    .value("hexahedron", cell::type::hexahedron)
+    .value("prism", cell::type::prism)
+    .value("pyramid", cell::type::pyramid);
+
+  declare_float<float>(m, "float32");
+  declare_float<double>(m, "float64");
 }

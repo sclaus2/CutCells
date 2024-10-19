@@ -20,7 +20,7 @@ namespace cutcells::cell
                                 // Tetrahedron 1 (original vertices): { 1, 3, 5, 4 }
                                 // Tetrahedron 2 (original vertices): { 1, 2, 5, 3 }
                                 tris.resize(3, std::vector<int>(3));
-                                tris = {{vertices[0],vertices[2],vertices[1],vertices[3]}, 
+                                tris = {{vertices[0],vertices[2],vertices[1],vertices[3]},
                                         {vertices[1],vertices[3],vertices[5],vertices[4]},
                                         {vertices[1],vertices[2],vertices[5],vertices[3]}};
                                 break;

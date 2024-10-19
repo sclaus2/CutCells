@@ -3,12 +3,44 @@ import numpy as np
 import pyvista as pv
 
 def level_set(x):
-  r = 0.6
-  c = np.array([0,0,0])
-  value = 0
-  for i in range(0,3):
-    value = value  + (x[i]-c[i])**2
-  value = np.sqrt(value)-r
+  r0 = 0.6
+  r  = np.sqrt(x[0]*x[0] + x[1]*x[1] + x[2]*x[2])
+
+  sum = r0 - r
+  for k in range(0,5):
+    xk =  r0/np.sqrt(5.0)*2*np.cos(2*k*np.pi/5)
+    yk =  r0/np.sqrt(5.0)*2*np.sin(2*k*np.pi/5)
+    zk =  r0/np.sqrt(5.0)
+    tmp =  (x[0] - xk)*(x[0] - xk) +  (x[1] - yk)*(x[1] - yk) \
+            +  (x[2] - zk)*(x[2] - zk)
+    sum += 2*np.exp(-tmp/(0.04))
+
+  for k in range(5,10):
+    xk =  r0/np.sqrt(5.0)*2*np.cos((2*(k-5)-1)*np.pi/5)
+    yk =  r0/np.sqrt(5.0)*2*np.sin((2*(k-5)-1)*np.pi/5)
+    zk =  -r0/np.sqrt(5.0);
+    tmp =  (x[0] - xk)*(x[0] - xk) +  (x[1] - yk)*(x[1] - yk) \
+            +  (x[2] - zk)*(x[2] - zk)
+    sum += 2*np.exp(-tmp/(0.04))
+
+  for k in range(10,11):
+    xk =  0
+    yk =  0
+    zk =  r0
+    tmp =  (x[0] - xk)*(x[0] - xk) +  (x[1] - yk)*(x[1] - yk) \
+            +  (x[2] - zk)*(x[2] - zk)
+    sum += 2*np.exp(-tmp/(0.04))
+
+  for k in range(11,12):
+    xk =  0
+    yk =  0
+    zk =  -r0
+    tmp =  (x[0] - xk)*(x[0] - xk) +  (x[1] - yk)*(x[1] - yk) \
+            +  (x[2] - zk)*(x[2] - zk);
+    sum += 2*np.exp(-tmp/(0.04));
+
+  value = -1.0*sum;
+
   return value
 
 def create_box_mesh(x0,y0,z0,x1,y1,z1,Nx,Ny,Nz):
@@ -87,12 +119,17 @@ extract = grid.extract_cells(inside_cells)
 mesh = create_cut_mesh(grid,extract,intersected_cells)
 
 mesh.plot(cpos="xy", show_edges=True)
+
+mesh.save('popcorn.vtk')
+
+grid.save('bg_mesh.vtk')
+
 pl = pv.Plotter()
 pl.add_mesh(grid, show_edges=True, style = 'wireframe')
 pl.add_mesh(mesh, show_edges=True)
 pl.camera_position = 'xy'
 pl.show()
-pl.screenshot('mesh3D.png') 
+pl.screenshot('mesh3D.png')
 
 
 

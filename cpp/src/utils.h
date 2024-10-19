@@ -6,15 +6,17 @@
 #pragma once
 
 #include <cmath>
+#include <concepts>
 
 namespace cutcells::utils
 {
     //Check if two vertices are equal
-    static bool equal(std::span<const double> coord1, const int &id1,
-                      std::span<const double> coord2, const int &id2, const int& gdim)
+    template <std::floating_point T>
+    static bool equal(std::span<const T> coord1, const int &id1,
+                      std::span<const T> coord2, const int &id2, const int& gdim)
     {
-      double tol = 1e-12;
-      double distance = 0;
+      T tol = 1e-12;
+      T distance = 0;
 
       //Take the distance between two points with id1 and id2 and return
       for(std::size_t j=0;j<gdim;j++)
@@ -36,7 +38,8 @@ namespace cutcells::utils
 
     // check if vertex coordinate exists in geom vector
     // and if vertex exists return its id in geom otherwise return -1
-    static int vertex_exists(std::span<const double> geom, std::span<const double> coords, const int &id2, const int &gdim)
+    template <std::floating_point T>
+    static int vertex_exists(std::span<const T> geom, std::span<const T> coords, const int &id2, const int &gdim)
     {
       int num_vertices_geom = geom.size()/gdim;
 

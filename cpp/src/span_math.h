@@ -9,15 +9,17 @@
 #include <string>
 #include <sstream>
 #include <cassert>
+#include <concepts>
 
 namespace cutcells
 {
     namespace math
     {
-      inline double dot(std::span<const double> a, std::span<const double> b)
+      template <std::floating_point T>
+      inline T dot(std::span<const T> a, std::span<const T> b)
       {
         assert(a.size()==b.size());
-        double result = 0;
+        T result = 0;
 
         for(std::size_t i=0;i<a.size();i++)
           result +=a[i]*b[i];
@@ -25,12 +27,13 @@ namespace cutcells
         return result;
       }
 
-      inline std::vector<double> cross(std::span<const double> a, std::span<const double> b)
+      template <std::floating_point T>
+      inline std::vector<T> cross(std::span<const T> a, std::span<const T> b)
       {
         //cross product only implemented in 3D
         assert(a.size()==3);
         assert(a.size()==b.size());
-        std::vector<double> result(3);
+        std::vector<T> result(3);
 
         result[0] = a[1]*b[2]-a[2]*b[1];
         result[1] = a[2]*b[0]-a[0]*b[2];
@@ -39,28 +42,31 @@ namespace cutcells
         return result;
       }
 
-      inline std::vector<double> subtract(std::span<const double> a, std::span<const double> b)
+      template <std::floating_point T>
+      inline std::vector<T> subtract(std::span<const T> a, std::span<const T> b)
       {
         assert(a.size()==b.size());
-        std::vector<double> result(a.size());
+        std::vector<T> result(a.size());
         for(std::size_t i=0;i<a.size();i++)
           result[i] =a[i]-b[i];
         return result;
       }
 
-      inline std::vector<double> add(std::span<const double> a, std::span<const double> b)
+      template <std::floating_point T>
+      inline std::vector<T> add(std::span<const T> a, std::span<const T> b)
       {
         assert(a.size()==b.size());
-        std::vector<double> result(a.size());
+        std::vector<T> result(a.size());
         for(std::size_t i=0;i<a.size();i++)
           result[i] =a[i]+b[i];
         return result;
       }
 
-      inline double distance(std::span<const double> a, std::span<const double> b)
+      template <std::floating_point T>
+      inline T distance(std::span<const T> a, std::span<const T> b)
       {
         assert(a.size()==b.size());
-        double result = 0;
+        T result = 0;
         for(std::size_t i=0;i<a.size();i++)
           result +=(b[i]-a[i])*(b[i]-a[i]);
 
@@ -73,7 +79,8 @@ namespace cutcells
         return result;
       }
 
-      static std::string print(std::span<const double> a)
+      template <std::floating_point T>
+      static std::string print(std::span<const T> a)
       {
         std::ostringstream str_out;
 

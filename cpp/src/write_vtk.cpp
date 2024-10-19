@@ -14,28 +14,28 @@
 
 namespace cutcells::io
 {
-    void write_vtk(std::string filename, const std::span<const double> element_vertex_coords,  
+    void write_vtk(std::string filename, const std::span<const double> element_vertex_coords,
                      const std::vector<std::vector<int>> elements,
-                     const std::span<cell::type> element_types, 
+                     const std::span<cell::type> element_types,
                      const int gdim)
     {
         std::ofstream ofs;
-        ofs.open(filename.c_str(), std::ios::out );  
- 
+        ofs.open(filename.c_str(), std::ios::out );
+
         if(ofs)
         {
             int num_points = element_vertex_coords.size()/gdim;
             int num_cells = elements.size();
 
             ofs << "<?xml version=\"1.0\"?>\n" 
-                << "<VTKFile type=\"UnstructuredGrid\" version=\"2.2\">\n" 
+                << "<VTKFile type=\"UnstructuredGrid\" version=\"2.2\">\n"
                 << "\t<UnstructuredGrid>\n"
-                << "\t\t<Piece NumberOfPoints=\"" << num_points 
+                << "\t\t<Piece NumberOfPoints=\"" << num_points
                 << "\" NumberOfCells=\"" << num_cells << "\">\n";
 
-            ofs << "\t\t\t<Points>\n" 
+            ofs << "\t\t\t<Points>\n"
                 <<  "\t\t\t  <DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">"; 
-            
+
             //coordinates
             for(int i=0;i<num_points;i++)
             {
@@ -50,15 +50,15 @@ namespace cutcells::io
 
                 ofs << x << " " << y << " " << z << " ";
             }
-    
-            ofs <<  "</DataArray>\n"; 
-            ofs << "\t\t\t</Points>\n"; 
+
+            ofs <<  "</DataArray>\n";
+            ofs << "\t\t\t</Points>\n";
             ofs << "\t\t\t<Cells>\n";
             ofs << "\t\t\t  <DataArray type=\"Int32\" Name=\"connectivity\" format=\"ascii\">";
             for(auto& element: elements)
             {
                 for(auto& vertex_id: element)
-                {                    
+                {
                     ofs << vertex_id << " ";
 
                 }
@@ -77,10 +77,9 @@ namespace cutcells::io
             {
                 ofs << static_cast<int>(cell::map_cell_type_to_vtk(type)) << " ";
             }
-            ofs <<  "</DataArray>\n"; 
+            ofs <<  "</DataArray>\n";
             ofs << "\t\t\t</Cells>\n";
 
-            
             ofs << "\t\t</Piece>\n"
                 << "\t</UnstructuredGrid>\n"
                 << "</VTKFile>\n";
@@ -90,11 +89,11 @@ namespace cutcells::io
         else std:: cout << "Unable to open file " << filename << " to write" << std::endl;
     }
 
-    void write_vtk(std::string filename, cell::CutCell& cut_cell)
+    void write_vtk(std::string filename, cell::CutCell<double>& cut_cell)
     {
         //std::as_const()
         write_vtk(filename, cut_cell._vertex_coords, cut_cell._connectivity,
-                     cut_cell._types, 
+                     cut_cell._types,
                      cut_cell._gdim);
     }
 

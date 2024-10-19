@@ -21,26 +21,26 @@ int main()
     std::vector<std::vector<int>> bg_elements(1);
     bg_elements[0] = {0,1};
 
-    cell::domain cell_domain = cell::classify_cell_domain(ls_values);
+    cell::domain cell_domain = cell::classify_cell_domain<double>(ls_values);
 
     std::cout << "Cell domain=" << domain_type_to_string(cell_domain) << std::endl;
 
-    std::cout << "Flag=" << cell::get_entity_flag(ls_values, false) << std::endl;
+    std::cout << "Flag=" << cell::get_entity_flag<double>(ls_values, false) << std::endl;
 
     if(cell_domain == cell::domain::intersected)
     {
-        cell::CutCell cut_cell;
-        cell::cut(cell_type, vertex_coordinates, gdim, ls_values, "phi=0", cut_cell);
+        cell::CutCell<double> cut_cell;
+        cell::cut<double>(cell_type, vertex_coordinates, gdim, ls_values, "phi=0", cut_cell);
         std::string fname = "interface.tex";
         io::write_tikz(fname,cut_cell._vertex_coords,cut_cell._connectivity,vertex_coordinates,bg_elements,ls_values,gdim);
 
-        cell::cut(cell_type, vertex_coordinates, gdim, ls_values, "phi<0", cut_cell);
+        cell::cut<double>(cell_type, vertex_coordinates, gdim, ls_values, "phi<0", cut_cell);
         fname = "interior.tex";
         io::write_tikz(fname,cut_cell._vertex_coords,cut_cell._connectivity,vertex_coordinates,bg_elements,ls_values,gdim);
         fname = "interior.vtu";
         io::write_vtk(fname,cut_cell);
 
-        cell::cut(cell_type, vertex_coordinates, gdim, ls_values, "phi>0", cut_cell, false);
+        cell::cut<double>(cell_type, vertex_coordinates, gdim, ls_values, "phi>0", cut_cell, false);
         fname = "exterior.tex";
         io::write_tikz(fname,cut_cell._vertex_coords,cut_cell._connectivity,vertex_coordinates,bg_elements,ls_values,gdim);
         fname = "exterior.vtu";
