@@ -5,7 +5,7 @@ if(APPLE)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14")
 endif()
 
-project(cutcells_nanobind VERSION "0.1" LANGUAGES CXX)
+project(cutcells_nanobind VERSION "0.2.0" LANGUAGES CXX)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
