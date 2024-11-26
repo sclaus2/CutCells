@@ -8,6 +8,8 @@
 #include <string>
 #include <stdexcept>
 
+#include <vector>
+
 namespace cutcells
 {
     namespace cell
@@ -156,6 +158,62 @@ namespace cutcells
                          break;
             }
             return type_str;
+        }
+
+        //get possible cell types from type of cut for cell type cell_type
+        inline std::vector<type> cut_cell_types(type cell_type, const std::string& ls_part)
+        {
+            std::vector<type> cell_types;
+
+            switch(cell_type)
+            {
+                case type::point:         {cell_types.resize(1);
+                                          cell_types[0]= type::point;
+                                          break;}
+                case type::interval:      {if(ls_part=="phi=0"){
+                                            cell_types.resize(1);
+                                            cell_types[0]= type::point;}
+                                          else{
+                                            cell_types.resize(1);
+                                            cell_types[0]= type::interval;}
+                                            break;}
+                case type::triangle:      {if(ls_part=="phi=0")
+                                          {
+                                            cell_types.resize(1);
+                                            cell_types[0]=type::interval;
+                                          }
+                                          else
+                                          {
+                                            cell_types.resize(2);
+                                            cell_types[0]= type::triangle;
+                                            cell_types[1]= type::quadrilateral;
+                                          }
+                                          break;}
+                case type::quadrilateral: {throw std::invalid_argument("quadrilateral yet not implemented");
+                                          break;}
+                case type::tetrahedron:   {if(ls_part=="phi=0")
+                                          {
+                                            cell_types.resize(2);
+                                            cell_types[0]= type::triangle;
+                                            cell_types[1]= type::quadrilateral;
+                                          }
+                                          else
+                                          {
+                                            cell_types.resize(2);
+                                            cell_types[0]= type::tetrahedron;
+                                            cell_types[1]= type::prism;
+                                          }
+                                          break;}
+                case type::hexahedron:    {throw std::invalid_argument("hexahedron yet not implemented");
+                                          break;}
+                case type::prism:         {throw std::invalid_argument("prism yet not implemented");
+                                          break;}
+                case type::pyramid:       {throw std::invalid_argument("pyramid yet not implemented");
+                                          break;}
+                default: {throw std::invalid_argument("cell type not recognised in cell_type_to_str of cell_types.h");
+                         break;}
+            }
+            return cell_types;
         }
     }
 }

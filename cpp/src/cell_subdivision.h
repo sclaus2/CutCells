@@ -1,5 +1,5 @@
-// Copyright (c) 2022-2023 ONERA 
-// Authors: Susanne Claus 
+// Copyright (c) 2022-2023 ONERA
+// Authors: Susanne Claus
 // This file is part of CutFEMx
 //
 // SPDX-License-Identifier:    MIT

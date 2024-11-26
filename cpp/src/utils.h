@@ -15,7 +15,7 @@ namespace cutcells::utils
     static bool equal(std::span<const T> coord1, const int &id1,
                       std::span<const T> coord2, const int &id2, const int& gdim)
     {
-      T tol = 1e-12;
+      T tol = 1e-15;
       T distance = 0;
 
       //Take the distance between two points with id1 and id2 and return

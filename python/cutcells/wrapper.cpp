@@ -70,7 +70,6 @@ auto as_nbarrayp(std::pair<V, std::array<std::size_t, U>>&& x)
 template <typename T>
 void declare_float(nb::module_& m, std::string type)
 {
-    std::string classify_cell_domain_name = "classify_cell_domain_" + type;
     m.def("classify_cell_domain", [](nb::ndarray<const T>& ls_values){
           cell::domain domain_id = cell::classify_cell_domain<T>(std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())});
           auto domain_str = cell_domain_to_str(domain_id);
@@ -140,6 +139,35 @@ void declare_float(nb::module_& m, std::string type)
         .def("volume", [](const cell::CutCell<T>& self) {return cell::volume(self);})
         .def("write_vtk", [](cell::CutCell<double>& self, std::string fname) {io::write_vtk(fname,self); return ;});
 
+    name = "CutCells_" + type;
+    nb::class_<mesh::CutCells<T>>(m, name.c_str(), "Cut Cells")
+        .def(nb::init<>())
+        .def_prop_ro(
+          "cut_cells",
+          [](const mesh::CutCells<T>& self)
+          {
+            return self._cut_cells;
+          })
+        .def_prop_ro(
+          "types",
+          [](const mesh::CutCells<T>& self) {
+            //allocate memory
+            nb::list types;
+
+              for(std::size_t i=0;i<self._types.size();i++)
+              {
+                types.append(static_cast<int>(map_cell_type_to_vtk(self._types[i])));
+              }
+
+              return types;
+          })
+        .def_prop_ro(
+          "parent_map",
+          [](const mesh::CutCells<T>& self) {
+            //allocate memory
+            return self._parent_map;
+          });
+
   name = "CutMesh_" + type;
   nb::class_<mesh::CutMesh<T>>(m, name.c_str(), "Cut Mesh")
         .def(nb::init<>())
@@ -201,13 +229,11 @@ void declare_float(nb::module_& m, std::string type)
               return types;
           });
 
-  name = "create_cut_mesh_" + type;
   m.def("create_cut_mesh", [](std::vector<cell::CutCell<T>>& cut_cells){
               return mesh::create_cut_mesh(cut_cells);
              }
              , "Creating a cut mesh");
 
-  name = "cut_" + type;
   m.def("cut", [](cell::type cell_type, const nb::ndarray<T>& vertex_coordinates, const int gdim,
              const nb::ndarray<T>& ls_values, const std::string& cut_type_str, bool triangulate){
               cell::CutCell<T> cut_cell;
@@ -216,7 +242,6 @@ void declare_float(nb::module_& m, std::string type)
              }
              , "cut a cell");
 
-  name = "higher_order_cut_" + type;
   m.def("higher_order_cut", [](cell::type cell_type, const nb::ndarray<T>& vertex_coordinates, const int gdim,
              const nb::ndarray<const T>& ls_values, const std::string& cut_type_str, bool triangulate){
               cell::CutCell<T> cut_cell = cell::higher_order_cut<T>(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, triangulate);
