@@ -38,8 +38,8 @@ namespace cutcells::cell{
             std::cout << i << ": ";
             for(int j=0;j<cut_cell._connectivity[i].size();j++)
             {
-                    std::cout << cut_cell._connectivity[i][j]; 
-                    if(j<cut_cell._connectivity[i].size()-1) 
+                    std::cout << cut_cell._connectivity[i][j];
+                    if(j<cut_cell._connectivity[i].size()-1)
                         std::cout << ", ";
             }
             if(i<cut_cell._connectivity.size()-1)
@@ -50,8 +50,17 @@ namespace cutcells::cell{
         std::cout << "cell types=[";
         for(int i=0;i<cut_cell._types.size();i++)
         {
-            std::cout << i << ": " << cell_type_to_str(cut_cell._types[i]); 
+            std::cout << i << ": " << cell_type_to_str(cut_cell._types[i]);
             if(i<cut_cell._types.size()-1)
+                std::cout << ", ";
+        }
+        std::cout << "]" << std::endl;
+
+        std::cout << "local parent entity=[";
+        for(int i=0;i<cut_cell._vertex_parent_entity.size();i++)
+        {
+            std::cout << i << ": " << cut_cell._vertex_parent_entity[i];
+            if(i<cut_cell._vertex_parent_entity.size()-1)
                 std::cout << ", ";
         }
         std::cout << "]" << std::endl;
@@ -201,7 +210,6 @@ namespace cutcells::cell{
               cutcells::cell::CutCell<T> tmp_cut_cell;
               cutcells::cell::cut<T>(cell_type, sub_vertex_coordinates, gdim, sub_ls_values, cut_type_str, tmp_cut_cell, triangulate);
               sub_cut_cells.push_back(tmp_cut_cell);
-              sub_cut_cells[sub_cut_cell_id]._parent_cell_index.push_back(-1);
               sub_cut_cell_id++;
               break;
             }
@@ -211,7 +219,6 @@ namespace cutcells::cell{
               {
                 cutcells::cell::CutCell<T> tmp_cut_cell = cutcells::cell::create_cut_cell<T>(cell_type, sub_vertex_coordinates, gdim);
                 sub_cut_cells.push_back(tmp_cut_cell);
-                sub_cut_cells[sub_cut_cell_id]._parent_cell_index.push_back(-1);
                 sub_cut_cell_id++;
               }
               break;
@@ -222,7 +229,6 @@ namespace cutcells::cell{
               {
                 cutcells::cell::CutCell<T> tmp_cut_cell = cutcells::cell::create_cut_cell<T>(cell_type, sub_vertex_coordinates, gdim);
                 sub_cut_cells.push_back(tmp_cut_cell);
-                sub_cut_cells[sub_cut_cell_id]._parent_cell_index.push_back(-1);
                 sub_cut_cell_id++;
               }
               break;
@@ -259,11 +265,6 @@ namespace cutcells::cell{
       merged_cut_cell._gdim=gdim;
       merged_cut_cell._tdim=tdim;
 
-      for(std::size_t i=0;i<cut_cell_vec[0]._parent_cell_index.size();i++)
-      {
-        merged_cut_cell._parent_cell_index.push_back(cut_cell_vec[0]._parent_cell_index[i]);
-      }
-
       //Count the total number of cells in vector
       int num_cells =0;
       for(auto & cut_cell : cut_cell_vec)
@@ -286,12 +287,11 @@ namespace cutcells::cell{
           continue;
         }
         //check that current cut_cell has same dimensions and parent
-        if((cut_cell._gdim!=gdim)||(cut_cell._tdim!=tdim)||(cut_cell._parent_cell_index[0]!=merged_cut_cell._parent_cell_index[0]))
+        if((cut_cell._gdim!=gdim)||(cut_cell._tdim!=tdim))
         {
           std::cout << "gdim: (" << gdim << ", " << cut_cell._gdim << ")" << std::endl;
           std::cout << "tdim: (" << tdim << ", " << cut_cell._tdim << ")" << std::endl;
-          std::cout << "parent_cell: (" << merged_cut_cell._parent_cell_index[0] << ", " << cut_cell._parent_cell_index[0] << ")" << std::endl;
-          throw std::runtime_error ("Error in merging cutcells have differing dimensions or parent cell");
+          throw std::runtime_error ("Error in merging cutcells have differing dimensions");
         }
 
         int num_cut_cell_vertices = cut_cell._vertex_coords.size()/gdim;
@@ -374,7 +374,6 @@ namespace cutcells::cell{
   template <std::floating_point T>
   void recursive_cut(cutcells::cell::CutCell<T> &cut_cell,
                     std::span<const T> ls_vals_all,
-                    const int& parent_cell_index,
                     const std::string& cut_type_str,
                     bool triangulate)
   {
@@ -414,7 +413,6 @@ namespace cutcells::cell{
       if(cell_domain == cutcells::cell::domain::intersected)
       {
         cutcells::cell::cut<T>(cut_cell_type, vertex_coords, gdim, ls_vals, cut_type_str, cut_cells[cut_cell_id], triangulate);
-        cut_cells[cut_cell_id]._parent_cell_index.push_back(parent_cell_index);
         cut_cell_id++;
       }
       // cell is completely inside
@@ -424,7 +422,6 @@ namespace cutcells::cell{
         if((cut_type_str=="phi<0"))
         {
           cut_cells[cut_cell_id] = create_cut_cell<T>(cut_cell_type, vertex_coords, gdim);
-          cut_cells[cut_cell_id]._parent_cell_index.push_back(parent_cell_index);
           cut_cell_id++;
         }
         else
@@ -439,7 +436,6 @@ namespace cutcells::cell{
         if((cut_type_str=="phi>0"))
         {
           cut_cells[cut_cell_id] = create_cut_cell<T>(cut_cell_type, vertex_coords, gdim);
-          cut_cells[cut_cell_id]._parent_cell_index.push_back(parent_cell_index);
           cut_cell_id++;
         }
         else
@@ -490,12 +486,10 @@ namespace cutcells::cell{
 
   template void recursive_cut(cutcells::cell::CutCell<double> &cut_cell,
                     std::span<const double> ls_vals_all,
-                    const int& parent_cell_index,
                     const std::string& cut_type_str,
                     bool triangulate);
   template void recursive_cut(cutcells::cell::CutCell<float> &cut_cell,
                     std::span<const float> ls_vals_all,
-                    const int& parent_cell_index,
                     const std::string& cut_type_str,
                     bool triangulate);
 //-----------------------------------------------------------------------------

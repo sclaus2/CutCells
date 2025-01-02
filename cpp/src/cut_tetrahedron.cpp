@@ -9,6 +9,7 @@
 #include "cell_flags.h"
 #include "triangulation.h"
 #include "span_math.h"
+#include "utils.h"
 
 #include <cassert>
 #include <stdexcept>
@@ -94,7 +95,7 @@ namespace{
     //  / /_____\ \
     //   100   101
     //
-    // The list gives back either the triangle or quadrilateral produced by the intersection
+    // The list gives back either the tetrahedron or prism produced by the intersection
     // This list can be used to reconstruct the coordinates of the sub-elements.
     int tetrahedron_sub_element[16][6] = 
     {
@@ -490,6 +491,8 @@ namespace tetrahedron{
 
         create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell,
                         triangulate, intersection_points, vertex_case_map);
+
+        cutcells::utils::create_vertex_parent_entity_map<T>(vertex_case_map, cut_cell._vertex_parent_entity);
     }
 
     template <std::floating_point T>

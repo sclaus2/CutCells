@@ -9,6 +9,7 @@
 #include "cell_flags.h"
 #include "triangulation.h"
 #include "span_math.h"
+#include "utils.h"
 
 #include <cassert>
 #include <stdexcept>
@@ -366,6 +367,8 @@ namespace triangle{
 
         create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, 
                         triangulate, intersection_points, vertex_case_map);
+
+        cutcells::utils::create_vertex_parent_entity_map<T>(vertex_case_map, cut_cell._vertex_parent_entity);
     };
 
     // cut triangle version with vector of string in case multiple parts of the cut-cell are needed (very common)

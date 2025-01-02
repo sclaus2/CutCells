@@ -15,6 +15,7 @@
 
 namespace cutcells
 {
+    // Structure to represent mesh local to each cell
     namespace cell
     {
         /// @brief Stores the sub-cells resulting from cutting a cell
@@ -38,9 +39,10 @@ namespace cutcells
             /// Cell type of cut cells
             std::vector<type> _types;
 
-            /// Parent index for cell, pair of indices for interfaces
-            std::vector<std::int32_t> _parent_cell_index;
-
+            /// parent facet or vertex of vertex coordinates
+            /// these correspond to the local numbering of intersected facets or vertices
+            /// vertices are indicated by a shift of 100 in the numbering  vertex 1 -> 101 etc.
+            std::vector<int32_t> _vertex_parent_entity;
         };
 
         template <std::floating_point T>
@@ -76,7 +78,6 @@ namespace cutcells
         template <std::floating_point T>
         void recursive_cut(cutcells::cell::CutCell<T> &cut_cell,
                   std::span<const T> ls_vals_all,
-                  const int& parent_cell_index,
                   const std::string& cut_type_str,
                   bool triangulate);
     }

@@ -77,6 +77,35 @@ namespace cutcells
             return vtk_type;
         };
 
+        inline type map_vtk_type_to_cell_type(vtk_types vtk_type)
+        {
+            type cell_type;
+
+            switch(vtk_type)
+            {
+                case vtk_types::VTK_VERTEX: cell_type = type::point;
+                                            break;
+                case vtk_types::VTK_LINE:   cell_type = type::interval;
+                                            break;
+                case vtk_types::VTK_TRIANGLE: cell_type = type::triangle;
+                                            break;
+                case vtk_types::VTK_QUAD:   cell_type =  type::quadrilateral;
+                                            break;
+                case vtk_types::VTK_TETRA:  cell_type = type::tetrahedron;
+                                            break;
+                case vtk_types::VTK_HEXAHEDRON: cell_type = type::hexahedron;
+                                            break;
+                case vtk_types::VTK_WEDGE:  cell_type = type::prism;
+                                            break;
+                case  vtk_types::VTK_PYRAMID: cell_type = type::pyramid;
+                                              break;
+                default: throw std::invalid_argument("vtk cell type not recognised in map_vtk_type_to_cell_type of cell_types.h");
+                                            break;
+            }
+
+            return cell_type;
+        };
+
         inline int get_num_vertices(type cell_type)
         {
             int num_vertices = 0;

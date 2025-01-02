@@ -10,45 +10,32 @@
 #include <vector>
 #include <unordered_map>
 
-#include "cell_types.h"
 #include "cut_cell.h"
 
+#include "cell_types.h"
+#include "cell_flags.h"
+
+/// Structures to represent mesh formed from several local cell meshes
 namespace cutcells::mesh
 {
     /// Collection of cut cells that have been cut with regards to a parent mesh/entities
     template <std::floating_point T>
     struct CutCells
     {
-            /// vector of all cut cells
-            std::vector<cell::CutCell<T>> _cut_cells;
-            /// map of cut cell id to parent cell id
-            /// this vector contains all cells that are cut
-            std::vector<std::int32_t> _parent_map;
-            /// the types of elements contained in all cut_cells
-            std::vector<cell::type> _types;
+      /// vector of all cut cells
+      std::vector<cell::CutCell<T>> _cut_cells;
 
-            /// Total number of vertices in CutCells
-            std::size_t _num_vertices;
+      /// map of cut cell id to parent cell id
+      /// this vector points to parent cell for each cut cell in vector _cut_cells
+      /// for an interface their are two parent cells
+      std::vector<std::int32_t> _parent_map;
+
+      /// the types of elements contained in all cut_cells
+      std::vector<cell::type> _types;
+
     };
 
-    /// Collection of cut cells that have been cut with regards to a parent mesh/entities
-    template <std::floating_point T>
-    struct CutInterface
-    {
-            /// vector of all cut cells
-            std::vector<cell::CutCell<T>> _cut_cells;
-            /// map of cut cell id to parent cell ids (2 for interface)
-            /// this vector contains all cells that are cut
-            std::vector<std::pair<std::int32_t, std::int32_t>> _parent_map;
-
-            /// the types of elements contained in all cut_cells
-            std::vector<cell::type> _types;
-
-            /// Total number of vertices in CutMesh
-            std::size_t _num_vertices;
-    };
-
-    // Class to represent mesh formed by cutcells in different parent cells
+    // Class to represent mesh formed by merging CutCells (removal of double vertices + flattening of connectivties)
     template <std::floating_point T>
     struct CutMesh
     {
@@ -69,13 +56,14 @@ namespace cutcells::mesh
 
       /// Vertex ids of cut cells
       /// @todo: maybe change this to connectivity and offset vectors
-      std::vector<std::vector<int>> _connectivity;
+      std::vector<int> _connectivity;
+      std::vector<int> _offset; //offsets in connectivity vector
 
-      /// Cell type of cut cells
+      /// Cell types
       std::vector<cell::type> _types;
 
       /// Parent index for cell, pair of indices for interfaces
-      std::vector<std::int32_t> _parent_cell_index;
+      std::vector<std::int32_t> _parent_map;
     };
 
     /// @brief  Print information about cut_mesh to screen
@@ -93,5 +81,17 @@ namespace cutcells::mesh
     int get_num_cells(const cutcells::mesh::CutCells<T>& cut_mesh);
 
     template <std::floating_point T>
-    cutcells::mesh::CutMesh<T> create_cut_mesh(std::vector<cell::CutCell<T>>& cut_cells);
+    cutcells::mesh::CutMesh<T> create_cut_mesh(CutCells<T>& cut_cells);
+
+    template <std::floating_point T>
+    std::vector<int> locate_cells(std::span<const T> ls_vals, std::span<const T> points,
+                                    std::span<const int> connectivity, std::span<const int> offset,
+                                    std::span<const int> vtk_type,
+                                    cell::cut_type ctype);
+
+    template <std::floating_point T>
+    cutcells::mesh::CutMesh<T> cut_vtk_mesh(std::span<const T> ls_vals, std::span<const T> points,
+                                            std::span<const int> connectivity, std::span<const int> offset,
+                                            std::span<const int> vtk_type,
+                                            const std::string& cut_type_str);
 }

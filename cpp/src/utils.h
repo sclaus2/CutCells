@@ -7,6 +7,9 @@
 
 #include <cmath>
 #include <concepts>
+#include <span>
+#include <unordered_map>
+#include <vector>
 
 namespace cutcells::utils
 {
@@ -51,5 +54,17 @@ namespace cutcells::utils
         }
       }
       return -1;
+    }
+
+    // create map from vertex coordinates to local parent entity, i.e. intersected edges and vertices
+    template <std::floating_point T>
+    void create_vertex_parent_entity_map(const std::unordered_map<int,int>& vertex_case_map, std::vector<int32_t>& vertex_parent_entity)
+    {
+      vertex_parent_entity.resize(vertex_case_map.size());
+
+      for (auto &[first,second]: vertex_case_map) //using structured binding
+      {
+        vertex_parent_entity[second] = first;  // values can also be manipulated as they are refrences
+      }
     }
 }

@@ -147,7 +147,9 @@ void declare_float(nb::module_& m, std::string type)
           [](const mesh::CutCells<T>& self)
           {
             return self._cut_cells;
-          })
+          },
+          nb::rv_policy::reference_internal,
+          "Return vector of cut cells.")
         .def_prop_ro(
           "types",
           [](const mesh::CutCells<T>& self) {
@@ -164,9 +166,10 @@ void declare_float(nb::module_& m, std::string type)
         .def_prop_ro(
           "parent_map",
           [](const mesh::CutCells<T>& self) {
-            //allocate memory
-            return self._parent_map;
-          });
+            return nb::ndarray<const std::int32_t, nb::numpy>(self._parent_map.data(),{self._parent_map.size()}, nb::handle());
+          },
+          nb::rv_policy::reference_internal,
+          " Return parent map of cut cells.");
 
   name = "CutMesh_" + type;
   nb::class_<mesh::CutMesh<T>>(m, name.c_str(), "Cut Mesh")
@@ -201,39 +204,58 @@ void declare_float(nb::module_& m, std::string type)
         .def_prop_ro(
           "connectivity",
           [](const mesh::CutMesh<T>& self) {
-            nb::list inner;
-
-            for(std::size_t i=0;i<self._connectivity.size();i++)
-            {
-              std::size_t num_vertices = self._connectivity[i].size();
-              inner.append(num_vertices);
-
-              for(std::size_t j=0;j<num_vertices;j++)
-              {
-                inner.append(self._connectivity[i][j]);
-              }
-            }
-            return inner;
-          })
+            return nb::ndarray<const int, nb::numpy>(self._connectivity.data(),{self._connectivity.size()}, nb::handle());
+          },
+          nb::rv_policy::reference_internal,
+          " Return connectivity vector.")
+        .def_prop_ro(
+          "offset",
+          [](const mesh::CutMesh<T>& self) {
+            return nb::ndarray<const int, nb::numpy>(self._offset.data(),{self._offset.size()}, nb::handle());
+          },
+          nb::rv_policy::reference_internal,
+          " Return offset vector.")
         .def_prop_ro(
           "types",
           [](const mesh::CutMesh<T>& self) {
             //allocate memory
             nb::list types;
-
               for(std::size_t i=0;i<self._types.size();i++)
               {
                 types.append(static_cast<int>(map_cell_type_to_vtk(self._types[i])));
               }
-
               return types;
-          });
+          })
+        .def_prop_ro(
+          "cells",
+          [](const mesh::CutMesh<T>& self) {
+            std::size_t num_cells = self._offset.size()-1;
+            std::vector<int> cells;
 
-  m.def("create_cut_mesh", [](std::vector<cell::CutCell<T>>& cut_cells){
+            for(std::size_t i=0;i<num_cells;i++)
+            {
+              std::size_t num_vertices = self._offset[i+1] - self._offset[i];
+              cells.push_back(num_vertices);
+              for(std::size_t j=0;j<num_vertices;j++)
+              {
+                cells.push_back(self._connectivity[self._offset[i]+j]);
+              }
+            }
+            return cells;
+          },
+          " Return cells.")
+        .def_prop_ro(
+          "parent_map",
+          [](const mesh::CutMesh<T>& self) {
+            return nb::ndarray<const std::int32_t, nb::numpy>(self._parent_map.data(),{self._parent_map.size()}, nb::handle());
+          },
+          nb::rv_policy::reference_internal,
+          " Return parent map of cut mesh.");
+
+  m.def("create_cut_mesh", [](mesh::CutCells<T>& cut_cells){
               return mesh::create_cut_mesh(cut_cells);
              }
              , "Creating a cut mesh");
-
   m.def("cut", [](cell::type cell_type, const nb::ndarray<T>& vertex_coordinates, const int gdim,
              const nb::ndarray<T>& ls_values, const std::string& cut_type_str, bool triangulate){
               cell::CutCell<T> cut_cell;
@@ -249,6 +271,31 @@ void declare_float(nb::module_& m, std::string type)
              }
              , "cut a second order cell");
 
+    m.def("locate_cells", [](nb::ndarray<const T>& ls_vals, nb::ndarray<const T>& points,
+                             nb::ndarray<const int>& connectivity, nb::ndarray<const int>& offset,
+                             nb::ndarray<const int>& vtk_type,
+                             const std::string& cut_type_str){
+              return  as_nbarray(mesh::locate_cells<T>(std::span(ls_vals.data(),ls_vals.size()),
+                            std::span(points.data(),points.size()),
+                            std::span(connectivity.data(),connectivity.size()),
+                            std::span(offset.data(),offset.size()),
+                            std::span(vtk_type.data(),vtk_type.size()),
+                            cell::string_to_cut_type(cut_type_str)));
+             }
+             , "locate cells in vtk mesh");
+
+    m.def("cut_vtk_mesh", [](nb::ndarray<const T>& ls_vals, nb::ndarray<const T>& points,
+                             nb::ndarray<const int>& connectivity, nb::ndarray<const int>& offset,
+                             nb::ndarray<const int>& vtk_type,
+                             const std::string& cut_type_str){
+              return  mesh::cut_vtk_mesh<T>(std::span(ls_vals.data(),ls_vals.size()),
+                            std::span(points.data(),points.size()),
+                            std::span(connectivity.data(),connectivity.size()),
+                            std::span(offset.data(),offset.size()),
+                            std::span(vtk_type.data(),vtk_type.size()),
+                            cut_type_str);
+             }
+             , "cut vtk mesh");
 }
 
 } // namespace

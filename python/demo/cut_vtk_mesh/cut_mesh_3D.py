@@ -56,73 +56,27 @@ def create_box_mesh(x0,y0,z0,x1,y1,z1,Nx,Ny,Nz):
 
   return grid
 
-def mark_cells(mesh):
-  cells = mesh.cells
-  points = mesh.points
+def create_cut_mesh(grid):
+  points = grid.points
   ls_values = np.zeros(len(points))
-  inside_cells = np.empty(0, dtype=int)
-  intersected_cells = np.empty(0, dtype=int)
+  j = 0
+  for point in points:
+    ls_values[j] = level_set(point)
+    j = j+1
 
-  id = 0
+  cut_mesh = cutcells.cut_vtk_mesh(ls_values,points,grid.cell_connectivity,grid.offset,grid.celltypes,"phi<0")
+  inside_cells = cutcells.locate_cells(ls_values,points,grid.cell_connectivity,grid.offset,grid.celltypes,"phi<0")
 
-  for i in range(mesh.n_cells):
-    num_points = cells[id]
-    id = id + 1
+  pv_cut =  pv.UnstructuredGrid(cut_mesh.cells,cut_mesh.types,cut_mesh.vertex_coords)
+  extract = grid.extract_cells(inside_cells)
 
-    for j in range(num_points):
-       point = points[cells[id]]
-       ls_values[j] = level_set(point)
-       id = id + 1
+  return extract.merge(pv_cut)
 
-    domain_str = cutcells.classify_cell_domain(ls_values)
-    if domain_str=="inside":
-      inside_cells=np.append(inside_cells,i)
-
-    if domain_str=="intersected":
-      intersected_cells=np.append(intersected_cells,i)
-
-  return inside_cells, intersected_cells
-
-def create_cut_mesh(mesh,inner_mesh, intersected_cells):
-  cell_type = cutcells.CellType.tetrahedron
-  triangulate = True
-  gdim = 3
-
-  cut_cells = []
-
-  for cell_id in intersected_cells:
-    c = mesh.get_cell(cell_id)
-    vertex_coordinates = c.points.flatten()
-    points = c.points
-    j = 0
-    ls_values = np.zeros(len(points))
-    for point in points:
-      ls_values[j] = level_set(point)
-      j = j+1
-    cut_cell_int = cutcells.cut(cell_type, vertex_coordinates,  gdim, ls_values, "phi<0", triangulate)
-    cut_cells.append(cut_cell_int)
-
-  cut_mesh = cutcells.create_cut_mesh(cut_cells)
-  grid_cell = pv.UnstructuredGrid(cut_mesh.connectivity, cut_mesh.types, cut_mesh.vertex_coords)
-  inner_mesh = inner_mesh.merge(grid_cell)
-
-  return inner_mesh
-
-
-N = 10
+N = 21
 grid = create_box_mesh(-1,-1,-1, 1,1,1, N,N,N)
-
-inside_cells, intersected_cells = mark_cells(grid)
-
-extract = grid.extract_cells(inside_cells)
-
-mesh = create_cut_mesh(grid,extract,intersected_cells)
+mesh = create_cut_mesh(grid)
 
 mesh.plot(cpos="xy", show_edges=True)
-
-mesh.save('popcorn.vtk')
-
-grid.save('bg_mesh.vtk')
 
 pl = pv.Plotter()
 pl.add_mesh(grid, show_edges=True, style = 'wireframe')

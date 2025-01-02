@@ -6,6 +6,7 @@
 #include "cut_interval.h"
 #include "cell_flags.h"
 #include "span_math.h"
+#include "utils.h"
 #include <unordered_map>
 
 namespace cutcells::cell
@@ -162,6 +163,8 @@ namespace cutcells::cell
             {
                 throw std::invalid_argument("cutting type unknown");
             }
+
+            cutcells::utils::create_vertex_parent_entity_map<T>(vertex_case_map, cut_cell._vertex_parent_entity);
         }
 
         // cut interval
