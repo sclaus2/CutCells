@@ -2,14 +2,18 @@
 
 [![CutCells CI](https://github.com/sclaus2/cutcells/actions/workflows/python-app.yml/badge.svg)](https://github.com/sclaus2/cutcells/actions/workflows/python-app.yml)
 
-a library to compute intersections between mesh cells and implicit (level set) functions using marching cubes/tetrahedra algorithms. The current version supports intervals, triangles and tetrahedra. Future versions will include quadrilaterals, hexahedra, pyramids and prisms. This library is used as a basis for the computation of integrals in immersed boundary methods/cut finite element methods.
+a library to compute intersections between mesh cells and implicit (level set) functions using marching cubes/tetrahedra algorithms.
+
+The current version supports intervals, triangles and tetrahedra. Future versions will include quadrilaterals, hexahedra, pyramids and prisms.
+
+The library contains utility functions to cut through vtk meshes using pyvista. It is also used as a basis to generate run time quadrature rules in immersed boundary methods/cut finite element methods (see CutFEMx).
 
 The images below show a cut through a vtk mesh using pyvista and CutCells.
 The corresponding demonstration code is located in `python/demo/cut_vtk_mesh`.
 
 <p float="left">
 <img src="./img/mesh2D.png" alt="Regular mesh cut by zero contour line of a circular level set function" width="500"/>
-<img src="./img/mesh3D.png" alt="Regular mesh cut by zero contour line of a spherical level set function" width="500"/>
+<img src="./img/popcorn.png" alt="Regular mesh cut by zero contour line of a popcorn level set function" width="500"/>
 </p>
 
 # Installation
