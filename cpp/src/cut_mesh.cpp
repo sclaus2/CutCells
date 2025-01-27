@@ -11,6 +11,7 @@
 
 #include "utils.h"
 #include <map>
+#include <algorithm>
 
 namespace cutcells::mesh
 {
