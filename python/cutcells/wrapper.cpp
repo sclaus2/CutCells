@@ -166,7 +166,7 @@ void declare_float(nb::module_& m, std::string type)
         .def_prop_ro(
           "parent_map",
           [](const mesh::CutCells<T>& self) {
-            return nb::ndarray<const std::int32_t, nb::numpy>(self._parent_map.data(),{self._parent_map.size()}, nb::handle());
+            return nb::ndarray<const int32_t, nb::numpy>(self._parent_map.data(),{self._parent_map.size()}, nb::handle());
           },
           nb::rv_policy::reference_internal,
           " Return parent map of cut cells.");
@@ -247,7 +247,7 @@ void declare_float(nb::module_& m, std::string type)
         .def_prop_ro(
           "parent_map",
           [](const mesh::CutMesh<T>& self) {
-            return nb::ndarray<const std::int32_t, nb::numpy>(self._parent_map.data(),{self._parent_map.size()}, nb::handle());
+            return nb::ndarray<const int32_t, nb::numpy>(self._parent_map.data(),{self._parent_map.size()}, nb::handle());
           },
           nb::rv_policy::reference_internal,
           " Return parent map of cut mesh.");

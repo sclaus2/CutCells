@@ -28,7 +28,7 @@ namespace cutcells::mesh
       /// map of cut cell id to parent cell id
       /// this vector points to parent cell for each cut cell in vector _cut_cells
       /// for an interface their are two parent cells
-      std::vector<std::int32_t> _parent_map;
+      std::vector<int32_t> _parent_map;
 
       /// the types of elements contained in all cut_cells
       std::vector<cell::type> _types;
@@ -63,7 +63,7 @@ namespace cutcells::mesh
       std::vector<cell::type> _types;
 
       /// Parent index for cell, pair of indices for interfaces
-      std::vector<std::int32_t> _parent_map;
+      std::vector<int32_t> _parent_map;
     };
 
     /// @brief  Print information about cut_mesh to screen

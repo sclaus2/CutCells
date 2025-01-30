@@ -19,6 +19,10 @@ else()
   find_package(CutCells REQUIRED)
 endif()
 
+if(CUTCELLS_FOUND)
+  message(STATUS "Found CutCells at ${CUTCELLS_DIR}")
+endif()
+
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 
 # Detect the installed nanobind package and import it into CMake

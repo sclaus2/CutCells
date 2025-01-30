@@ -24,6 +24,6 @@ ci = ["mypy", "pytest-xdist", "cutcells[test]"]
 
 [tool.scikit-build]
 minimum-version = "0.5"
-cmake.minimum-version = "3.19.0"
+cmake.minimum-version = "3.21.0"
 wheel.packages = ["cutcells"]
 wheel.license-files = ["../LICENSE"]
