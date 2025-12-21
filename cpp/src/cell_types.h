@@ -218,8 +218,18 @@ namespace cutcells
                                             cell_types[1]= type::quadrilateral;
                                           }
                                           break;}
-                case type::quadrilateral: {throw std::invalid_argument("quadrilateral yet not implemented");
-                                          break;}
+                                case type::quadrilateral: {if(ls_part=="phi=0")
+                                                                                    {
+                                                                                        cell_types.resize(1);
+                                                                                        cell_types[0]= type::interval;
+                                                                                    }
+                                                                                    else
+                                                                                    {
+                                                                                        cell_types.resize(2);
+                                                                                        cell_types[0]= type::triangle;
+                                                                                        cell_types[1]= type::quadrilateral;
+                                                                                    }
+                                                                                    break;}
                 case type::tetrahedron:   {if(ls_part=="phi=0")
                                           {
                                             cell_types.resize(2);
@@ -233,8 +243,19 @@ namespace cutcells
                                             cell_types[1]= type::prism;
                                           }
                                           break;}
-                case type::hexahedron:    {throw std::invalid_argument("hexahedron yet not implemented");
-                                          break;}
+                                case type::hexahedron:    {if(ls_part=="phi=0")
+                                                                                    {
+                                                                                        cell_types.resize(2);
+                                                                                        cell_types[0]= type::triangle;
+                                                                                        cell_types[1]= type::quadrilateral;
+                                                                                    }
+                                                                                    else
+                                                                                    {
+                                                                                        cell_types.resize(2);
+                                                                                        cell_types[0]= type::tetrahedron;
+                                                                                        cell_types[1]= type::prism;
+                                                                                    }
+                                                                                    break;}
                 case type::prism:         {throw std::invalid_argument("prism yet not implemented");
                                           break;}
                 case type::pyramid:       {throw std::invalid_argument("pyramid yet not implemented");

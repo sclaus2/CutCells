@@ -43,6 +43,15 @@ namespace cutcells
             /// these correspond to the local numbering of intersected facets or vertices
             /// vertices are indicated by a shift of 100 in the numbering  vertex 1 -> 101 etc.
             std::vector<int32_t> _vertex_parent_entity;
+
+            /// Parent cell type before cutting
+            type _parent_cell_type;
+
+            /// Parent vertex coordinates (V*gdim)
+            std::vector<T> _parent_vertex_coords;
+
+            /// Parent vertex IDs (context-global ids)
+            std::vector<int> _parent_vertex_ids;
         };
 
         template <std::floating_point T>

@@ -8,13 +8,22 @@ add_library(cutcells)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/version.h.in version.h)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
+# Make headers in this directory discoverable for generated table headers
+# (e.g. generated/*_tables.h includes "cell_types.h").
+target_include_directories(cutcells PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
+
 set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_types.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_flags.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_subdivision.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_triangle.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_interval.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_quadrilateral.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_hexahedron.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_context.h
   ${CMAKE_CURRENT_SOURCE_DIR}/triangulation.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.h
@@ -27,7 +36,10 @@ set(HEADERS
 target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_interval.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_triangle.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_quadrilateral.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_hexahedron.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_context.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.cpp

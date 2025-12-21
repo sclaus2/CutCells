@@ -253,14 +253,26 @@ namespace cutcells::mesh
                                             std::span<const int> vtk_type,
                                             const std::string& cut_type_str)
     {
+      return cut_vtk_mesh<T>(ls_vals, points,
+                             connectivity, offset,
+                             vtk_type,
+                             cut_type_str,
+                             true);
+    }
+
+    template <std::floating_point T>
+    cutcells::mesh::CutMesh<T> cut_vtk_mesh(std::span<const T> ls_vals, std::span<const T> points,
+                                            std::span<const int> connectivity, std::span<const int> offset,
+                                            std::span<const int> vtk_type,
+                                            const std::string& cut_type_str,
+                                            bool triangulate)
+    {
       cutcells::mesh::CutCells<T> cut_cells;
 
-      bool triangulate = true;
-
       auto intersected_cells = locate_cells<T>(ls_vals, points,
-                                             connectivity, offset,
-                                             vtk_type,
-                                             cell::cut_type::phieq0);
+                                               connectivity, offset,
+                                               vtk_type,
+                                               cell::cut_type::phieq0);
 
       cut_cells._cut_cells.resize(intersected_cells.size());
       cut_cells._parent_map.resize(intersected_cells.size());
@@ -328,6 +340,19 @@ namespace cutcells::mesh
                                             std::span<const int> connectivity, std::span<const int> offset,
                                             std::span<const int> vtk_type,
                                             const std::string& cut_type_str);
+
+    template
+    cutcells::mesh::CutMesh<double> cut_vtk_mesh(std::span<const double> ls_vals, std::span<const double> points,
+                        std::span<const int> connectivity, std::span<const int> offset,
+                        std::span<const int> vtk_type,
+                        const std::string& cut_type_str,
+                        bool triangulate);
+    template
+    cutcells::mesh::CutMesh<float> cut_vtk_mesh(std::span<const float> ls_vals, std::span<const float> points,
+                        std::span<const int> connectivity, std::span<const int> offset,
+                        std::span<const int> vtk_type,
+                        const std::string& cut_type_str,
+                        bool triangulate);
 
 //-----------------------------------------------------------------------------
 }
