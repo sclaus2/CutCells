@@ -1,6 +1,12 @@
 """Adapters for VTK TableBasedClip tables.
 
 Populate the stubs with canonical VTK connectivity to regenerate CutCells tables.
+
+License/provenance:
+    The clip/cut case tables used here are derived from VTK's
+    `Filters/General/vtkTableBasedClipCases.h`.
+    VTK is licensed under the BSD 3-Clause license; see
+    `third_party/VTK-Copyright.txt` in this repository.
 """
 
 from __future__ import annotations

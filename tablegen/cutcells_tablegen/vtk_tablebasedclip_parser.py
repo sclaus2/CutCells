@@ -7,12 +7,18 @@ We do not depend on VTK headers/libraries; instead we parse the published
 header text (either from a local file path or downloaded URL).
 
 The extracted structure is converted into CutCells tablegen `ClipCase` objects.
+
+License/provenance:
+    The case tables parsed by this module are derived from VTK's
+    `Filters/General/vtkTableBasedClipCases.h`.
+    VTK is licensed under the BSD 3-Clause license; see
+    `third_party/VTK-Copyright.txt` in this repository.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import List, Sequence
 
 import os
 import re

@@ -51,6 +51,32 @@ and then
 python3 -m pip install .
 ```
 
+### Note on conda toolchains (recommended)
+
+When building inside a conda environment (e.g. `fenicsx-dev`), build/install the **C++ library** and the **Python extension**
+with the **same compiler toolchain** (typically the conda-provided Clang). Otherwise, you can hit link errors due to C++
+template/ABI symbol mismatches.
+
+One reliable workflow is:
+
+```console
+# Resolve the conda env prefix (avoid relying on $CONDA_PREFIX with `conda run`)
+ENV_PREFIX="$(conda run -n fenicsx-dev python -c 'import sys; print(sys.prefix)')"
+
+# C++ library into the env prefix
+cd cpp
+conda run -n fenicsx-dev cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$ENV_PREFIX" \
+	-DCMAKE_C_COMPILER="$ENV_PREFIX/bin/x86_64-apple-darwin13.4.0-clang" \
+	-DCMAKE_CXX_COMPILER="$ENV_PREFIX/bin/x86_64-apple-darwin13.4.0-clang++" \
+	-B build-conda -S .
+conda run -n fenicsx-dev cmake --build build-conda
+conda run -n fenicsx-dev cmake --install build-conda
+
+# Python extension against that install
+cd ../python
+env CMAKE_PREFIX_PATH="$ENV_PREFIX" conda run -n fenicsx-dev python -m pip install -e . --no-deps --force-reinstall
+```
+
 ## Running demons
 
 There are demons for both the C++ and the python interface.
@@ -63,6 +89,11 @@ cmake --install build-dir
 in the corresponding demo folder, e.g. `cpp/demo/cut_triangle`
 
 The python demos are located in `python/demo`.
+
+## Third-party notices
+
+Some generated clip/cut case tables (hexahedron/prism/pyramid) are derived from VTK's `vtkTableBasedClipCases.h`.
+VTK's BSD-3-Clause license text is included in `third_party/VTK-Copyright.txt`.
 
 ## Dependencies
 

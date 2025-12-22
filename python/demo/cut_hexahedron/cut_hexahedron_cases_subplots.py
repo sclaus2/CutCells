@@ -119,9 +119,9 @@ def main() -> None:
                     "phi<0",
                     False,
                 )
-                inside_points = np.asarray(inside_cell.vertex_coords, dtype=float).reshape(
-                    -1, 3
-                )
+                inside_points = np.asarray(
+                    inside_cell.vertex_coords, dtype=float
+                ).reshape(-1, 3)
                 inside_grid = pv.UnstructuredGrid(
                     inside_cell.connectivity, inside_cell.types, inside_points
                 )
