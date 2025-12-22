@@ -4,26 +4,33 @@
 //
 // SPDX-License-Identifier:    MIT
 
-#include "cut_hexahedron.h"
+#include "cut_pyramid.h"
 
 #include "cell_flags.h"
 #include "cut_cell.h"
 #include "cut_interval.h"
-#include "generated/cut_hexahedron_inside_tables.h"
-#include "generated/cut_hexahedron_interface_tables.h"
-#include "generated/cut_hexahedron_outside_tables.h"
+#include "generated/cut_pyramid_inside_tables.h"
+#include "generated/cut_pyramid_interface_tables.h"
+#include "generated/cut_pyramid_outside_tables.h"
 #include "utils.h"
 
-#include <array>
 #include <concepts>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
-namespace cutcells::cell::hexahedron
+namespace cutcells::cell::pyramid
 {
     namespace
     {
+        // VTK_PYRAMID vertex ordering assumed:
+        // base quad: 0,1,2,3 and apex: 4.
+        // Edge ids must match the VTK TableBasedClip case stream.
+        constexpr int edges[8][2] = {
+            {0, 1}, {1, 2}, {2, 3}, {3, 0}, // base
+            {0, 4}, {1, 4}, {2, 4}, {3, 4}  // sides
+        };
+
         [[noreturn]] void throw_missing_token(const int flag, const int token, const char* where)
         {
             throw std::runtime_error(std::string(where) + ": missing token=" + std::to_string(token)
@@ -55,7 +62,7 @@ namespace cutcells::cell::hexahedron
             std::vector<T> ip(gdim);
 
             int ip_index = 0;
-            for (int e = 0; e < 12; ++e)
+            for (int e = 0; e < 8; ++e)
             {
                 if (intersected_edges[flag][e] == 0)
                     continue;
@@ -111,6 +118,9 @@ namespace cutcells::cell::hexahedron
             if (vertex_case_map.find(token) != vertex_case_map.end())
                 return;
 
+            if (special_point_count == nullptr || special_point_offset == nullptr || special_point_data == nullptr)
+                throw std::runtime_error("Special points referenced but not available for this table");
+
             const int sp_id = token - 200;
             const int count = special_point_count[flag];
             if (sp_id < 0 || sp_id >= count)
@@ -134,25 +144,24 @@ namespace cutcells::cell::hexahedron
 
                 if (ref < 100)
                 {
-                    // Edge intersection point (already stored in cut_cell at index vertex_case_map[edge_id])
-                    const int local = lookup_token_or_throw(vertex_case_map, flag, ref, "ensure_special_token(ref<100)");
+                    const int local = lookup_token_or_throw(vertex_case_map, flag, ref,
+                                                           "ensure_special_token(ref<100)");
                     for (int j = 0; j < gdim; ++j)
                         coord[j] += cut_cell._vertex_coords[local * gdim + j];
                 }
                 else if (ref < 200)
                 {
-                    // Original vertex (not necessarily added yet)
                     const int vid = ref - 100;
                     for (int j = 0; j < gdim; ++j)
                         coord[j] += vertex_coordinates[vid * gdim + j];
                 }
                 else
                 {
-                    // Special point reference (rare): ensure and reuse
                     ensure_special_token<T>(vertex_coordinates, gdim, flag, ref,
                                             special_point_count, special_point_offset, special_point_data,
                                             cut_cell, vertex_case_map);
-                    const int local = lookup_token_or_throw(vertex_case_map, flag, ref, "ensure_special_token(ref>=200)");
+                    const int local = lookup_token_or_throw(vertex_case_map, flag, ref,
+                                                           "ensure_special_token(ref>=200)");
                     for (int j = 0; j < gdim; ++j)
                         coord[j] += cut_cell._vertex_coords[local * gdim + j];
                 }
@@ -236,23 +245,21 @@ namespace cutcells::cell::hexahedron
              const std::span<const T> ls_values, const std::string& cut_type_str,
              CutCell<T>& cut_cell, bool triangulate)
     {
-        if (vertex_coordinates.size() != static_cast<std::size_t>(8 * gdim))
-            throw std::invalid_argument("hexahedron::cut expects 8 vertices");
-        if (ls_values.size() != 8)
-            throw std::invalid_argument("hexahedron::cut expects 8 level set values");
+        if (vertex_coordinates.size() != static_cast<std::size_t>(5 * gdim))
+            throw std::invalid_argument("pyramid::cut expects 5 vertices");
+        if (ls_values.size() != 5)
+            throw std::invalid_argument("pyramid::cut expects 5 level set values");
 
         // CutCells convention: case mask bit i is set when phi_i < 0.
         const int flag_lt0 = get_entity_flag(ls_values, false);
-        if (flag_lt0 == 0 || flag_lt0 == 255)
-        {
-            throw std::invalid_argument("hexahedron is not intersected and therefore cannot be cut");
-        }
+        if (flag_lt0 == 0 || flag_lt0 == 31)
+            throw std::invalid_argument("pyramid is not intersected and therefore cannot be cut");
 
         // Store parent geometry
-        cut_cell._parent_cell_type = type::hexahedron;
-        cut_cell._parent_vertex_coords.resize(8 * gdim);
-        cut_cell._parent_vertex_ids.resize(8);
-        for (int i = 0; i < 8; ++i)
+        cut_cell._parent_cell_type = type::pyramid;
+        cut_cell._parent_vertex_coords.resize(5 * gdim);
+        cut_cell._parent_vertex_ids.resize(5);
+        for (int i = 0; i < 5; ++i)
         {
             for (int j = 0; j < gdim; ++j)
                 cut_cell._parent_vertex_coords[i * gdim + j] = vertex_coordinates[i * gdim + j];
@@ -275,7 +282,7 @@ namespace cutcells::cell::hexahedron
             cut_cell._tdim = 2;
             decode_case<T, 4>(vertex_coordinates, gdim, flag_lt0,
                               case_subcell_offset_interface, subcell_type_interface, subcell_verts_interface,
-                              special_point_count_interface, special_point_offset_interface, special_point_data_interface,
+                              nullptr, nullptr, nullptr,
                               triangulate, cut_cell, vertex_case_map);
         }
         else if (cut_type_str == "phi<0")
@@ -309,9 +316,7 @@ namespace cutcells::cell::hexahedron
     {
         cut_cell.resize(cut_type_str.size());
         for (std::size_t i = 0; i < cut_type_str.size(); ++i)
-        {
             cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str[i], cut_cell[i], triangulate);
-        }
     }
 
     template void cut(const std::span<const double> vertex_coordinates, const int gdim,

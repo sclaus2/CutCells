@@ -1,5 +1,15 @@
+import pytest
+
+pytest.importorskip(
+    "tools.cutcells_tables",
+    reason="Legacy table-tooling package is not part of this repo layout.",
+)
+
 from tools.cutcells_tables.build.hex_variant import build_hex_variant
-from tools.cutcells_tables.classify.hex_mc33 import edges_mask_from_cell_mask, classify_hex
+from tools.cutcells_tables.classify.hex_mc33 import (
+    edges_mask_from_cell_mask,
+    classify_hex,
+)
 
 
 def test_variant_loops_basic():

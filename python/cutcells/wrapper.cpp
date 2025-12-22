@@ -287,14 +287,18 @@ void declare_float(nb::module_& m, std::string type)
     m.def("cut_vtk_mesh", [](nb::ndarray<const T>& ls_vals, nb::ndarray<const T>& points,
                              nb::ndarray<const int>& connectivity, nb::ndarray<const int>& offset,
                              nb::ndarray<const int>& vtk_type,
-                             const std::string& cut_type_str){
+                             const std::string& cut_type_str,
+                             bool triangulate){
               return  mesh::cut_vtk_mesh<T>(std::span(ls_vals.data(),ls_vals.size()),
                             std::span(points.data(),points.size()),
                             std::span(connectivity.data(),connectivity.size()),
                             std::span(offset.data(),offset.size()),
                             std::span(vtk_type.data(),vtk_type.size()),
-                            cut_type_str);
+                            cut_type_str,
+                            triangulate);
              }
+             , nb::arg("ls_vals"), nb::arg("points"), nb::arg("connectivity"), nb::arg("offset"), nb::arg("vtk_type"),
+               nb::arg("cut_type_str"), nb::arg("triangulate") = true
              , "cut vtk mesh");
 }
 

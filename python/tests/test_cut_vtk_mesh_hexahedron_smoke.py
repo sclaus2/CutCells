@@ -51,6 +51,13 @@ def test_cut_vtk_mesh_single_hexahedron_smoke():
         triangulate=True,
     )
 
+    coords = np.asarray(cut_mesh.vertex_coords, dtype=float).reshape(-1, 3)
+    # All generated vertices must stay within the parent unit cube (tolerant for FP noise).
+    tol = 1e-10
+    assert coords[:, 0].min() >= -tol and coords[:, 0].max() <= 1.0 + tol
+    assert coords[:, 1].min() >= -tol and coords[:, 1].max() <= 1.0 + tol
+    assert coords[:, 2].min() >= -tol and coords[:, 2].max() <= 1.0 + tol
+
     assert len(cut_mesh.types) > 0
-    # Fallback hex implementation cuts via tetrahedra; with triangulate=True it should be tetra-dominant.
-    assert VTK_TETRA in list(cut_mesh.types)
+    # Do not constrain emitted cell types here; the table-driven hex cutter may emit
+    # hex/prism/pyramid/tet depending on the case.

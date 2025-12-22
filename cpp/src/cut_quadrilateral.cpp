@@ -24,6 +24,22 @@ namespace cutcells::cell::quadrilateral
 {
     namespace
     {
+        inline bool case_is_ambiguous(int flag)
+        {
+            // Opposite-corner patterns 0b0101 (5) and 0b1010 (10)
+            return flag == 5 || flag == 10;
+        }
+
+        inline bool asymptotic_decider(double f0, double f1, double f2, double f3)
+        {
+            // Bilinear form for marching squares; true -> choose diagonal (0,2), false -> (1,3)
+            // This form is invariant to scaling of phi.
+            const double d = f0 * f2 - f1 * f3;
+            // Tie-break: when d==0 (center exactly on interface), prefer the alternate variant
+            // to keep the opposite-corners case disconnected.
+            return d > 0.0;
+        }
+
         template <std::floating_point T>
         void compute_intersection_points(const std::span<const T> vertex_coordinates, const int gdim,
                                           const std::span<const T> ls_values, const int flag,
@@ -69,16 +85,14 @@ namespace cutcells::cell::quadrilateral
             }
         }
         template <std::floating_point T, int MaxVerts>
-        void decode_case(const std::span<const T> vertex_coordinates, const int gdim, int flag,
-                         const int* case_offsets, const type* cell_types,
-                         const int (*subcell_verts)[MaxVerts],
-                         const std::span<const T> intersection_points,
-                         bool triangulate, CutCell<T>& cut_cell,
-                         std::unordered_map<int, int>& edge_ip_map)
+        void decode_range(const std::span<const T> vertex_coordinates, const int gdim,
+                          const int cell_begin, const int cell_end,
+                          const type* cell_types,
+                          const int (*subcell_verts)[MaxVerts],
+                          const std::span<const T> intersection_points,
+                          bool triangulate, CutCell<T>& cut_cell,
+                          std::unordered_map<int, int>& edge_ip_map)
         {
-            const int cell_begin = case_offsets[flag];
-            const int cell_end = case_offsets[flag + 1];
-
             // Map from token (edge id or 100+vid) to local vertex index in cut_cell._vertex_coords
             std::unordered_map<int, int> token_to_local;
 
@@ -149,6 +163,20 @@ namespace cutcells::cell::quadrilateral
                 }
             }
         }
+
+        template <std::floating_point T, int MaxVerts>
+        void decode_case(const std::span<const T> vertex_coordinates, const int gdim, int flag,
+                         const int* case_offsets, const type* cell_types,
+                         const int (*subcell_verts)[MaxVerts],
+                         const std::span<const T> intersection_points,
+                         bool triangulate, CutCell<T>& cut_cell,
+                         std::unordered_map<int, int>& edge_ip_map)
+        {
+            decode_range<T, MaxVerts>(vertex_coordinates, gdim,
+                                      case_offsets[flag], case_offsets[flag + 1],
+                                      cell_types, subcell_verts,
+                                      intersection_points, triangulate, cut_cell, edge_ip_map);
+        }
     } // namespace
 
     template <std::floating_point T>
@@ -186,33 +214,70 @@ namespace cutcells::cell::quadrilateral
         cut_cell._types.clear();
         cut_cell._connectivity.clear();
 
-        // Ambiguous opposite-corner cases (masks 0b0101, 0b1010) are already disambiguated in the generated tables
-        // into two disjoint pieces (two triangles for volume, two segments for interface).
+        const bool is_amb = case_is_ambiguous(flag_interior);
+        const int variant = asymptotic_decider(ls_values[0], ls_values[1], ls_values[2], ls_values[3]) ? 0 : 1;
 
         if (cut_type_str == "phi=0")
         {
             cut_cell._tdim = 1;
             std::span<const T> ip_span(intersection_points.data(), intersection_points.size());
-            decode_case<T, 2>(vertex_coordinates, gdim, flag_interior,
-                              case_subcell_offset_interface, subcell_type_interface,
-                              subcell_verts_interface, ip_span, triangulate, cut_cell, vertex_case_map);
+            if (is_amb)
+            {
+                const int amb_id = amb_case_id[flag_interior];
+                const int begin = amb_range_interface[4 * amb_id + 2 * variant + 0];
+                const int end = amb_range_interface[4 * amb_id + 2 * variant + 1];
+                decode_range<T, 2>(vertex_coordinates, gdim, begin, end,
+                                   subcell_type_interface, subcell_verts_interface,
+                                   ip_span, triangulate, cut_cell, vertex_case_map);
+            }
+            else
+            {
+                decode_case<T, 2>(vertex_coordinates, gdim, flag_interior,
+                                  case_subcell_offset_interface, subcell_type_interface,
+                                  subcell_verts_interface, ip_span, triangulate, cut_cell, vertex_case_map);
+            }
         }
         else if (cut_type_str == "phi<0")
         {
             cut_cell._tdim = 2;
             std::span<const T> ip_span(intersection_points.data(), intersection_points.size());
-            decode_case<T, 4>(vertex_coordinates, gdim, flag_interior,
-                              case_subcell_offset_inside, subcell_type_inside,
-                              subcell_verts_inside, ip_span, triangulate, cut_cell, vertex_case_map);
+            if (is_amb)
+            {
+                const int amb_id = amb_case_id[flag_interior];
+                const int begin = amb_range_inside[4 * amb_id + 2 * variant + 0];
+                const int end = amb_range_inside[4 * amb_id + 2 * variant + 1];
+                decode_range<T, 4>(vertex_coordinates, gdim, begin, end,
+                                   subcell_type_inside, subcell_verts_inside,
+                                   ip_span, triangulate, cut_cell, vertex_case_map);
+            }
+            else
+            {
+                decode_case<T, 4>(vertex_coordinates, gdim, flag_interior,
+                                  case_subcell_offset_inside, subcell_type_inside,
+                                  subcell_verts_inside, ip_span, triangulate, cut_cell, vertex_case_map);
+            }
         }
         else if (cut_type_str == "phi>0")
         {
             cut_cell._tdim = 2;
-            const int flag_exterior = get_entity_flag(ls_values, true);
             std::span<const T> ip_span(intersection_points.data(), intersection_points.size());
-            decode_case<T, 4>(vertex_coordinates, gdim, flag_exterior,
-                              case_subcell_offset_outside, subcell_type_outside,
-                              subcell_verts_outside, ip_span, triangulate, cut_cell, vertex_case_map);
+            // Note: the generated "outside" tables are keyed by the *interior* mask (phi<0),
+            // i.e. they already represent the complement region.
+            if (is_amb)
+            {
+                const int amb_id = amb_case_id[flag_interior];
+                const int begin = amb_range_outside[4 * amb_id + 2 * variant + 0];
+                const int end = amb_range_outside[4 * amb_id + 2 * variant + 1];
+                decode_range<T, 4>(vertex_coordinates, gdim, begin, end,
+                                   subcell_type_outside, subcell_verts_outside,
+                                   ip_span, triangulate, cut_cell, vertex_case_map);
+            }
+            else
+            {
+                decode_case<T, 4>(vertex_coordinates, gdim, flag_interior,
+                                  case_subcell_offset_outside, subcell_type_outside,
+                                  subcell_verts_outside, ip_span, triangulate, cut_cell, vertex_case_map);
+            }
         }
         else
         {

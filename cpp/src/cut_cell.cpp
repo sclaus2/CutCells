@@ -9,6 +9,8 @@
 #include "cut_triangle.h"
 #include "cut_quadrilateral.h"
 #include "cut_hexahedron.h"
+#include "cut_prism.h"
+#include "cut_pyramid.h"
 #include "cut_interval.h"
 #include "cell_flags.h"
 #include "cell_subdivision.h"
@@ -135,9 +137,13 @@ namespace cutcells::cell{
                                  break;
             case type::tetrahedron: tetrahedron::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
                                  break;
-        case type::hexahedron: hexahedron::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
-                   break;
-        default: throw std::invalid_argument("Only intervals, triangles, quadrilaterals, tetrahedra and hexahedra are implemented for cutting so far.");
+          case type::hexahedron: hexahedron::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+                      break;
+          case type::prism: prism::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+                    break;
+            case type::pyramid: pyramid::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+                break;
+            default: throw std::invalid_argument("Only intervals, triangles, quadrilaterals, tetrahedra, hexahedra, prisms and pyramids are implemented for cutting so far.");
                                 break;
         }
     }

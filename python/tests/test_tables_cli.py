@@ -2,6 +2,13 @@
 
 import subprocess
 import sys
+
+import pytest
+
+pytest.importorskip(
+    "tools.cutcells_tables",
+    reason="Legacy table-tooling package is not part of this repo layout.",
+)
 from pathlib import Path
 
 # Add tools directory to path for imports
@@ -25,7 +32,14 @@ def test_cli_list():
 def test_cli_dump_hex_base():
     """Test CLI dump-hex-base command."""
     result = subprocess.run(
-        [sys.executable, "-m", "tools.cutcells_tables.cli", "dump-hex-base", "--mask", "173"],
+        [
+            sys.executable,
+            "-m",
+            "tools.cutcells_tables.cli",
+            "dump-hex-base",
+            "--mask",
+            "173",
+        ],
         capture_output=True,
         text=True,
         cwd=tools_dir.parent,

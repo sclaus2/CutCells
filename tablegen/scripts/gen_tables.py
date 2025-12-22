@@ -13,6 +13,12 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
+
+# Allow running this script without installing the tablegen package
+_THIS_DIR = Path(__file__).resolve().parent
+_TABLEGEN_ROOT = _THIS_DIR.parent
+sys.path.insert(0, str(_TABLEGEN_ROOT))
 
 from cutcells_tablegen.emit_c_headers import emit_all_tet_like
 from cutcells_tablegen.normalize import normalize_cases

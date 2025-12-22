@@ -1,4 +1,11 @@
 from pathlib import Path
+import pytest
+
+pytest.importorskip(
+    "tools.cutcells_tables",
+    reason="Legacy table-tooling package is not part of this repo layout.",
+)
+
 from tools.cutcells_tables.emit.hex_emit import write_hex_header, generate_hex_tables
 from tools.cutcells_tables.build.hex_variant import build_hex_variant
 from tools.cutcells_tables.classify.hex_mc33 import classify_hex
@@ -36,7 +43,9 @@ def test_generate_hex_tables_basic(tmp_path: Path):
     assert len(acc.poly_descs) > 0
     # variant_lut_offsets length == NUM_BASES
     # monotonic offsets
-    assert all(x <= y for x, y in zip(acc.variant_lut_offsets, acc.variant_lut_offsets[1:]))
+    assert all(
+        x <= y for x, y in zip(acc.variant_lut_offsets, acc.variant_lut_offsets[1:])
+    )
     out = tmp_path / "hex.hpp"
     write_hex_header(out)
     assert out.exists()

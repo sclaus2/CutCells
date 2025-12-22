@@ -22,6 +22,8 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_interval.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_quadrilateral.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_hexahedron.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_prism.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_pyramid.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_context.h
   ${CMAKE_CURRENT_SOURCE_DIR}/triangulation.h
@@ -38,6 +40,8 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_triangle.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_quadrilateral.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_hexahedron.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_prism.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_pyramid.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_context.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.cpp

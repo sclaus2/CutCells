@@ -34,8 +34,10 @@ CELL_TOPOLOGY = {
             (7, 4),  # 7
             (0, 4),  # 8
             (1, 5),  # 9
-            (2, 6),  # 10
-            (3, 7),  # 11
+            # NOTE: VTK's TableBasedClipCases.h uses (3,7) as edge 10 and (2,6) as edge 11
+            # for VTK_HEXAHEDRON (see vtkTableBasedClipCasesBase::CellEdges).
+            (3, 7),  # 10
+            (2, 6),  # 11
         ),
     ),
     "prism": CellTopology(

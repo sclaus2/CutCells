@@ -12,11 +12,11 @@ constexpr int num_subcells_outside[16] = { 1, 2, 2, 1, 2, 2, 1, 1, 2, 1, 2, 1, 1
 constexpr int case_subcell_offset_outside[17] = { 0, 1, 3, 5, 6, 8, 10, 11, 12, 14, 15, 17, 18, 19, 20, 21, 21 };
 
 // Cell types for outside subcells
-constexpr type subcell_type_outside[21] = { cell::type::quadrilateral, cell::type::triangle, cell::type::quadrilateral, cell::type::triangle, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::triangle, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::triangle, cell::type::triangle, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::triangle, cell::type::quadrilateral, cell::type::triangle, cell::type::triangle };
+constexpr type subcell_type_outside[25] = { cell::type::quadrilateral, cell::type::triangle, cell::type::quadrilateral, cell::type::triangle, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::triangle, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::triangle, cell::type::triangle, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::quadrilateral, cell::type::triangle, cell::type::quadrilateral, cell::type::triangle, cell::type::triangle, cell::type::triangle, cell::type::triangle, cell::type::triangle, cell::type::triangle };
 
 // Subcell vertices (max 4 vertices per subcell, -1 padding)
 // Tokens: <100 = edge id, >=100 = 100+vertex_id
-constexpr int subcell_verts_outside[21][4] = {
+constexpr int subcell_verts_outside[25][4] = {
     { 100, 101, 102, 103 },
     { 0, 101, 102, -1 },
     { 0, 102, 103, 3 },
@@ -37,8 +37,15 @@ constexpr int subcell_verts_outside[21][4] = {
     { 1, 102, 2, -1 },
     { 100, 101, 1, 3 },
     { 0, 101, 1, -1 },
-    { 100, 0, 3, -1 }
+    { 100, 0, 3, -1 },
+    { 100, 0, 3, -1 },
+    { 102, 1, 2, -1 },
+    { 101, 0, 1, -1 },
+    { 103, 2, 3, -1 }
 };
+
+// Ambiguity override ranges: [begin0,end0,begin1,end1] per ambiguous case
+constexpr int amb_range_outside[8] = { 23, 25, 8, 10, 15, 17, 21, 23 };
 
 } // namespace cutcells::cell::quadrilateral
 

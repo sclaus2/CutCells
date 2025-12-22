@@ -61,6 +61,12 @@ def emit_header(
     lines.append(f"#define {guard}")
     lines.append("")
     lines.append('#include "cell_types.h"')
+    if cell_type == "quadrilateral" and table_kind == "inside":
+        # For uint8_t / int8_t in ambiguity metadata
+        lines.append("#include <cstdint>")
+    if cell_type == "quadrilateral" and table_kind == "inside":
+        # For uint8_t / int8_t in ambiguity metadata
+        lines.append("#include <cstdint>")
     lines.append("")
     lines.append("namespace cutcells::cell::generated {")
     lines.append("")
@@ -122,6 +128,9 @@ def _emit_tet_like_header(
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"cut_{cell_type}_{table_kind}_tables.h"
 
+    # Copy lists so we can safely mutate for augmentation (e.g. quad ambiguity)
+    arrays = {k: (v.copy() if isinstance(v, list) else v) for k, v in arrays.items()}
+
     n_cases = len(arrays["intersected_edges"])
     n_edges = num_edges(cell_type)
     guard = _header_guard(cell_type, table_kind)
@@ -130,11 +139,20 @@ def _emit_tet_like_header(
     # Extract subcells from flat stream
     subcells_data = _extract_subcells_from_flat(arrays)
 
+    quad_amb_meta = None
+    if cell_type == "quadrilateral":
+        quad_amb_meta = _augment_quadrilateral_ambiguity(table_kind, arrays)
+        # Re-extract after augmentation
+        subcells_data = _extract_subcells_from_flat(arrays)
+
     lines: List[str] = []
     lines.append(f"#ifndef {guard}")
     lines.append(f"#define {guard}")
     lines.append("")
     lines.append('#include "cell_types.h"')
+    if cell_type == "quadrilateral" and table_kind == "inside":
+        # For uint8_t / int8_t in ambiguity metadata
+        lines.append("#include <cstdint>")
     lines.append("")
     lines.append(f"namespace cutcells::cell::{cell_type} {{")
     lines.append("")
@@ -151,7 +169,9 @@ def _emit_tet_like_header(
             lines.append("constexpr int edges[12][2] = {")
             lines.append("    {0,1}, {1,2}, {2,3}, {3,0},  // bottom face")
             lines.append("    {4,5}, {5,6}, {6,7}, {7,4},  // top face")
-            lines.append("    {0,4}, {1,5}, {2,6}, {3,7}   // vertical edges")
+            lines.append(
+                "    {0,4}, {1,5}, {3,7}, {2,6}   // vertical edges (VTK TableBasedClip ordering)"
+            )
             lines.append("};")
             lines.append("")
             lines.append("constexpr int faces[6][4] = {")
@@ -171,6 +191,21 @@ def _emit_tet_like_header(
             + ";"
         )
         lines.append("")
+
+        if cell_type == "quadrilateral" and quad_amb_meta is not None:
+            # Ambiguity metadata used by runtime asymptotic-decider selection
+            lines.append("// Ambiguity metadata (opposite-corner cases)")
+            lines.append(
+                f"constexpr uint8_t case_is_ambiguous_tbl[16] = "
+                + _format_int_list(quad_amb_meta["case_is_ambiguous_tbl"])
+                + ";"
+            )
+            lines.append(
+                f"constexpr int8_t amb_case_id[16] = "
+                + _format_int_list(quad_amb_meta["amb_case_id"])
+                + ";"
+            )
+            lines.append("")
 
     # Number of subcells per case
     num_subcells_per_case = []
@@ -213,12 +248,69 @@ def _emit_tet_like_header(
     lines.append(
         f"// Subcell vertices (max {max_verts} vertices per subcell, -1 padding)"
     )
-    lines.append(f"// Tokens: <100 = edge id, >=100 = 100+vertex_id")
+    lines.append(
+        f"// Tokens: <100 = edge id, 100..199 = 100+vertex_id, >=200 = 200+special_point_id"
+    )
     lines.append(
         f"constexpr int subcell_verts_{table_kind}[{total_subcells}][{max_verts}] = "
         + _format_matrix(padded_verts)
         + ";"
     )
+
+    # Special (derived) points, e.g. VTK centroid N0
+    sp_count = arrays.get("special_point_count", [])
+    sp_offset = arrays.get("special_point_offset", [])
+    sp_data = arrays.get("special_point_data", [])
+    if sp_count:
+        lines.append("")
+        lines.append("// Special points (e.g. centroid): per-case definition streams")
+        lines.append(
+            f"constexpr int special_point_count_{table_kind}[{len(sp_count)}] = "
+            + _format_int_list(sp_count)
+            + ";"
+        )
+        lines.append(
+            f"constexpr int special_point_offset_{table_kind}[{len(sp_offset)}] = "
+            + _format_int_list(sp_offset)
+            + ";"
+        )
+        lines.append(
+            f"constexpr int special_point_data_{table_kind}[{len(sp_data)}] = "
+            + _format_int_list(sp_data)
+            + ";"
+        )
+
+    if cell_type == "quadrilateral" and quad_amb_meta is not None:
+        if table_kind == "inside":
+            lines.append("")
+            lines.append(
+                "// Ambiguity override ranges: [begin0,end0,begin1,end1] per ambiguous case"
+            )
+            lines.append(
+                f"constexpr int amb_range_inside[{len(quad_amb_meta['amb_range_inside'])}] = "
+                + _format_int_list(quad_amb_meta["amb_range_inside"])
+                + ";"
+            )
+        elif table_kind == "outside":
+            lines.append("")
+            lines.append(
+                "// Ambiguity override ranges: [begin0,end0,begin1,end1] per ambiguous case"
+            )
+            lines.append(
+                f"constexpr int amb_range_outside[{len(quad_amb_meta['amb_range_outside'])}] = "
+                + _format_int_list(quad_amb_meta["amb_range_outside"])
+                + ";"
+            )
+        elif table_kind == "interface":
+            lines.append("")
+            lines.append(
+                "// Ambiguity override ranges: [begin0,end0,begin1,end1] per ambiguous case"
+            )
+            lines.append(
+                f"constexpr int amb_range_interface[{len(quad_amb_meta['amb_range_interface'])}] = "
+                + _format_int_list(quad_amb_meta["amb_range_interface"])
+                + ";"
+            )
 
     lines.append("")
     lines.append(f"}} // namespace cutcells::cell::{cell_type}")
@@ -227,6 +319,119 @@ def _emit_tet_like_header(
 
     path.write_text("\n".join(lines))
     return path
+
+
+def _append_triangle(arrays: Dict[str, List], tokens: List[int]) -> None:
+    # arrays["sub_element_cell_types"] uses CutCells enum mapping (triangle=2)
+    arrays["sub_element_cell_types"].append(2)
+    arrays["sub_element"].append(len(tokens))
+    arrays["sub_element"].extend(tokens)
+
+
+def _append_quad(arrays: Dict[str, List], tokens: List[int]) -> None:
+    # arrays["sub_element_cell_types"] uses CutCells enum mapping (quadrilateral=4)
+    arrays["sub_element_cell_types"].append(4)
+    arrays["sub_element"].append(len(tokens))
+    arrays["sub_element"].extend(tokens)
+
+
+def _augment_quadrilateral_ambiguity(
+    table_kind: str, arrays: Dict[str, List]
+) -> Dict[str, List] | None:
+    """Augment quad tables with asymptotic-decider ambiguity variants.
+
+    Variant 0: choose diagonal (0,2) connectivity
+    Variant 1: choose diagonal (1,3) connectivity
+    """
+    amb_masks = [0b0101, 0b1010]
+    n_amb = len(amb_masks)
+
+    offsets = arrays["sub_element_offset"]
+    total_before = len(arrays["sub_element_cell_types"])
+
+    def case_range(mask: int) -> tuple[int, int]:
+        return offsets[mask], offsets[mask + 1]
+
+    # Metadata tables (only emitted once in inside header)
+    case_is_ambiguous_tbl = [0] * 16
+    amb_case_id = [-1] * 16
+    for amb_id, m in enumerate(amb_masks):
+        case_is_ambiguous_tbl[m] = 1
+        amb_case_id[m] = amb_id
+
+    meta: Dict[str, List] = {
+        "case_is_ambiguous_tbl": case_is_ambiguous_tbl,
+        "amb_case_id": amb_case_id,
+        "amb_range_inside": [],
+        "amb_range_outside": [],
+        "amb_range_interface": [],
+    }
+
+    if table_kind == "interface":
+        # No new subcells needed; both pairings already exist in base tables.
+        v0_begin, v0_end = case_range(0b1010)  # edges (0,1) and (2,3)
+        v1_begin, v1_end = case_range(0b0101)  # edges (0,3) and (1,2)
+        for _ in amb_masks:
+            meta["amb_range_interface"].extend([v0_begin, v0_end, v1_begin, v1_end])
+        return meta
+
+    if table_kind == "inside":
+        # Append connected-region decompositions for both diagonals.
+        # Connected diagonal (0,2): polygon (V0,E0,E1,V2,E2,E3) split into two quads.
+        conn_02_begin = len(arrays["sub_element_cell_types"])
+        _append_quad(arrays, [100, 0, 1, 102])
+        _append_quad(arrays, [100, 102, 2, 3])
+        conn_02_end = len(arrays["sub_element_cell_types"])
+
+        # Connected diagonal (1,3): polygon (V1,E1,E2,V3,E3,E0) split into two quads.
+        conn_13_begin = len(arrays["sub_element_cell_types"])
+        _append_quad(arrays, [101, 1, 2, 103])
+        _append_quad(arrays, [101, 103, 3, 0])
+        conn_13_end = len(arrays["sub_element_cell_types"])
+
+        base_05 = case_range(0b0101)
+        base_10 = case_range(0b1010)
+
+        # For mask 0101, inside vertices lie on diagonal (0,2)
+        meta["amb_range_inside"].extend(
+            [conn_02_begin, conn_02_end, base_05[0], base_05[1]]
+        )
+        # For mask 1010, inside vertices lie on diagonal (1,3)
+        meta["amb_range_inside"].extend(
+            [base_10[0], base_10[1], conn_13_begin, conn_13_end]
+        )
+
+        return meta
+
+    if table_kind == "outside":
+        # Append disconnected-region triangulations for both diagonals.
+        # Disconnected diagonal (0,2): triangles at V0 and V2
+        disc_02_begin = len(arrays["sub_element_cell_types"])
+        for tri in ([100, 0, 3], [102, 1, 2]):
+            _append_triangle(arrays, tri)
+        disc_02_end = len(arrays["sub_element_cell_types"])
+
+        # Disconnected diagonal (1,3): triangles at V1 and V3
+        disc_13_begin = len(arrays["sub_element_cell_types"])
+        for tri in ([101, 0, 1], [103, 2, 3]):
+            _append_triangle(arrays, tri)
+        disc_13_end = len(arrays["sub_element_cell_types"])
+
+        base_05 = case_range(0b0101)
+        base_10 = case_range(0b1010)
+
+        # For mask 0101, outside vertices lie on diagonal (1,3)
+        meta["amb_range_outside"].extend(
+            [disc_13_begin, disc_13_end, base_05[0], base_05[1]]
+        )
+        # For mask 1010, outside vertices lie on diagonal (0,2)
+        meta["amb_range_outside"].extend(
+            [base_10[0], base_10[1], disc_02_begin, disc_02_end]
+        )
+
+        return meta
+
+    return None
 
 
 def _extract_subcells_from_flat(arrays: Dict[str, List]) -> Dict:

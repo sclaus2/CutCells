@@ -1,5 +1,12 @@
 import random
 
+import pytest
+
+pytest.importorskip(
+    "tools.cutcells_tables",
+    reason="Legacy table-tooling package is not part of this repo layout.",
+)
+
 from tools.cutcells_tables.classify.hex_mc33 import (
     classify_hex,
     permute_mask,

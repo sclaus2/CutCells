@@ -35,6 +35,9 @@ constexpr int subcell_verts_interface[16][2] = {
     { 0, 3 }
 };
 
+// Ambiguity override ranges: [begin0,end0,begin1,end1] per ambiguous case
+constexpr int amb_range_interface[8] = { 10, 12, 4, 6, 10, 12, 4, 6 };
+
 } // namespace cutcells::cell::quadrilateral
 
 #endif // CUT_CELLS_QUADRILATERAL_INTERFACE_TABLES_H
