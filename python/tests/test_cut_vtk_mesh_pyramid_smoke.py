@@ -41,7 +41,7 @@ def test_cut_vtk_mesh_single_pyramid_smoke():
         triangulate=True,
     )
 
-    coords = np.asarray(cut_mesh.vertex_coords, dtype=float).reshape(-1, 3)
+    coords = np.asarray(cut_mesh.vertex_coords)
     tol = 1e-10
     assert coords[:, 0].min() >= -tol and coords[:, 0].max() <= 1.0 + tol
     assert coords[:, 1].min() >= -tol and coords[:, 1].max() <= 1.0 + tol

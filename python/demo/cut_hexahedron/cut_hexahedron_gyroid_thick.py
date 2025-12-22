@@ -61,8 +61,11 @@ def create_cut_mesh(
         "phi<0",
     )
 
-    cut_points = np.asarray(cut_mesh.vertex_coords, dtype=float).reshape(-1, 3)
-    pv_cut = pv.UnstructuredGrid(cut_mesh.cells, cut_mesh.types, cut_points)
+    pv_cut = pv.UnstructuredGrid(
+        cut_mesh.cells,
+        cut_mesh.types,
+        cut_mesh.vertex_coords,
+    )
     extract = grid.extract_cells(inside_cells)
 
     return extract.merge(pv_cut)
@@ -164,8 +167,9 @@ def main() -> None:
             iface = cutcells.cut_vtk_mesh(
                 ls_values, pts, conn, off, ctypes, "phi=0", args.triangulate
             )
-            iface_pts = np.asarray(iface.vertex_coords, dtype=float).reshape(-1, 3)
-            iface_pv = pv.UnstructuredGrid(iface.cells, iface.types, iface_pts)
+            iface_pv = pv.UnstructuredGrid(
+                iface.cells, iface.types, iface.vertex_coords
+            )
             iface_file = f"{args.write_prefix}_interface.vtu"
             iface_pv.save(iface_file)
             print(f"Wrote interface VTK -> {iface_file}")
@@ -177,8 +181,9 @@ def main() -> None:
             inside = cutcells.cut_vtk_mesh(
                 ls_values, pts, conn, off, ctypes, "phi<0", args.triangulate
             )
-            inside_pts = np.asarray(inside.vertex_coords, dtype=float).reshape(-1, 3)
-            inside_pv = pv.UnstructuredGrid(inside.cells, inside.types, inside_pts)
+            inside_pv = pv.UnstructuredGrid(
+                inside.cells, inside.types, inside.vertex_coords
+            )
             inside_file = f"{args.write_prefix}_inside.vtu"
             inside_pv.save(inside_file)
             print(f"Wrote inside VTK -> {inside_file}")
@@ -190,8 +195,9 @@ def main() -> None:
             outside = cutcells.cut_vtk_mesh(
                 ls_values, pts, conn, off, ctypes, "phi>0", args.triangulate
             )
-            outside_pts = np.asarray(outside.vertex_coords, dtype=float).reshape(-1, 3)
-            outside_pv = pv.UnstructuredGrid(outside.cells, outside.types, outside_pts)
+            outside_pv = pv.UnstructuredGrid(
+                outside.cells, outside.types, outside.vertex_coords
+            )
             outside_file = f"{args.write_prefix}_outside.vtu"
             outside_pv.save(outside_file)
             print(f"Wrote outside VTK -> {outside_file}")

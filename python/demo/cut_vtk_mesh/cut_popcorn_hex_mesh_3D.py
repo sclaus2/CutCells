@@ -94,8 +94,11 @@ def create_cut_mesh(
         "phi<0",
     )
 
-    cut_points = np.asarray(cut_mesh.vertex_coords, dtype=float).reshape(-1, 3)
-    pv_cut = pv.UnstructuredGrid(cut_mesh.cells, cut_mesh.types, cut_points)
+    pv_cut = pv.UnstructuredGrid(
+        cut_mesh.cells,
+        cut_mesh.types,
+        cut_mesh.vertex_coords,
+    )
     extract = grid.extract_cells(inside_cells)
 
     return extract.merge(pv_cut)

@@ -72,7 +72,7 @@ def main() -> None:
         False,
     )
 
-    points = np.asarray(cut_cell.vertex_coords, dtype=float).reshape(-1, 3)
+    points = np.asarray(cut_cell.vertex_coords)
     grid = pv.UnstructuredGrid(cut_cell.connectivity, cut_cell.types, points)
 
     edge_mask = np.array([on_unit_cube_edge(p) for p in points], dtype=bool)

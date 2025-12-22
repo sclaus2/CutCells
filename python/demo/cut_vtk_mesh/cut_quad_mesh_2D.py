@@ -143,7 +143,7 @@ def main() -> None:
 
     bg = pv.UnstructuredGrid(cells_with_counts, celltypes, points)
 
-    cut_points = np.asarray(cut_mesh.vertex_coords, dtype=float).reshape((-1, 3))
+    cut_points = np.asarray(cut_mesh.vertex_coords)
     cut_cells = np.asarray(cut_mesh.cells, dtype=np.int32)
     cut_types = np.asarray(cut_mesh.types, dtype=np.int32)
     pv_cut = pv.UnstructuredGrid(cut_cells, cut_types, cut_points)

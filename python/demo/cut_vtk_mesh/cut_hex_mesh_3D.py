@@ -105,8 +105,11 @@ def main():
     cells.reshape(-1, 9)[:, 1:] = connectivity.reshape(-1, 8)
 
     pv_in = pv.UnstructuredGrid(cells, celltypes, points)
-    cut_points = np.asarray(cut_mesh.vertex_coords, dtype=float).reshape(-1, 3)
-    pv_cut = pv.UnstructuredGrid(cut_mesh.cells, cut_mesh.types, cut_points)
+    pv_cut = pv.UnstructuredGrid(
+        cut_mesh.cells,
+        cut_mesh.types,
+        cut_mesh.vertex_coords,
+    )
 
     pl = pv.Plotter()
     pl.add_mesh(pv_in, show_edges=True, style="wireframe", opacity=0.15)

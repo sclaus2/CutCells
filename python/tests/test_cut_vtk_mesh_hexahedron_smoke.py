@@ -51,7 +51,7 @@ def test_cut_vtk_mesh_single_hexahedron_smoke():
         triangulate=True,
     )
 
-    coords = np.asarray(cut_mesh.vertex_coords, dtype=float).reshape(-1, 3)
+    coords = np.asarray(cut_mesh.vertex_coords)
     # All generated vertices must stay within the parent unit cube (tolerant for FP noise).
     tol = 1e-10
     assert coords[:, 0].min() >= -tol and coords[:, 0].max() <= 1.0 + tol

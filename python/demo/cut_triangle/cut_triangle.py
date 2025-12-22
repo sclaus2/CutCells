@@ -1,19 +1,23 @@
 import cutcells
 import numpy as np
-import pyvista as pv 
+import pyvista as pv
+
 
 def cut_cell_type_to_pyvista(cut_cell_type):
-    if(cut_cell_type==cutcells.CellType.triangle):
-        return pv.CellType.TRIANGLE;
+    if cut_cell_type == cutcells.CellType.triangle:
+        return pv.CellType.TRIANGLE
 
-ls_values = np.array([0.1,-0.1,0.2])
-vertex_coordinates = np.array([0.,0.,1.,0.,1.,1.])
+
+ls_values = np.array([0.1, -0.1, 0.2])
+vertex_coordinates = np.array([0.0, 0.0, 1.0, 0.0, 1.0, 1.0])
 
 cell_type = cutcells.CellType.triangle
 triangulate = True
 gdim = 2
 
-cut_cell_int = cutcells.cut(cell_type, vertex_coordinates,  gdim, ls_values, "phi<0", triangulate)
+cut_cell_int = cutcells.cut(
+    cell_type, vertex_coordinates, gdim, ls_values, "phi<0", triangulate
+)
 print(cut_cell_int.str())
 cut_cell_int.write_vtk("interior.vtu")
 vol = cut_cell_int.volume()
@@ -22,7 +26,9 @@ print("vertex_coords=", cut_cell_int.vertex_coords)
 print("connectivity=", cut_cell_int.connectivity)
 print("types=", cut_cell_int.types)
 
-cut_cell_ext = cutcells.cut(cell_type, vertex_coordinates,  gdim, ls_values, "phi>0", triangulate)
+cut_cell_ext = cutcells.cut(
+    cell_type, vertex_coordinates, gdim, ls_values, "phi>0", triangulate
+)
 print(cut_cell_ext.str())
 cut_cell_ext.write_vtk("exterior.vtu")
 vol2 = cut_cell_ext.volume()
@@ -33,11 +39,18 @@ print("types=", cut_cell_ext.types)
 
 pv.start_xvfb()
 
-grid_int = pv.UnstructuredGrid(cut_cell_int.connectivity, cut_cell_int.types, cut_cell_int.vertex_coords)
-grid_ext = pv.UnstructuredGrid(cut_cell_ext.connectivity, cut_cell_ext.types, cut_cell_ext.vertex_coords)
+pts_int = np.asarray(cut_cell_int.vertex_coords)
+if pts_int.shape[1] == 2:
+    pts_int = np.c_[pts_int, np.zeros((pts_int.shape[0],), dtype=pts_int.dtype)]
+pts_ext = np.asarray(cut_cell_ext.vertex_coords)
+if pts_ext.shape[1] == 2:
+    pts_ext = np.c_[pts_ext, np.zeros((pts_ext.shape[0],), dtype=pts_ext.dtype)]
+
+grid_int = pv.UnstructuredGrid(cut_cell_int.connectivity, cut_cell_int.types, pts_int)
+grid_ext = pv.UnstructuredGrid(cut_cell_ext.connectivity, cut_cell_ext.types, pts_ext)
 
 plotter = pv.Plotter(off_screen=False)
-plotter.set_background('white', top='white')
-plotter.add_mesh(grid_int, color="blue",show_edges=True)
-plotter.add_mesh(grid_ext, color="red",show_edges=True)
-plotter.show(screenshot='cut_triangle.png')
+plotter.set_background("white", top="white")
+plotter.add_mesh(grid_int, color="blue", show_edges=True)
+plotter.add_mesh(grid_ext, color="red", show_edges=True)
+plotter.show(screenshot="cut_triangle.png")

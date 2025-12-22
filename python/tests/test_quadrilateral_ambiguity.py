@@ -47,7 +47,7 @@ def test_asymptotic_decider_scale_invariant_and_different_diagonals():
 
 
 def _segments_from_cutcell(cut_cell):
-    coords = np.asarray(cut_cell.vertex_coords, dtype=float).reshape(-1, 3)
+    coords = np.asarray(cut_cell.vertex_coords)
     conn = list(cut_cell.connectivity)
     segments = []
     i = 0

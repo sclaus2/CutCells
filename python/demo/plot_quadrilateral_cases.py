@@ -129,8 +129,8 @@ def _plot_runtime_cutcell(
     linestyle: str,
     label: str,
 ):
-    coords = list(cut_cell.vertex_coords)
-    pts = [(coords[i], coords[i + 1]) for i in range(0, len(coords), 3)]
+    coords = np.asarray(cut_cell.vertex_coords)
+    pts = [(float(p[0]), float(p[1])) for p in coords]
     connectivity = list(cut_cell.connectivity)
     types = list(cut_cell.types)
 

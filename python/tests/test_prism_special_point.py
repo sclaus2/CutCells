@@ -43,7 +43,7 @@ def test_prism_interface_uses_special_point_n0_case10():
         False,
     )
 
-    coords = np.asarray(cut_cell.vertex_coords, dtype=np.float64).reshape(-1, 3)
+    coords = np.asarray(cut_cell.vertex_coords)
 
     tol = 1e-10
     assert coords[:, 0].min() >= -tol and coords[:, 0].max() <= 1.0 + tol

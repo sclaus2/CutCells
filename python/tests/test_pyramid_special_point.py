@@ -40,7 +40,7 @@ def test_pyramid_uses_special_point_n0_case19():
         False,
     )
 
-    coords = np.asarray(cut_cell.vertex_coords, dtype=np.float64).reshape(-1, 3)
+    coords = np.asarray(cut_cell.vertex_coords)
 
     # Basic bounds
     tol = 1e-10
