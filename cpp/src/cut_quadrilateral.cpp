@@ -91,16 +91,21 @@ namespace cutcells::cell::quadrilateral
                           const int (*subcell_verts)[MaxVerts],
                           const std::span<const T> intersection_points,
                           bool triangulate, CutCell<T>& cut_cell,
-                          std::unordered_map<int, int>& edge_ip_map)
+                          const std::unordered_map<int, int>& edge_ip_map,
+                          std::unordered_map<int, int>& token_to_local_out)
         {
             // Map from token (edge id or 100+vid) to local vertex index in cut_cell._vertex_coords
             std::unordered_map<int, int> token_to_local;
 
             // Prefill edge intersections so they get stable indices
-            for (const auto& kv : edge_ip_map)
+            for (int e = 0; e < 4; ++e)
             {
-                const int token = kv.first; // edge id
-                const int ip_idx = kv.second;
+                const auto it = edge_ip_map.find(e);
+                if (it == edge_ip_map.end())
+                    continue;
+
+                const int token = it->first; // edge id
+                const int ip_idx = it->second;
                 const int local_idx = static_cast<int>(cut_cell._vertex_coords.size() / gdim);
                 token_to_local[token] = local_idx;
                 cut_cell._vertex_coords.resize(cut_cell._vertex_coords.size() + gdim);
@@ -162,6 +167,8 @@ namespace cutcells::cell::quadrilateral
                     cut_cell._connectivity.push_back(std::move(verts_local));
                 }
             }
+
+            token_to_local_out = std::move(token_to_local);
         }
 
         template <std::floating_point T, int MaxVerts>
@@ -170,12 +177,13 @@ namespace cutcells::cell::quadrilateral
                          const int (*subcell_verts)[MaxVerts],
                          const std::span<const T> intersection_points,
                          bool triangulate, CutCell<T>& cut_cell,
-                         std::unordered_map<int, int>& edge_ip_map)
+                         const std::unordered_map<int, int>& edge_ip_map,
+                         std::unordered_map<int, int>& token_to_local_out)
         {
             decode_range<T, MaxVerts>(vertex_coordinates, gdim,
                                       case_offsets[flag], case_offsets[flag + 1],
                                       cell_types, subcell_verts,
-                                      intersection_points, triangulate, cut_cell, edge_ip_map);
+                                      intersection_points, triangulate, cut_cell, edge_ip_map, token_to_local_out);
         }
     } // namespace
 
@@ -206,8 +214,11 @@ namespace cutcells::cell::quadrilateral
 
         // Compute intersections (shared for all parts)
         std::vector<T> intersection_points;
-        std::unordered_map<int, int> vertex_case_map;
-        compute_intersection_points(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
+        std::unordered_map<int, int> edge_ip_map;
+        compute_intersection_points(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, edge_ip_map);
+
+        // Final token->local vertex index map used to populate CutCell::_vertex_parent_entity
+        std::unordered_map<int, int> token_to_local;
 
         cut_cell._gdim = gdim;
         cut_cell._vertex_coords.clear();
@@ -228,13 +239,13 @@ namespace cutcells::cell::quadrilateral
                 const int end = amb_range_interface[4 * amb_id + 2 * variant + 1];
                 decode_range<T, 2>(vertex_coordinates, gdim, begin, end,
                                    subcell_type_interface, subcell_verts_interface,
-                                   ip_span, triangulate, cut_cell, vertex_case_map);
+                                   ip_span, triangulate, cut_cell, edge_ip_map, token_to_local);
             }
             else
             {
                 decode_case<T, 2>(vertex_coordinates, gdim, flag_interior,
                                   case_subcell_offset_interface, subcell_type_interface,
-                                  subcell_verts_interface, ip_span, triangulate, cut_cell, vertex_case_map);
+                                  subcell_verts_interface, ip_span, triangulate, cut_cell, edge_ip_map, token_to_local);
             }
         }
         else if (cut_type_str == "phi<0")
@@ -248,13 +259,13 @@ namespace cutcells::cell::quadrilateral
                 const int end = amb_range_inside[4 * amb_id + 2 * variant + 1];
                 decode_range<T, 4>(vertex_coordinates, gdim, begin, end,
                                    subcell_type_inside, subcell_verts_inside,
-                                   ip_span, triangulate, cut_cell, vertex_case_map);
+                                   ip_span, triangulate, cut_cell, edge_ip_map, token_to_local);
             }
             else
             {
                 decode_case<T, 4>(vertex_coordinates, gdim, flag_interior,
                                   case_subcell_offset_inside, subcell_type_inside,
-                                  subcell_verts_inside, ip_span, triangulate, cut_cell, vertex_case_map);
+                                  subcell_verts_inside, ip_span, triangulate, cut_cell, edge_ip_map, token_to_local);
             }
         }
         else if (cut_type_str == "phi>0")
@@ -270,13 +281,13 @@ namespace cutcells::cell::quadrilateral
                 const int end = amb_range_outside[4 * amb_id + 2 * variant + 1];
                 decode_range<T, 4>(vertex_coordinates, gdim, begin, end,
                                    subcell_type_outside, subcell_verts_outside,
-                                   ip_span, triangulate, cut_cell, vertex_case_map);
+                                   ip_span, triangulate, cut_cell, edge_ip_map, token_to_local);
             }
             else
             {
                 decode_case<T, 4>(vertex_coordinates, gdim, flag_interior,
                                   case_subcell_offset_outside, subcell_type_outside,
-                                  subcell_verts_outside, ip_span, triangulate, cut_cell, vertex_case_map);
+                                  subcell_verts_outside, ip_span, triangulate, cut_cell, edge_ip_map, token_to_local);
             }
         }
         else
@@ -284,7 +295,7 @@ namespace cutcells::cell::quadrilateral
             throw std::invalid_argument("cutting type unknown");
         }
 
-        cutcells::utils::create_vertex_parent_entity_map<T>(vertex_case_map, cut_cell._vertex_parent_entity);
+        cutcells::utils::create_vertex_parent_entity_map<T>(token_to_local, cut_cell._vertex_parent_entity);
     }
 
     template <std::floating_point T>

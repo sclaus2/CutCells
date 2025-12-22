@@ -69,12 +69,16 @@ if(APPLE AND DEFINED ENV{CONDA_PREFIX})
   # If that environment contains another libcutcells.dylib, dyld will load the wrong one.
   # Reorder RPATHs post-link so the in-repo CutCells lib directory is searched first.
   set(_conda_lib "$ENV{CONDA_PREFIX}/lib")
-  add_custom_command(TARGET _cutcellscpp POST_BUILD
-    COMMAND install_name_tool -delete_rpath "${_conda_lib}" $<TARGET_FILE:_cutcellscpp> || true
-    COMMAND install_name_tool -delete_rpath "${_cutcells_dir}" $<TARGET_FILE:_cutcellscpp> || true
-    COMMAND install_name_tool -add_rpath "${_cutcells_dir}" $<TARGET_FILE:_cutcellscpp>
-    COMMAND install_name_tool -add_rpath "${_conda_lib}" $<TARGET_FILE:_cutcellscpp>
-    VERBATIM)
+  # If CutCells itself is installed into the conda env lib dir, then _cutcells_dir == _conda_lib
+  # and reordering is unnecessary (and would attempt to add the same RPATH twice).
+  if (NOT "${_cutcells_dir}" STREQUAL "${_conda_lib}")
+    add_custom_command(TARGET _cutcellscpp POST_BUILD
+      COMMAND install_name_tool -delete_rpath "${_conda_lib}" $<TARGET_FILE:_cutcellscpp> || true
+      COMMAND install_name_tool -delete_rpath "${_cutcells_dir}" $<TARGET_FILE:_cutcellscpp> || true
+      COMMAND install_name_tool -add_rpath "${_cutcells_dir}" $<TARGET_FILE:_cutcellscpp>
+      COMMAND install_name_tool -add_rpath "${_conda_lib}" $<TARGET_FILE:_cutcellscpp>
+      VERBATIM)
+  endif()
 endif()
 
 install(TARGETS _cutcellscpp LIBRARY DESTINATION cutcells)

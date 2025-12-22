@@ -135,6 +135,17 @@ void declare_float(nb::module_& m, std::string type)
 
               return types;
           })
+        .def_prop_ro(
+          "vertex_parent_entity",
+          [](const cell::CutCell<T>& self) {
+            return nb::ndarray<const int32_t, nb::numpy>(
+              self._vertex_parent_entity.data(),
+              {self._vertex_parent_entity.size()},
+              nb::handle());
+          },
+          nb::rv_policy::reference_internal,
+          "Return parent entity token for each cut-cell vertex.\n"
+          "Tokens encode the origin: edge intersections use edge id, original vertices use 100+vid, special points use 200+sid.")
         .def("str", [](const cell::CutCell<T>& self) {cell::str(self); return ;})
         .def("volume", [](const cell::CutCell<T>& self) {return cell::volume(self);})
         .def("write_vtk", [](cell::CutCell<double>& self, std::string fname) {io::write_vtk(fname,self); return ;});

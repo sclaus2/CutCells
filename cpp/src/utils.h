@@ -60,11 +60,17 @@ namespace cutcells::utils
     template <std::floating_point T>
     void create_vertex_parent_entity_map(const std::unordered_map<int,int>& vertex_case_map, std::vector<int32_t>& vertex_parent_entity)
     {
-      vertex_parent_entity.resize(vertex_case_map.size());
+      // vertex_case_map maps (token -> local_vertex_index). Tokens encode the origin:
+      // - edge intersections: 0..(n_edges-1)
+      // - original vertices:  100+vid
+      // - special points:     200+sid
+      // Local indices are expected to refer to indices in CutCell::_vertex_coords.
+      int max_local = -1;
+      for (const auto& kv : vertex_case_map)
+        max_local = std::max(max_local, kv.second);
 
-      for (auto &[first,second]: vertex_case_map) //using structured binding
-      {
-        vertex_parent_entity[second] = first;  // values can also be manipulated as they are refrences
-      }
+      vertex_parent_entity.assign(static_cast<std::size_t>(max_local + 1), -1);
+      for (const auto& kv : vertex_case_map)
+        vertex_parent_entity[static_cast<std::size_t>(kv.second)] = kv.first;
     }
 }

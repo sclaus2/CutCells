@@ -25,7 +25,6 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_prism.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_pyramid.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.h
-  ${CMAKE_CURRENT_SOURCE_DIR}/cut_context.h
   ${CMAKE_CURRENT_SOURCE_DIR}/triangulation.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.h
@@ -43,7 +42,6 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_prism.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_pyramid.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/cut_context.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.cpp

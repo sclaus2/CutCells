@@ -104,7 +104,9 @@ def main() -> None:
         cell_types = registered_cell_types()
 
     for cell_type in cell_types:
-        generate_for_cell(cell_type, args.out, vtk_ref=vtk_ref, vtk_header_path=vtk_header_path)
+        generate_for_cell(
+            cell_type, args.out, vtk_ref=vtk_ref, vtk_header_path=vtk_header_path
+        )
 
 
 if __name__ == "__main__":

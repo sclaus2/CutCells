@@ -116,6 +116,11 @@ def main() -> None:
         default=True,
         help="Show an interactive window (disable for headless runs).",
     )
+    parser.add_argument(
+        "--write-prefix",
+        default="",
+        help="If set, write interface/inside/outside VTK files using this prefix (e.g. /tmp/gyroid).",
+    )
     args = parser.parse_args()
 
     if args.n < 2:
@@ -140,6 +145,58 @@ def main() -> None:
         pl.add_mesh(grid, show_edges=True, style="wireframe")
     pl.add_mesh(mesh, show_edges=args.show_edges)
     pl.camera_position = "iso"
+
+    # Optionally write interface, inside and outside VTK files
+    if args.write_prefix:
+        pts = grid.points
+        ls_values = np.zeros(len(pts), dtype=float)
+        for j, point in enumerate(pts):
+            ls_values[j] = level_set_thick_gyroid(
+                point, k=k, thickness=float(args.thickness)
+            )
+
+        conn = grid.cell_connectivity
+        off = grid.offset
+        ctypes = grid.celltypes
+
+        # Interface (phi=0)
+        try:
+            iface = cutcells.cut_vtk_mesh(
+                ls_values, pts, conn, off, ctypes, "phi=0", args.triangulate
+            )
+            iface_pts = np.asarray(iface.vertex_coords, dtype=float).reshape(-1, 3)
+            iface_pv = pv.UnstructuredGrid(iface.cells, iface.types, iface_pts)
+            iface_file = f"{args.write_prefix}_interface.vtu"
+            iface_pv.save(iface_file)
+            print(f"Wrote interface VTK -> {iface_file}")
+        except Exception as e:  # pragma: no cover
+            print("Failed to write interface mesh:", e)
+
+        # Inside (phi<0)
+        try:
+            inside = cutcells.cut_vtk_mesh(
+                ls_values, pts, conn, off, ctypes, "phi<0", args.triangulate
+            )
+            inside_pts = np.asarray(inside.vertex_coords, dtype=float).reshape(-1, 3)
+            inside_pv = pv.UnstructuredGrid(inside.cells, inside.types, inside_pts)
+            inside_file = f"{args.write_prefix}_inside.vtu"
+            inside_pv.save(inside_file)
+            print(f"Wrote inside VTK -> {inside_file}")
+        except Exception as e:  # pragma: no cover
+            print("Failed to write inside mesh:", e)
+
+        # Outside (phi>0)
+        try:
+            outside = cutcells.cut_vtk_mesh(
+                ls_values, pts, conn, off, ctypes, "phi>0", args.triangulate
+            )
+            outside_pts = np.asarray(outside.vertex_coords, dtype=float).reshape(-1, 3)
+            outside_pv = pv.UnstructuredGrid(outside.cells, outside.types, outside_pts)
+            outside_file = f"{args.write_prefix}_outside.vtu"
+            outside_pv.save(outside_file)
+            print(f"Wrote outside VTK -> {outside_file}")
+        except Exception as e:  # pragma: no cover
+            print("Failed to write outside mesh:", e)
 
     if args.screenshot:
         pl.show(screenshot=args.screenshot)
