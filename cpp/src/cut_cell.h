@@ -44,6 +44,9 @@ namespace cutcells
             /// vertices are indicated by a shift of 100 in the numbering  vertex 1 -> 101 etc.
             std::vector<int32_t> _vertex_parent_entity;
 
+            /// Parent cell index
+            int32_t _parent_cell_index;
+
             /// Parent cell type before cutting
             type _parent_cell_type;
 

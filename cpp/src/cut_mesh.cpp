@@ -129,6 +129,15 @@ namespace cutcells::mesh
     {
       CutMesh<T> cut_mesh;
 
+      if (cut_cells._cut_cells.empty())
+      {
+        cut_mesh._gdim = 0;
+        cut_mesh._tdim = 0;
+        cut_mesh._num_cells = 0;
+        cut_mesh._num_vertices = 0;
+        return cut_mesh;
+      }
+
       std::size_t gdim = cut_cells._cut_cells[0]._gdim;
       std::size_t tdim = cut_cells._cut_cells[0]._tdim;
 
@@ -150,12 +159,16 @@ namespace cutcells::mesh
       cut_mesh._offset.resize(num_cells+1);
       cut_mesh._connectivity.resize(num_connectivity);
 
-      //either two or one
-      int num_parents = cut_cells._parent_map.size()/cut_cells._cut_cells.size();
+      // either two or one; allow missing parent map
+      int num_parents = 0;
+      if (!cut_cells._parent_map.empty())
+        num_parents = static_cast<int>(cut_cells._parent_map.size() / cut_cells._cut_cells.size());
+      if (num_parents <= 0)
+        num_parents = 1;
 
       cut_mesh._num_cells = num_cells;
       cut_mesh._types.resize(num_cells);
-      cut_mesh._parent_map.resize(num_cells*num_parents);
+      cut_mesh._parent_map.resize(num_cells * num_parents, -1);
 
       int sub_cell_offset = 0;
       int element_offset = 0;
@@ -192,7 +205,9 @@ namespace cutcells::mesh
         const bool has_tokens = (static_cast<int>(cut_cell._vertex_parent_entity.size()) == num_cut_cell_vertices);
         const int parent_vertices = cell::get_num_vertices(cut_cell._parent_cell_type);
         const bool has_parent_ids = (static_cast<int>(cut_cell._parent_vertex_ids.size()) == parent_vertices);
-        const int parent_cell_id = cut_cells._parent_map[cnt * num_parents + 0];
+        const int parent_cell_id = cut_cells._parent_map.empty()
+                                       ? -1
+                                       : cut_cells._parent_map[cnt * num_parents + 0];
         const bool can_fast_dedup = has_tokens && has_parent_ids && (parent_cell_id >= 0);
 
         if (can_fast_dedup)

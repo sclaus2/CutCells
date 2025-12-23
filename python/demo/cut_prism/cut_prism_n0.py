@@ -114,7 +114,8 @@ def main() -> None:
         cmap=["dodgerblue", "crimson"],
     )
 
-    pl.camera_position = "iso"
+    # Frontal perspective: camera in front of the prism, slightly above and to the right
+    pl.camera_position = [(1.5, 1.5, 1.5), (0.5, 0.5, 0.5), (0, 0, 1)]
 
     screenshot = args.screenshot if args.screenshot else None
     pl.show(screenshot=screenshot)
