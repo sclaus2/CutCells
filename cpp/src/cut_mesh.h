@@ -94,4 +94,11 @@ namespace cutcells::mesh
                                             std::span<const int> connectivity, std::span<const int> offset,
                                             std::span<const int> vtk_type,
                                             const std::string& cut_type_str);
+
+    template <std::floating_point T>
+    cutcells::mesh::CutMesh<T> cut_vtk_mesh(std::span<const T> ls_vals, std::span<const T> points,
+                        std::span<const int> connectivity, std::span<const int> offset,
+                        std::span<const int> vtk_type,
+                        const std::string& cut_type_str,
+                        bool triangulate);
 }

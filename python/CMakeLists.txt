@@ -16,6 +16,13 @@ if (TARGET cutcells)
   add_library(CUTCELLS::cutcells ALIAS cutcells)
 else()
   # Find CutCells (C++)
+  # Prefer the in-repo build if present, so `pip install -e python` uses local C++ changes.
+  if (NOT DEFINED CutCells_DIR)
+    set(_local_cutcells_prefix "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-dir/prefix")
+    if (EXISTS "${_local_cutcells_prefix}/lib/cmake/cutcells/CutCellsConfig.cmake")
+      list(PREPEND CMAKE_PREFIX_PATH "${_local_cutcells_prefix}")
+    endif()
+  endif()
   find_package(CutCells REQUIRED)
 endif()
 
@@ -46,6 +53,32 @@ endif()
 
 get_target_property(_location CUTCELLS::cutcells LOCATION)
 get_filename_component(_cutcells_dir ${_location} DIRECTORY)
-set_target_properties(_cutcellscpp PROPERTIES INSTALL_RPATH ${_cutcells_dir})
+
+# Ensure we load the CutCells library we just found/linked against.
+# In conda environments it's common to also have a (possibly older) libcutcells.dylib
+# available on the default RPATH; if that appears before our in-repo prefix, dyld
+# will pick the wrong one at runtime.
+set_target_properties(_cutcellscpp PROPERTIES
+  INSTALL_RPATH "${_cutcells_dir}"
+  BUILD_RPATH "${_cutcells_dir}"
+  BUILD_WITH_INSTALL_RPATH TRUE
+  INSTALL_RPATH_USE_LINK_PATH FALSE)
+
+if(APPLE AND DEFINED ENV{CONDA_PREFIX})
+  # scikit-build/nanobind often injects ${CONDA_PREFIX}/lib as an LC_RPATH ahead of ours.
+  # If that environment contains another libcutcells.dylib, dyld will load the wrong one.
+  # Reorder RPATHs post-link so the in-repo CutCells lib directory is searched first.
+  set(_conda_lib "$ENV{CONDA_PREFIX}/lib")
+  # If CutCells itself is installed into the conda env lib dir, then _cutcells_dir == _conda_lib
+  # and reordering is unnecessary (and would attempt to add the same RPATH twice).
+  if (NOT "${_cutcells_dir}" STREQUAL "${_conda_lib}")
+    add_custom_command(TARGET _cutcellscpp POST_BUILD
+      COMMAND install_name_tool -delete_rpath "${_conda_lib}" $<TARGET_FILE:_cutcellscpp> || true
+      COMMAND install_name_tool -delete_rpath "${_cutcells_dir}" $<TARGET_FILE:_cutcellscpp> || true
+      COMMAND install_name_tool -add_rpath "${_cutcells_dir}" $<TARGET_FILE:_cutcellscpp>
+      COMMAND install_name_tool -add_rpath "${_conda_lib}" $<TARGET_FILE:_cutcellscpp>
+      VERBATIM)
+  endif()
+endif()
 
 install(TARGETS _cutcellscpp LIBRARY DESTINATION cutcells)

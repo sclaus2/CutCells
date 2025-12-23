@@ -84,29 +84,41 @@ void declare_float(nb::module_& m, std::string type)
         .def_prop_ro(
           "vertex_coords",
           [](const cell::CutCell<T>& self) {
-            const unsigned long num_vertices = self._vertex_coords.size()/self._gdim;
-            std::vector<T> vertex_coords(3*num_vertices);
-
-            int idx = 0;
-
-            for(unsigned long i=0;i<num_vertices;i++)
-            {
-              T z = 0;
-
-              if(self._gdim==3)
-              {
-                  z = self._vertex_coords[i*self._gdim+2];
-              }
-              vertex_coords[idx] = self._vertex_coords[i*self._gdim];
-              idx++;
-              vertex_coords[idx] = self._vertex_coords[i*self._gdim+1];
-              idx++;
-              vertex_coords[idx] = z;
-              idx++;
-            }
-
-            return vertex_coords;
-        })
+            const std::size_t gdim = static_cast<std::size_t>(self._gdim);
+            if (gdim == 0)
+              return nb::ndarray<const T, nb::numpy>(nullptr, {0, 0}, nb::handle());
+            const std::size_t n = self._vertex_coords.size() / gdim;
+            return nb::ndarray<const T, nb::numpy>(
+              self._vertex_coords.data(),
+              {n, gdim},
+              nb::handle());
+          },
+          nb::rv_policy::reference_internal,
+          "Zero-copy view of cut-cell vertex coordinates as shape (num_vertices, gdim).")
+        .def_prop_ro(
+          "parent_vertex_coords",
+          [](const cell::CutCell<T>& self) {
+            const std::size_t gdim = static_cast<std::size_t>(self._gdim);
+            if (gdim == 0)
+              return nb::ndarray<const T, nb::numpy>(nullptr, {0, 0}, nb::handle());
+            const std::size_t n = self._parent_vertex_coords.size() / gdim;
+            return nb::ndarray<const T, nb::numpy>(
+              self._parent_vertex_coords.data(),
+              {n, gdim},
+              nb::handle());
+          },
+          nb::rv_policy::reference_internal,
+          "Zero-copy view of parent-cell vertex coordinates as shape (num_parent_vertices, gdim).")
+        .def_prop_ro(
+          "parent_vertex_ids",
+          [](const cell::CutCell<T>& self) {
+            return nb::ndarray<const int, nb::numpy>(
+              self._parent_vertex_ids.data(),
+              {self._parent_vertex_ids.size()},
+              nb::handle());
+          },
+          nb::rv_policy::reference_internal,
+          "Zero-copy view of parent vertex ids (context-global indices when available).")
         .def_prop_ro(
           "connectivity",
           [](const cell::CutCell<T>& self) {
@@ -135,6 +147,17 @@ void declare_float(nb::module_& m, std::string type)
 
               return types;
           })
+        .def_prop_ro(
+          "vertex_parent_entity",
+          [](const cell::CutCell<T>& self) {
+            return nb::ndarray<const int32_t, nb::numpy>(
+              self._vertex_parent_entity.data(),
+              {self._vertex_parent_entity.size()},
+              nb::handle());
+          },
+          nb::rv_policy::reference_internal,
+          "Return parent entity token for each cut-cell vertex.\n"
+          "Tokens encode the origin: edge intersections use edge id, original vertices use 100+vid, special points use 200+sid.")
         .def("str", [](const cell::CutCell<T>& self) {cell::str(self); return ;})
         .def("volume", [](const cell::CutCell<T>& self) {return cell::volume(self);})
         .def("write_vtk", [](cell::CutCell<double>& self, std::string fname) {io::write_vtk(fname,self); return ;});
@@ -178,29 +201,17 @@ void declare_float(nb::module_& m, std::string type)
         .def_prop_ro(
           "vertex_coords",
           [](const mesh::CutMesh<T>& self) {
-            const unsigned long num_vertices = self._vertex_coords.size()/self._gdim;
-            std::vector<T> vertex_coords(3*num_vertices);
-
-            int idx = 0;
-
-            for(unsigned long i=0;i<num_vertices;i++)
-            {
-              T z = 0;
-
-              if(self._gdim==3)
-              {
-                  z = self._vertex_coords[i*self._gdim+2];
-              }
-              vertex_coords[idx] = self._vertex_coords[i*self._gdim];
-              idx++;
-              vertex_coords[idx] = self._vertex_coords[i*self._gdim+1];
-              idx++;
-              vertex_coords[idx] = z;
-              idx++;
-            }
-
-            return vertex_coords;
-        })
+            const std::size_t gdim = static_cast<std::size_t>(self._gdim);
+            if (gdim == 0)
+              return nb::ndarray<const T, nb::numpy>(nullptr, {0, 0}, nb::handle());
+            const std::size_t n = self._vertex_coords.size() / gdim;
+            return nb::ndarray<const T, nb::numpy>(
+              self._vertex_coords.data(),
+              {n, gdim},
+              nb::handle());
+          },
+          nb::rv_policy::reference_internal,
+          "Zero-copy view of mesh vertex coordinates as shape (num_vertices, gdim).")
         .def_prop_ro(
           "connectivity",
           [](const mesh::CutMesh<T>& self) {
@@ -287,14 +298,18 @@ void declare_float(nb::module_& m, std::string type)
     m.def("cut_vtk_mesh", [](nb::ndarray<const T>& ls_vals, nb::ndarray<const T>& points,
                              nb::ndarray<const int>& connectivity, nb::ndarray<const int>& offset,
                              nb::ndarray<const int>& vtk_type,
-                             const std::string& cut_type_str){
+                             const std::string& cut_type_str,
+                             bool triangulate){
               return  mesh::cut_vtk_mesh<T>(std::span(ls_vals.data(),ls_vals.size()),
                             std::span(points.data(),points.size()),
                             std::span(connectivity.data(),connectivity.size()),
                             std::span(offset.data(),offset.size()),
                             std::span(vtk_type.data(),vtk_type.size()),
-                            cut_type_str);
+                            cut_type_str,
+                            triangulate);
              }
+             , nb::arg("ls_vals"), nb::arg("points"), nb::arg("connectivity"), nb::arg("offset"), nb::arg("vtk_type"),
+               nb::arg("cut_type_str"), nb::arg("triangulate") = true
              , "cut vtk mesh");
 }
 
