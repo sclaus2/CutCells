@@ -6,6 +6,7 @@
 #pragma once
 
 #include <iostream>
+#include <cstdint>
 
 #include "cell_types.h"
 #include <vector>

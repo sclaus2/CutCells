@@ -13,6 +13,7 @@
 #include "cell_topology.h"
 #include <map>
 #include <algorithm>
+#include <cstdint>
 
 namespace
 {
