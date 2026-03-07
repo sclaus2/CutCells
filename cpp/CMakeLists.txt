@@ -17,6 +17,7 @@ include(FeatureSummary)
 
 # Source files
 add_subdirectory(src)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../benchmarks ${CMAKE_CURRENT_BINARY_DIR}/benchmarks)
 
 set_target_properties(cutcells PROPERTIES PRIVATE_HEADER "${HEADERS}")
 target_include_directories(cutcells PUBLIC

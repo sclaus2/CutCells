@@ -5,6 +5,7 @@
 // SPDX-License-Identifier:    MIT
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <concepts>
 #include <span>
@@ -13,30 +14,24 @@
 
 namespace cutcells::utils
 {
+  constexpr int MAX_TOKEN_LOOKUP = 256;
+
     //Check if two vertices are equal
     template <std::floating_point T>
     static bool equal(std::span<const T> coord1, const int &id1,
                       std::span<const T> coord2, const int &id2, const int& gdim)
     {
       T tol = 1e-15;
-      T distance = 0;
+      T distance2 = 0;
 
       //Take the distance between two points with id1 and id2 and return
       for(std::size_t j=0;j<gdim;j++)
       {
-          distance +=(coord1[id1*gdim+j] - coord2[id2*gdim+j])*(coord1[id1*gdim+j] - coord2[id2*gdim+j]);
+          const T delta = coord1[id1*gdim+j] - coord2[id2*gdim+j];
+          distance2 += delta * delta;
       }
 
-      distance = sqrt(distance);
-
-      if(distance<tol)
-      {
-        return true;
-      }
-      else
-      {
-        return false;
-      }
+      return distance2 <= tol * tol;
     }
 
     // check if vertex coordinate exists in geom vector
@@ -72,5 +67,25 @@ namespace cutcells::utils
       vertex_parent_entity.assign(static_cast<std::size_t>(max_local + 1), -1);
       for (const auto& kv : vertex_case_map)
         vertex_parent_entity[static_cast<std::size_t>(kv.second)] = kv.first;
+    }
+
+    template <std::floating_point T, std::size_t N>
+    void create_vertex_parent_entity_map(const std::array<int, N>& token_to_vertex,
+                                         std::vector<int32_t>& vertex_parent_entity)
+    {
+      int max_local = -1;
+      for (std::size_t token = 0; token < N; ++token)
+      {
+        if (token_to_vertex[token] >= 0)
+          max_local = std::max(max_local, token_to_vertex[token]);
+      }
+
+      vertex_parent_entity.assign(static_cast<std::size_t>(max_local + 1), -1);
+      for (std::size_t token = 0; token < N; ++token)
+      {
+        const int local = token_to_vertex[token];
+        if (local >= 0)
+          vertex_parent_entity[static_cast<std::size_t>(local)] = static_cast<int32_t>(token);
+      }
     }
 }

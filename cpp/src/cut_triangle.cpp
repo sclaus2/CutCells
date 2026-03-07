@@ -14,13 +14,18 @@
 #include <cassert>
 #include <stdexcept>
 #include <iostream>
-#include <unordered_map>
+#include <array>
 #include<cmath>
 
 namespace cutcells::cell
 {
 // Look up tables for intersection
 namespace{
+    using VertexCaseMap = std::array<int, cutcells::utils::MAX_TOKEN_LOOKUP>;
+    constexpr int reserve_vertex_coords = 8;
+    constexpr int reserve_connectivity = 8;
+    constexpr int reserve_types = 8;
+
     // Choose numbering of edges for cutting in accordance with numbering of vtk
     int edges[3][2] = {{0,1}, {1,2}, {2,0}};
 
@@ -96,7 +101,7 @@ namespace triangle{
     template <std::floating_point T>
     void compute_intersection_points(const std::span<const T> vertex_coordinates, const int gdim, 
              const std::span<const T> ls_values, const int flag, std::vector<T>& intersection_points, 
-             std::unordered_map<int,int>& vertex_case_map)
+             VertexCaseMap& vertex_case_map)
     {
         // vertex ids will be edges[edge_0][0] edges[edge_0][1]
         // get vertex coordinates and interpolate 
@@ -140,7 +145,7 @@ namespace triangle{
     template <std::floating_point T>
     void create_sub_cell_vertex_coords(const int& flag, const std::span<const T> vertex_coordinates, const int gdim, 
                                        const std::span<const T> intersection_points, 
-                                       std::vector<T>& coords, std::unordered_map<int,int>& vertex_case_map)
+                                       std::vector<T>& coords, VertexCaseMap& vertex_case_map)
     {
         int num_intersection_points = intersection_points.size()/gdim;
         type cell_type = triangle_sub_element_cell_types[flag];
@@ -193,7 +198,7 @@ namespace triangle{
     }
 
     void create_sub_cells(const int& flag, bool triangulate, std::vector<std::vector<int>>& sub_cells, 
-                          std::vector<type>& sub_cell_types, std::unordered_map<int,int>& vertex_case_map)
+                          std::vector<type>& sub_cell_types, VertexCaseMap& vertex_case_map)
     {
         // Allocate memory
         int num_sub_elements = get_num_sub_elements(flag, triangulate);
@@ -262,7 +267,7 @@ namespace triangle{
                          const std::string& cut_type_str,
                          CutCell<T>& cut_cell, bool triangulate, 
                          const std::span<const T> intersection_points, 
-                         std::unordered_map<int,int>& vertex_case_map)
+                         VertexCaseMap& vertex_case_map)
     {
         cut_cell._gdim = gdim;
 
@@ -296,7 +301,7 @@ namespace triangle{
             //Determine exterior sub-cells
             int flag_exterior = get_entity_flag(ls_values, true);
             create_sub_cell_vertex_coords(flag_exterior, vertex_coordinates, gdim, intersection_points, 
-                        cut_cell._vertex_coords, vertex_case_map);
+                    cut_cell._vertex_coords, vertex_case_map);
             create_sub_cells(flag_exterior, triangulate, cut_cell._connectivity, 
                     cut_cell._types, vertex_case_map);
         }
@@ -306,12 +311,13 @@ namespace triangle{
         }
     }
     template <std::floating_point T>
-    void str(CutCell<T>& cut_cell, std::unordered_map<int,int>& vertex_case_map)
+    void str(CutCell<T>& cut_cell, const VertexCaseMap& vertex_case_map)
     {
         std::cout << "vertex case map=[";
-        for(auto& it: vertex_case_map)
+        for(std::size_t token = 0; token < vertex_case_map.size(); ++token)
         {
-        std::cout << it.first << ": " << it.second << std::endl;
+            if (vertex_case_map[token] >= 0)
+                std::cout << token << ": " << vertex_case_map[token] << std::endl;
         }
         std::cout << "]" << std::endl;
 
@@ -357,13 +363,19 @@ namespace triangle{
         // Compute intersection points these are required for any cut cell part (interface, interior, exterior)
         // get the number of intersection points
         std::vector<T> intersection_points;
+        intersection_points.reserve(2 * gdim);
         // the vertex case map,
         // first few entries map from intersected edge to intersection point number 
         // next entries map from orginal vertex id to number of vertex in vertex_coordinates of CutCell (renumbered to go from 0,...,N)
         // example: intersected edges 0 -> 0, 2 -> 1
         //          then orginal vertex 101 -> 2 , 102 -> 3 etc.
-        std::unordered_map<int,int> vertex_case_map;
+        VertexCaseMap vertex_case_map;
+        vertex_case_map.fill(-1);
         compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
+
+        cut_cell._vertex_coords.reserve(reserve_vertex_coords * gdim);
+        cut_cell._connectivity.reserve(reserve_connectivity);
+        cut_cell._types.reserve(reserve_types);
 
         create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, 
                         triangulate, intersection_points, vertex_case_map);
@@ -388,7 +400,9 @@ namespace triangle{
         // Compute intersection points these are required for any cut cell part (interface, interior, exterior)
         // get the number of intersection points
         std::vector<T> intersection_points;
-        std::unordered_map<int,int> vertex_case_map;
+        intersection_points.reserve(2 * gdim);
+        VertexCaseMap vertex_case_map;
+        vertex_case_map.fill(-1);
         compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
 
         cut_cell.resize(cut_type_str.size());
