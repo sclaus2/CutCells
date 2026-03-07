@@ -34,8 +34,11 @@ namespace cutcells
             std::vector<T> _vertex_coords;
 
             /// Vertex ids of cut cells
-            /// @todo: maybe change this to connectivity and offset vectors
-            std::vector<std::vector<int>> _connectivity;
+            /// Flattened cell-to-vertex connectivity in CSR layout
+            std::vector<int> _connectivity;
+
+            /// Offsets into _connectivity (size = num_cells + 1)
+            std::vector<int> _offset;
 
             /// Cell type of cut cells
             std::vector<type> _types;
@@ -93,6 +96,53 @@ namespace cutcells
                   std::span<const T> ls_vals_all,
                   const std::string& cut_type_str,
                   bool triangulate);
+
+                template <std::floating_point T>
+                inline int num_cells(const CutCell<T>& cut_cell)
+                {
+                    return cut_cell._offset.empty() ? 0 : static_cast<int>(cut_cell._offset.size()) - 1;
+                }
+
+                template <std::floating_point T>
+                inline int num_cell_vertices(const CutCell<T>& cut_cell, const int cell_id)
+                {
+                    return cut_cell._offset[cell_id + 1] - cut_cell._offset[cell_id];
+                }
+
+                template <std::floating_point T>
+                inline std::span<const int> cell_vertices(const CutCell<T>& cut_cell, const int cell_id)
+                {
+                    const int begin = cut_cell._offset[cell_id];
+                    const int end = cut_cell._offset[cell_id + 1];
+                    return std::span<const int>(cut_cell._connectivity.data() + begin, end - begin);
+                }
+
+                template <std::floating_point T>
+                inline void clear_cell_topology(CutCell<T>& cut_cell)
+                {
+                    cut_cell._connectivity.clear();
+                    cut_cell._offset.clear();
+                    cut_cell._offset.push_back(0);
+                    cut_cell._types.clear();
+                }
+
+                template <std::floating_point T>
+                inline void reserve_cell_topology(CutCell<T>& cut_cell,
+                                                                                    const int connectivity_capacity,
+                                                                                    const int cell_capacity)
+                {
+                    cut_cell._connectivity.reserve(connectivity_capacity);
+                    cut_cell._offset.reserve(cell_capacity + 1);
+                    cut_cell._types.reserve(cell_capacity);
+                }
+
+                template <std::floating_point T>
+                inline void append_cell(CutCell<T>& cut_cell, const type cell_type, std::span<const int> vertices)
+                {
+                    cut_cell._types.push_back(cell_type);
+                    cut_cell._connectivity.insert(cut_cell._connectivity.end(), vertices.begin(), vertices.end());
+                    cut_cell._offset.push_back(static_cast<int>(cut_cell._connectivity.size()));
+                }
     }
 
 }

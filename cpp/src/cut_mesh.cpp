@@ -74,12 +74,14 @@ namespace cutcells::mesh
             }
             std::cout << "]" << std::endl;
             std::cout << "connectivity=[";
-            for(int i=0;i<cell._connectivity.size();i++)
+            const int ncells = cutcells::cell::num_cells(cell);
+            for(int i=0;i<ncells;i++)
             {
+              const auto verts = cutcells::cell::cell_vertices(cell, i);
                 std::cout << i << ": ";
-                for(int j=0;j<cell._connectivity[i].size();j++)
+              for(int j=0;j<verts.size();j++)
                 {
-                    std::cout << cell._connectivity[i][j] << ", ";
+                std::cout << verts[j] << ", ";
                 }
             }
             std::cout << "]" << std::endl;
@@ -119,7 +121,7 @@ namespace cutcells::mesh
 
       for(auto & cut_cell : cut_mesh._cut_cells)
       {
-        num_cells += cut_cell._connectivity.size();
+        num_cells += cutcells::cell::num_cells(cut_cell);
       }
       return num_cells;
     }
@@ -149,13 +151,15 @@ namespace cutcells::mesh
       int num_cells =0;
       for(auto & cut_cell :  cut_cells._cut_cells)
       {
-        num_cells += cut_cell._connectivity.size();
+        num_cells += cutcells::cell::num_cells(cut_cell);
       }
 
       int num_connectivity=0;
       for(auto & cut_cell :  cut_cells._cut_cells)
-        for(int i=0;i<cut_cell._connectivity.size();i++)
-          num_connectivity += cut_cell._connectivity[i].size();
+      {
+        if (cutcells::cell::num_cells(cut_cell) > 0)
+          num_connectivity += cut_cell._offset.back();
+      }
 
       cut_mesh._offset.resize(num_cells+1);
       cut_mesh._connectivity.resize(num_connectivity);
@@ -197,7 +201,7 @@ namespace cutcells::mesh
 
         int num_cut_cell_vertices = cut_cell._vertex_coords.size()/gdim;
 
-        int local_num_cells = cut_cell._connectivity.size();
+        int local_num_cells = cutcells::cell::num_cells(cut_cell);
 
         // Map from vertex id in current cutcell to merged cutmesh
         std::vector<int> local_merged_vertex_ids(num_cut_cell_vertices, -1);
@@ -300,10 +304,11 @@ namespace cutcells::mesh
 
         for(int i=0;i<local_num_cells;i++)
         {
-          int num_vertices = cut_cell._connectivity[i].size();
+          auto vertices = cutcells::cell::cell_vertices(cut_cell, i);
+          int num_vertices = vertices.size();
           for(int j=0;j<num_vertices;j++)
           {
-              int64_t index = cut_cell._connectivity[i][j];
+            int64_t index = vertices[j];
               cut_mesh._connectivity[element_offset+j] = local_merged_vertex_ids[static_cast<int>(index)];
           }
 

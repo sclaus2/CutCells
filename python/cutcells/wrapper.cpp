@@ -12,12 +12,12 @@
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/map.h>
 #include <span>
+#include <type_traits>
 
-#include <cutcells/cell_flags.h>
-#include <cutcells/cell_types.h>
-#include <cutcells/cut_cell.h>
-#include <cutcells/cut_mesh.h>
-#include <cutcells/write_vtk.h>
+#include "../../cpp/src/cell_types.h"
+#include "../../cpp/src/cut_cell.h"
+#include "../../cpp/src/cut_mesh.h"
+#include "../../cpp/src/write_vtk.h"
 
 namespace nb = nanobind;
 
@@ -70,7 +70,7 @@ auto as_nbarrayp(std::pair<V, std::array<std::size_t, U>>&& x)
 template <typename T>
 void declare_float(nb::module_& m, std::string type)
 {
-    m.def("classify_cell_domain", [](nb::ndarray<const T>& ls_values){
+    m.def("classify_cell_domain", [](const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& ls_values){
           cell::domain domain_id = cell::classify_cell_domain<T>(std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())});
           auto domain_str = cell_domain_to_str(domain_id);
           return domain_str;
@@ -122,31 +122,35 @@ void declare_float(nb::module_& m, std::string type)
         .def_prop_ro(
           "connectivity",
           [](const cell::CutCell<T>& self) {
-            nb::list inner;
-
-            for(std::size_t i=0;i<self._connectivity.size();i++)
-            {
-              inner.append(self._connectivity[i].size());
-              for(std::size_t j=0;j<self._connectivity[i].size();j++)
-              {
-                inner.append(self._connectivity[i][j]);
-              }
-            }
-            return inner;
-          })
+            return nb::ndarray<const int, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              self._connectivity.data(),
+              {self._connectivity.size()},
+              nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal,
+          "Zero-copy view of flat CSR connectivity array.")
+        .def_prop_ro(
+          "offsets",
+          [](const cell::CutCell<T>& self) {
+            return nb::ndarray<const int, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              self._offset.data(),
+              {self._offset.size()},
+              nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal,
+          "Zero-copy view of CSR offsets array.")
         .def_prop_ro(
           "types",
           [](const cell::CutCell<T>& self) {
-            //allocate memory
-            nb::list types;
-
-              for(std::size_t i=0;i<self._types.size();i++)
-              {
-                types.append(static_cast<int>(map_cell_type_to_vtk(self._types[i])));
-              }
-
-              return types;
-          })
+            using type_id_t = std::underlying_type_t<cell::type>;
+            static_assert(std::is_integral_v<type_id_t>, "cell::type must have integral underlying type");
+            return nb::ndarray<const type_id_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              reinterpret_cast<const type_id_t*>(self._types.data()),
+              {self._types.size()},
+              nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal,
+          "Zero-copy view of cut-cell type ids (cell::type enum underlying values).")
         .def_prop_ro(
           "vertex_parent_entity",
           [](const cell::CutCell<T>& self) {
@@ -264,28 +268,42 @@ void declare_float(nb::module_& m, std::string type)
           " Return parent map of cut mesh.");
 
   m.def("create_cut_mesh", [](mesh::CutCells<T>& cut_cells){
+              nb::gil_scoped_release release;
               return mesh::create_cut_mesh(cut_cells);
              }
              , "Creating a cut mesh");
-  m.def("cut", [](cell::type cell_type, const nb::ndarray<T>& vertex_coordinates, const int gdim,
-             const nb::ndarray<T>& ls_values, const std::string& cut_type_str, bool triangulate){
+  m.def("cut", [](cell::type cell_type,
+                   const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& vertex_coordinates,
+                   const int gdim,
+                   const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& ls_values,
+                   const std::string& cut_type_str,
+                   bool triangulate){
               cell::CutCell<T> cut_cell;
+              nb::gil_scoped_release release;
               cell::cut<T>(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, cut_cell, triangulate);
               return cut_cell;
              }
              , "cut a cell");
 
-  m.def("higher_order_cut", [](cell::type cell_type, const nb::ndarray<T>& vertex_coordinates, const int gdim,
-             const nb::ndarray<const T>& ls_values, const std::string& cut_type_str, bool triangulate){
+  m.def("higher_order_cut", [](cell::type cell_type,
+             const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& vertex_coordinates,
+             const int gdim,
+             const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& ls_values,
+             const std::string& cut_type_str,
+             bool triangulate){
+              nb::gil_scoped_release release;
               cell::CutCell<T> cut_cell = cell::higher_order_cut<T>(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, triangulate);
               return cut_cell;
              }
              , "cut a second order cell");
 
-    m.def("locate_cells", [](nb::ndarray<const T>& ls_vals, nb::ndarray<const T>& points,
-                             nb::ndarray<const int>& connectivity, nb::ndarray<const int>& offset,
-                             nb::ndarray<const int>& vtk_type,
+    m.def("locate_cells", [](const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& ls_vals,
+                             const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& points,
+                             const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,
+                             const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offset,
+                             const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& vtk_type,
                              const std::string& cut_type_str){
+              nb::gil_scoped_release release;
               return  as_nbarray(mesh::locate_cells<T>(std::span(ls_vals.data(),ls_vals.size()),
                             std::span(points.data(),points.size()),
                             std::span(connectivity.data(),connectivity.size()),
@@ -295,11 +313,14 @@ void declare_float(nb::module_& m, std::string type)
              }
              , "locate cells in vtk mesh");
 
-    m.def("cut_vtk_mesh", [](nb::ndarray<const T>& ls_vals, nb::ndarray<const T>& points,
-                             nb::ndarray<const int>& connectivity, nb::ndarray<const int>& offset,
-                             nb::ndarray<const int>& vtk_type,
+    m.def("cut_vtk_mesh", [](const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& ls_vals,
+                             const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& points,
+                             const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,
+                             const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offset,
+                             const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& vtk_type,
                              const std::string& cut_type_str,
                              bool triangulate){
+              nb::gil_scoped_release release;
               return  mesh::cut_vtk_mesh<T>(std::span(ls_vals.data(),ls_vals.size()),
                             std::span(points.data(),points.size()),
                             std::span(connectivity.data(),connectivity.size()),

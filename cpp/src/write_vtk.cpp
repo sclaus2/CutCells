@@ -15,7 +15,8 @@
 namespace cutcells::io
 {
     void write_vtk(std::string filename, const std::span<const double> element_vertex_coords,
-                     const std::vector<std::vector<int>> elements,
+                     const std::span<const int> connectivity,
+                     const std::span<const int> offsets,
                      const std::span<cell::type> element_types,
                      const int gdim)
     {
@@ -25,7 +26,7 @@ namespace cutcells::io
         if(ofs)
         {
             int num_points = element_vertex_coords.size()/gdim;
-            int num_cells = elements.size();
+            int num_cells = static_cast<int>(offsets.size()) - 1;
 
             ofs << "<?xml version=\"1.0\"?>\n" 
                 << "<VTKFile type=\"UnstructuredGrid\" version=\"2.2\">\n"
@@ -55,22 +56,12 @@ namespace cutcells::io
             ofs << "\t\t\t</Points>\n";
             ofs << "\t\t\t<Cells>\n";
             ofs << "\t\t\t  <DataArray type=\"Int32\" Name=\"connectivity\" format=\"ascii\">";
-            for(auto& element: elements)
-            {
-                for(auto& vertex_id: element)
-                {
-                    ofs << vertex_id << " ";
-
-                }
-            }
+            for(auto& vertex_id: connectivity)
+                ofs << vertex_id << " ";
             ofs <<  "</DataArray>\n"; 
             ofs << "\t\t\t  <DataArray type=\"Int32\" Name=\"offsets\" format=\"ascii\">";
-            int offset = 0;
-            for(auto& element: elements)
-            {
-                offset +=element.size();
-                ofs << offset << " ";
-            }
+            for(std::size_t i=1;i<offsets.size();i++)
+                ofs << offsets[i] << " ";
             ofs <<  "</DataArray>\n"; 
             ofs << "\t\t\t  <DataArray type=\"Int8\" Name=\"types\" format=\"ascii\">";
             for(auto& type: element_types)
@@ -92,7 +83,7 @@ namespace cutcells::io
     void write_vtk(std::string filename, cell::CutCell<double>& cut_cell)
     {
         //std::as_const()
-        write_vtk(filename, cut_cell._vertex_coords, cut_cell._connectivity,
+        write_vtk(filename, cut_cell._vertex_coords, cut_cell._connectivity, cut_cell._offset,
                      cut_cell._types,
                      cut_cell._gdim);
     }

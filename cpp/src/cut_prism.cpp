@@ -229,15 +229,15 @@ namespace cutcells::cell::prism
 
                 if (triangulate && sub_type == type::quadrilateral && verts_local.size() == 4)
                 {
-                    cut_cell._types.push_back(type::triangle);
-                    cut_cell._connectivity.push_back({verts_local[0], verts_local[1], verts_local[2]});
-                    cut_cell._types.push_back(type::triangle);
-                    cut_cell._connectivity.push_back({verts_local[0], verts_local[2], verts_local[3]});
+                    const std::array<int, 3> t0 = {verts_local[0], verts_local[1], verts_local[2]};
+                    const std::array<int, 3> t1 = {verts_local[0], verts_local[2], verts_local[3]};
+                    cutcells::cell::append_cell(cut_cell, type::triangle, std::span<const int>(t0.data(), t0.size()));
+                    cutcells::cell::append_cell(cut_cell, type::triangle, std::span<const int>(t1.data(), t1.size()));
                 }
                 else
                 {
-                    cut_cell._types.push_back(sub_type);
-                    cut_cell._connectivity.push_back(std::move(verts_local));
+                    cutcells::cell::append_cell(cut_cell, sub_type,
+                                                std::span<const int>(verts_local.data(), verts_local.size()));
                 }
             }
         }
@@ -278,11 +278,9 @@ namespace cutcells::cell::prism
 
         cut_cell._gdim = gdim;
         cut_cell._vertex_coords = std::move(intersection_points);
-        cut_cell._types.clear();
-        cut_cell._connectivity.clear();
+        cutcells::cell::clear_cell_topology(cut_cell);
         cut_cell._vertex_coords.reserve(reserve_vertex_coords * gdim);
-        cut_cell._connectivity.reserve(reserve_connectivity);
-        cut_cell._types.reserve(reserve_types);
+        cutcells::cell::reserve_cell_topology(cut_cell, reserve_connectivity, reserve_types);
 
         if (cut_type_str == "phi=0")
         {

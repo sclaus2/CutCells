@@ -126,6 +126,7 @@ namespace cutcells::cell
                         const std::span<const T> intersection_points)
         {
             cut_cell._gdim = gdim;
+            cutcells::cell::clear_cell_topology(cut_cell);
             std::unordered_map<int,int> vertex_case_map;
 
             if(cut_type_str=="phi=0")
@@ -137,7 +138,14 @@ namespace cutcells::cell
                     cut_cell._vertex_coords[i] = intersection_points[i];
                 }
                 //Fill in cut cell with intersection point for interval this is just the intersection point
-                create_interface_cells(cut_cell._connectivity, cut_cell._types);
+                std::vector<std::vector<int>> interface_cells;
+                std::vector<type> interface_cell_types;
+                create_interface_cells(interface_cells, interface_cell_types);
+                for (std::size_t i = 0; i < interface_cells.size(); ++i)
+                {
+                    cutcells::cell::append_cell(cut_cell, interface_cell_types[i],
+                                                std::span<const int>(interface_cells[i].data(), interface_cells[i].size()));
+                }
             }
             else if(cut_type_str=="phi<0")
             {
@@ -146,8 +154,14 @@ namespace cutcells::cell
                 create_sub_cell_vertex_coords(flag_interior, vertex_coordinates, gdim, intersection_points, 
                             cut_cell._vertex_coords, vertex_case_map);
                 //Determine interior sub-cells
-                create_sub_cells(flag_interior, cut_cell._connectivity,
-                            cut_cell._types, vertex_case_map);
+                std::vector<std::vector<int>> sub_cells;
+                std::vector<type> sub_cell_types;
+                create_sub_cells(flag_interior, sub_cells, sub_cell_types, vertex_case_map);
+                for (std::size_t i = 0; i < sub_cells.size(); ++i)
+                {
+                    cutcells::cell::append_cell(cut_cell, sub_cell_types[i],
+                                                std::span<const int>(sub_cells[i].data(), sub_cells[i].size()));
+                }
             }
             else if(cut_type_str=="phi>0")
             {
@@ -156,8 +170,14 @@ namespace cutcells::cell
                 int flag_exterior = get_entity_flag(ls_values, true);
                 create_sub_cell_vertex_coords(flag_exterior, vertex_coordinates, gdim, intersection_points, 
                             cut_cell._vertex_coords, vertex_case_map);
-                create_sub_cells(flag_exterior, cut_cell._connectivity,
-                        cut_cell._types, vertex_case_map);
+                std::vector<std::vector<int>> sub_cells;
+                std::vector<type> sub_cell_types;
+                create_sub_cells(flag_exterior, sub_cells, sub_cell_types, vertex_case_map);
+                for (std::size_t i = 0; i < sub_cells.size(); ++i)
+                {
+                    cutcells::cell::append_cell(cut_cell, sub_cell_types[i],
+                                                std::span<const int>(sub_cells[i].data(), sub_cells[i].size()));
+                }
             }
             else
             {

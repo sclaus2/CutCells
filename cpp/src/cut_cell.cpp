@@ -38,16 +38,18 @@ namespace cutcells::cell{
         std::cout << "]" << std::endl;
 
         std::cout << "connectivity=[";
-        for(int i=0;i<cut_cell._connectivity.size();i++)
+        const int ncells = num_cells(cut_cell);
+        for(int i=0;i<ncells;i++)
         {
+          const auto verts = cell_vertices(cut_cell, i);
             std::cout << i << ": ";
-            for(int j=0;j<cut_cell._connectivity[i].size();j++)
+          for(int j=0;j<verts.size();j++)
             {
-                    std::cout << cut_cell._connectivity[i][j];
-                    if(j<cut_cell._connectivity[i].size()-1)
+              std::cout << verts[j];
+              if(j<verts.size()-1)
                         std::cout << ", ";
             }
-            if(i<cut_cell._connectivity.size()-1)
+          if(i<ncells-1)
                 std::cout << std::endl;
         }
         std::cout << "]" << std::endl;
@@ -75,13 +77,14 @@ namespace cutcells::cell{
     void sub_cell_vertices(const CutCell<T> &cut_cell, const int& id, std::vector<T>& vertex_coordinates)
     {
         int gdim = cut_cell._gdim;
-        int num_vertices = cut_cell._connectivity[id].size();
+        const auto vertices = cell_vertices(cut_cell, id);
+        int num_vertices = vertices.size();
         vertex_coordinates.resize(num_vertices*gdim);
         int local_vertex_id = 0;
 
         for(std::size_t j=0;j<num_vertices;j++)
         {
-          int vertex_id = cut_cell._connectivity[id][j];
+          int vertex_id = vertices[j];
           for(std::size_t k=0;k<gdim;k++)
           {
             vertex_coordinates[local_vertex_id*gdim+k] = cut_cell._vertex_coords[vertex_id*gdim+k];
@@ -95,7 +98,7 @@ namespace cutcells::cell{
     {
       int gdim = cut_cell._gdim;
       T vol = 0;
-      std::size_t num_elements=cut_cell._connectivity.size();
+      std::size_t num_elements=num_cells(cut_cell);
 
       for(std::size_t el = 0; el < num_elements; el++)
       {
@@ -281,17 +284,16 @@ namespace cutcells::cell{
       merged_cut_cell._tdim=tdim;
 
       //Count the total number of cells in vector
-      int num_cells =0;
+      int total_num_cells =0;
       for(auto & cut_cell : cut_cell_vec)
       {
-        num_cells += cut_cell._connectivity.size();
+        total_num_cells += cutcells::cell::num_cells(cut_cell);
       }
 
-      merged_cut_cell._connectivity.resize(num_cells);
-      merged_cut_cell._types.resize(num_cells);
+      merged_cut_cell._offset.resize(1);
+      merged_cut_cell._offset[0] = 0;
 
       int merged_vertex_id = 0;
-      int sub_cell_offset=0;
       int vertex_counter = 0;
 
       //all cutcells in vector above should have the same gdim and tdim
@@ -311,7 +313,7 @@ namespace cutcells::cell{
 
         int num_cut_cell_vertices = cut_cell._vertex_coords.size()/gdim;
 
-        int local_num_cells = cut_cell._connectivity.size();
+        int local_num_cells = num_cells(cut_cell);
 
         //Map from vertex id in current cutcell to merged cutcell
         std::map<int,int> local_merged_vertex_ids;
@@ -341,17 +343,19 @@ namespace cutcells::cell{
           local_merged_vertex_ids[local_id] = merged_vertex_id;
         }
 
-        for(int i=0;i<cut_cell._connectivity.size();i++)
+        for(int i=0;i<local_num_cells;i++)
         {
-          for(int j=0;j<cut_cell._connectivity[i].size();j++)
+          const auto vertices = cell_vertices(cut_cell, i);
+          std::vector<int> remapped_vertices;
+          remapped_vertices.reserve(vertices.size());
+          for(int j=0;j<vertices.size();j++)
           {
-              int64_t index = cut_cell._connectivity[i][j];
-              merged_cut_cell._connectivity[sub_cell_offset+i].push_back(local_merged_vertex_ids[index]);
+              int64_t index = vertices[j];
+              remapped_vertices.push_back(local_merged_vertex_ids[index]);
           }
-          merged_cut_cell._types[sub_cell_offset+i]=cut_cell._types[i];
+          append_cell(merged_cut_cell, cut_cell._types[i],
+                      std::span<const int>(remapped_vertices.data(), remapped_vertices.size()));
         }
-
-        sub_cell_offset+=local_num_cells;
       }
 
       return merged_cut_cell;
@@ -371,14 +375,16 @@ namespace cutcells::cell{
       cut_cell._gdim = gdim;
       cut_cell._tdim = get_tdim(cell_type);
 
-      cut_cell._connectivity.resize(1);
+      cut_cell._offset.resize(2);
+      cut_cell._offset[0] = 0;
       int num_vertices = vertex_coords.size()/gdim;
+      cut_cell._offset[1] = num_vertices;
       cut_cell._types.push_back(cell_type);
 
-      cut_cell._connectivity[0].resize(num_vertices);
+      cut_cell._connectivity.resize(num_vertices);
       for(std::size_t i=0;i<num_vertices;i++)
       {
-        cut_cell._connectivity[0][i] = i;
+        cut_cell._connectivity[i] = i;
       }
 
       return cut_cell;
@@ -392,10 +398,10 @@ namespace cutcells::cell{
                     const std::string& cut_type_str,
                     bool triangulate)
   {
-    int num_cells = cut_cell._connectivity.size();
+    int total_num_cells = cutcells::cell::num_cells(cut_cell);
     int gdim = cut_cell._gdim;
 
-    std::vector<cutcells::cell::CutCell<T>> cut_cells(num_cells);
+    std::vector<cutcells::cell::CutCell<T>> cut_cells(total_num_cells);
 
     // std::cout << "ls_vals calculated " << ls_vals_all.size() << std::endl;
     // std::cout << "num_cells= " << num_cells << std::endl;
@@ -403,9 +409,10 @@ namespace cutcells::cell{
     int cut_cell_id = 0;
 
     //iterate over cells in cut_cell and cut each one
-    for(std::size_t j=0;j<num_cells;j++)
+    for(std::size_t j=0;j<total_num_cells;j++)
     {
-      int num_vertices = cut_cell._connectivity[j].size();
+      auto vertices = cell_vertices(cut_cell, j);
+      int num_vertices = vertices.size();
       auto cut_cell_type = cut_cell._types[j];
       //std::cout << "num_vertices" << num_vertices << std::endl;
       std::vector<T> vertex_coords(num_vertices*gdim);
@@ -413,7 +420,7 @@ namespace cutcells::cell{
 
       for(std::size_t k=0;k<num_vertices;k++)
       {
-        int vertex_id = cut_cell._connectivity[j][k];
+        int vertex_id = vertices[k];
         for(std::size_t l=0;l<gdim;l++)
         {
           vertex_coords[k*gdim+l] = cut_cell._vertex_coords[vertex_id*gdim+l];

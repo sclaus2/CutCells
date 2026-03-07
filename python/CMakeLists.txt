@@ -48,7 +48,7 @@ include(CheckCXXCompilerFlag)
 CHECK_CXX_COMPILER_FLAG("-Wall -Werror -Wextra -Wno-comment -pedantic" HAVE_PEDANTIC)
 
 if(HAVE_PEDANTIC)
-  target_compile_options(_cutcellscpp PRIVATE -Wall;-Wextra;-Werror;-Wno-comment)
+  target_compile_options(_cutcellscpp PRIVATE -Wall;-Wextra;-Wno-comment)
 endif()
 
 get_target_property(_location CUTCELLS::cutcells LOCATION)

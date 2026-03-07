@@ -393,6 +393,7 @@ namespace tetrahedron{
                          VertexCaseMap& vertex_case_map)
     {
         cut_cell._gdim = gdim;
+        cutcells::cell::clear_cell_topology(cut_cell);
 
         if(cut_type_str=="phi=0")
         {
@@ -406,7 +407,14 @@ namespace tetrahedron{
                 cut_cell._vertex_coords[i] = intersection_points[i];
             }
             // Determine interface cells for triangle this is an interval with two points (the intersection points)
-            create_interface_cells(flag_interior, vertex_case_map, triangulate, cut_cell._connectivity, cut_cell._types);
+            std::vector<std::vector<int>> interface_cells;
+            std::vector<type> interface_cell_types;
+            create_interface_cells(flag_interior, vertex_case_map, triangulate, interface_cells, interface_cell_types);
+            for (std::size_t i = 0; i < interface_cells.size(); ++i)
+            {
+                cutcells::cell::append_cell(cut_cell, interface_cell_types[i],
+                                            std::span<const int>(interface_cells[i].data(), interface_cells[i].size()));
+            }
         }
         else if(cut_type_str=="phi<0")
         {
@@ -415,8 +423,14 @@ namespace tetrahedron{
             create_sub_cell_vertex_coords(flag_interior, vertex_coordinates, gdim, intersection_points, 
                         cut_cell._vertex_coords, vertex_case_map);
             //Determine interior sub-cells
-            create_sub_cells(flag_interior, triangulate, vertex_case_map, 
-                             cut_cell._connectivity, cut_cell._types);
+            std::vector<std::vector<int>> sub_cells;
+            std::vector<type> sub_cell_types;
+            create_sub_cells(flag_interior, triangulate, vertex_case_map, sub_cells, sub_cell_types);
+            for (std::size_t i = 0; i < sub_cells.size(); ++i)
+            {
+                cutcells::cell::append_cell(cut_cell, sub_cell_types[i],
+                                            std::span<const int>(sub_cells[i].data(), sub_cells[i].size()));
+            }
         }
         else if(cut_type_str=="phi>0")
         {
@@ -425,8 +439,14 @@ namespace tetrahedron{
             int flag_exterior = get_entity_flag(ls_values, true);
             create_sub_cell_vertex_coords(flag_exterior, vertex_coordinates, gdim, intersection_points, 
                         cut_cell._vertex_coords, vertex_case_map);
-            create_sub_cells(flag_exterior, triangulate, vertex_case_map, 
-                             cut_cell._connectivity, cut_cell._types);
+            std::vector<std::vector<int>> sub_cells;
+            std::vector<type> sub_cell_types;
+            create_sub_cells(flag_exterior, triangulate, vertex_case_map, sub_cells, sub_cell_types);
+            for (std::size_t i = 0; i < sub_cells.size(); ++i)
+            {
+                cutcells::cell::append_cell(cut_cell, sub_cell_types[i],
+                                            std::span<const int>(sub_cells[i].data(), sub_cells[i].size()));
+            }
         }
         else
         {
@@ -448,10 +468,7 @@ namespace tetrahedron{
         std::cout << "connectivity=[";
         for(auto &i: cut_cell._connectivity)
         {
-            for(auto &j : i)
-            {
-                std::cout << j << ", ";
-            }
+            std::cout << i << ", ";
         }
         std::cout << "]" << std::endl;
 
@@ -498,8 +515,7 @@ namespace tetrahedron{
         compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
 
         cut_cell._vertex_coords.reserve(reserve_vertex_coords * gdim);
-        cut_cell._connectivity.reserve(reserve_connectivity);
-        cut_cell._types.reserve(reserve_types);
+        cutcells::cell::reserve_cell_topology(cut_cell, reserve_connectivity, reserve_types);
 
         create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell,
                         triangulate, intersection_points, vertex_case_map);

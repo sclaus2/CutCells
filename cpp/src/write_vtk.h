@@ -11,7 +11,8 @@
 namespace cutcells::io
 {
     void write_vtk(std::string filename, const std::span<const double> element_vertex_coords,  
-                    const std::vector<std::vector<int>> elements,
+                    const std::span<const int> connectivity,
+                    const std::span<const int> offsets,
                     const std::span<cell::type> element_types, 
                     const int gdim);
 
