@@ -14,10 +14,21 @@ option(BUILD_SHARED_LIBS "Build CutCells with shared libraries." ON)
 #add_feature_info(BUILD_SHARED_LIBS BUILD_SHARED_LIBS "Build cutfemx with shared libraries.")
 
 include(FeatureSummary)
+include(CheckIPOSupported)
 
 # Source files
 add_subdirectory(src)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../benchmarks ${CMAKE_CURRENT_BINARY_DIR}/benchmarks)
+
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(cutcells PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
+check_ipo_supported(RESULT CUTCELLS_IPO_SUPPORTED OUTPUT CUTCELLS_IPO_ERROR)
+if(CUTCELLS_IPO_SUPPORTED)
+  set_property(TARGET cutcells PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+endif()
 
 set_target_properties(cutcells PROPERTIES PRIVATE_HEADER "${HEADERS}")
 target_include_directories(cutcells PUBLIC

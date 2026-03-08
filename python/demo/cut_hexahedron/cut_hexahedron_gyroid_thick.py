@@ -36,7 +36,11 @@ def create_structured_hex_mesh(
 def create_cut_mesh(
     grid: pv.UnstructuredGrid, k: float, thickness: float, triangulate: bool
 ) -> pv.UnstructuredGrid:
-    points = grid.points
+    points = np.asarray(grid.points, dtype=np.float64)
+    points_flat = points.reshape(-1)
+    connectivity = np.asarray(grid.cell_connectivity, dtype=np.int32)
+    offset = np.asarray(grid.offset, dtype=np.int32)
+    celltypes = np.asarray(grid.celltypes, dtype=np.int32)
 
     ls_values = np.zeros(len(points), dtype=float)
     for j, point in enumerate(points):
@@ -44,27 +48,27 @@ def create_cut_mesh(
 
     cut_mesh = cutcells.cut_vtk_mesh(
         ls_values,
-        points,
-        grid.cell_connectivity,
-        grid.offset,
-        grid.celltypes,
+        points_flat,
+        connectivity,
+        offset,
+        celltypes,
         "phi<0",
         triangulate,
     )
 
     inside_cells = cutcells.locate_cells(
         ls_values,
-        points,
-        grid.cell_connectivity,
-        grid.offset,
-        grid.celltypes,
+        points_flat,
+        connectivity,
+        offset,
+        celltypes,
         "phi<0",
     )
 
     pv_cut = pv.UnstructuredGrid(
         cut_mesh.cells,
-        cut_mesh.types,
-        cut_mesh.vertex_coords,
+        cut_mesh.vtk_types,
+        np.asarray(cut_mesh.vertex_coords),
     )
     extract = grid.extract_cells(inside_cells)
 
@@ -151,24 +155,27 @@ def main() -> None:
 
     # Optionally write interface, inside and outside VTK files
     if args.write_prefix:
-        pts = grid.points
+        pts = np.asarray(grid.points, dtype=np.float64)
+        pts_flat = pts.reshape(-1)
         ls_values = np.zeros(len(pts), dtype=float)
         for j, point in enumerate(pts):
             ls_values[j] = level_set_thick_gyroid(
                 point, k=k, thickness=float(args.thickness)
             )
 
-        conn = grid.cell_connectivity
-        off = grid.offset
-        ctypes = grid.celltypes
+        conn = np.asarray(grid.cell_connectivity, dtype=np.int32)
+        off = np.asarray(grid.offset, dtype=np.int32)
+        ctypes = np.asarray(grid.celltypes, dtype=np.int32)
 
         # Interface (phi=0)
         try:
             iface = cutcells.cut_vtk_mesh(
-                ls_values, pts, conn, off, ctypes, "phi=0", args.triangulate
+                ls_values, pts_flat, conn, off, ctypes, "phi=0", args.triangulate
             )
             iface_pv = pv.UnstructuredGrid(
-                iface.cells, iface.types, iface.vertex_coords
+                iface.cells,
+                iface.vtk_types,
+                np.asarray(iface.vertex_coords),
             )
             iface_file = f"{args.write_prefix}_interface.vtu"
             iface_pv.save(iface_file)
@@ -179,10 +186,12 @@ def main() -> None:
         # Inside (phi<0)
         try:
             inside = cutcells.cut_vtk_mesh(
-                ls_values, pts, conn, off, ctypes, "phi<0", args.triangulate
+                ls_values, pts_flat, conn, off, ctypes, "phi<0", args.triangulate
             )
             inside_pv = pv.UnstructuredGrid(
-                inside.cells, inside.types, inside.vertex_coords
+                inside.cells,
+                inside.vtk_types,
+                np.asarray(inside.vertex_coords),
             )
             inside_file = f"{args.write_prefix}_inside.vtu"
             inside_pv.save(inside_file)
@@ -193,10 +202,12 @@ def main() -> None:
         # Outside (phi>0)
         try:
             outside = cutcells.cut_vtk_mesh(
-                ls_values, pts, conn, off, ctypes, "phi>0", args.triangulate
+                ls_values, pts_flat, conn, off, ctypes, "phi>0", args.triangulate
             )
             outside_pv = pv.UnstructuredGrid(
-                outside.cells, outside.types, outside.vertex_coords
+                outside.cells,
+                outside.vtk_types,
+                np.asarray(outside.vertex_coords),
             )
             outside_file = f"{args.write_prefix}_outside.vtu"
             outside_pv.save(outside_file)

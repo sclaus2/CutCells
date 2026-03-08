@@ -8,8 +8,8 @@ import pytest
 
 import cutcells
 
-VTK_TRIANGLE = 5
-VTK_QUAD = 9
+TRIANGLE = int(cutcells.CellType.triangle.value)
+QUADRILATERAL = int(cutcells.CellType.quadrilateral.value)
 
 
 def _square_vertices():
@@ -23,13 +23,13 @@ def test_quadrilateral_opposite_corners_disconnected():
     cut_inside = cutcells.cut(
         cutcells.CellType.quadrilateral, vertices, 2, ls_values, "phi<0", False
     )
-    assert cut_inside.types == [VTK_TRIANGLE, VTK_TRIANGLE]
+    assert list(cut_inside.types) == [TRIANGLE, TRIANGLE]
     assert np.isclose(cut_inside.volume(), 0.25)
 
     cut_outside = cutcells.cut(
         cutcells.CellType.quadrilateral, vertices, 2, ls_values, "phi>0", False
     )
-    assert cut_outside.types == [VTK_QUAD, VTK_QUAD]
+    assert list(cut_outside.types) == [QUADRILATERAL, QUADRILATERAL]
     assert np.isclose(cut_outside.volume(), 0.75)
 
 
@@ -40,11 +40,11 @@ def test_quadrilateral_pentagon_splits_triangle_quad():
     cut_inside = cutcells.cut(
         cutcells.CellType.quadrilateral, vertices, 2, ls_values, "phi<0", False
     )
-    assert cut_inside.types == [VTK_TRIANGLE, VTK_QUAD]
+    assert list(cut_inside.types) == [TRIANGLE, QUADRILATERAL]
     assert np.isclose(cut_inside.volume(), 0.875)
 
     cut_outside = cutcells.cut(
         cutcells.CellType.quadrilateral, vertices, 2, ls_values, "phi>0", False
     )
-    assert cut_outside.types == [VTK_TRIANGLE]
+    assert list(cut_outside.types) == [TRIANGLE]
     assert np.isclose(cut_outside.volume(), 0.125)

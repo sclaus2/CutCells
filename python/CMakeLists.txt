@@ -7,6 +7,8 @@ endif()
 
 project(cutcells_nanobind VERSION "0.2.0" LANGUAGES CXX)
 
+find_package(OpenMP)
+
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,12 +18,31 @@ if (TARGET cutcells)
   add_library(CUTCELLS::cutcells ALIAS cutcells)
 else()
   # Find CutCells (C++)
-  # Prefer the in-repo build if present, so `pip install -e python` uses local C++ changes.
+  # Prefer in-repo CutCells configs over any globally/conda-installed libcutcells.
+  # This avoids ABI mismatches between wrapper headers (from workspace) and an older
+  # runtime library discovered on the default prefix path.
   if (NOT DEFINED CutCells_DIR)
-    set(_local_cutcells_prefix "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-dir/prefix")
-    if (EXISTS "${_local_cutcells_prefix}/lib/cmake/cutcells/CutCellsConfig.cmake")
-      list(PREPEND CMAKE_PREFIX_PATH "${_local_cutcells_prefix}")
-    endif()
+    set(_local_cutcells_candidates
+      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build/prefix/lib/cmake/cutcells"
+      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-dir/prefix/lib/cmake/cutcells"
+      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-bench-release"
+      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build"
+      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-dir")
+
+    foreach(_candidate IN LISTS _local_cutcells_candidates)
+      if (EXISTS "${_candidate}")
+        if (IS_DIRECTORY "${_candidate}")
+          set(_candidate_dir "${_candidate}")
+        else()
+          get_filename_component(_candidate_dir "${_candidate}" DIRECTORY)
+        endif()
+
+        if (EXISTS "${_candidate_dir}/CutCellsConfig.cmake" AND EXISTS "${_candidate_dir}/CutCellsTargets.cmake")
+          set(CutCells_DIR "${_candidate_dir}")
+          break()
+        endif()
+      endif()
+    endforeach()
   endif()
   find_package(CutCells REQUIRED)
 endif()

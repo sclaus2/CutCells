@@ -70,7 +70,11 @@ def create_hex_box_mesh(x0, y0, z0, x1, y1, z1, nx, ny, nz) -> pv.UnstructuredGr
 def create_cut_mesh(
     grid: pv.UnstructuredGrid, triangulate: bool
 ) -> pv.UnstructuredGrid:
-    points = grid.points
+    points = np.asarray(grid.points, dtype=np.float64)
+    points_flat = points.reshape(-1)
+    connectivity = np.asarray(grid.cell_connectivity, dtype=np.int32)
+    offset = np.asarray(grid.offset, dtype=np.int32)
+    celltypes = np.asarray(grid.celltypes, dtype=np.int32)
 
     ls_values = np.zeros(len(points), dtype=float)
     for j, point in enumerate(points):
@@ -78,26 +82,26 @@ def create_cut_mesh(
 
     cut_mesh = cutcells.cut_vtk_mesh(
         ls_values,
-        points,
-        grid.cell_connectivity,
-        grid.offset,
-        grid.celltypes,
+        points_flat,
+        connectivity,
+        offset,
+        celltypes,
         "phi<0",
         triangulate,
     )
     inside_cells = cutcells.locate_cells(
         ls_values,
-        points,
-        grid.cell_connectivity,
-        grid.offset,
-        grid.celltypes,
+        points_flat,
+        connectivity,
+        offset,
+        celltypes,
         "phi<0",
     )
 
     pv_cut = pv.UnstructuredGrid(
         cut_mesh.cells,
-        cut_mesh.types,
-        cut_mesh.vertex_coords,
+        np.asarray(cut_mesh.types, dtype=np.uint8),
+        np.asarray(cut_mesh.vertex_coords),
     )
     extract = grid.extract_cells(inside_cells)
 

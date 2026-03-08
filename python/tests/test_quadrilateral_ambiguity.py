@@ -48,16 +48,17 @@ def test_asymptotic_decider_scale_invariant_and_different_diagonals():
 
 def _segments_from_cutcell(cut_cell):
     coords = np.asarray(cut_cell.vertex_coords)
-    conn = list(cut_cell.connectivity)
+    conn = np.asarray(cut_cell.connectivity)
+    offsets = np.asarray(cut_cell.offsets)
     segments = []
-    i = 0
-    while i < len(conn):
-        n = int(conn[i])
+    for i in range(len(offsets) - 1):
+        begin = int(offsets[i])
+        end = int(offsets[i + 1])
+        n = end - begin
         assert n == 2
-        a = int(conn[i + 1])
-        b = int(conn[i + 2])
+        a = int(conn[begin])
+        b = int(conn[begin + 1])
         segments.append((coords[a], coords[b]))
-        i += 1 + n
     return segments
 
 
@@ -124,12 +125,14 @@ def test_quad_ambiguous_connected_variant_keeps_quads(ls_values, expected_mask):
     )
     types = list(inside.types)
 
-    # VTK_QUAD = 9
-    assert types == [9, 9]
+    assert types == [
+        int(cutcells.CellType.quadrilateral.value),
+        int(cutcells.CellType.quadrilateral.value),
+    ]
 
-    conn = list(inside.connectivity)
-    i = 0
-    for _ in range(2):
-        assert int(conn[i]) == 4
-        i += 5
-    assert i == len(conn)
+    conn = np.asarray(inside.connectivity)
+    offsets = np.asarray(inside.offsets)
+    assert len(offsets) == 3
+    for i in range(2):
+        assert int(offsets[i + 1] - offsets[i]) == 4
+    assert int(offsets[-1]) == len(conn)

@@ -109,9 +109,9 @@ namespace triangle{
 
         intersection_points.resize(num_intersection_points*gdim);
 
-        std::vector<T> v0(gdim);
-        std::vector<T> v1(gdim);
-        std::vector<T> intersection_point(gdim);
+        // gdim is at most 3; use stack arrays to avoid heap allocation per intersection point
+        std::array<T, 3> v0 = {};
+        std::array<T, 3> v1 = {};
 
         for(int ip=0; ip<num_intersection_points; ip++)
         {
@@ -130,12 +130,9 @@ namespace triangle{
             T ls0 = ls_values[vertex_id_0];
             T ls1 = ls_values[vertex_id_1];
 
-            interval::compute_intersection_point<T>(0.0, v0, v1,ls0, ls1, intersection_point);
-
-            for(int j=0;j<gdim;j++)
-            {
-                intersection_points[ip*gdim+j] = intersection_point[j];
-            }
+            interval::compute_intersection_point<T>(T(0), std::span<const T>(v0.data(), gdim),
+                                                    std::span<const T>(v1.data(), gdim),
+                                                    ls0, ls1, intersection_points, ip * gdim);
         }
 
         vertex_case_map[triangle_intersected_edges[flag][0]] = 0;
@@ -186,81 +183,6 @@ namespace triangle{
         }
     }
 
-    void create_interface_cells(std::vector<std::vector<int>>& interface_cells, std::vector<type>& interface_cell_types)
-    {
-        interface_cells.resize(1);
-        interface_cells[0].resize(2);
-        interface_cells[0][0] = 0;
-        interface_cells[0][1] = 1;
-
-        interface_cell_types.resize(1);
-        interface_cell_types[0] = type::interval;
-    }
-
-    void create_sub_cells(const int& flag, bool triangulate, std::vector<std::vector<int>>& sub_cells, 
-                          std::vector<type>& sub_cell_types, VertexCaseMap& vertex_case_map)
-    {
-        // Allocate memory
-        int num_sub_elements = get_num_sub_elements(flag, triangulate);
-        sub_cells.resize(num_sub_elements);
-        sub_cell_types.resize(num_sub_elements);
-
-        for(int i=0;i<num_sub_elements;i++)
-        {
-            type sub_cell_type;
-
-            if(triangulate)
-            {
-                sub_cell_type = type::triangle;
-            }
-            else
-            {
-                sub_cell_type = triangle_sub_element_cell_types[flag];
-            }
-            sub_cell_types[i] = sub_cell_type;
-            int num_vertices = get_num_vertices(sub_cell_type);
-            sub_cells[i].resize(num_vertices);
-        }
-
-        // Fill in vertex ids
-        //int vertices[4] = triangle_sub_element[flag];
-        type sub_cell_type = triangle_sub_element_cell_types[flag];
-
-        //collect all vertices of sub-elements (elements are separated by -1 in list)
-        if(sub_cell_type == type::quadrilateral && triangulate == true)
-        {
-            std::vector<std::vector<int>> triangles;
-            triangulation(sub_cell_type, triangle_sub_element[flag], triangles);
-
-            for(int i=0;i<num_sub_elements;i++)
-                for(int j=0;j<3;j++)
-                {
-                    sub_cells[i][j] = vertex_case_map[triangles[i][j]];
-                }
-        }
-        else
-        {
-            //number of entries in sub_element table
-            int ncols = 4;
-            int sub_element = 0;
-
-            for(int i=0;i<num_sub_elements;i++)
-            {
-                for(int j=0;j<ncols;j++)
-                {
-                    if(triangle_sub_element[flag][j]!=-1)
-                    {
-                        sub_cells[i][j] = vertex_case_map[triangle_sub_element[flag][j]];
-                    }
-                    else
-                    {
-                        //vertex is -1, move on to next element
-                    }
-                }
-            }
-        }
-    }
-
     template <std::floating_point T>
     void create_cut_cell(const std::span<const T> vertex_coordinates, 
                          const int gdim,  const std::span<const T> ls_values,
@@ -271,8 +193,9 @@ namespace triangle{
     {
         cut_cell._gdim = gdim;
         cutcells::cell::clear_cell_topology(cut_cell);
+        const cut_type cut_kind = string_to_cut_type(cut_type_str);
 
-        if(cut_type_str=="phi=0")
+        if(cut_kind == cut_type::phieq0)
         {
             cut_cell._tdim = 1;
             int flag_interior = get_entity_flag(ls_values, false);
@@ -283,46 +206,69 @@ namespace triangle{
             {
                 cut_cell._vertex_coords[i] = intersection_points[i];
             }
-            // Determine interface cells for triangle this is an interval with two points (the intersection points)
-            std::vector<std::vector<int>> interface_cells;
-            std::vector<type> interface_cell_types;
-            create_interface_cells(interface_cells, interface_cell_types);
-            for (std::size_t i = 0; i < interface_cells.size(); ++i)
-            {
-                cutcells::cell::append_cell(cut_cell, interface_cell_types[i],
-                                            std::span<const int>(interface_cells[i].data(), interface_cells[i].size()));
-            }
+            // Interface is a single interval spanning the two intersection points
+            const std::array<int, 2> iface_verts = {0, 1};
+            cutcells::cell::append_cell(cut_cell, type::interval, iface_verts, 2);
         }
-        else if(cut_type_str=="phi<0")
+        else if(cut_kind == cut_type::philt0)
         {
             cut_cell._tdim = 2;
             int flag_interior = get_entity_flag(ls_values, false);
             create_sub_cell_vertex_coords(flag_interior, vertex_coordinates, gdim, intersection_points, 
                         cut_cell._vertex_coords, vertex_case_map);
-            //Determine interior sub-cells
-            std::vector<std::vector<int>> sub_cells;
-            std::vector<type> sub_cell_types;
-            create_sub_cells(flag_interior, triangulate, sub_cells, sub_cell_types, vertex_case_map);
-            for (std::size_t i = 0; i < sub_cells.size(); ++i)
+            // Append sub-cells directly into flat storage without staging
+            type sub_cell_type = triangle_sub_element_cell_types[flag_interior];
+            if(sub_cell_type == type::quadrilateral && triangulate)
             {
-                cutcells::cell::append_cell(cut_cell, sub_cell_types[i],
-                                            std::span<const int>(sub_cells[i].data(), sub_cells[i].size()));
+                // Triangulate the quad: produce two triangles via triangulation helper
+                std::vector<std::vector<int>> triangles;
+                triangulation(sub_cell_type, triangle_sub_element[flag_interior], triangles);
+                for(int i = 0; i < static_cast<int>(triangles.size()); ++i)
+                {
+                    std::array<int, 3> t;
+                    t[0] = vertex_case_map[triangles[i][0]];
+                    t[1] = vertex_case_map[triangles[i][1]];
+                    t[2] = vertex_case_map[triangles[i][2]];
+                    cutcells::cell::append_cell(cut_cell, type::triangle, t, 3);
+                }
+            }
+            else
+            {
+                int num_vertices = get_num_vertices(sub_cell_type);
+                std::array<int, 4> verts;
+                for(int j = 0; j < num_vertices; ++j)
+                    verts[j] = vertex_case_map[triangle_sub_element[flag_interior][j]];
+                cutcells::cell::append_cell(cut_cell, sub_cell_type, verts, num_vertices);
             }
         }
-        else if(cut_type_str=="phi>0")
+        else if(cut_kind == cut_type::phigt0)
         {
             cut_cell._tdim = 2;
-            //Determine exterior sub-cells
             int flag_exterior = get_entity_flag(ls_values, true);
             create_sub_cell_vertex_coords(flag_exterior, vertex_coordinates, gdim, intersection_points, 
                     cut_cell._vertex_coords, vertex_case_map);
-            std::vector<std::vector<int>> sub_cells;
-            std::vector<type> sub_cell_types;
-            create_sub_cells(flag_exterior, triangulate, sub_cells, sub_cell_types, vertex_case_map);
-            for (std::size_t i = 0; i < sub_cells.size(); ++i)
+            // Append sub-cells directly into flat storage without staging
+            type sub_cell_type = triangle_sub_element_cell_types[flag_exterior];
+            if(sub_cell_type == type::quadrilateral && triangulate)
             {
-                cutcells::cell::append_cell(cut_cell, sub_cell_types[i],
-                                            std::span<const int>(sub_cells[i].data(), sub_cells[i].size()));
+                std::vector<std::vector<int>> triangles;
+                triangulation(sub_cell_type, triangle_sub_element[flag_exterior], triangles);
+                for(int i = 0; i < static_cast<int>(triangles.size()); ++i)
+                {
+                    std::array<int, 3> t;
+                    t[0] = vertex_case_map[triangles[i][0]];
+                    t[1] = vertex_case_map[triangles[i][1]];
+                    t[2] = vertex_case_map[triangles[i][2]];
+                    cutcells::cell::append_cell(cut_cell, type::triangle, t, 3);
+                }
+            }
+            else
+            {
+                int num_vertices = get_num_vertices(sub_cell_type);
+                std::array<int, 4> verts;
+                for(int j = 0; j < num_vertices; ++j)
+                    verts[j] = vertex_case_map[triangle_sub_element[flag_exterior][j]];
+                cutcells::cell::append_cell(cut_cell, sub_cell_type, verts, num_vertices);
             }
         }
         else
@@ -379,7 +325,8 @@ namespace triangle{
 
         // Compute intersection points these are required for any cut cell part (interface, interior, exterior)
         // get the number of intersection points
-        std::vector<T> intersection_points;
+        thread_local std::vector<T> intersection_points;
+        intersection_points.clear();
         intersection_points.reserve(2 * gdim);
         // the vertex case map,
         // first few entries map from intersected edge to intersection point number 
@@ -396,7 +343,7 @@ namespace triangle{
         create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, 
                         triangulate, intersection_points, vertex_case_map);
 
-        cutcells::utils::create_vertex_parent_entity_map<T>(vertex_case_map, cut_cell._vertex_parent_entity);
+        cutcells::utils::create_vertex_parent_entity_map<T>(vertex_case_map, cut_cell._vertex_parent_entity, 3, 3);
     };
 
     // cut triangle version with vector of string in case multiple parts of the cut-cell are needed (very common)
@@ -415,7 +362,8 @@ namespace triangle{
 
         // Compute intersection points these are required for any cut cell part (interface, interior, exterior)
         // get the number of intersection points
-        std::vector<T> intersection_points;
+        thread_local std::vector<T> intersection_points;
+        intersection_points.clear();
         intersection_points.reserve(2 * gdim);
         VertexCaseMap vertex_case_map;
         vertex_case_map.fill(-1);

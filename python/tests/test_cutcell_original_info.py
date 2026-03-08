@@ -12,7 +12,7 @@ def test_cutcell_original_info():
 
     # Cut it
     cut = cutcells.cut(
-        cutcells.CellType.quadrilateral, vertices, 2, ls_values, "phi<0", False
+        cutcells.CellType.quadrilateral, vertices.ravel(), 2, ls_values, "phi<0", False
     )
 
     # For now, just verify the cut doesn't crash
@@ -21,7 +21,7 @@ def test_cutcell_original_info():
     # - cut._parent_vertex_coords matches vertices
     # - cut._parent_vertex_ids is [0,1,2,3] (or similar default)
 
-    assert len(cut.types) > 0, "Should produce some cut cells"
+    assert cut.types.size > 0, "Should produce some cut cells"
     assert cut.vertex_coords is not None, "Should have vertex coordinates"
 
 

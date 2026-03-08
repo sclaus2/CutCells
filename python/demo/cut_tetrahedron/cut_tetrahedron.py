@@ -32,14 +32,14 @@ cut_cell.write_vtk("interface.vtu")
 pv.start_xvfb()
 
 grid_int = pv.UnstructuredGrid(
-    cut_cell_int.connectivity,
-    cut_cell_int.types,
-    cut_cell_int.vertex_coords,
+    cut_cell_int.cells,
+    cut_cell_int.vtk_types,
+    np.asarray(cut_cell_int.vertex_coords),
 )
 grid_ext = pv.UnstructuredGrid(
-    cut_cell_ext.connectivity,
-    cut_cell_ext.types,
-    cut_cell_ext.vertex_coords,
+    cut_cell_ext.cells,
+    cut_cell_ext.vtk_types,
+    np.asarray(cut_cell_ext.vertex_coords),
 )
 
 split_cells_int = grid_int.explode()

@@ -8,7 +8,8 @@ import numpy as np
 
 import cutcells
 
-VTK_TRIANGLE = 5
+TRIANGLE = int(cutcells.CellType.triangle.value)
+QUADRILATERAL = int(cutcells.CellType.quadrilateral.value)
 VTK_QUAD = 9
 
 
@@ -39,12 +40,24 @@ def test_cut_vtk_mesh_triangulate_flag_controls_output_types():
     ls_vals = points[:, 0] - 0.3
 
     cut_mesh_quads = cutcells.cut_vtk_mesh(
-        ls_vals, points, connectivity, offset, vtk_type, "phi<0", triangulate=False
+        ls_vals,
+        points.ravel(),
+        connectivity,
+        offset,
+        vtk_type,
+        "phi<0",
+        triangulate=False,
     )
-    assert VTK_QUAD in list(cut_mesh_quads.types)
+    assert QUADRILATERAL in list(cut_mesh_quads.types)
 
     cut_mesh_tris = cutcells.cut_vtk_mesh(
-        ls_vals, points, connectivity, offset, vtk_type, "phi<0", triangulate=True
+        ls_vals,
+        points.ravel(),
+        connectivity,
+        offset,
+        vtk_type,
+        "phi<0",
+        triangulate=True,
     )
-    assert VTK_QUAD not in list(cut_mesh_tris.types)
-    assert VTK_TRIANGLE in list(cut_mesh_tris.types)
+    assert QUADRILATERAL not in list(cut_mesh_tris.types)
+    assert TRIANGLE in list(cut_mesh_tris.types)

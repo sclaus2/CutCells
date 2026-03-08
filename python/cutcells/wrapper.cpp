@@ -13,6 +13,7 @@
 #include <nanobind/stl/map.h>
 #include <span>
 #include <type_traits>
+#include <stdexcept>
 
 #include "../../cpp/src/cell_types.h"
 #include "../../cpp/src/cut_cell.h"
@@ -65,6 +66,40 @@ template <typename V, std::size_t U>
 auto as_nbarrayp(std::pair<V, std::array<std::size_t, U>>&& x)
 {
   return as_nbarray(std::move(x.first), x.second.size(), x.second.data());
+}
+
+inline std::vector<int32_t> csr_to_vtk_cells_impl(std::span<const int> connectivity,
+                                                  std::span<const int> offsets)
+{
+  if (offsets.empty())
+    return {};
+
+  const int conn_size = static_cast<int>(connectivity.size());
+  const bool has_terminal_offset = (offsets.back() == conn_size);
+  const int num_cells = has_terminal_offset ? static_cast<int>(offsets.size()) - 1
+                                            : static_cast<int>(offsets.size());
+
+  if (num_cells < 0)
+    throw std::runtime_error("Invalid CSR offsets: negative cell count");
+
+  std::vector<int32_t> cells;
+  cells.reserve(connectivity.size() + static_cast<std::size_t>(num_cells));
+
+  for (int i = 0; i < num_cells; ++i)
+  {
+    const int begin = offsets[i];
+    const int end = (i + 1 < static_cast<int>(offsets.size())) ? offsets[i + 1] : conn_size;
+
+    if (begin < 0 || end < begin || end > conn_size)
+      throw std::runtime_error("Invalid CSR offsets/connectivity bounds");
+
+    const int nverts = end - begin;
+    cells.push_back(static_cast<int32_t>(nverts));
+    for (int j = begin; j < end; ++j)
+      cells.push_back(static_cast<int32_t>(connectivity[j]));
+  }
+
+  return cells;
 }
 
 template <typename T>
@@ -140,6 +175,15 @@ void declare_float(nb::module_& m, std::string type)
           nb::rv_policy::reference_internal,
           "Zero-copy view of CSR offsets array.")
         .def_prop_ro(
+          "cells",
+          [](const cell::CutCell<T>& self) {
+            return as_nbarray(csr_to_vtk_cells_impl(
+              std::span<const int>(self._connectivity.data(), self._connectivity.size()),
+              std::span<const int>(self._offset.data(), self._offset.size())));
+          },
+          nb::rv_policy::move,
+          "Packed VTK cells array [n0, v0..., n1, v1..., ...] built from connectivity+offsets.")
+        .def_prop_ro(
           "types",
           [](const cell::CutCell<T>& self) {
             using type_id_t = std::underlying_type_t<cell::type>;
@@ -151,6 +195,17 @@ void declare_float(nb::module_& m, std::string type)
           },
           nb::rv_policy::reference_internal,
           "Zero-copy view of cut-cell type ids (cell::type enum underlying values).")
+        .def_prop_ro(
+          "vtk_types",
+          [](const cell::CutCell<T>& self) {
+            std::vector<uint8_t> vtk;
+            vtk.reserve(self._types.size());
+            for (const auto t : self._types)
+              vtk.push_back(static_cast<uint8_t>(cell::map_cell_type_to_vtk(t)));
+            return as_nbarray(std::move(vtk));
+          },
+          nb::rv_policy::move,
+          "VTK type IDs for each sub-cell (uint8), suitable for pv.UnstructuredGrid.")
         .def_prop_ro(
           "vertex_parent_entity",
           [](const cell::CutCell<T>& self) {
@@ -180,16 +235,15 @@ void declare_float(nb::module_& m, std::string type)
         .def_prop_ro(
           "types",
           [](const mesh::CutCells<T>& self) {
-            //allocate memory
-            nb::list types;
-
-              for(std::size_t i=0;i<self._types.size();i++)
-              {
-                types.append(static_cast<int>(map_cell_type_to_vtk(self._types[i])));
-              }
-
-              return types;
-          })
+            using type_id_t = std::underlying_type_t<cell::type>;
+            static_assert(std::is_integral_v<type_id_t>, "cell::type must have integral underlying type");
+            return nb::ndarray<const type_id_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              reinterpret_cast<const type_id_t*>(self._types.data()),
+              {self._types.size()},
+              nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal,
+          "Zero-copy view of cut-cell type ids (cell::type enum underlying values).")
         .def_prop_ro(
           "parent_map",
           [](const mesh::CutCells<T>& self) {
@@ -233,32 +287,36 @@ void declare_float(nb::module_& m, std::string type)
         .def_prop_ro(
           "types",
           [](const mesh::CutMesh<T>& self) {
-            //allocate memory
-            nb::list types;
-              for(std::size_t i=0;i<self._types.size();i++)
-              {
-                types.append(static_cast<int>(map_cell_type_to_vtk(self._types[i])));
-              }
-              return types;
-          })
+            using type_id_t = std::underlying_type_t<cell::type>;
+            static_assert(std::is_integral_v<type_id_t>, "cell::type must have integral underlying type");
+            return nb::ndarray<const type_id_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              reinterpret_cast<const type_id_t*>(self._types.data()),
+              {self._types.size()},
+              nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal,
+          "Zero-copy view of cut-mesh type ids (cell::type enum underlying values).")
+        .def_prop_ro(
+          "vtk_types",
+          [](const mesh::CutMesh<T>& self) {
+            std::vector<uint8_t> vtk;
+            vtk.reserve(self._types.size());
+            for (const auto t : self._types)
+              vtk.push_back(static_cast<uint8_t>(cell::map_cell_type_to_vtk(t)));
+            return as_nbarray(std::move(vtk));
+          },
+          nb::rv_policy::move,
+          "VTK type IDs for each sub-cell (uint8), suitable for pv.UnstructuredGrid.")
         .def_prop_ro(
           "cells",
           [](const mesh::CutMesh<T>& self) {
-            std::size_t num_cells = self._offset.size()-1;
-            std::vector<int> cells;
-
-            for(std::size_t i=0;i<num_cells;i++)
-            {
-              std::size_t num_vertices = self._offset[i+1] - self._offset[i];
-              cells.push_back(num_vertices);
-              for(std::size_t j=0;j<num_vertices;j++)
-              {
-                cells.push_back(self._connectivity[self._offset[i]+j]);
-              }
-            }
-            return cells;
+            return as_nbarray(csr_to_vtk_cells_impl(
+              std::span<const int>(self._connectivity.data(), self._connectivity.size()),
+              std::span<const int>(self._offset.data(), self._offset.size())));
           },
-          " Return cells.")
+          nb::rv_policy::move,
+          "Convenience packed cells view [n, v0, ...] for VTK-style consumers (allocates)."
+          " For high-performance workflows, prefer zero-copy 'connectivity' + 'offset'.")
         .def_prop_ro(
           "parent_map",
           [](const mesh::CutMesh<T>& self) {
@@ -303,13 +361,17 @@ void declare_float(nb::module_& m, std::string type)
                              const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offset,
                              const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& vtk_type,
                              const std::string& cut_type_str){
-              nb::gil_scoped_release release;
-              return  as_nbarray(mesh::locate_cells<T>(std::span(ls_vals.data(),ls_vals.size()),
-                            std::span(points.data(),points.size()),
-                            std::span(connectivity.data(),connectivity.size()),
-                            std::span(offset.data(),offset.size()),
-                            std::span(vtk_type.data(),vtk_type.size()),
-                            cell::string_to_cut_type(cut_type_str)));
+              std::vector<int> located_cells;
+              {
+                nb::gil_scoped_release release;
+                located_cells = mesh::locate_cells<T>(std::span(ls_vals.data(),ls_vals.size()),
+                              std::span(points.data(),points.size()),
+                              std::span(connectivity.data(),connectivity.size()),
+                              std::span(offset.data(),offset.size()),
+                              std::span(vtk_type.data(),vtk_type.size()),
+                              cell::string_to_cut_type(cut_type_str));
+              }
+              return as_nbarray(std::move(located_cells));
              }
              , "locate cells in vtk mesh");
 
@@ -353,4 +415,16 @@ NB_MODULE(_cutcellscpp, m)
 
   declare_float<float>(m, "float32");
   declare_float<double>(m, "float64");
+
+  m.def("csr_to_vtk_cells",
+        [](const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,
+           const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offsets)
+        {
+          return as_nbarray(csr_to_vtk_cells_impl(
+            std::span<const int>(connectivity.data(), connectivity.size()),
+            std::span<const int>(offsets.data(), offsets.size())));
+        },
+        nb::arg("connectivity"),
+        nb::arg("offsets"),
+        "Pack CSR connectivity/offsets to VTK cells layout [n0, v0..., n1, v1..., ...].");
 }

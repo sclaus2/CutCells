@@ -25,11 +25,11 @@ def test_cutcontext_edge_reuse():
     ls_values = np.array([-0.5, 0.5, 0.5, -0.5], dtype=float)
 
     cut = cutcells.cut(
-        cutcells.CellType.quadrilateral, vertices, 2, ls_values, "phi<0", False
+        cutcells.CellType.quadrilateral, vertices.ravel(), 2, ls_values, "phi<0", False
     )
 
     # Basic sanity: cut should produce cells
-    assert len(cut.types) > 0
+    assert cut.types.size > 0
     assert cut.vertex_coords is not None
 
     # TODO: When CutContext is integrated, verify:

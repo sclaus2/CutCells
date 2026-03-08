@@ -126,12 +126,22 @@ def main() -> None:
 
     # level set at points
     ls = np.array([level_set_popcorn_2d(p) for p in points], dtype=float)
+    points_flat = points.reshape(-1)
+    conn = np.asarray(conn, dtype=np.int32)
+    off = np.asarray(off, dtype=np.int32)
+    celltypes = np.asarray(celltypes, dtype=np.int32)
 
     # Cut mesh and also extract all inside (phi<0) background cells for context
     cut_mesh = cutcells.cut_vtk_mesh(
-        ls, points, conn, off, celltypes, "phi<0", triangulate=bool(args.triangulate)
+        ls,
+        points_flat,
+        conn,
+        off,
+        celltypes,
+        "phi<0",
+        triangulate=bool(args.triangulate),
     )
-    inside_cells = cutcells.locate_cells(ls, points, conn, off, celltypes, "phi<0")
+    inside_cells = cutcells.locate_cells(ls, points_flat, conn, off, celltypes, "phi<0")
 
     # Build a pyvista grid for visualization
     cells_with_counts = np.empty((len(off) * 5,), dtype=np.int32)
@@ -145,7 +155,7 @@ def main() -> None:
 
     cut_points = np.asarray(cut_mesh.vertex_coords)
     cut_cells = np.asarray(cut_mesh.cells, dtype=np.int32)
-    cut_types = np.asarray(cut_mesh.types, dtype=np.int32)
+    cut_types = cut_mesh.vtk_types
     pv_cut = pv.UnstructuredGrid(cut_cells, cut_types, cut_points)
     extract = bg.extract_cells(inside_cells)
     merged = extract.merge(pv_cut)

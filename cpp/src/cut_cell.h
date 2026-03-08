@@ -143,6 +143,25 @@ namespace cutcells
                     cut_cell._connectivity.insert(cut_cell._connectivity.end(), vertices.begin(), vertices.end());
                     cut_cell._offset.push_back(static_cast<int>(cut_cell._connectivity.size()));
                 }
+
+                /// Append a subcell given as a raw pointer + count.
+                /// Avoids forcing a temporary std::vector<int> at call sites.
+                template <std::floating_point T>
+                inline void append_cell(CutCell<T>& cut_cell, const type cell_type, const int* vertices, int n)
+                {
+                    cut_cell._types.push_back(cell_type);
+                    cut_cell._connectivity.insert(cut_cell._connectivity.end(), vertices, vertices + n);
+                    cut_cell._offset.push_back(static_cast<int>(cut_cell._connectivity.size()));
+                }
+
+                /// Append a subcell given as a fixed-size std::array using the first n entries.
+                template <std::floating_point T, std::size_t N>
+                inline void append_cell(CutCell<T>& cut_cell, const type cell_type, const std::array<int, N>& vertices, int n)
+                {
+                    cut_cell._types.push_back(cell_type);
+                    cut_cell._connectivity.insert(cut_cell._connectivity.end(), vertices.begin(), vertices.begin() + n);
+                    cut_cell._offset.push_back(static_cast<int>(cut_cell._connectivity.size()));
+                }
     }
 
 }

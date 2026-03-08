@@ -30,7 +30,7 @@ namespace cutcells
             phigt0 = 2
         };
 
-        inline cut_type string_to_cut_type(std::string type_str)
+        inline cut_type string_to_cut_type(const std::string& type_str)
         {
             if(type_str=="phi<0")
                 return cut_type::philt0;

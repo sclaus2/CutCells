@@ -48,5 +48,8 @@ target_sources(cutcells PRIVATE
 
 )
 
+target_compile_options(cutcells PRIVATE
+  $<$<CONFIG:Release>:-O3>)
+
 
 

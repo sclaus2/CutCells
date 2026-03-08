@@ -14,13 +14,40 @@
 #include "cut_interval.h"
 #include "cell_flags.h"
 #include "cell_subdivision.h"
+#include "cell_topology.h"
 #include "utils.h"
 
 #include <cassert>
 #include <set>
 #include <unordered_map>
-#include <map>
+#include <cstdint>
 #include <concepts>
+
+namespace
+{
+  struct MergeVertexKey
+  {
+    uint8_t kind = 0;
+    int32_t a = 0;
+    int32_t b = 0;
+
+    bool operator==(const MergeVertexKey& other) const noexcept
+    {
+      return kind == other.kind && a == other.a && b == other.b;
+    }
+  };
+
+  struct MergeVertexKeyHash
+  {
+    std::size_t operator()(const MergeVertexKey& k) const noexcept
+    {
+      const std::size_t h0 = std::hash<int32_t>{}(k.a);
+      const std::size_t h1 = std::hash<int32_t>{}(k.b);
+      const std::size_t hk = std::hash<uint8_t>{}(k.kind);
+      return h0 ^ (h1 + 0x9e3779b97f4a7c15ULL + (h0 << 6) + (h0 >> 2)) ^ (hk << 1);
+    }
+  };
+}
 
 
 namespace cutcells::cell{
@@ -296,6 +323,13 @@ namespace cutcells::cell{
       int merged_vertex_id = 0;
       int vertex_counter = 0;
 
+      std::size_t total_cut_vertices = 0;
+      for (const auto& cut_cell : cut_cell_vec)
+        total_cut_vertices += cut_cell._vertex_coords.size() / gdim;
+
+      std::unordered_map<MergeVertexKey, int, MergeVertexKeyHash> merged_vertex_ids;
+      merged_vertex_ids.reserve(total_cut_vertices);
+
       //all cutcells in vector above should have the same gdim and tdim
       for(auto & cut_cell : cut_cell_vec)
       {
@@ -316,45 +350,120 @@ namespace cutcells::cell{
         int local_num_cells = num_cells(cut_cell);
 
         //Map from vertex id in current cutcell to merged cutcell
-        std::map<int,int> local_merged_vertex_ids;
+        std::vector<int> local_merged_vertex_ids(num_cut_cell_vertices, -1);
+
+        const bool has_tokens = (static_cast<int>(cut_cell._vertex_parent_entity.size()) == num_cut_cell_vertices);
+        const int parent_vertices = get_num_vertices(cut_cell._parent_cell_type);
+        const bool has_parent_ids = (static_cast<int>(cut_cell._parent_vertex_ids.size()) == parent_vertices);
+        const bool can_fast_dedup = has_tokens && has_parent_ids;
+        const int32_t parent_discriminator = has_parent_ids ? static_cast<int32_t>(cut_cell._parent_vertex_ids[0]) : -1;
+        std::span<const std::array<int, 2>> parent_edges;
+        if (can_fast_dedup)
+          parent_edges = edges(cut_cell._parent_cell_type);
 
         for(int local_id=0;local_id<num_cut_cell_vertices;local_id++)
         {
-          //check if vertex already exists to avoid doubling of vertices
-          int id = cutcells::utils::vertex_exists<T>(merged_cut_cell._vertex_coords, cut_cell._vertex_coords, local_id, gdim);
-
-          if(id==-1) //not found
+          if (can_fast_dedup)
           {
-            //add vertex
-            merged_vertex_id=vertex_counter;
-            vertex_counter++;
+            const int32_t token = cut_cell._vertex_parent_entity[local_id];
+            MergeVertexKey key;
 
-            for(int j=0;j<gdim;j++)
+            if (token >= 100 && token < 200)
             {
-              merged_cut_cell._vertex_coords.push_back(cut_cell._vertex_coords[local_id*gdim+j]);
+              const int ref_vid = static_cast<int>(token - 100);
+              if (ref_vid >= 0 && ref_vid < parent_vertices)
+              {
+                key.kind = 0;
+                key.a = static_cast<int32_t>(cut_cell._parent_vertex_ids[ref_vid]);
+                key.b = 0;
+              }
+              else
+              {
+                key.kind = 2;
+                key.a = parent_discriminator;
+                key.b = token;
+              }
+            }
+            else if (token >= 200)
+            {
+              key.kind = 2;
+              key.a = parent_discriminator;
+              key.b = static_cast<int32_t>(token - 200);
+            }
+            else
+            {
+              const int edge_id = static_cast<int>(token);
+              if (edge_id >= 0 && edge_id < static_cast<int>(parent_edges.size()))
+              {
+                const int v0 = parent_edges[edge_id][0];
+                const int v1 = parent_edges[edge_id][1];
+                const int32_t gv0 = static_cast<int32_t>(cut_cell._parent_vertex_ids[v0]);
+                const int32_t gv1 = static_cast<int32_t>(cut_cell._parent_vertex_ids[v1]);
+                key.kind = 1;
+                key.a = std::min(gv0, gv1);
+                key.b = std::max(gv0, gv1);
+              }
+              else
+              {
+                key.kind = 2;
+                key.a = parent_discriminator;
+                key.b = token;
+              }
+            }
+
+            const auto it = merged_vertex_ids.find(key);
+            if (it == merged_vertex_ids.end())
+            {
+              merged_vertex_id=vertex_counter;
+              vertex_counter++;
+
+              for(int j=0;j<gdim;j++)
+                merged_cut_cell._vertex_coords.push_back(cut_cell._vertex_coords[local_id*gdim+j]);
+
+              merged_vertex_ids.emplace(key, merged_vertex_id);
+            }
+            else
+            {
+              merged_vertex_id = it->second;
             }
           }
-          else //found
+          else
           {
-            //take already existing vertex for local mapping
-            merged_vertex_id = id;
+            //check if vertex already exists to avoid doubling of vertices
+            int id = cutcells::utils::vertex_exists<T>(merged_cut_cell._vertex_coords, cut_cell._vertex_coords, local_id, gdim);
+
+            if(id==-1) //not found
+            {
+              //add vertex
+              merged_vertex_id=vertex_counter;
+              vertex_counter++;
+
+              for(int j=0;j<gdim;j++)
+                merged_cut_cell._vertex_coords.push_back(cut_cell._vertex_coords[local_id*gdim+j]);
+            }
+            else //found
+            {
+              //take already existing vertex for local mapping
+              merged_vertex_id = id;
+            }
           }
-          //offset is vertex_id
+
           local_merged_vertex_ids[local_id] = merged_vertex_id;
         }
 
         for(int i=0;i<local_num_cells;i++)
         {
           const auto vertices = cell_vertices(cut_cell, i);
-          std::vector<int> remapped_vertices;
-          remapped_vertices.reserve(vertices.size());
-          for(int j=0;j<vertices.size();j++)
+          // Use a fixed-size scratch array to avoid heap allocation per subcell.
+          // Max connectivity per cell is 8 (hexahedron); scratch is stack-allocated.
+          std::array<int, 8> remapped_scratch;
+          const int nv = static_cast<int>(vertices.size());
+          for(int j=0;j<nv;j++)
           {
               int64_t index = vertices[j];
-              remapped_vertices.push_back(local_merged_vertex_ids[index]);
+              remapped_scratch[j] = local_merged_vertex_ids[index];
           }
-          append_cell(merged_cut_cell, cut_cell._types[i],
-                      std::span<const int>(remapped_vertices.data(), remapped_vertices.size()));
+          append_cell(merged_cut_cell, cut_cell._types[i], remapped_scratch.data(), nv);
         }
       }
 

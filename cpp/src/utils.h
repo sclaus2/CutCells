@@ -88,4 +88,37 @@ namespace cutcells::utils
           vertex_parent_entity[static_cast<std::size_t>(local)] = static_cast<int32_t>(token);
       }
     }
+
+    // Targeted variant: only scans the token ranges actually used by the cell type.
+    // Much faster than scanning all 256 entries: e.g. triangle only has 6 valid tokens.
+    // n_edges:    number of edge tokens in [0, n_edges)
+    // n_vertices: number of vertex tokens in [100, 100+n_vertices)
+    // n_special:  number of special tokens in [200, 200+n_special)
+    template <std::floating_point T, std::size_t N>
+    void create_vertex_parent_entity_map(const std::array<int, N>& token_to_vertex,
+                                         std::vector<int32_t>& vertex_parent_entity,
+                                         int n_edges, int n_vertices, int n_special = 0)
+    {
+      int max_local = -1;
+      for (int t = 0; t < n_edges; ++t)
+        if (token_to_vertex[t] >= 0)
+          max_local = std::max(max_local, token_to_vertex[t]);
+      for (int t = 100, e = 100 + n_vertices; t < e; ++t)
+        if (token_to_vertex[t] >= 0)
+          max_local = std::max(max_local, token_to_vertex[t]);
+      for (int t = 200, e = 200 + n_special; t < e; ++t)
+        if (token_to_vertex[t] >= 0)
+          max_local = std::max(max_local, token_to_vertex[t]);
+
+      vertex_parent_entity.assign(static_cast<std::size_t>(max_local + 1), -1);
+      for (int t = 0; t < n_edges; ++t)
+        if (token_to_vertex[t] >= 0)
+          vertex_parent_entity[static_cast<std::size_t>(token_to_vertex[t])] = static_cast<int32_t>(t);
+      for (int t = 100, e = 100 + n_vertices; t < e; ++t)
+        if (token_to_vertex[t] >= 0)
+          vertex_parent_entity[static_cast<std::size_t>(token_to_vertex[t])] = static_cast<int32_t>(t);
+      for (int t = 200, e = 200 + n_special; t < e; ++t)
+        if (token_to_vertex[t] >= 0)
+          vertex_parent_entity[static_cast<std::size_t>(token_to_vertex[t])] = static_cast<int32_t>(t);
+    }
 }
