@@ -12,7 +12,8 @@
 
 namespace
 {
-constexpr int kRepeats = 1'000'000;
+constexpr int kRepeatsCutVtkMesh = 10'000;
+constexpr int kRepeatsCreateCutMesh = 10'000;
 
 struct RandomHexCellData
 {
@@ -110,7 +111,7 @@ static void BM_CutVtkMesh(benchmark::State& state)
     for (auto _ : state)
     {
         cutcells::mesh::CutMesh<double> out;
-        for (int i = 0; i < kRepeats; ++i)
+        for (int i = 0; i < kRepeatsCutVtkMesh; ++i)
         {
             out = cutcells::mesh::cut_vtk_mesh<double>(data.ls, data.points, data.connectivity, data.offset,
                                                        data.vtk_type, "phi=0", false);
@@ -119,7 +120,7 @@ static void BM_CutVtkMesh(benchmark::State& state)
         benchmark::ClobberMemory();
     }
 
-    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * kRepeats);
+    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * kRepeatsCutVtkMesh);
 }
 
 static void BM_CreateCutMesh(benchmark::State& state)
@@ -128,7 +129,7 @@ static void BM_CreateCutMesh(benchmark::State& state)
 
     for (auto _ : state)
     {
-        for (int i = 0; i < kRepeats; ++i)
+        for (int i = 0; i < kRepeatsCreateCutMesh; ++i)
         {
             auto cells = make_random_cut_cells(rng);
             auto out = cutcells::mesh::create_cut_mesh<double>(cells);
@@ -137,7 +138,7 @@ static void BM_CreateCutMesh(benchmark::State& state)
         benchmark::ClobberMemory();
     }
 
-    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * kRepeats);
+    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * kRepeatsCreateCutMesh);
 }
 
 BENCHMARK(BM_CutVtkMesh);

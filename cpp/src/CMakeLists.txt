@@ -28,6 +28,9 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/triangulation.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mapping.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/quadrature_tables.h
   ${CMAKE_CURRENT_SOURCE_DIR}/span_math.h
   ${CMAKE_CURRENT_SOURCE_DIR}/utils.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_tikz.h
@@ -44,6 +47,8 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/mapping.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.cpp
 
 )

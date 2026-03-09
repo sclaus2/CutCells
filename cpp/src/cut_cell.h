@@ -30,8 +30,16 @@ namespace cutcells
             /// Topological Dimension of Cell
             int _tdim;
 
-            /// Coordinates of vertices of cut cell
+            /// Cut vertices as produced by the cutting routine.
+            /// Semantic: always interpreted as parent reference coordinates after frame completion.
+            /// When cutting is done in reference space these are ready to use.
+            /// When cutting is done in physical space, call complete_from_physical() which
+            /// copies these into _vertex_coords_phys and pulls back to fill _vertex_coords.
             std::vector<T> _vertex_coords;
+
+            /// Cut vertices in physical space.
+            /// Empty until compute_physical_cut_vertices() or complete_from_physical() is called.
+            std::vector<T> _vertex_coords_phys;
 
             /// Vertex ids of cut cells
             /// Flattened cell-to-vertex connectivity in CSR layout
@@ -66,6 +74,12 @@ namespace cutcells
 
         template <std::floating_point T>
         void sub_cell_vertices(const CutCell<T> &cut_cell, const int& id, std::vector<T>& vertex_coordinates);
+
+        /// Gather physical-space coordinates of sub-cell id into vertex_coordinates.
+        /// Reads from _vertex_coords_phys, which must be filled before calling
+        /// (call compute_physical_cut_vertices or complete_from_physical first).
+        template <std::floating_point T>
+        void sub_cell_vertices_phys(const CutCell<T> &cut_cell, const int& id, std::vector<T>& vertex_coordinates);
 
         template <std::floating_point T>
         T volume(const CutCell<T> &cut_cell);

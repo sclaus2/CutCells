@@ -121,6 +121,26 @@ namespace cutcells::cell{
     }
 
     template <std::floating_point T>
+    void sub_cell_vertices_phys(const CutCell<T> &cut_cell, const int& id, std::vector<T>& vertex_coordinates)
+    {
+        int gdim = cut_cell._gdim;
+        const auto vertices = cell_vertices(cut_cell, id);
+        int num_vertices = vertices.size();
+        vertex_coordinates.resize(num_vertices*gdim);
+        int local_vertex_id = 0;
+
+        for(std::size_t j=0;j<num_vertices;j++)
+        {
+          int vertex_id = vertices[j];
+          for(std::size_t k=0;k<gdim;k++)
+          {
+            vertex_coordinates[local_vertex_id*gdim+k] = cut_cell._vertex_coords_phys[vertex_id*gdim+k];
+          }
+          local_vertex_id++;
+        }
+    }
+
+    template <std::floating_point T>
     T volume(const CutCell<T> &cut_cell)
     {
       int gdim = cut_cell._gdim;
@@ -175,6 +195,13 @@ namespace cutcells::cell{
                 break;
             default: throw std::invalid_argument("Only intervals, triangles, quadrilaterals, tetrahedra, hexahedra, prisms and pyramids are implemented for cutting so far.");
                                 break;
+        }
+        // Ensure parent meta-data is always set so mapping functions can use it.
+        cut_cell._parent_cell_type = cell_type;
+        if (cut_cell._parent_vertex_coords.empty())
+        {
+          cut_cell._parent_vertex_coords.assign(
+            vertex_coordinates.begin(), vertex_coordinates.end());
         }
     }
 
@@ -595,6 +622,12 @@ namespace cutcells::cell{
 
   template void str(const CutCell<double> &cut_cell);
   template void str(const CutCell<float> &cut_cell);
+
+  template void sub_cell_vertices(const CutCell<double> &cut_cell, const int& id, std::vector<double>& vertex_coordinates);
+  template void sub_cell_vertices(const CutCell<float>  &cut_cell, const int& id, std::vector<float>&  vertex_coordinates);
+
+  template void sub_cell_vertices_phys(const CutCell<double> &cut_cell, const int& id, std::vector<double>& vertex_coordinates);
+  template void sub_cell_vertices_phys(const CutCell<float>  &cut_cell, const int& id, std::vector<float>&  vertex_coordinates);
 
   template double volume(const CutCell<double> &cut_cell);
   template float volume(const CutCell<float> &cut_cell);

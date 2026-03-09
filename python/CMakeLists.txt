@@ -23,6 +23,7 @@ else()
   # runtime library discovered on the default prefix path.
   if (NOT DEFINED CutCells_DIR)
     set(_local_cutcells_candidates
+      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-bench-release/prefix/lib/cmake/cutcells"
       "${CMAKE_CURRENT_LIST_DIR}/../cpp/build/prefix/lib/cmake/cutcells"
       "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-dir/prefix/lib/cmake/cutcells"
       "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-bench-release"

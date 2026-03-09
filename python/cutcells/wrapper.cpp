@@ -19,6 +19,8 @@
 #include "../../cpp/src/cut_cell.h"
 #include "../../cpp/src/cut_mesh.h"
 #include "../../cpp/src/write_vtk.h"
+#include "../../cpp/src/mapping.h"
+#include "../../cpp/src/quadrature.h"
 
 namespace nb = nanobind;
 
@@ -217,6 +219,21 @@ void declare_float(nb::module_& m, std::string type)
           nb::rv_policy::reference_internal,
           "Return parent entity token for each cut-cell vertex.\n"
           "Tokens encode the origin: edge intersections use edge id, original vertices use 100+vid, special points use 200+sid.")
+        .def_prop_ro(
+          "vertex_coords_phys",
+          [](const cell::CutCell<T>& self) {
+            const std::size_t gdim = static_cast<std::size_t>(self._gdim);
+            if (gdim == 0 || self._vertex_coords_phys.empty())
+              return nb::ndarray<const T, nb::numpy>(nullptr, {0, 0}, nb::handle());
+            const std::size_t n = self._vertex_coords_phys.size() / gdim;
+            return nb::ndarray<const T, nb::numpy>(
+              self._vertex_coords_phys.data(),
+              {n, gdim},
+              nb::handle());
+          },
+          nb::rv_policy::reference_internal,
+          "Zero-copy view of cut-cell physical vertex coordinates as shape (num_vertices, gdim). "
+          "Empty until compute_physical_cut_vertices() or complete_from_physical() is called.")
         .def("str", [](const cell::CutCell<T>& self) {cell::str(self); return ;})
         .def("volume", [](const cell::CutCell<T>& self) {return cell::volume(self);})
         .def("write_vtk", [](cell::CutCell<double>& self, std::string fname) {io::write_vtk(fname,self); return ;});
@@ -261,26 +278,26 @@ void declare_float(nb::module_& m, std::string type)
           [](const mesh::CutMesh<T>& self) {
             const std::size_t gdim = static_cast<std::size_t>(self._gdim);
             if (gdim == 0)
-              return nb::ndarray<const T, nb::numpy>(nullptr, {0, 0}, nb::handle());
+              return nb::ndarray<T, nb::numpy>(nullptr, {0, 0}, nb::handle());
             const std::size_t n = self._vertex_coords.size() / gdim;
-            return nb::ndarray<const T, nb::numpy>(
-              self._vertex_coords.data(),
-              {n, gdim},
-              nb::handle());
+            // Return an *owned* copy so pyvista (which retains the array) does not
+            // keep the CutMesh alive via a numpy base reference at interpreter shutdown.
+            std::vector<T> copy = self._vertex_coords;
+            return as_nbarray(std::move(copy), {n, gdim});
           },
-          nb::rv_policy::reference_internal,
-          "Zero-copy view of mesh vertex coordinates as shape (num_vertices, gdim).")
+          nb::rv_policy::move,
+          "Copy of mesh vertex coordinates as shape (num_vertices, gdim).")
         .def_prop_ro(
           "connectivity",
           [](const mesh::CutMesh<T>& self) {
-            return nb::ndarray<const int, nb::numpy>(self._connectivity.data(),{self._connectivity.size()}, nb::handle());
+            return nb::ndarray<const int, nb::numpy>(self._connectivity.data(),{self._connectivity.size()}, nb::cast(self, nb::rv_policy::reference));
           },
           nb::rv_policy::reference_internal,
           " Return connectivity vector.")
         .def_prop_ro(
           "offset",
           [](const mesh::CutMesh<T>& self) {
-            return nb::ndarray<const int, nb::numpy>(self._offset.data(),{self._offset.size()}, nb::handle());
+            return nb::ndarray<const int, nb::numpy>(self._offset.data(),{self._offset.size()}, nb::cast(self, nb::rv_policy::reference));
           },
           nb::rv_policy::reference_internal,
           " Return offset vector.")
@@ -320,10 +337,87 @@ void declare_float(nb::module_& m, std::string type)
         .def_prop_ro(
           "parent_map",
           [](const mesh::CutMesh<T>& self) {
-            return nb::ndarray<const int32_t, nb::numpy>(self._parent_map.data(),{self._parent_map.size()}, nb::handle());
+            return nb::ndarray<const int32_t, nb::numpy>(self._parent_map.data(),{self._parent_map.size()}, nb::cast(self, nb::rv_policy::reference));
           },
           nb::rv_policy::reference_internal,
           " Return parent map of cut mesh.");
+
+  // ---- frame-completion helpers ----
+  m.def("compute_physical_cut_vertices",
+    [](cell::CutCell<T>& cut_cell) {
+      nb::gil_scoped_release release;
+      cell::compute_physical_cut_vertices(cut_cell);
+    },
+    nb::arg("cut_cell"),
+    "Fill _vertex_coords_phys via affine push-forward of _vertex_coords (reference-frame cut path).");
+
+  m.def("complete_from_physical",
+    [](cell::CutCell<T>& cut_cell) {
+      nb::gil_scoped_release release;
+      cell::complete_from_physical(cut_cell);
+    },
+    nb::arg("cut_cell"),
+    "Copy vertex_coords to _vertex_coords_phys, then pull back to fill _vertex_coords "
+    "with parent reference coordinates (physical-frame cut path).");
+
+  // ---- QuadratureRules class ----
+  {
+    std::string qr_name = "QuadratureRules_" + type;
+    nb::class_<quadrature::QuadratureRules<T>>(m, qr_name.c_str(),
+        "Flat batch quadrature rules for a collection of cut cells.\n"
+        "Points are in parent reference space; weights incorporate the physical Jacobian determinant.")
+      .def(nb::init<>())
+      .def_prop_ro("tdim",
+        [](const quadrature::QuadratureRules<T>& self) { return self._tdim; },
+        "Topological dimension of the point coordinates.")
+      .def_prop_ro("points",
+        [](const quadrature::QuadratureRules<T>& self) {
+          // Always return a flat 1-D array; caller reshapes with [:, tdim] if needed.
+          // Use nb::cast(self, ...) as the ndarray owner so NumPy holds a proper
+          // strong reference to the parent — avoids keep_alive cycles at shutdown.
+          return nb::ndarray<const T, nb::numpy>(
+            self._points.data(), {self._points.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Quadrature points in parent reference space, flat array of length (total_points * tdim). "
+        "Reshape to (-1, tdim) to get shape (total_points, tdim).")
+      .def_prop_ro("weights",
+        [](const quadrature::QuadratureRules<T>& self) {
+          return nb::ndarray<const T, nb::numpy>(
+            self._weights.data(), {self._weights.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Physical integration weights, shape (total_points,).")
+      .def_prop_ro("offset",
+        [](const quadrature::QuadratureRules<T>& self) {
+          return nb::ndarray<const int32_t, nb::numpy>(
+            self._offset.data(), {self._offset.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Offsets into points/weights per cut-cell rule, shape (num_rules+1,).")
+      .def_prop_ro("parent_map",
+        [](const quadrature::QuadratureRules<T>& self) {
+          return nb::ndarray<const int32_t, nb::numpy>(
+            self._parent_map.data(), {self._parent_map.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Index of the originating cut-cell in the input list, shape (num_rules,).");
+  }
+
+  // ---- make_quadrature ----
+  m.def("make_quadrature",
+    [](const std::vector<cell::CutCell<T>>& cut_cells, int order) {
+      nb::gil_scoped_release release;
+      return quadrature::make_quadrature(cut_cells, order);
+    },
+    nb::arg("cut_cells"), nb::arg("order"),
+    "Generate flat quadrature rules for a list of enriched CutCells.\n"
+    "Both vertex_coords (_vertex_coords, reference) and vertex_coords_phys must be populated on each cell.\n"
+    "Returns a QuadratureRules_<T> object.");
 
   m.def("create_cut_mesh", [](mesh::CutCells<T>& cut_cells){
               nb::gil_scoped_release release;
@@ -394,6 +488,62 @@ void declare_float(nb::module_& m, std::string type)
              , nb::arg("ls_vals"), nb::arg("points"), nb::arg("connectivity"), nb::arg("offset"), nb::arg("vtk_type"),
                nb::arg("cut_type_str"), nb::arg("triangulate") = true
              , "cut vtk mesh");
+
+    m.def("runtime_quadrature",
+      [](const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& ls_vals,
+         const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& points,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offset,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& vtk_type,
+         const std::string& cut_type_str,
+         bool triangulate,
+         int order) {
+          {
+            nb::gil_scoped_release release;
+            return quadrature::runtime_quadrature<T>(
+                std::span(ls_vals.data(),     ls_vals.size()),
+                std::span(points.data(),      points.size()),
+                std::span(connectivity.data(),connectivity.size()),
+                std::span(offset.data(),      offset.size()),
+                std::span(vtk_type.data(),    vtk_type.size()),
+                cut_type_str,
+                triangulate,
+                order);
+          }
+      },
+      nb::arg("ls_vals"), nb::arg("points"), nb::arg("connectivity"),
+      nb::arg("offset"), nb::arg("vtk_type"), nb::arg("cut_type_str"),
+      nb::arg("triangulate") = true, nb::arg("order") = 3,
+      "Generate flat quadrature rules for all mesh cells in the requested "
+      "level-set domain.\n"
+      "Full cells (entirely inside/outside) use a direct reference rule scaled "
+      "by |det J|.\n"
+      "Cut cells (intersected) are cut and integrated via append_quadrature.\n"
+      "Returns a QuadratureRules object with reference-space points and "
+      "physical weights.");
+
+    m.def("physical_points",
+      [](const quadrature::QuadratureRules<T>& rules,
+         const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& points,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offset,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& vtk_type) {
+          std::vector<T> pts;
+          {
+            nb::gil_scoped_release release;
+            pts = quadrature::physical_points<T>(
+                rules,
+                std::span(points.data(),      points.size()),
+                std::span(connectivity.data(),connectivity.size()),
+                std::span(offset.data(),      offset.size()),
+                std::span(vtk_type.data(),    vtk_type.size()));
+          }
+          return as_nbarray(std::move(pts));
+      },
+      nb::arg("rules"), nb::arg("points"), nb::arg("connectivity"),
+      nb::arg("offset"), nb::arg("vtk_type"),
+      "Map reference-space quadrature points to physical space.\n"
+      "Returns a flat numpy array of shape (total_num_points * 3,).");
 }
 
 } // namespace
