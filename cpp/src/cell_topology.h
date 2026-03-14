@@ -13,10 +13,10 @@
 namespace cutcells::cell
 {
 /// @brief Cell topology data for edge-based clipping algorithms.
-/// Edge and face numbering follows VTK conventions.
+/// Edge and face numbering follows Basix conventions.
 
 //-----------------------------------------------------------------------------
-// Edge definitions per cell type (VTK ordering)
+// Edge definitions per cell type (Basix ordering)
 //-----------------------------------------------------------------------------
 
 /// Interval: 1 edge (0-1)
@@ -25,95 +25,53 @@ inline constexpr std::array<std::array<int, 2>, 1> interval_edges = {{
 }};
 
 /// Triangle: 3 edges
-/// VTK edge order: (0,1), (1,2), (2,0)
+/// Basix edge order: (1,2), (0,2), (0,1)
 inline constexpr std::array<std::array<int, 2>, 3> triangle_edges = {{
-    {0, 1}, {1, 2}, {2, 0}
+    {1, 2}, {0, 2}, {0, 1}
 }};
 
 /// Quadrilateral: 4 edges
-/// VTK edge order: (0,1), (1,2), (2,3), (3,0)
+/// Basix edge order: (0,1), (0,2), (1,3), (2,3)
 ///
 ///   3 --- 2
 ///   |     |
 ///   0 --- 1
 inline constexpr std::array<std::array<int, 2>, 4> quadrilateral_edges = {{
-    {0, 1}, {1, 2}, {2, 3}, {3, 0}
+    {0, 1}, {0, 2}, {1, 3}, {2, 3}
 }};
 
 /// Tetrahedron: 6 edges
-/// VTK edge order: (0,1), (1,2), (2,0), (0,3), (1,3), (2,3)
+/// Basix edge order: (2,3), (1,3), (1,2), (0,3), (0,2), (0,1)
 inline constexpr std::array<std::array<int, 2>, 6> tetrahedron_edges = {{
-    {0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 3}, {2, 3}
+    {2, 3}, {1, 3}, {1, 2}, {0, 3}, {0, 2}, {0, 1}
 }};
 
 /// Hexahedron: 12 edges
-/// VTK vertex numbering:
-///        7 -------- 6
-///       /|         /|
-///      / |        / |
-///     4 -------- 5  |
-///     |  3 ------|-- 2
-///     | /        | /
-///     |/         |/
-///     0 -------- 1
-///
-/// VTK edge order:
-///   Base: (0,1), (1,2), (2,3), (3,0)
-///   Top:  (4,5), (5,6), (6,7), (7,4)
-///   Verticals: (0,4), (1,5), (2,6), (3,7)
+/// Basix edge order:
+///   (0,1), (0,2), (0,4), (1,3), (1,5), (2,3),
+///   (2,6), (3,7), (4,5), (4,6), (5,7), (6,7)
 inline constexpr std::array<std::array<int, 2>, 12> hexahedron_edges = {{
-    // Base edges (0-3)
-    {0, 1}, {1, 2}, {2, 3}, {3, 0},
-    // Top edges (4-7)
-    {4, 5}, {5, 6}, {6, 7}, {7, 4},
-    // Vertical edges (8-11)
-    {0, 4}, {1, 5}, {2, 6}, {3, 7}
+    {0, 1}, {0, 2}, {0, 4}, {1, 3},
+    {1, 5}, {2, 3}, {2, 6}, {3, 7},
+    {4, 5}, {4, 6}, {5, 7}, {6, 7}
 }};
 
 /// Prism (Wedge): 9 edges
-/// VTK vertex numbering:
-///       2
-///      /|\
-///     / | \
-///    0-----1
-///    |  |  |
-///    |  5  |
-///    | /|\ |
-///    |/ | \|
-///    3-----4
-///
-/// VTK edge order:
-///   Bottom triangle: (0,1), (1,2), (2,0)
-///   Top triangle: (3,4), (4,5), (5,3)
-///   Verticals: (0,3), (1,4), (2,5)
+/// Basix edge order:
+///   (0,1), (0,2), (0,3), (1,2), (1,4),
+///   (2,5), (3,4), (3,5), (4,5)
 inline constexpr std::array<std::array<int, 2>, 9> prism_edges = {{
-    // Bottom triangle (0-2)
-    {0, 1}, {1, 2}, {2, 0},
-    // Top triangle (3-5)
-    {3, 4}, {4, 5}, {5, 3},
-    // Vertical edges (6-8)
-    {0, 3}, {1, 4}, {2, 5}
+    {0, 1}, {0, 2}, {0, 3},
+    {1, 2}, {1, 4}, {2, 5},
+    {3, 4}, {3, 5}, {4, 5}
 }};
 
 /// Pyramid: 8 edges
-/// VTK vertex numbering:
-///         4
-///        /|\
-///       / | \
-///      /  |  \
-///     /   |   \
-///    3----|----2
-///    |    |    |
-///    0---------1
-///
-/// VTK edge order:
-///   Base: (0,1), (1,2), (2,3), (3,0)
-///   Apex connections: (0,4), (1,4), (2,4), (3,4)
+/// Basix edge order:
+///   (0,1), (0,2), (0,4), (1,3), (1,4), (2,3), (2,4), (3,4)
 inline constexpr std::array<std::array<int, 2>, 8> pyramid_edges = {{
-    // Base edges (0-3)
-    {0, 1}, {1, 2}, {2, 3}, {3, 0},
-    // Apex edges (4-7)
-    {0, 4}, {1, 4}, {2, 4}, {3, 4}
+    {0, 1}, {0, 2}, {0, 4}, {1, 3},
+    {1, 4}, {2, 3}, {2, 4}, {3, 4}
 }};
 
 //-----------------------------------------------------------------------------
@@ -171,34 +129,33 @@ inline std::span<const std::array<int, 2>> edges(type cell_type)
 // Face definitions (for interface stitching, optional future use)
 //-----------------------------------------------------------------------------
 
-/// Hexahedron: 6 faces (quads)
-/// Face order: -X, +X, -Y, +Y, -Z, +Z (left, right, front, back, bottom, top)
+/// Hexahedron: 6 faces (quads), Basix face order.
 inline constexpr std::array<std::array<int, 4>, 6> hexahedron_faces = {{
-    {0, 3, 7, 4},  // -X (left)
-    {1, 2, 6, 5},  // +X (right)
-    {0, 1, 5, 4},  // -Y (front)
-    {3, 2, 6, 7},  // +Y (back)
-    {0, 1, 2, 3},  // -Z (bottom)
-    {4, 5, 6, 7}   // +Z (top)
+    {0, 1, 2, 3},
+    {0, 1, 4, 5},
+    {0, 2, 4, 6},
+    {1, 3, 5, 7},
+    {2, 3, 6, 7},
+    {4, 5, 6, 7}
 }};
 
-/// Prism: 5 faces (2 triangles + 3 quads)
-/// Represented as max 4 vertices per face, with -1 padding for triangles
+/// Prism: 5 faces (2 triangles + 3 quads), Basix face order.
+/// Stored with max 4 vertices per face, using -1 padding for triangles.
 inline constexpr std::array<std::array<int, 4>, 5> prism_faces = {{
-    {0, 1, 2, -1},  // bottom triangle
-    {3, 4, 5, -1},  // top triangle
-    {0, 1, 4, 3},   // quad face
-    {1, 2, 5, 4},   // quad face
-    {2, 0, 3, 5}    // quad face
+    {0, 1, 2, -1},
+    {0, 1, 3, 4},
+    {0, 2, 3, 5},
+    {1, 2, 4, 5},
+    {3, 4, 5, -1}
 }};
 
-/// Pyramid: 5 faces (1 quad base + 4 triangles)
+/// Pyramid: 5 faces (1 quad + 4 triangles), Basix face order.
 inline constexpr std::array<std::array<int, 4>, 5> pyramid_faces = {{
-    {0, 1, 2, 3},   // base quad
-    {0, 1, 4, -1},  // triangle
-    {1, 2, 4, -1},  // triangle
-    {2, 3, 4, -1},  // triangle
-    {3, 0, 4, -1}   // triangle
+    {0, 1, 2, 3},
+    {0, 1, 4, -1},
+    {0, 2, 4, -1},
+    {1, 3, 4, -1},
+    {2, 3, 4, -1}
 }};
 
 //-----------------------------------------------------------------------------

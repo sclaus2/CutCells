@@ -5,8 +5,8 @@
 // SPDX-License-Identifier:    MIT
 
 #include "cut_triangle.h"
-#include "cut_interval.h"
 #include "cell_flags.h"
+#include "edge_root.h"
 #include "triangulation.h"
 #include "span_math.h"
 #include "utils.h"
@@ -96,47 +96,6 @@ namespace triangle{
             num_sub_elements = 2;
         }
         return num_sub_elements;
-    }
-
-    template <std::floating_point T>
-    void compute_intersection_points(const std::span<const T> vertex_coordinates, const int gdim, 
-             const std::span<const T> ls_values, const int flag, std::vector<T>& intersection_points, 
-             VertexCaseMap& vertex_case_map)
-    {
-        // vertex ids will be edges[edge_0][0] edges[edge_0][1]
-        // get vertex coordinates and interpolate 
-        int num_intersection_points = get_num_intersection_points(flag);
-
-        intersection_points.resize(num_intersection_points*gdim);
-
-        // gdim is at most 3; use stack arrays to avoid heap allocation per intersection point
-        std::array<T, 3> v0 = {};
-        std::array<T, 3> v1 = {};
-
-        for(int ip=0; ip<num_intersection_points; ip++)
-        {
-            // edge has two vertices
-            // intersection points are listed first in triangle case table 
-            // therefore the first two entries are the intersected edges
-            int vertex_id_0 = edges[triangle_intersected_edges[flag][ip]][0];
-            int vertex_id_1 = edges[triangle_intersected_edges[flag][ip]][1]; 
-
-            for(int j=0;j<gdim;j++)
-            {
-                v0[j] = vertex_coordinates[vertex_id_0*gdim+j];
-                v1[j] = vertex_coordinates[vertex_id_1*gdim+j];
-            }
-
-            T ls0 = ls_values[vertex_id_0];
-            T ls1 = ls_values[vertex_id_1];
-
-            interval::compute_intersection_point<T>(T(0), std::span<const T>(v0.data(), gdim),
-                                                    std::span<const T>(v1.data(), gdim),
-                                                    ls0, ls1, intersection_points, ip * gdim);
-        }
-
-        vertex_case_map[triangle_intersected_edges[flag][0]] = 0;
-        vertex_case_map[triangle_intersected_edges[flag][1]] = 1;
     }
 
     template <std::floating_point T>
@@ -335,7 +294,14 @@ namespace triangle{
         //          then orginal vertex 101 -> 2 , 102 -> 3 etc.
         VertexCaseMap vertex_case_map;
         vertex_case_map.fill(-1);
-        compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
+        const std::array<int, 2> case_edge_ids = {
+            triangle_intersected_edges[flag_interior][0],
+            triangle_intersected_edges[flag_interior][1]
+        };
+        edge_root::compute_case_intersections_from_edge_ids<T>(
+            vertex_coordinates, gdim, ls_values, edges, 3,
+            std::span<const int>(case_edge_ids.data(), case_edge_ids.size()),
+            intersection_points, vertex_case_map);
 
         cut_cell._vertex_coords.reserve(reserve_vertex_coords * gdim);
         cutcells::cell::reserve_cell_topology(cut_cell, reserve_connectivity, reserve_types);
@@ -367,7 +333,14 @@ namespace triangle{
         intersection_points.reserve(2 * gdim);
         VertexCaseMap vertex_case_map;
         vertex_case_map.fill(-1);
-        compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
+        const std::array<int, 2> case_edge_ids = {
+            triangle_intersected_edges[flag_interior][0],
+            triangle_intersected_edges[flag_interior][1]
+        };
+        edge_root::compute_case_intersections_from_edge_ids<T>(
+            vertex_coordinates, gdim, ls_values, edges, 3,
+            std::span<const int>(case_edge_ids.data(), case_edge_ids.size()),
+            intersection_points, vertex_case_map);
 
         cut_cell.resize(cut_type_str.size());
 

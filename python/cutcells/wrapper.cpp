@@ -26,6 +26,9 @@
 #include "../../cpp/src/quadrature.h"
 #include "../../cpp/src/mesh_view.h"
 #include "../../cpp/src/level_set.h"
+#include "../../cpp/src/iso_refine.h"
+#include "../../cpp/src/local_mesh.h"
+#include "../../cpp/src/edge_classification.h"
 
 namespace nb = nanobind;
 
@@ -436,12 +439,218 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
 template <typename T>
 void declare_float(nb::module_& m, std::string type)
 {
+    using LevelSetT = cutcells::LevelSetFunction<T, int>;
     m.def("classify_cell_domain", [](const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& ls_values){
           cell::domain domain_id = cell::classify_cell_domain<T>(std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())});
           auto domain_str = cell_domain_to_str(domain_id);
           return domain_str;
         }
         , "classify a cell domain");
+
+    using LocalMeshT = cutcells::LocalMesh<T>;
+    const std::string lm_name = "LocalMesh_" + type;
+    nb::class_<LocalMeshT>(m, lm_name.c_str(), "Cell-local mesh")
+      .def(nb::init<>())
+      .def_prop_ro("gdim", [](const LocalMeshT& self) { return self.gdim; })
+      .def_prop_ro("tdim", [](const LocalMeshT& self) { return self.tdim; })
+      .def_prop_ro("parent_cell_id", [](const LocalMeshT& self) { return self.parent_cell_id; })
+      .def("n_vertices", &LocalMeshT::n_vertices)
+      .def("n_edges", &LocalMeshT::n_edges)
+      .def("n_cells", &LocalMeshT::n_cells)
+      .def_prop_ro("vertex_x",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.vertex_x.data(), {self.vertex_x.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("cell_vertices",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.cell_vertices.data(), {self.cell_vertices.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("cell_offsets",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.cell_offsets.data(), {self.cell_offsets.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("cell_types",
+        [](const LocalMeshT& self) {
+          using type_id_t = std::underlying_type_t<cell::type>;
+          return nb::ndarray<const type_id_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            reinterpret_cast<const type_id_t*>(self.cell_types.data()),
+            {self.cell_types.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("edge_state",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.edge_state.data(), {self.edge_state.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("edge_root_vertex",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.edge_root_vertex.data(), {self.edge_root_vertex.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("edge_root_parameter",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.edge_root_parameter.data(), {self.edge_root_parameter.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("edge_root_iterations",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.edge_root_iterations.data(), {self.edge_root_iterations.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("edge_root_evaluations",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.edge_root_evaluations.data(), {self.edge_root_evaluations.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("edge_root_converged",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.edge_root_converged.data(), {self.edge_root_converged.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("edge_root_residual",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.edge_root_residual.data(), {self.edge_root_residual.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("cell_domain",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.cell_domain.data(), {self.cell_domain.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal);
+
+    const std::string init_name = "init_local_mesh_from_template_" + type;
+    m.def(
+      init_name.c_str(),
+      [](const RefinementTemplate& tpl,
+         const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& parent_cell_coords,
+         cell::type parent_cell_type,
+         int parent_cell_id,
+         int n_level_sets) {
+        LocalMeshT mesh;
+        cutcells::init_local_mesh_from_template<T>(
+          mesh, tpl,
+          std::span<const T>(parent_cell_coords.data(), parent_cell_coords.size()),
+          parent_cell_type,
+          parent_cell_id,
+          n_level_sets);
+        return mesh;
+      },
+      nb::arg("template"),
+      nb::arg("parent_cell_coords"),
+      nb::arg("parent_cell_type"),
+      nb::arg("parent_cell_id"),
+      nb::arg("n_level_sets") = 1,
+      "Initialize and return a LocalMesh from a refinement template and one parent cell.");
+
+    const std::string init_cell_name = "init_local_mesh_from_cell_" + type;
+    m.def(
+      init_cell_name.c_str(),
+      [](const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& parent_cell_coords,
+         cell::type parent_cell_type,
+         int parent_cell_id,
+         int n_level_sets) {
+        LocalMeshT mesh;
+        cutcells::init_local_mesh_from_cell<T>(
+          mesh,
+          std::span<const T>(parent_cell_coords.data(), parent_cell_coords.size()),
+          parent_cell_type,
+          parent_cell_id,
+          n_level_sets);
+        return mesh;
+      },
+      nb::arg("parent_cell_coords"),
+      nb::arg("parent_cell_type"),
+      nb::arg("parent_cell_id"),
+      nb::arg("n_level_sets") = 1,
+      "Initialize and return a LocalMesh from one parent mesh cell.");
+
+    const std::string classify_name = "classify_edges_on_local_mesh_" + type;
+    m.def(
+      classify_name.c_str(),
+      [](LocalMeshT& mesh,
+         const LevelSetT& level_set,
+         int level_set_id,
+         T tol,
+         bool refine_on_uncertain) {
+        return cutcells::classify_edges_and_mark_refine<T, int>(
+          mesh, level_set, level_set_id, tol, refine_on_uncertain);
+      },
+      nb::arg("mesh"),
+      nb::arg("level_set"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("tol") = static_cast<T>(1e-14),
+      nb::arg("refine_on_uncertain") = false,
+      "Classify all local-mesh edges for one level set.\n"
+      "Returns True if refinement is recommended.");
+
+    const std::string roots_name = "compute_roots_on_local_mesh_" + type;
+    m.def(
+      roots_name.c_str(),
+      [](LocalMeshT& mesh,
+         const LevelSetT& level_set,
+         int level_set_id,
+         cell::edge_root::method root_method,
+         T tol) {
+        cutcells::classify_edges_and_mark_refine<T, int>(
+          mesh, level_set, level_set_id, tol, false);
+        cutcells::compute_all_roots<T, int>(
+          mesh, level_set, level_set_id, root_method);
+      },
+      nb::arg("mesh"),
+      nb::arg("level_set"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("root_method") = cell::edge_root::method::linear,
+      nb::arg("tol") = static_cast<T>(1e-14),
+      "Compute and cache roots on all one-root edges and store per-edge solver diagnostics.");
+
+    const std::string decompose_name = "decompose_local_mesh_" + type;
+    m.def(
+      decompose_name.c_str(),
+      [](LocalMeshT& mesh,
+         const LevelSetT& level_set,
+         int level_set_id,
+         cell::edge_root::method root_method,
+         bool triangulate,
+         T tol) {
+        // Ensure vertex_phi and edge_state are up-to-date before root computation.
+        cutcells::classify_edges_and_mark_refine<T, int>(
+          mesh, level_set, level_set_id, tol, false);
+        cutcells::decompose_local_mesh<T, int>(
+          mesh, level_set, level_set_id, root_method, triangulate);
+      },
+      nb::arg("mesh"),
+      nb::arg("level_set"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("root_method") = cell::edge_root::method::linear,
+      nb::arg("triangulate") = true,
+      nb::arg("tol") = static_cast<T>(1e-14),
+      "Decompose a local mesh into phi<0 and phi>0 fragments using cached roots.");
 
     std::string name = "CutCell_" + type;
     nb::class_<cell::CutCell<T>>(m, name.c_str(), "Cut Cell")
@@ -766,6 +975,39 @@ void declare_float(nb::module_& m, std::string type)
              }
              , "cut a cell");
 
+  m.def("cut_from_cached_roots",
+        [](cell::type cell_type,
+           const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& vertex_coordinates,
+           const int gdim,
+           const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& ls_values,
+           const std::string& cut_type_str,
+           const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& edge_root_coords,
+           const nb::ndarray<const uint8_t, nb::shape<-1>, nb::c_contig>& edge_has_root,
+           bool triangulate) {
+          cell::CutCell<T> cut_cell;
+          nb::gil_scoped_release release;
+          cell::cut_from_cached_roots<T>(
+            cell_type,
+            std::span{vertex_coordinates.data(), static_cast<unsigned long>(vertex_coordinates.size())},
+            gdim,
+            std::span{ls_values.data(), static_cast<unsigned long>(ls_values.size())},
+            cut_type_str,
+            std::span{edge_root_coords.data(), static_cast<unsigned long>(edge_root_coords.size())},
+            std::span{edge_has_root.data(), static_cast<unsigned long>(edge_has_root.size())},
+            cut_cell,
+            triangulate);
+          return cut_cell;
+        },
+        nb::arg("cell_type"),
+        nb::arg("vertex_coordinates"),
+        nb::arg("gdim"),
+        nb::arg("ls_values"),
+        nb::arg("cut_type_str"),
+        nb::arg("edge_root_coords"),
+        nb::arg("edge_has_root"),
+        nb::arg("triangulate") = true,
+        "Cut a cell while overriding edge-intersection coordinates from a root cache.");
+
   m.def("higher_order_cut", [](cell::type cell_type,
              const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& vertex_coordinates,
              const int gdim,
@@ -873,6 +1115,16 @@ void declare_float(nb::module_& m, std::string type)
       nb::arg("offset"), nb::arg("vtk_type"),
       "Map reference-space quadrature points to physical space.\n"
       "Returns a flat numpy array of shape (total_num_points * 3,).");
+
+    if constexpr (std::is_same_v<T, double>)
+    {
+      m.attr("LocalMesh") = m.attr(lm_name.c_str());
+      m.attr("init_local_mesh_from_template") = m.attr(init_name.c_str());
+      m.attr("init_local_mesh_from_cell") = m.attr(init_cell_name.c_str());
+      m.attr("classify_edges_on_local_mesh") = m.attr(classify_name.c_str());
+      m.attr("compute_roots_on_local_mesh") = m.attr(roots_name.c_str());
+      m.attr("decompose_local_mesh") = m.attr(decompose_name.c_str());
+    }
 }
 
 } // namespace
@@ -881,6 +1133,59 @@ NB_MODULE(_cutcellscpp, m)
 {
   // Create module for C++ wrappers
   m.doc() = "CutCells Python interface";
+
+  nb::class_<RefinementTemplate>(m, "RefinementTemplate")
+    .def_prop_ro("n_vertices", [](const RefinementTemplate& self) { return self.n_vertices; })
+    .def_prop_ro("n_cells", [](const RefinementTemplate& self) { return self.n_cells; })
+    .def_prop_ro("tdim", [](const RefinementTemplate& self) { return self.tdim; })
+    .def_prop_ro("vertices_per_cell", [](const RefinementTemplate& self) { return self.vertices_per_cell; })
+    .def_prop_ro("bg_cell_type", [](const RefinementTemplate& self) { return self.bg_cell_type; })
+    .def_prop_ro("child_cell_type", [](const RefinementTemplate& self) { return self.child_cell_type; })
+    .def_prop_ro(
+      "vertex_parent_dim",
+      [](const RefinementTemplate& self) {
+        return nb::ndarray<const int, nb::numpy, nb::shape<-1>, nb::c_contig>(
+          self.vertex_parent_dim.data(),
+          {self.vertex_parent_dim.size()},
+          nb::cast(self, nb::rv_policy::reference));
+      },
+      nb::rv_policy::reference_internal)
+    .def_prop_ro(
+      "vertex_parent_id",
+      [](const RefinementTemplate& self) {
+        return nb::ndarray<const int, nb::numpy, nb::shape<-1>, nb::c_contig>(
+          self.vertex_parent_id.data(),
+          {self.vertex_parent_id.size()},
+          nb::cast(self, nb::rv_policy::reference));
+      },
+      nb::rv_policy::reference_internal)
+    .def_prop_ro(
+      "cell_connectivity",
+      [](const RefinementTemplate& self) {
+        return nb::ndarray<const int, nb::numpy, nb::shape<-1>, nb::c_contig>(
+          self.cell_connectivity.data(),
+          {self.cell_connectivity.size()},
+          nb::cast(self, nb::rv_policy::reference));
+      },
+      nb::rv_policy::reference_internal);
+
+  m.def(
+    "iso_p1_template",
+    [](cell::type cell_type, int order) -> const RefinementTemplate& {
+      return cutcells::iso_p1_template(cell_type, order);
+    },
+    nb::arg("cell_type"), nb::arg("order"),
+    nb::rv_policy::reference);
+
+  m.def(
+    "iso_p1_ref_coords",
+    [](cell::type cell_type, int order) {
+      auto x = cutcells::iso_p1_ref_coords(cell_type, order);
+      return nb::ndarray<const double, nb::numpy>(
+        x.data(), {x.size()}, nb::handle());
+    },
+    nb::arg("cell_type"), nb::arg("order"),
+    "Return flat reference-node coordinates for iso-P1 (size = n_vertices * tdim).");
 
   nb::enum_<cell::type>(m, "CellType")
     .value("point", cell::type::point)
@@ -891,6 +1196,12 @@ NB_MODULE(_cutcellscpp, m)
     .value("hexahedron", cell::type::hexahedron)
     .value("prism", cell::type::prism)
     .value("pyramid", cell::type::pyramid);
+
+  nb::enum_<cell::edge_root::method>(m, "EdgeRootMethod")
+    .value("linear", cell::edge_root::method::linear)
+    .value("brent", cell::edge_root::method::brent)
+    .value("itp", cell::edge_root::method::itp)
+    .value("newton", cell::edge_root::method::newton);
 
   declare_float<float>(m, "float32");
   declare_float<double>(m, "float64");

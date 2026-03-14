@@ -29,8 +29,12 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/triangulation.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/edge_classification.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/edge_root.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/iso_refine.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping.h
   ${CMAKE_CURRENT_SOURCE_DIR}/level_set.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/local_mesh.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mesh_view.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature_tables.h
@@ -50,14 +54,19 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/iso_refine.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/local_mesh.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.cpp
-
 )
 
 target_compile_options(cutcells PRIVATE
   $<$<CONFIG:Release>:-O3>)
 
-
-
+if(BUILD_TESTING)
+  add_executable(cutcells_local_mesh_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/local_mesh_test.cpp)
+  target_link_libraries(cutcells_local_mesh_test PRIVATE cutcells)
+  add_test(NAME cutcells_local_mesh_test COMMAND cutcells_local_mesh_test)
+endif()

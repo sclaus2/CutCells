@@ -15,6 +15,7 @@ option(BUILD_SHARED_LIBS "Build CutCells with shared libraries." ON)
 
 include(FeatureSummary)
 include(CheckIPOSupported)
+include(CTest)
 
 # Source files
 add_subdirectory(src)
@@ -65,5 +66,4 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/CutCellsConfig.cmake ${CMAKE_CURRENT_B
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cutcells COMPONENT Development)
 install(EXPORT CutCellsTargets FILE CutCellsTargets.cmake NAMESPACE CUTCELLS::
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cutcells)
-
 

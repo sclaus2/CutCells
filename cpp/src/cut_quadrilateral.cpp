@@ -7,8 +7,8 @@
 #include "cut_quadrilateral.h"
 #include "cell_flags.h"
 #include "cell_topology.h"
-#include "cut_interval.h"
 #include "cut_triangle.h"
+#include "edge_root.h"
 #include "generated/cut_quadrilateral_inside_tables.h"
 #include "generated/cut_quadrilateral_outside_tables.h"
 #include "generated/cut_quadrilateral_interface_tables.h"
@@ -44,50 +44,6 @@ namespace cutcells::cell::quadrilateral
             return d > 0.0;
         }
 
-        template <std::floating_point T>
-        void compute_intersection_points(const std::span<const T> vertex_coordinates, const int gdim,
-                                          const std::span<const T> ls_values, const int flag,
-                                          std::vector<T>& intersection_points,
-                                          VertexCaseMap& vertex_case_map)
-        {
-            const auto& intersected = intersected_edges[flag];
-
-            intersection_points.clear();
-            intersection_points.reserve(4 * gdim);
-            vertex_case_map.fill(-1);
-
-            // gdim is at most 3; use stack arrays to avoid heap allocations
-            std::array<T, 3> v0 = {};
-            std::array<T, 3> v1 = {};
-
-            int ip_index = 0;
-            for (int e = 0; e < 4; ++e)
-            {
-                if (intersected[e] == 0)
-                    continue;
-
-                const int v0_id = edges[e][0];
-                const int v1_id = edges[e][1];
-
-                for (int j = 0; j < gdim; ++j)
-                {
-                    v0[j] = vertex_coordinates[v0_id * gdim + j];
-                    v1[j] = vertex_coordinates[v1_id * gdim + j];
-                }
-
-                const T ls0 = ls_values[v0_id];
-                const T ls1 = ls_values[v1_id];
-
-                const int ip_offset = static_cast<int>(intersection_points.size());
-                intersection_points.resize(intersection_points.size() + gdim);
-                interval::compute_intersection_point<T>(T(0), std::span<const T>(v0.data(), gdim),
-                                                        std::span<const T>(v1.data(), gdim),
-                                                        ls0, ls1, intersection_points, ip_offset);
-
-                vertex_case_map[e] = ip_index;
-                ++ip_index;
-            }
-        }
         template <std::floating_point T, int MaxVerts>
         void decode_range(const std::span<const T> vertex_coordinates, const int gdim,
                           const int cell_begin, const int cell_end,
@@ -222,7 +178,11 @@ namespace cutcells::cell::quadrilateral
         // Compute intersections (shared for all parts)
         thread_local std::vector<T> intersection_points;
         VertexCaseMap edge_ip_map;
-        compute_intersection_points(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, edge_ip_map);
+        edge_ip_map.fill(-1);
+        edge_root::compute_case_intersections_from_edge_mask<T>(
+            vertex_coordinates, gdim, ls_values, edges, 4,
+            std::span<const int>(intersected_edges[flag_interior], 4),
+            intersection_points, edge_ip_map);
 
         // Final token->local vertex index map used to populate CutCell::_vertex_parent_entity
         VertexCaseMap vertex_case_map;

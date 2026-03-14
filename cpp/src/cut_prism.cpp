@@ -8,7 +8,7 @@
 
 #include "cell_flags.h"
 #include "cut_cell.h"
-#include "cut_interval.h"
+#include "edge_root.h"
 #include "generated/cut_prism_inside_tables.h"
 #include "generated/cut_prism_interface_tables.h"
 #include "generated/cut_prism_outside_tables.h"
@@ -51,49 +51,6 @@ namespace cutcells::cell::prism
             if (token < 0 || token >= static_cast<int>(vertex_case_map.size()) || vertex_case_map[token] < 0)
                 throw_missing_token(flag, token, where);
             return vertex_case_map[token];
-        }
-
-        template <std::floating_point T>
-        void compute_intersection_points(const std::span<const T> vertex_coordinates, const int gdim,
-                                          const std::span<const T> ls_values, const int flag,
-                                          std::vector<T>& intersection_points,
-                                          VertexCaseMap& vertex_case_map)
-        {
-            intersection_points.clear();
-            intersection_points.reserve(9 * gdim);
-            vertex_case_map.fill(-1);
-
-            // gdim is 3 for prisms; use stack arrays to avoid heap allocation per edge
-            std::array<T, 3> v0 = {};
-            std::array<T, 3> v1 = {};
-
-            int ip_index = 0;
-            for (int e = 0; e < 9; ++e)
-            {
-                if (intersected_edges[flag][e] == 0)
-                    continue;
-
-                const int v0_id = edges[e][0];
-                const int v1_id = edges[e][1];
-
-                for (int j = 0; j < gdim; ++j)
-                {
-                    v0[j] = vertex_coordinates[v0_id * gdim + j];
-                    v1[j] = vertex_coordinates[v1_id * gdim + j];
-                }
-
-                const T ls0 = ls_values[v0_id];
-                const T ls1 = ls_values[v1_id];
-
-                const int ip_offset = static_cast<int>(intersection_points.size());
-                intersection_points.resize(intersection_points.size() + gdim);
-                interval::compute_intersection_point<T>(T(0), std::span<const T>(v0.data(), gdim),
-                                                        std::span<const T>(v1.data(), gdim),
-                                                        ls0, ls1, intersection_points, ip_offset);
-
-                vertex_case_map[e] = ip_index;
-                ++ip_index;
-            }
         }
 
         template <std::floating_point T>
@@ -273,8 +230,11 @@ namespace cutcells::cell::prism
         // Compute intersections (shared for all parts)
         thread_local std::vector<T> intersection_points;
         VertexCaseMap vertex_case_map;
-        compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_lt0,
-                           intersection_points, vertex_case_map);
+        vertex_case_map.fill(-1);
+        edge_root::compute_case_intersections_from_edge_mask<T>(
+            vertex_coordinates, gdim, ls_values, edges, 9,
+            std::span<const int>(intersected_edges[flag_lt0], 9),
+            intersection_points, vertex_case_map);
 
         cut_cell._gdim = gdim;
         cut_cell._vertex_coords.assign(intersection_points.begin(), intersection_points.end());

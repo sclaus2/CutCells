@@ -89,6 +89,21 @@ namespace cutcells
                  const std::span<const T> ls_values, const std::string& cut_type_str,
                 CutCell<T>& cut_cell, bool triangulate=false);
 
+        /// Cut using precomputed edge-root coordinates (indexed by local edge id).
+        ///
+        /// Topology is still obtained from the existing cut tables; for edge tokens
+        /// in the resulting CutCell, coordinates are overwritten from cached roots.
+        template <std::floating_point T>
+        void cut_from_cached_roots(const type cell_type,
+                                   const std::span<const T> vertex_coordinates,
+                                   const int gdim,
+                                   const std::span<const T> ls_values,
+                                   const std::string& cut_type_str,
+                                   const std::span<const T> edge_root_coords,
+                                   const std::span<const uint8_t> edge_has_root,
+                                   CutCell<T>& cut_cell,
+                                   bool triangulate=false);
+
         template <std::floating_point T>
         void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
              const std::span<const T> ls_values, const std::vector<std::string>& cut_type_str,

@@ -205,6 +205,45 @@ namespace cutcells::cell{
         }
     }
 
+    template <std::floating_point T>
+    void cut_from_cached_roots(const type cell_type,
+                               const std::span<const T> vertex_coordinates,
+                               const int gdim,
+                               const std::span<const T> ls_values,
+                               const std::string& cut_type_str,
+                               const std::span<const T> edge_root_coords,
+                               const std::span<const uint8_t> edge_has_root,
+                               CutCell<T>& cut_cell,
+                               bool triangulate)
+    {
+        cut<T>(cell_type, vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+
+        const int n_edges = num_edges(cell_type);
+        if (edge_root_coords.size() != static_cast<std::size_t>(n_edges * gdim))
+            throw std::invalid_argument("cut_from_cached_roots: edge_root_coords has invalid size");
+        if (edge_has_root.size() != static_cast<std::size_t>(n_edges))
+            throw std::invalid_argument("cut_from_cached_roots: edge_has_root has invalid size");
+
+        const int n_cut_vertices = static_cast<int>(cut_cell._vertex_coords.size() / gdim);
+        if (static_cast<int>(cut_cell._vertex_parent_entity.size()) != n_cut_vertices)
+            return;
+
+        for (int lv = 0; lv < n_cut_vertices; ++lv)
+        {
+            const int32_t token = cut_cell._vertex_parent_entity[static_cast<std::size_t>(lv)];
+            if (token < 0 || token >= n_edges)
+                continue;
+            if (edge_has_root[static_cast<std::size_t>(token)] == 0)
+                continue;
+
+            const std::size_t src0 = static_cast<std::size_t>(token * gdim);
+            const std::size_t dst0 = static_cast<std::size_t>(lv * gdim);
+            for (int d = 0; d < gdim; ++d)
+                cut_cell._vertex_coords[dst0 + static_cast<std::size_t>(d)]
+                    = edge_root_coords[src0 + static_cast<std::size_t>(d)];
+        }
+    }
+
     //Cutting of 2nd order triangles (6-node) and tetrahedra (10-node)
     template <std::floating_point T>
     CutCell<T> higher_order_cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
@@ -214,17 +253,21 @@ namespace cutcells::cell{
       switch(cell_type)
       {
         case cutcells::cell::type::triangle:
-        { if(ls_values.size()!=6)
-              throw std::invalid_argument("more than 6 level set values, only 2nd order triangles are supported");
+          if(ls_values.size()!=6)
+            throw std::invalid_argument("more than 6 level set values, only 2nd order triangles are supported");
           break;
-        }
         case cutcells::cell::type::tetrahedron:
-        { if(ls_values.size()!=10)
-             throw std::invalid_argument("more than 10 level set values, only 2nd order tetrahedra are supported");
+          if(ls_values.size()!=10)
+            throw std::invalid_argument("more than 10 level set values, only 2nd order tetrahedra are supported");
           break;
-        }
-        default: throw std::invalid_argument("Only intervals, triangles and tetrahedra are implemented for cutting so far.");
-                break;
+        case cutcells::cell::type::point:
+        case cutcells::cell::type::interval:
+        case cutcells::cell::type::quadrilateral:
+        case cutcells::cell::type::hexahedron:
+        case cutcells::cell::type::prism:
+        case cutcells::cell::type::pyramid:
+        default:
+          throw std::invalid_argument("Only triangles and tetrahedra are implemented for cutting so far.");
       }
 
       cutcells::cell::domain cell_domain = cutcells::cell::classify_cell_domain(ls_values);
@@ -234,10 +277,20 @@ namespace cutcells::cell{
         std::size_t num_sub_cells = 0;
         switch(cell_type)
         {
-          case cutcells::cell::type::triangle: {num_sub_cells = cutcells::cell::triangle_subdivision_table.size();
-                                        break;}
-          case cutcells::cell::type::tetrahedron: {num_sub_cells = cutcells::cell::tetrahedron_subdivision_table.size();
-                                        break;}
+          case cutcells::cell::type::triangle:
+            num_sub_cells = cutcells::cell::triangle_subdivision_table.size();
+            break;
+          case cutcells::cell::type::tetrahedron:
+            num_sub_cells = cutcells::cell::tetrahedron_subdivision_table.size();
+            break;
+          case cutcells::cell::type::point:
+          case cutcells::cell::type::interval:
+          case cutcells::cell::type::quadrilateral:
+          case cutcells::cell::type::hexahedron:
+          case cutcells::cell::type::prism:
+          case cutcells::cell::type::pyramid:
+          default:
+            throw std::invalid_argument("Unexpected cell type when counting subcells.");
         }
 
         std::vector<cutcells::cell::CutCell<T>> sub_cut_cells;
@@ -248,14 +301,24 @@ namespace cutcells::cell{
         for(std::size_t i=0;i<num_sub_cells;i++)
         {
           const std::size_t num_vertices = cutcells::cell::get_num_vertices(cell_type);
-          std::span<int> sub_tet;
+          std::span<const int> sub_tet;
 
           switch(cell_type)
           {
-            case cutcells::cell::type::triangle: {sub_tet = cutcells::cell::triangle_subdivision_table[i];
-                                          break;}
-            case cutcells::cell::type::tetrahedron: {sub_tet = cutcells::cell::tetrahedron_subdivision_table[i];
-                                          break;}
+            case cutcells::cell::type::triangle:
+              sub_tet = cutcells::cell::triangle_subdivision_table[i];
+              break;
+            case cutcells::cell::type::tetrahedron:
+              sub_tet = cutcells::cell::tetrahedron_subdivision_table[i];
+              break;
+            case cutcells::cell::type::point:
+            case cutcells::cell::type::interval:
+            case cutcells::cell::type::quadrilateral:
+            case cutcells::cell::type::hexahedron:
+            case cutcells::cell::type::prism:
+            case cutcells::cell::type::pyramid:
+            default:
+              throw std::invalid_argument("Unexpected cell type when selecting subcell vertices.");
           }
 
           std::vector<T> sub_ls_values(num_vertices);
@@ -305,6 +368,9 @@ namespace cutcells::cell{
               }
               break;
             }
+            case cutcells::cell::domain::unset:
+            default:
+              throw std::invalid_argument("Corner-case domain state encountered during subdivision.");
           }
         }
         cutcells::cell::CutCell<T> merged_cut_cell = cutcells::cell::merge<T>(sub_cut_cells);
@@ -638,6 +704,19 @@ namespace cutcells::cell{
   template void cut(const type cell_type, const std::span<const float> vertex_coordinates, const int gdim,
              const std::span<const float> ls_values, const std::string& cut_type_str,
              CutCell<float>& cut_cell, bool triangulate);
+
+  template void cut_from_cached_roots(const type cell_type, const std::span<const double> vertex_coordinates,
+                                      const int gdim, const std::span<const double> ls_values,
+                                      const std::string& cut_type_str,
+                                      const std::span<const double> edge_root_coords,
+                                      const std::span<const uint8_t> edge_has_root,
+                                      CutCell<double>& cut_cell, bool triangulate);
+  template void cut_from_cached_roots(const type cell_type, const std::span<const float> vertex_coordinates,
+                                      const int gdim, const std::span<const float> ls_values,
+                                      const std::string& cut_type_str,
+                                      const std::span<const float> edge_root_coords,
+                                      const std::span<const uint8_t> edge_has_root,
+                                      CutCell<float>& cut_cell, bool triangulate);
 
   template CutCell<double> higher_order_cut(const type cell_type,
             const std::span<const double> vertex_coordinates, const int gdim,

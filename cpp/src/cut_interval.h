@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "cut_cell.h"
+#include "edge_root.h"
 
 namespace cutcells::cell
 {
@@ -19,8 +20,7 @@ namespace cutcells::cell
         inline void compute_intersection_point(const T& level, std::span<const T> p0, std::span<const T> p1,
                  const T& v0, const T& v1, std::vector<T>& intersection_point, const int offset = 0)
         {
-            for (int i = 0; i < static_cast<int>(p0.size()); ++i)
-                intersection_point[i + offset] = p0[i] + (p1[i] - p0[i]) * (level - v0) / (v1 - v0);
+            edge_root::linear_intersection_point<T>(p0, p1, v0, v1, intersection_point, offset, level);
         }
 
         template <std::floating_point T>

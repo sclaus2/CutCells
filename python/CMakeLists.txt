@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.19)
 
-# nanobind uses aligned deallocators only present on macOS > 10.14
+# Conda toolchains/libs are commonly built for macOS 11+, so match that to
+# avoid linker warnings about newer dylib deployment targets.
 if(APPLE)
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14")
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0")
 endif()
 
 project(cutcells_nanobind VERSION "0.2.0" LANGUAGES CXX)
@@ -17,39 +18,52 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if (TARGET cutcells)
   add_library(CUTCELLS::cutcells ALIAS cutcells)
 else()
-  # Find CutCells (C++)
-  # Prefer in-repo CutCells configs over any globally/conda-installed libcutcells.
-  # This avoids ABI mismatches between wrapper headers (from workspace) and an older
-  # runtime library discovered on the default prefix path.
-  if (NOT DEFINED CutCells_DIR)
-    set(_local_cutcells_candidates
-      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-bench-release/prefix/lib/cmake/cutcells"
-      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build/prefix/lib/cmake/cutcells"
-      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-dir/prefix/lib/cmake/cutcells"
-      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-bench-release"
-      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build"
-      "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-dir")
+  # Prefer an in-tree build artifact to avoid accidentally linking against
+  # a stale globally-installed libcutcells (conda/system).
+  set(_local_cutcells_lib "")
+  set(_local_cutcells_lib_candidates
+    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build/src/libcutcells.dylib"
+    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build/libcutcells.dylib"
+    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-bench-release/src/libcutcells.dylib"
+    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-bench-release/libcutcells.dylib"
+  )
+  foreach(_lib IN LISTS _local_cutcells_lib_candidates)
+    if (EXISTS "${_lib}")
+      set(_local_cutcells_lib "${_lib}")
+      break()
+    endif()
+  endforeach()
 
-    foreach(_candidate IN LISTS _local_cutcells_candidates)
-      if (EXISTS "${_candidate}")
-        if (IS_DIRECTORY "${_candidate}")
-          set(_candidate_dir "${_candidate}")
-        else()
-          get_filename_component(_candidate_dir "${_candidate}" DIRECTORY)
-        endif()
-
-        if (EXISTS "${_candidate_dir}/CutCellsConfig.cmake" AND EXISTS "${_candidate_dir}/CutCellsTargets.cmake")
+  if (_local_cutcells_lib)
+    add_library(CUTCELLS::cutcells SHARED IMPORTED GLOBAL)
+    set_target_properties(CUTCELLS::cutcells PROPERTIES
+      IMPORTED_LOCATION "${_local_cutcells_lib}"
+      INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/../cpp")
+    set(CUTCELLS_FOUND TRUE)
+  else()
+    # Fallback to package discovery (used when only an installed CutCells exists).
+    if (NOT DEFINED CutCells_DIR)
+      set(_local_config_candidates
+        "${CMAKE_CURRENT_LIST_DIR}/../cpp/build"
+        "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-bench-release"
+      )
+      foreach(_candidate_dir IN LISTS _local_config_candidates)
+        if (EXISTS "${_candidate_dir}/CutCellsConfig.cmake")
           set(CutCells_DIR "${_candidate_dir}")
           break()
         endif()
-      endif()
-    endforeach()
+      endforeach()
+    endif()
+    find_package(CutCells REQUIRED)
   endif()
-  find_package(CutCells REQUIRED)
 endif()
 
 if(CUTCELLS_FOUND)
-  message(STATUS "Found CutCells at ${CUTCELLS_DIR}")
+  if (_local_cutcells_lib)
+    message(STATUS "Found CutCells at ${_local_cutcells_lib}")
+  else()
+    message(STATUS "Found CutCells at ${CUTCELLS_DIR}")
+  endif()
 endif()
 
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)

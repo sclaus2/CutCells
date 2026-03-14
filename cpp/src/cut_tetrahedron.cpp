@@ -5,8 +5,8 @@
 // SPDX-License-Identifier:    MIT
 
 #include "cut_tetrahedron.h"
-#include "cut_interval.h"
 #include "cell_flags.h"
+#include "edge_root.h"
 #include "triangulation.h"
 #include "span_math.h"
 #include "utils.h"
@@ -174,52 +174,6 @@ namespace tetrahedron{
             num_sub_elements = 2;
         }
         return num_sub_elements;
-    }
-
-    template <std::floating_point T>
-    void compute_intersection_points(std::span<const T> vertex_coordinates, const int gdim,
-             std::span<const T> ls_values, const int flag, std::vector<T>& intersection_points,
-             VertexCaseMap& vertex_case_map)
-    {
-        // vertex ids will be edges[edge_0][0] edges[edge_0][1]
-        // get vertex coordinates and interpolate
-        int num_intersection_points = get_num_intersection_points(flag);
-
-        intersection_points.resize(num_intersection_points*gdim);
-
-        // gdim is at most 3; use stack arrays to avoid heap allocation per intersection point
-        std::array<T, 3> v0 = {};
-        std::array<T, 3> v1 = {};
-
-        for(int ip=0; ip<num_intersection_points; ip++)
-        {
-            // edge has two vertices
-            // intersection points are listed first in triangle case table
-            // therefore the first two entries are the intersected edges
-            int vertex_id_0 = edges[tetrahedron_intersected_edges[flag][ip]][0];
-            int vertex_id_1 = edges[tetrahedron_intersected_edges[flag][ip]][1];
-
-            for(int j=0;j<gdim;j++)
-            {
-                v0[j] = vertex_coordinates[vertex_id_0*gdim+j];
-                v1[j] = vertex_coordinates[vertex_id_1*gdim+j];
-            }
-
-            T ls0 = ls_values[vertex_id_0];
-            T ls1 = ls_values[vertex_id_1];
-
-            interval::compute_intersection_point<T>(T(0), std::span<const T>(v0.data(), gdim),
-                                                    std::span<const T>(v1.data(), gdim),
-                                                    ls0, ls1, intersection_points, ip * gdim);
-        }
-
-        int cnt = 0;
-        for(int ip=0; ip<num_intersection_points; ip++)
-        {
-            vertex_case_map[tetrahedron_intersected_edges[flag][ip]] = cnt;
-            cnt++;
-        }
-
     }
 
     template <std::floating_point T>
@@ -440,7 +394,15 @@ namespace tetrahedron{
         //          then orginal vertex 101 -> 2 , 102 -> 3 etc.
         VertexCaseMap vertex_case_map;
         vertex_case_map.fill(-1);
-        compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
+        const int num_intersection_points = get_num_intersection_points(flag_interior);
+        std::array<int, 4> case_edge_ids = {-1, -1, -1, -1};
+        for (int i = 0; i < num_intersection_points; ++i)
+            case_edge_ids[static_cast<std::size_t>(i)] = tetrahedron_intersected_edges[flag_interior][i];
+
+        edge_root::compute_case_intersections_from_edge_ids<T>(
+            vertex_coordinates, gdim, ls_values, edges, 6,
+            std::span<const int>(case_edge_ids.data(), static_cast<std::size_t>(num_intersection_points)),
+            intersection_points, vertex_case_map);
 
         cut_cell._vertex_coords.reserve(reserve_vertex_coords * gdim);
         cutcells::cell::reserve_cell_topology(cut_cell, reserve_connectivity, reserve_types);
@@ -476,13 +438,6 @@ namespace tetrahedron{
     template void cut(const std::span<const float> vertex_coordinates, const int gdim,
               const std::span<const float> ls_values, const std::string& cut_type_str,
               CutCell<float>& cut_cell, bool triangulate);
-
-    template void compute_intersection_points(std::span<const double> vertex_coordinates, const int gdim,
-             std::span<const double> ls_values, const int flag, std::vector<double>& intersection_points,
-             VertexCaseMap& vertex_case_map);
-    template void compute_intersection_points(std::span<const float> vertex_coordinates, const int gdim,
-             std::span<const float> ls_values, const int flag, std::vector<float>& intersection_points,
-             VertexCaseMap& vertex_case_map);
 
     template double volume(const std::span<const double> vertex_coordinates, const int gdim);
     template float volume(const std::span<const float> vertex_coordinates, const int gdim);

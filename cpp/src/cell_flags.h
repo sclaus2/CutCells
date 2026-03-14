@@ -42,17 +42,18 @@ namespace cutcells
                 return cut_type::unset;
         }
 
-        inline std::string domain_type_to_string(const domain& cell_domain)
-        {
-            if(cell_domain==domain::unset)
-                return "unset";
-            else if(cell_domain==domain::intersected)
-                return "intersected";
-            else if(cell_domain==domain::inside)
-                return "inside";
-            else if(cell_domain==domain::outside)
-                return "outside";
-        }
+    inline std::string domain_type_to_string(const domain& cell_domain)
+    {
+        if(cell_domain==domain::unset)
+            return "unset";
+        else if(cell_domain==domain::intersected)
+            return "intersected";
+        else if(cell_domain==domain::inside)
+            return "inside";
+        else if(cell_domain==domain::outside)
+            return "outside";
+        return "unknown";
+    }
 
         template <std::floating_point T>
         inline int get_entity_flag(const std::span<const T> ls_values, bool outside)
@@ -96,7 +97,7 @@ namespace cutcells
         inline bool is_intersected(const std::span<const T> ls_values, const T tol = 1e-14)
         {
             // Check if there is a sign change 
-            for(int i=1;i<ls_values.size();i++)
+            for(std::size_t i=1;i<ls_values.size();i++)
             {
                 //check if sign in current node is different from first node value
                 //sign change is only registered if smaller than -tol
@@ -114,7 +115,7 @@ namespace cutcells
         inline bool is_corner_case(const std::span<const T> ls_values, const T tol = 1e-14)
         {
             // Check if there is a sign change 
-            for(int i=1;i<ls_values.size();i++)
+            for(std::size_t i=1;i<ls_values.size();i++)
             {
                 //check if sign in current node is different from first node value
                 if(std::fabs(ls_values[i])<tol)
@@ -128,7 +129,7 @@ namespace cutcells
 
         // Flag all nodes with abs(ls_val) < tol
         template <std::floating_point T>
-        inline int get_entity_corner_case_flag(const std::span<const T> ls_values, bool outside)
+        inline int get_entity_corner_case_flag(const std::span<const T> ls_values, [[maybe_unused]] bool outside)
         {
             int index = 0;
             int multiplier = 1;
@@ -138,7 +139,7 @@ namespace cutcells
             T tol = std::numeric_limits<T>::epsilon() * std::fabs(ls_values[0]) * ulp;
 
             //todo: consider to provide insideout flag to get outside cut
-            for(int i=0;i<ls_values.size();i++)
+            for(std::size_t i=0;i<ls_values.size();i++)
             {
                 if(std::fabs(ls_values[i])<tol)
                 {
