@@ -18,6 +18,7 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_types.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_flags.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_subdivision.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cell_topology.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_triangle.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_interval.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_quadrilateral.h
@@ -29,6 +30,8 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/level_set.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mesh_view.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature_tables.h
   ${CMAKE_CURRENT_SOURCE_DIR}/span_math.h

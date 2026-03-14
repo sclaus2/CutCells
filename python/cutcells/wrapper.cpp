@@ -11,9 +11,12 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/map.h>
+#include <nanobind/stl/shared_ptr.h>
 #include <span>
 #include <type_traits>
 #include <stdexcept>
+#include <memory>
+#include <optional>
 
 #include "../../cpp/src/cell_types.h"
 #include "../../cpp/src/cut_cell.h"
@@ -21,6 +24,8 @@
 #include "../../cpp/src/write_vtk.h"
 #include "../../cpp/src/mapping.h"
 #include "../../cpp/src/quadrature.h"
+#include "../../cpp/src/mesh_view.h"
+#include "../../cpp/src/level_set.h"
 
 namespace nb = nanobind;
 
@@ -70,38 +75,362 @@ auto as_nbarrayp(std::pair<V, std::array<std::size_t, U>>&& x)
   return as_nbarray(std::move(x.first), x.second.size(), x.second.data());
 }
 
-inline std::vector<int32_t> csr_to_vtk_cells_impl(std::span<const int> connectivity,
-                                                  std::span<const int> offsets)
+template <typename T>
+using ndarray1 = nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>;
+
+template <typename T>
+using ndarray2 = nb::ndarray<const T, nb::numpy, nb::shape<-1, -1>, nb::c_contig>;
+
+std::shared_ptr<void> make_owner_from_objects(nb::object a = nb::object(),
+                                              nb::object b = nb::object(),
+                                              nb::object c = nb::object(),
+                                              nb::object d = nb::object())
 {
-  if (offsets.empty())
-    return {};
-
-  const int conn_size = static_cast<int>(connectivity.size());
-  const bool has_terminal_offset = (offsets.back() == conn_size);
-  const int num_cells = has_terminal_offset ? static_cast<int>(offsets.size()) - 1
-                                            : static_cast<int>(offsets.size());
-
-  if (num_cells < 0)
-    throw std::runtime_error("Invalid CSR offsets: negative cell count");
-
-  std::vector<int32_t> cells;
-  cells.reserve(connectivity.size() + static_cast<std::size_t>(num_cells));
-
-  for (int i = 0; i < num_cells; ++i)
+  struct Owner
   {
-    const int begin = offsets[i];
-    const int end = (i + 1 < static_cast<int>(offsets.size())) ? offsets[i + 1] : conn_size;
+    nb::object a, b, c, d;
+  };
+  auto owner = std::make_shared<Owner>();
+  owner->a = std::move(a);
+  owner->b = std::move(b);
+  owner->c = std::move(c);
+  owner->d = std::move(d);
+  return owner;
+}
 
-    if (begin < 0 || end < begin || end > conn_size)
-      throw std::runtime_error("Invalid CSR offsets/connectivity bounds");
+// Convert CSR connectivity+offset arrays into VTK packed cells layout
+// [n0, v0_0, v0_1, ..., n1, v1_0, ...].
+static std::vector<int> csr_to_vtk_cells_impl(std::span<const int> connectivity,
+                                             std::span<const int> offsets)
+{
+  std::vector<int> out;
+  if (offsets.size() == 0)
+    return out;
+  const std::size_t ncells = (offsets.size() > 0) ? (offsets.size() - 1) : 0;
+  out.reserve(connectivity.size() + ncells);
+  for (std::size_t i = 0; i < ncells; ++i)
+  {
+    int start = offsets[i];
+    int end = offsets[i + 1];
+    int n = end - start;
+    out.push_back(n);
+    for (int j = start; j < end; ++j)
+      out.push_back(connectivity[static_cast<std::size_t>(j)]);
+  }
+  return out;
+}
 
-    const int nverts = end - begin;
-    cells.push_back(static_cast<int32_t>(nverts));
-    for (int j = begin; j < end; ++j)
-      cells.push_back(static_cast<int32_t>(connectivity[j]));
+template <typename T>
+cutcells::MeshView<T, int> make_mesh_view_from_numpy(
+    const ndarray2<T>& coordinates,
+    const ndarray1<int>& connectivity,
+    const ndarray1<int>& offsets,
+    const std::optional<ndarray1<int>>& cell_types,
+    int tdim)
+{
+  cutcells::MeshView<T, int> mesh;
+  mesh.gdim = static_cast<int>(coordinates.shape(1));
+  mesh.tdim = tdim;
+
+  mesh.coordinates = std::span<const T>(coordinates.data(),
+                                        static_cast<std::size_t>(coordinates.size()));
+  mesh.connectivity = std::span<const int>(connectivity.data(),
+                                           static_cast<std::size_t>(connectivity.size()));
+  mesh.offsets = std::span<const int>(offsets.data(),
+                                      static_cast<std::size_t>(offsets.size()));
+
+  nb::object coords_obj = nb::cast(coordinates);
+  nb::object conn_obj = nb::cast(connectivity);
+  nb::object offs_obj = nb::cast(offsets);
+  nb::object types_obj;
+
+  if (cell_types.has_value())
+  {
+    mesh.cell_types = std::span<const int>(cell_types->data(),
+                                           static_cast<std::size_t>(cell_types->size()));
+    types_obj = nb::cast(*cell_types);
   }
 
-  return cells;
+  mesh.owner = make_owner_from_objects(coords_obj, conn_obj, offs_obj, types_obj);
+  return mesh;
+}
+
+template <typename T>
+void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
+{
+  using MeshViewT = cutcells::MeshView<T, int>;
+  using LevelSetT = cutcells::LevelSetFunction<T, int>;
+
+  const std::string mesh_name = "MeshView_" + suffix;
+  nb::class_<MeshViewT>(m, mesh_name.c_str(), "Lightweight mesh view")
+      .def(
+          "__init__",
+          [](MeshViewT* self,
+             const ndarray2<T>& coordinates,
+             const ndarray1<int>& connectivity,
+             const ndarray1<int>& offsets,
+             nb::object cell_types_obj,
+             int tdim)
+          {
+            std::optional<ndarray1<int>> cell_types;
+            if (!cell_types_obj.is_none())
+              cell_types = nb::cast<ndarray1<int>>(cell_types_obj);
+
+            new (self) MeshViewT(
+                make_mesh_view_from_numpy<T>(coordinates, connectivity, offsets, cell_types, tdim));
+          },
+          nb::arg("coordinates"),
+          nb::arg("connectivity"),
+          nb::arg("offsets"),
+          nb::arg("cell_types") = nb::none(),
+          nb::arg("tdim"))
+      .def_prop_ro("gdim", [](const MeshViewT& self) { return self.gdim; })
+      .def_prop_ro("tdim", [](const MeshViewT& self) { return self.tdim; })
+      .def("num_nodes", &MeshViewT::num_nodes)
+      .def("num_cells", &MeshViewT::num_cells)
+      .def("has_cell_types", &MeshViewT::has_cell_types)
+      .def("cell_num_nodes", &MeshViewT::cell_num_nodes)
+      .def("cell_node", &MeshViewT::cell_node)
+      .def(
+          "node",
+          [](const MeshViewT& self, int node_id)
+          {
+            const T* x = self.node(node_id);
+            return nb::ndarray<const T, nb::numpy>(
+                x, {static_cast<std::size_t>(self.gdim)}, nb::handle());
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "coordinates",
+          [](const MeshViewT& self)
+          {
+            return nb::ndarray<const T, nb::numpy>(
+                self.coordinates.data(),
+                {static_cast<std::size_t>(self.num_nodes()),
+                 static_cast<std::size_t>(self.gdim)},
+                nb::handle());
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "connectivity",
+          [](const MeshViewT& self)
+          {
+            return nb::ndarray<const int, nb::numpy>(
+                self.connectivity.data(),
+                {self.connectivity.size()},
+                nb::handle());
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "offsets",
+          [](const MeshViewT& self)
+          {
+            return nb::ndarray<const int, nb::numpy>(
+                self.offsets.data(),
+                {self.offsets.size()},
+                nb::handle());
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "cell_types",
+          [](const MeshViewT& self)
+          {
+            if (self.cell_types.empty())
+              return nb::ndarray<const int, nb::numpy>(nullptr, {0}, nb::handle());
+            return nb::ndarray<const int, nb::numpy>(
+                self.cell_types.data(),
+                {self.cell_types.size()},
+                nb::handle());
+          },
+          nb::rv_policy::reference_internal);
+
+  const std::string ls_name = "LevelSetFunction_" + suffix;
+  nb::class_<LevelSetT>(m, ls_name.c_str(), "Level-set function")
+      .def(
+          "__init__",
+          [](LevelSetT* self,
+             nb::object value_obj,
+             nb::object grad_obj,
+             nb::object nodal_values_obj,
+             int gdim)
+          {
+            using ValueFn = std::function<T(const T*, int)>;
+            using GradFn = std::function<void(const T*, int, T*)>;
+
+            ValueFn value_fn;
+            GradFn grad_fn;
+            std::span<const T> nodal_values;
+            nb::object nodal_owner;
+
+            if (!value_obj.is_none())
+            {
+              nb::callable value_callable = nb::cast<nb::callable>(value_obj);
+
+              value_fn = [value_callable](const T* x, int cell_id) -> T
+              {
+                nb::gil_scoped_acquire gil;
+                nb::ndarray<const T, nb::numpy> x_arr(x, {static_cast<std::size_t>(3)}, nb::handle());
+                try
+                {
+                  return nb::cast<T>(value_callable(x_arr, cell_id));
+                }
+                catch (const nb::python_error&)
+                {
+                  return nb::cast<T>(value_callable(x_arr));
+                }
+              };
+            }
+
+            if (!grad_obj.is_none())
+            {
+              nb::callable grad_callable = nb::cast<nb::callable>(grad_obj);
+
+              grad_fn = [grad_callable](const T* x, int cell_id, T* g)
+              {
+                nb::gil_scoped_acquire gil;
+                nb::ndarray<const T, nb::numpy> x_arr(x, {static_cast<std::size_t>(3)}, nb::handle());
+
+                nb::object result;
+                try
+                {
+                  result = grad_callable(x_arr, cell_id);
+                }
+                catch (const nb::python_error&)
+                {
+                  result = grad_callable(x_arr);
+                }
+
+                auto grad_arr = nb::cast<ndarray1<T>>(result);
+                for (std::size_t i = 0; i < grad_arr.size(); ++i)
+                  g[i] = grad_arr(i);
+              };
+            }
+
+            if (!nodal_values_obj.is_none())
+            {
+              auto nodal_array = nb::cast<ndarray1<T>>(nodal_values_obj);
+              nodal_values = std::span<const T>(nodal_array.data(),
+                                                static_cast<std::size_t>(nodal_array.size()));
+              nodal_owner = nodal_values_obj;
+            }
+
+            if (!value_fn && nodal_values.empty())
+              throw std::runtime_error("LevelSetFunction requires at least one of value or nodal_values.");
+
+            if (grad_fn && !value_fn)
+              throw std::runtime_error("LevelSetFunction: grad requires value.");
+
+            new (self) LevelSetT{};
+            self->value_fn = std::move(value_fn);
+            self->grad_fn = std::move(grad_fn);
+            self->nodal_values = nodal_values;
+            self->gdim = gdim;
+            self->owner = make_owner_from_objects(value_obj, grad_obj, nodal_owner);
+          },
+          nb::arg("value") = nb::none(),
+          nb::arg("grad") = nb::none(),
+          nb::arg("nodal_values") = nb::none(),
+          nb::arg("gdim") = 0)
+      .def_prop_ro("gdim", [](const LevelSetT& self) { return self.gdim; })
+      .def("has_value", &LevelSetT::has_value)
+      .def("has_gradient", &LevelSetT::has_gradient)
+      .def("has_nodal_values", &LevelSetT::has_nodal_values)
+      .def(
+          "value",
+          [](const LevelSetT& self, const ndarray1<T>& x, int cell_id)
+          {
+            return self.value(x.data(), cell_id);
+          },
+          nb::arg("x"),
+          nb::arg("cell_id") = -1)
+      .def(
+          "grad",
+          [](const LevelSetT& self, const ndarray1<T>& x, int cell_id)
+          {
+            std::vector<T> g(static_cast<std::size_t>(self.gdim), T(0));
+            self.grad(x.data(), cell_id, g.data());
+            return nb::ndarray<const T, nb::numpy>(
+                g.data(),
+                {g.size()},
+                nb::capsule(new std::vector<T>(std::move(g)),
+                            [](void* p) noexcept { delete static_cast<std::vector<T>*>(p); }));
+          },
+          nb::arg("x"),
+          nb::arg("cell_id") = -1)
+      .def("value_at_node", &LevelSetT::value_at_node)
+      .def_prop_ro(
+          "nodal_values",
+          [](const LevelSetT& self)
+          {
+            if (self.nodal_values.empty())
+              return nb::ndarray<const T, nb::numpy>(nullptr, {0}, nb::handle());
+            return nb::ndarray<const T, nb::numpy>(
+                self.nodal_values.data(),
+                {self.nodal_values.size()},
+                nb::handle());
+          },
+          nb::rv_policy::reference_internal);
+
+  // ---- cut_mesh_view ----
+  // Cuts a MeshView using a LevelSetFunction, returning a CutMesh.
+  // Nodal level-set values are taken from ls.nodal_values if available,
+  // otherwise ls.value() is evaluated at every mesh node.
+  m.def(
+      "cut_mesh_view",
+      [](const MeshViewT& mesh, const LevelSetT& ls,
+         const std::string& cut_type_str, bool triangulate)
+      {
+        if (!mesh.has_cell_types())
+          throw std::runtime_error(
+              "cut_mesh_view: MeshView must have cell_types (VTK type IDs)");
+
+        // Build nodal level-set values while GIL is held
+        // (ls.value() may call back into Python)
+        const std::size_t n = static_cast<std::size_t>(mesh.num_nodes());
+        std::vector<T> ls_vals(n);
+        if (ls.has_nodal_values())
+        {
+          if (ls.nodal_values.size() != n)
+            throw std::runtime_error(
+                "cut_mesh_view: nodal_values size does not match MeshView num_nodes");
+          std::copy(ls.nodal_values.begin(), ls.nodal_values.end(), ls_vals.begin());
+        }
+        else if (ls.has_value())
+        {
+          for (std::size_t i = 0; i < n; ++i)
+            ls_vals[i] = ls.value(mesh.node(static_cast<int>(i)), -1);
+        }
+        else
+        {
+          throw std::runtime_error(
+              "cut_mesh_view: LevelSetFunction has neither value nor nodal_values");
+        }
+
+        // Cut mesh with GIL released
+        nb::gil_scoped_release release;
+        return mesh::cut_vtk_mesh<T>(
+            std::span<const T>(ls_vals.data(), ls_vals.size()),
+            mesh.coordinates,
+            mesh.connectivity,
+            mesh.offsets,
+            mesh.cell_types,
+            cut_type_str,
+            triangulate);
+      },
+      nb::arg("mesh"),
+      nb::arg("level_set"),
+      nb::arg("cut_type"),
+      nb::arg("triangulate") = true,
+      "Cut a MeshView with a LevelSetFunction.\n"
+      "Returns a CutMesh containing cells classified by cut_type (\"phi<0\", \"phi=0\", \"phi>0\").\n"
+      "Level-set values are taken from nodal_values if set, otherwise evaluated via value().");
+
+  // Simple aliases for Python
+  if constexpr (std::is_same_v<T, double>)
+  {
+    m.attr("MeshView") = m.attr(mesh_name.c_str());
+    m.attr("LevelSetFunction") = m.attr(ls_name.c_str());
+  }
 }
 
 template <typename T>
@@ -565,6 +894,9 @@ NB_MODULE(_cutcellscpp, m)
 
   declare_float<float>(m, "float32");
   declare_float<double>(m, "float64");
+
+  declare_meshview_and_levelset<float>(m, "float32");
+  declare_meshview_and_levelset<double>(m, "float64");
 
   m.def("csr_to_vtk_cells",
         [](const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,

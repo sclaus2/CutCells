@@ -18,7 +18,6 @@ include(CheckIPOSupported)
 
 # Source files
 add_subdirectory(src)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../benchmarks ${CMAKE_CURRENT_BINARY_DIR}/benchmarks)
 
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
@@ -38,6 +37,12 @@ target_include_directories(cutcells PUBLIC
 
 install(FILES ${HEADERS} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cutcells/${DIR}
 COMPONENT Development)
+
+# Install generated headers produced at build time (tables, etc.)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cutcells/src
+  COMPONENT Development
+  FILES_MATCHING PATTERN "*.h")
 
 # Install the cutcells library
 install(TARGETS cutcells

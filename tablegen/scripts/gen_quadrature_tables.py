@@ -16,24 +16,13 @@ Environment variables (to override Basix lookup paths):
 import sys
 import os
 import argparse
+import basix
 
 # ---------------------------------------------------------------------------
 # Basix path bootstrap – use environment or well-known local build.
 # ---------------------------------------------------------------------------
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_DEFAULT_BASIX_PYTHON = os.path.join(os.path.dirname(_REPO_ROOT), "basix", "python")
-_DEFAULT_BASIX_SO = os.path.join(
-    os.path.dirname(_REPO_ROOT), "basix", "build", "python"
-)
 
-for _p in [
-    os.environ.get("BASIX_SO_PATH", _DEFAULT_BASIX_SO),
-    os.environ.get("BASIX_PYPATH", _DEFAULT_BASIX_PYTHON),
-]:
-    if _p and _p not in sys.path:
-        sys.path.insert(0, _p)
-
-import basix  # noqa: E402 (must come after path fixup)
 
 # ---------------------------------------------------------------------------
 # Cell-type table: (name, basix.CellType, topological_dimension)
@@ -92,7 +81,14 @@ def _write_cell_header(cell_name, basix_ct, tdim, max_order, out_dir):
             )
         )
         for order in range(1, max_order + 1):
-            pts, wts = basix.make_quadrature(basix_ct, order)
+            # Use Gauss-Lobatto-Legendre (GLL) for 1D interval tables so
+            # endpoints are included; keep defaults for other cell types.
+            if basix_ct == basix.CellType.interval:
+                pts, wts = basix.make_quadrature(
+                    basix_ct, order, rule=basix.QuadratureType.gll
+                )
+            else:
+                pts, wts = basix.make_quadrature(basix_ct, order)
             npts = pts.shape[0]
             pts_flat = pts.ravel()
 

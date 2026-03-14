@@ -9,110 +9,114 @@
 
 namespace cutcells::quadrature::generated
 {
-// ---- order 1: 1 point(s), tdim=1 ----
-inline constexpr int    interval_o1_npts    = 1;
+// ---- order 1: 2 point(s), tdim=1 ----
+inline constexpr int    interval_o1_npts    = 2;
 inline constexpr int    interval_o1_tdim    = 1;
-inline constexpr double interval_o1_points[1] = {
-    5.000000000000000000e-01
+inline constexpr double interval_o1_points[2] = {
+    0.000000000000000000e+00, 1.000000000000000000e+00
 };
-inline constexpr double interval_o1_weights[1] = {
-    1.000000000000000000e+00
+inline constexpr double interval_o1_weights[2] = {
+    4.999999999999998890e-01, 4.999999999999998890e-01
 };
 
-// ---- order 2: 2 point(s), tdim=1 ----
-inline constexpr int    interval_o2_npts    = 2;
+// ---- order 2: 3 point(s), tdim=1 ----
+inline constexpr int    interval_o2_npts    = 3;
 inline constexpr int    interval_o2_tdim    = 1;
-inline constexpr double interval_o2_points[2] = {
-    2.113248654051871345e-01, 7.886751345948128655e-01
+inline constexpr double interval_o2_points[3] = {
+    1.110223024625156540e-16, 9.999999999999998890e-01, 5.000000000000000000e-01
 };
-inline constexpr double interval_o2_weights[2] = {
-    5.000000000000000000e-01, 5.000000000000000000e-01
+inline constexpr double interval_o2_weights[3] = {
+    1.666666666666667129e-01, 1.666666666666666574e-01, 6.666666666666662966e-01
 };
 
-// ---- order 3: 2 point(s), tdim=1 ----
-inline constexpr int    interval_o3_npts    = 2;
+// ---- order 3: 3 point(s), tdim=1 ----
+inline constexpr int    interval_o3_npts    = 3;
 inline constexpr int    interval_o3_tdim    = 1;
-inline constexpr double interval_o3_points[2] = {
-    2.113248654051871345e-01, 7.886751345948128655e-01
+inline constexpr double interval_o3_points[3] = {
+    1.110223024625156540e-16, 9.999999999999998890e-01, 5.000000000000000000e-01
 };
-inline constexpr double interval_o3_weights[2] = {
-    5.000000000000000000e-01, 5.000000000000000000e-01
+inline constexpr double interval_o3_weights[3] = {
+    1.666666666666667129e-01, 1.666666666666666574e-01, 6.666666666666662966e-01
 };
 
-// ---- order 4: 3 point(s), tdim=1 ----
-inline constexpr int    interval_o4_npts    = 3;
+// ---- order 4: 4 point(s), tdim=1 ----
+inline constexpr int    interval_o4_npts    = 4;
 inline constexpr int    interval_o4_tdim    = 1;
-inline constexpr double interval_o4_points[3] = {
-    1.127016653792582979e-01, 5.000000000000000000e-01, 8.872983346207417021e-01
+inline constexpr double interval_o4_points[4] = {
+    -1.110223024625156540e-16, 1.000000000000000000e+00, 2.763932022500210639e-01, 7.236067977499789361e-01
 };
-inline constexpr double interval_o4_weights[3] = {
-    2.777777777777776791e-01, 4.444444444444444198e-01, 2.777777777777776791e-01
+inline constexpr double interval_o4_weights[4] = {
+    8.333333333333323156e-02, 8.333333333333335646e-02, 4.166666666666665186e-01, 4.166666666666663521e-01
 };
 
-// ---- order 5: 3 point(s), tdim=1 ----
-inline constexpr int    interval_o5_npts    = 3;
+// ---- order 5: 4 point(s), tdim=1 ----
+inline constexpr int    interval_o5_npts    = 4;
 inline constexpr int    interval_o5_tdim    = 1;
-inline constexpr double interval_o5_points[3] = {
-    1.127016653792582979e-01, 5.000000000000000000e-01, 8.872983346207417021e-01
+inline constexpr double interval_o5_points[4] = {
+    -1.110223024625156540e-16, 1.000000000000000000e+00, 2.763932022500210639e-01, 7.236067977499789361e-01
 };
-inline constexpr double interval_o5_weights[3] = {
-    2.777777777777776791e-01, 4.444444444444444198e-01, 2.777777777777776791e-01
+inline constexpr double interval_o5_weights[4] = {
+    8.333333333333323156e-02, 8.333333333333335646e-02, 4.166666666666665186e-01, 4.166666666666663521e-01
 };
 
-// ---- order 6: 4 point(s), tdim=1 ----
-inline constexpr int    interval_o6_npts    = 4;
+// ---- order 6: 5 point(s), tdim=1 ----
+inline constexpr int    interval_o6_npts    = 5;
 inline constexpr int    interval_o6_tdim    = 1;
-inline constexpr double interval_o6_points[4] = {
-    6.943184420297371373e-02, 3.300094782075718713e-01, 6.699905217924281287e-01, 9.305681557970262308e-01
+inline constexpr double interval_o6_points[5] = {
+    5.551115123125782702e-17, 1.000000000000000000e+00, 1.726731646460114566e-01, 5.000000000000000000e-01,
+    8.273268353539885434e-01
 };
-inline constexpr double interval_o6_weights[4] = {
-    1.739274225687268416e-01, 3.260725774312731029e-01, 3.260725774312729919e-01, 1.739274225687268416e-01
+inline constexpr double interval_o6_weights[5] = {
+    5.000000000000003747e-02, 5.000000000000004441e-02, 2.722222222222222543e-01, 3.555555555555554581e-01,
+    2.722222222222220323e-01
 };
 
-// ---- order 7: 4 point(s), tdim=1 ----
-inline constexpr int    interval_o7_npts    = 4;
+// ---- order 7: 5 point(s), tdim=1 ----
+inline constexpr int    interval_o7_npts    = 5;
 inline constexpr int    interval_o7_tdim    = 1;
-inline constexpr double interval_o7_points[4] = {
-    6.943184420297371373e-02, 3.300094782075718713e-01, 6.699905217924281287e-01, 9.305681557970262308e-01
+inline constexpr double interval_o7_points[5] = {
+    5.551115123125782702e-17, 1.000000000000000000e+00, 1.726731646460114566e-01, 5.000000000000000000e-01,
+    8.273268353539885434e-01
 };
-inline constexpr double interval_o7_weights[4] = {
-    1.739274225687268416e-01, 3.260725774312731029e-01, 3.260725774312729919e-01, 1.739274225687268416e-01
+inline constexpr double interval_o7_weights[5] = {
+    5.000000000000003747e-02, 5.000000000000004441e-02, 2.722222222222222543e-01, 3.555555555555554581e-01,
+    2.722222222222220323e-01
 };
 
-// ---- order 8: 5 point(s), tdim=1 ----
-inline constexpr int    interval_o8_npts    = 5;
+// ---- order 8: 6 point(s), tdim=1 ----
+inline constexpr int    interval_o8_npts    = 6;
 inline constexpr int    interval_o8_tdim    = 1;
-inline constexpr double interval_o8_points[5] = {
-    4.691007703066801815e-02, 2.307653449471584461e-01, 5.000000000000000000e-01, 7.692346550528414983e-01,
-    9.530899229693319263e-01
+inline constexpr double interval_o8_points[6] = {
+    2.775557561562891351e-16, 1.000000000000000000e+00, 1.174723380352676871e-01, 3.573842417596773680e-01,
+    6.426157582403224655e-01, 8.825276619647323129e-01
 };
-inline constexpr double interval_o8_weights[5] = {
-    1.184634425280945563e-01, 2.393143352496833187e-01, 2.844444444444443887e-01, 2.393143352496833187e-01,
-    1.184634425280945563e-01
+inline constexpr double interval_o8_weights[6] = {
+    3.333333333333327042e-02, 3.333333333333340920e-02, 1.892374781489237490e-01, 2.774291885177430084e-01,
+    2.774291885177428418e-01, 1.892374781489237490e-01
 };
 
-// ---- order 9: 5 point(s), tdim=1 ----
-inline constexpr int    interval_o9_npts    = 5;
+// ---- order 9: 6 point(s), tdim=1 ----
+inline constexpr int    interval_o9_npts    = 6;
 inline constexpr int    interval_o9_tdim    = 1;
-inline constexpr double interval_o9_points[5] = {
-    4.691007703066801815e-02, 2.307653449471584461e-01, 5.000000000000000000e-01, 7.692346550528414983e-01,
-    9.530899229693319263e-01
+inline constexpr double interval_o9_points[6] = {
+    2.775557561562891351e-16, 1.000000000000000000e+00, 1.174723380352676871e-01, 3.573842417596773680e-01,
+    6.426157582403224655e-01, 8.825276619647323129e-01
 };
-inline constexpr double interval_o9_weights[5] = {
-    1.184634425280945563e-01, 2.393143352496833187e-01, 2.844444444444443887e-01, 2.393143352496833187e-01,
-    1.184634425280945563e-01
+inline constexpr double interval_o9_weights[6] = {
+    3.333333333333327042e-02, 3.333333333333340920e-02, 1.892374781489237490e-01, 2.774291885177430084e-01,
+    2.774291885177428418e-01, 1.892374781489237490e-01
 };
 
-// ---- order 10: 6 point(s), tdim=1 ----
-inline constexpr int    interval_o10_npts    = 6;
+// ---- order 10: 7 point(s), tdim=1 ----
+inline constexpr int    interval_o10_npts    = 7;
 inline constexpr int    interval_o10_tdim    = 1;
-inline constexpr double interval_o10_points[6] = {
-    3.376524289842397497e-02, 1.693953067668677037e-01, 3.806904069584015060e-01, 6.193095930415984940e-01,
-    8.306046932331323518e-01, 9.662347571015760250e-01
+inline constexpr double interval_o10_points[7] = {
+    -1.110223024625156540e-16, 1.000000000000000000e+00, 8.488805186071646247e-02, 2.655756032646428011e-01,
+    5.000000000000001110e-01, 7.344243967353571989e-01, 9.151119481392833155e-01
 };
-inline constexpr double interval_o10_weights[6] = {
-    8.566224618958498405e-02, 1.803807865240693031e-01, 2.339569672863456296e-01, 2.339569672863454908e-01,
-    1.803807865240693031e-01, 8.566224618958498405e-02
+inline constexpr double interval_o10_weights[7] = {
+    2.380952380952375963e-02, 2.380952380952357922e-02, 1.384130236807827041e-01, 2.158726906049313332e-01,
+    2.438095238095235040e-01, 2.158726906049308336e-01, 1.384130236807826209e-01
 };
 
 } // namespace cutcells::quadrature::generated
