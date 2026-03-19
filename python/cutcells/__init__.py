@@ -7,6 +7,7 @@ from ._cutcellscpp import (
     classify_cell_domain,
     CellType,
     EdgeRootMethod,
+    LocalLevelSetBackend,
     CutCell_float32,
     CutCell_float64,
     CutCells_float32,
@@ -55,4 +56,7 @@ from ._cutcellscpp import (
     decompose_local_mesh,
     decompose_local_mesh_float32,
     decompose_local_mesh_float64,
+    find_root_on_segment,
+    find_root_on_segment_float32,
+    find_root_on_segment_float64,
 )

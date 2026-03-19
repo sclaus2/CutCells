@@ -19,6 +19,7 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_flags.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_subdivision.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_topology.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/bernstein_backend.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_triangle.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_interval.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_quadrilateral.h
@@ -54,6 +55,7 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/bernstein_backend.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/iso_refine.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/local_mesh.cpp

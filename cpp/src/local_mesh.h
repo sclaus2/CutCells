@@ -10,7 +10,9 @@
 #include <span>
 #include <vector>
 
+#include "bernstein_backend.h"
 #include "cell_types.h"
+#include "cut_cell.h"
 #include "edge_root.h"
 #include "iso_refine.h"
 #include "level_set.h"
@@ -30,6 +32,23 @@ enum class EdgeState : uint8_t
     multiple_roots = 2,  ///< Evidence that more than one root may exist.
     near_tangency = 3,   ///< Edge likely contains a tangential/near tangential contact.
     uncertain = 4        ///< Current tests cannot certify this edge.
+};
+
+/// Provenance of a cut-subcell edge during LUT certification.
+enum class EdgeOrigin : uint8_t
+{
+    original = 0,
+    root_split = 1,
+    lut_new = 2
+};
+
+template <std::floating_point T, std::integral I = int>
+struct LUTCertificationResult
+{
+    bool certified = true;
+    bool hit_max_depth = false;
+    int refine_iterations = 0;
+    int invalid_cells = 0;
 };
 
 // ============================================================================
@@ -235,6 +254,17 @@ void refine_local_mesh_from_template(
     LocalMesh<T>&             mesh,
     const RefinementTemplate& tpl);
 
+/// Red-refine the currently marked local cells in-place.
+///
+/// This refines the current local subcells rather than restarting from the
+/// parent-cell iso-P1 template. New vertices inherit stable parent-entity
+/// ancestry when they lie on original parent edges/faces; otherwise they are
+/// marked as local interior vertices.
+template <std::floating_point T>
+void red_refine_marked_cells(
+    LocalMesh<T>&             mesh,
+    std::span<const uint8_t>  marked_cells);
+
 /// Evaluate all active level sets at every vertex and fill vertex_phi,
 /// vertex_zero_mask, and vertex_inside_mask.
 ///
@@ -278,6 +308,16 @@ int compute_edge_root_linear(
     int           edge_id,
     int           level_set_id = 0);
 
+/// Compute one edge root using a full-cell Bernstein representation of the
+/// parent FEM level-set polynomial.
+template <std::floating_point T>
+int compute_edge_root_bernstein(
+    LocalMesh<T>&             mesh,
+    const BernsteinCell<T>&   parent_poly,
+    int                       edge_id,
+    int                       level_set_id = 0,
+    T                         tol = static_cast<T>(1e-12));
+
 /// Compute one edge root using selected root finder.
 ///
 /// - `linear`: uses endpoint nodal values (fast path).
@@ -305,6 +345,26 @@ void compute_all_roots(
     int                                level_set_id = 0,
     cell::edge_root::method            root_method = cell::edge_root::method::linear);
 
+/// Compute roots on all `one_root` edges using the selected local backend.
+template <std::floating_point T, std::integral I = int>
+void compute_all_roots_with_backend(
+    LocalMesh<T>&                      mesh,
+    const LevelSetFunction<T, I>&      level_set,
+    LocalLevelSetBackend               backend,
+    int                                level_set_id = 0,
+    cell::edge_root::method            root_method = cell::edge_root::method::linear,
+    T                                  tol = static_cast<T>(1e-12));
+
+template <std::floating_point T, std::integral I = int>
+bool certify_cut_subcells(
+    const LevelSetFunction<T, I>&      level_set,
+    const cell::CutCell<T>&            cut_cell,
+    cell::type                         parent_cell_type,
+    std::span<const T>                 parent_ls_values,
+    int                                parent_cell_id,
+    T                                  tol = static_cast<T>(1e-14),
+    bool                               debug = false);
+
 /// Decompose all intersected local cells into both `phi<0` and `phi>0` fragments
 /// using the linear cutting path.
 ///
@@ -325,5 +385,17 @@ void decompose_local_mesh(
     int                                level_set_id = 0,
     cell::edge_root::method            root_method = cell::edge_root::method::linear,
     bool                               triangulate = true);
+
+template <std::floating_point T, std::integral I = int>
+LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
+    LocalMesh<T>&                      mesh,
+    const LevelSetFunction<T, I>&      level_set,
+    LocalLevelSetBackend               backend,
+    int                                level_set_id = 0,
+    cell::edge_root::method            root_method = cell::edge_root::method::linear,
+    bool                               triangulate = true,
+    int                                max_refine_depth = 6,
+    T                                  tol = static_cast<T>(1e-14),
+    bool                               debug = false);
 
 } // namespace cutcells

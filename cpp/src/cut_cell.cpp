@@ -397,6 +397,7 @@ namespace cutcells::cell{
       }
 
       CutCell<T> merged_cut_cell;
+      bool parent_meta_set = false;
       std::size_t gdim = cut_cell_vec[0]._gdim;
       std::size_t tdim = cut_cell_vec[0]._tdim;
 
@@ -429,6 +430,15 @@ namespace cutcells::cell{
         if(cut_cell._vertex_coords.size()==0)
         {
           continue;
+        }
+
+        if (!parent_meta_set)
+        {
+          merged_cut_cell._parent_cell_index = cut_cell._parent_cell_index;
+          merged_cut_cell._parent_cell_type = cut_cell._parent_cell_type;
+          merged_cut_cell._parent_vertex_coords = cut_cell._parent_vertex_coords;
+          merged_cut_cell._parent_vertex_ids = cut_cell._parent_vertex_ids;
+          parent_meta_set = true;
         }
         //check that current cut_cell has same dimensions and parent
         if((cut_cell._gdim!=gdim)||(cut_cell._tdim!=tdim))
@@ -512,12 +522,18 @@ namespace cutcells::cell{
 
               for(int j=0;j<gdim;j++)
                 merged_cut_cell._vertex_coords.push_back(cut_cell._vertex_coords[local_id*gdim+j]);
+              merged_cut_cell._vertex_parent_entity.push_back(token);
 
               merged_vertex_ids.emplace(key, merged_vertex_id);
             }
             else
             {
               merged_vertex_id = it->second;
+              if (static_cast<std::size_t>(merged_vertex_id) < merged_cut_cell._vertex_parent_entity.size()
+                  && merged_cut_cell._vertex_parent_entity[static_cast<std::size_t>(merged_vertex_id)] < 0)
+              {
+                merged_cut_cell._vertex_parent_entity[static_cast<std::size_t>(merged_vertex_id)] = token;
+              }
             }
           }
           else
@@ -533,11 +549,22 @@ namespace cutcells::cell{
 
               for(int j=0;j<gdim;j++)
                 merged_cut_cell._vertex_coords.push_back(cut_cell._vertex_coords[local_id*gdim+j]);
+              if (has_tokens)
+                merged_cut_cell._vertex_parent_entity.push_back(cut_cell._vertex_parent_entity[local_id]);
+              else
+                merged_cut_cell._vertex_parent_entity.push_back(-1);
             }
             else //found
             {
               //take already existing vertex for local mapping
               merged_vertex_id = id;
+              if (has_tokens
+                  && static_cast<std::size_t>(merged_vertex_id) < merged_cut_cell._vertex_parent_entity.size()
+                  && merged_cut_cell._vertex_parent_entity[static_cast<std::size_t>(merged_vertex_id)] < 0)
+              {
+                merged_cut_cell._vertex_parent_entity[static_cast<std::size_t>(merged_vertex_id)]
+                    = cut_cell._vertex_parent_entity[local_id];
+              }
             }
           }
 

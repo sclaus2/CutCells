@@ -255,7 +255,8 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
              nb::object value_obj,
              nb::object grad_obj,
              nb::object nodal_values_obj,
-             int gdim)
+             int gdim,
+             int degree)
           {
             using ValueFn = std::function<T(const T*, int)>;
             using GradFn = std::function<void(const T*, int, T*)>;
@@ -328,13 +329,16 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
             self->grad_fn = std::move(grad_fn);
             self->nodal_values = nodal_values;
             self->gdim = gdim;
+            self->degree = degree;
             self->owner = make_owner_from_objects(value_obj, grad_obj, nodal_owner);
           },
           nb::arg("value") = nb::none(),
           nb::arg("grad") = nb::none(),
           nb::arg("nodal_values") = nb::none(),
-          nb::arg("gdim") = 0)
+          nb::arg("gdim") = 0,
+          nb::arg("degree") = -1)
       .def_prop_ro("gdim", [](const LevelSetT& self) { return self.gdim; })
+      .def_prop_ro("degree", [](const LevelSetT& self) { return self.degree; })
       .def("has_value", &LevelSetT::has_value)
       .def("has_gradient", &LevelSetT::has_gradient)
       .def("has_nodal_values", &LevelSetT::has_nodal_values)
@@ -597,15 +601,17 @@ void declare_float(nb::module_& m, std::string type)
          const LevelSetT& level_set,
          int level_set_id,
          T tol,
-         bool refine_on_uncertain) {
-        return cutcells::classify_edges_and_mark_refine<T, int>(
-          mesh, level_set, level_set_id, tol, refine_on_uncertain);
+         bool refine_on_uncertain,
+         LocalLevelSetBackend backend) {
+        return cutcells::classify_edges_with_backend<T, int>(
+          mesh, level_set, backend, level_set_id, tol, refine_on_uncertain);
       },
       nb::arg("mesh"),
       nb::arg("level_set"),
       nb::arg("level_set_id") = 0,
       nb::arg("tol") = static_cast<T>(1e-14),
       nb::arg("refine_on_uncertain") = false,
+      nb::arg("backend") = LocalLevelSetBackend::nodal_signs,
       "Classify all local-mesh edges for one level set.\n"
       "Returns True if refinement is recommended.");
 
@@ -616,17 +622,32 @@ void declare_float(nb::module_& m, std::string type)
          const LevelSetT& level_set,
          int level_set_id,
          cell::edge_root::method root_method,
-         T tol) {
-        cutcells::classify_edges_and_mark_refine<T, int>(
-          mesh, level_set, level_set_id, tol, false);
-        cutcells::compute_all_roots<T, int>(
-          mesh, level_set, level_set_id, root_method);
+         T tol,
+         LocalLevelSetBackend backend) {
+        const LocalLevelSetBackend resolved_backend =
+          (backend == LocalLevelSetBackend::nodal_signs && level_set.has_value())
+            ? LocalLevelSetBackend::analytical_callbacks
+            : backend;
+
+        if (resolved_backend == LocalLevelSetBackend::bernstein)
+        {
+          cutcells::certify_local_mesh_polynomial<T, int>(
+            mesh, level_set, level_set_id, 8, tol, true);
+        }
+        else
+        {
+          cutcells::classify_edges_with_backend<T, int>(
+            mesh, level_set, resolved_backend, level_set_id, tol, false);
+        }
+        cutcells::compute_all_roots_with_backend<T, int>(
+          mesh, level_set, resolved_backend, level_set_id, root_method, tol);
       },
       nb::arg("mesh"),
       nb::arg("level_set"),
       nb::arg("level_set_id") = 0,
       nb::arg("root_method") = cell::edge_root::method::linear,
       nb::arg("tol") = static_cast<T>(1e-14),
+      nb::arg("backend") = LocalLevelSetBackend::nodal_signs,
       "Compute and cache roots on all one-root edges and store per-edge solver diagnostics.");
 
     const std::string decompose_name = "decompose_local_mesh_" + type;
@@ -637,12 +658,26 @@ void declare_float(nb::module_& m, std::string type)
          int level_set_id,
          cell::edge_root::method root_method,
          bool triangulate,
-         T tol) {
-        // Ensure vertex_phi and edge_state are up-to-date before root computation.
-        cutcells::classify_edges_and_mark_refine<T, int>(
-          mesh, level_set, level_set_id, tol, false);
-        cutcells::decompose_local_mesh<T, int>(
-          mesh, level_set, level_set_id, root_method, triangulate);
+         T tol,
+         LocalLevelSetBackend backend) {
+        const bool use_backend_path =
+          backend == LocalLevelSetBackend::bernstein
+          || level_set.has_value();
+
+        if (use_backend_path)
+        {
+          const LocalLevelSetBackend resolved_backend =
+            (backend == LocalLevelSetBackend::nodal_signs && level_set.has_value())
+              ? LocalLevelSetBackend::analytical_callbacks
+              : backend;
+          cutcells::decompose_local_mesh_with_backend<T, int>(
+            mesh, level_set, resolved_backend, level_set_id, root_method, triangulate, 6, tol, false);
+        }
+        else
+        {
+          cutcells::decompose_local_mesh<T, int>(
+            mesh, level_set, level_set_id, root_method, triangulate);
+        }
       },
       nb::arg("mesh"),
       nb::arg("level_set"),
@@ -650,7 +685,63 @@ void declare_float(nb::module_& m, std::string type)
       nb::arg("root_method") = cell::edge_root::method::linear,
       nb::arg("triangulate") = true,
       nb::arg("tol") = static_cast<T>(1e-14),
+      nb::arg("backend") = LocalLevelSetBackend::nodal_signs,
       "Decompose a local mesh into phi<0 and phi>0 fragments using cached roots.");
+
+    const std::string root_segment_name = "find_root_on_segment_" + type;
+    m.def(
+      root_segment_name.c_str(),
+      [](const ndarray1<T>& p0_arr,
+         const ndarray1<T>& p1_arr,
+         const LevelSetT& level_set,
+         cell::edge_root::method root_method,
+         int cell_id,
+         T level,
+         int max_iter,
+         T xtol,
+         T ftol)
+      {
+        if (!level_set.has_value())
+          throw std::runtime_error("find_root_on_segment: level_set.value(...) is required.");
+        if (p0_arr.size() != p1_arr.size())
+          throw std::invalid_argument("find_root_on_segment: p0 and p1 must have same dimension.");
+        if (p0_arr.size() == 0 || p0_arr.size() > 3)
+          throw std::invalid_argument("find_root_on_segment: dimension must be 1..3.");
+
+        const std::span<const T> p0(p0_arr.data(), p0_arr.size());
+        const std::span<const T> p1(p1_arr.data(), p1_arr.size());
+        auto phi = [&](std::span<const T> x) -> T
+        {
+          return level_set.value(x.data(), static_cast<int>(cell_id));
+        };
+
+        const auto info = cell::edge_root::find_root_parameter_info<T>(
+          p0, p1, phi, root_method, level, max_iter, xtol, ftol);
+
+        std::vector<T> point(p0.size(), T(0));
+        cell::edge_root::interpolate_point<T>(
+          p0, p1, info.t, std::span<T>(point.data(), point.size()));
+
+        nb::dict out;
+        out["point"] = as_nbarray(std::move(point));
+        out["t"] = nb::float_(info.t);
+        out["residual"] = nb::float_(info.residual);
+        out["iterations"] = nb::int_(info.iterations);
+        out["evaluations"] = nb::int_(info.evaluations);
+        out["converged"] = nb::bool_(info.converged);
+        return out;
+      },
+      nb::arg("p0"),
+      nb::arg("p1"),
+      nb::arg("level_set"),
+      nb::arg("root_method") = cell::edge_root::method::newton,
+      nb::arg("cell_id") = -1,
+      nb::arg("level") = static_cast<T>(0),
+      nb::arg("max_iter") = 64,
+      nb::arg("xtol") = static_cast<T>(1e-12),
+      nb::arg("ftol") = static_cast<T>(1e-12),
+      "Find a root on a segment p(t)=p0+t*(p1-p0), t in [0,1], and return "
+      "{point, t, residual, iterations, evaluations, converged}.");
 
     std::string name = "CutCell_" + type;
     nb::class_<cell::CutCell<T>>(m, name.c_str(), "Cut Cell")
@@ -1124,6 +1215,7 @@ void declare_float(nb::module_& m, std::string type)
       m.attr("classify_edges_on_local_mesh") = m.attr(classify_name.c_str());
       m.attr("compute_roots_on_local_mesh") = m.attr(roots_name.c_str());
       m.attr("decompose_local_mesh") = m.attr(decompose_name.c_str());
+      m.attr("find_root_on_segment") = m.attr(root_segment_name.c_str());
     }
 }
 
@@ -1202,6 +1294,11 @@ NB_MODULE(_cutcellscpp, m)
     .value("brent", cell::edge_root::method::brent)
     .value("itp", cell::edge_root::method::itp)
     .value("newton", cell::edge_root::method::newton);
+
+  nb::enum_<LocalLevelSetBackend>(m, "LocalLevelSetBackend")
+    .value("nodal_signs", LocalLevelSetBackend::nodal_signs)
+    .value("bernstein", LocalLevelSetBackend::bernstein)
+    .value("analytical_callbacks", LocalLevelSetBackend::analytical_callbacks);
 
   declare_float<float>(m, "float32");
   declare_float<double>(m, "float64");

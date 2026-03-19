@@ -28,6 +28,7 @@ struct LevelSetFunction
   std::shared_ptr<void> owner;
 
   int gdim = 0;
+  int degree = -1;
 
   bool has_value() const
   {
