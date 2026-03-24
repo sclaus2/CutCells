@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "local_level_set.h"
 #include "local_mesh.h"
 
 #include <algorithm>
@@ -240,6 +241,52 @@ inline void populate_local_level_set_values(
             mesh.vertex_zero_mask[static_cast<std::size_t>(i)] |= mask;
         else if (s < 0)
             mesh.vertex_inside_mask[static_cast<std::size_t>(i)] |= mask;
+    }
+}
+
+template <std::floating_point T, std::integral I = int>
+inline void populate_local_level_set_values(
+    LocalMesh<T>&                      mesh,
+    const LocalLevelSetFunction<T, I>& level_set,
+    int                                level_set_id,
+    T                                  tol,
+    std::vector<uint8_t>&              value_available)
+{
+    const int nv = mesh.n_vertices();
+    value_available.assign(static_cast<std::size_t>(nv), 0);
+
+    if (mesh.vertex_phi.size() != static_cast<std::size_t>(nv * mesh.n_level_sets))
+        mesh.vertex_phi.assign(static_cast<std::size_t>(nv * mesh.n_level_sets), T(0));
+    if (mesh.vertex_zero_mask.size() != static_cast<std::size_t>(nv))
+        mesh.vertex_zero_mask.assign(static_cast<std::size_t>(nv), 0);
+    if (mesh.vertex_inside_mask.size() != static_cast<std::size_t>(nv))
+        mesh.vertex_inside_mask.assign(static_cast<std::size_t>(nv), 0);
+
+    if (!level_set.has_value())
+        return;
+
+    const bool use_ref = !mesh.vertex_ref_x.empty()
+                         && mesh.vertex_ref_x.size()
+                                == static_cast<std::size_t>(mesh.n_vertices() * mesh.tdim);
+    const int coord_dim = use_ref ? mesh.tdim : mesh.gdim;
+    for (int i = 0; i < nv; ++i)
+    {
+        const T* x = use_ref
+                         ? mesh.vertex_ref_x.data() + static_cast<std::size_t>(i * mesh.tdim)
+                         : mesh.vertex_x.data() + static_cast<std::size_t>(i * mesh.gdim);
+        const T v = level_set.value(x);
+        value_available[static_cast<std::size_t>(i)] = 1;
+        mesh.vertex_phi[static_cast<std::size_t>(i * mesh.n_level_sets + level_set_id)] = v;
+
+        const uint64_t mask = (uint64_t(1) << level_set_id);
+        mesh.vertex_zero_mask[static_cast<std::size_t>(i)] &= ~mask;
+        mesh.vertex_inside_mask[static_cast<std::size_t>(i)] &= ~mask;
+        const int s = sign_with_tol(v, tol);
+        if (s == 0)
+            mesh.vertex_zero_mask[static_cast<std::size_t>(i)] |= mask;
+        else if (s < 0)
+            mesh.vertex_inside_mask[static_cast<std::size_t>(i)] |= mask;
+        (void)coord_dim;
     }
 }
 
@@ -623,6 +670,73 @@ inline bool classify_edges_from_parent_polynomial(
 }
 
 template <std::floating_point T, std::integral I = int>
+inline bool classify_edges_from_local_level_set(
+    LocalMesh<T>&                       mesh,
+    const LocalLevelSetFunction<T, I>&  level_set,
+    int                                 level_set_id,
+    T                                   tol,
+    bool                                refine_on_uncertain,
+    std::vector<uint8_t>*               marked_cells = nullptr)
+{
+    if (level_set_id < 0 || level_set_id >= mesh.n_level_sets)
+        throw std::invalid_argument("classify_edges_from_local_level_set: invalid level_set_id");
+    if (mesh.vertex_ref_x.size() != static_cast<std::size_t>(mesh.n_vertices() * mesh.tdim))
+        throw std::invalid_argument(
+            "classify_edges_from_local_level_set: Bernstein backend requires reference coordinates");
+
+    std::vector<uint8_t> value_available;
+    populate_local_level_set_values(mesh, level_set, level_set_id, tol, value_available);
+
+    const int ne = mesh.n_edges();
+    for (int e = 0; e < ne; ++e)
+    {
+        const int v0 = mesh.edge_vertices[static_cast<std::size_t>(2 * e)];
+        const int v1 = mesh.edge_vertices[static_cast<std::size_t>(2 * e + 1)];
+        if (!value_available[static_cast<std::size_t>(v0)]
+            || !value_available[static_cast<std::size_t>(v1)])
+        {
+            mesh.edge_state[static_cast<std::size_t>(e)] = static_cast<uint8_t>(EdgeState::uncertain);
+            continue;
+        }
+
+        std::vector<T> edge_coeffs;
+        if (level_set.has_segment_restriction())
+        {
+            const std::span<const T> x0_ref(
+                mesh.vertex_ref_x.data() + static_cast<std::size_t>(v0 * mesh.tdim),
+                static_cast<std::size_t>(mesh.tdim));
+            const std::span<const T> x1_ref(
+                mesh.vertex_ref_x.data() + static_cast<std::size_t>(v1 * mesh.tdim),
+                static_cast<std::size_t>(mesh.tdim));
+            level_set.segment_restriction(x0_ref, x1_ref, edge_coeffs);
+        }
+        else if (level_set.has_edge_restriction()
+                 && mesh.edge_parent_dim[static_cast<std::size_t>(e)] == 1
+                 && mesh.edge_parent_id[static_cast<std::size_t>(e)] >= 0)
+        {
+            edge_coeffs = level_set.edge_restriction(
+                mesh.edge_parent_id[static_cast<std::size_t>(e)]).coeffs;
+        }
+        else
+        {
+            mesh.edge_state[static_cast<std::size_t>(e)] = static_cast<uint8_t>(EdgeState::uncertain);
+            continue;
+        }
+
+        mesh.edge_state[static_cast<std::size_t>(e)] = static_cast<uint8_t>(
+            classify_edge_from_full_cell_bernstein<T>(
+                std::span<const T>(edge_coeffs.data(), edge_coeffs.size()), tol));
+    }
+
+    std::vector<uint8_t> local_marks;
+    const bool refine = mark_cells_for_polynomial_backend(
+        mesh, value_available, level_set_id, tol, refine_on_uncertain, local_marks);
+    if (marked_cells)
+        *marked_cells = std::move(local_marks);
+    return refine;
+}
+
+template <std::floating_point T, std::integral I = int>
 bool classify_edges_with_backend(
     LocalMesh<T>&                 mesh,
     const LevelSetFunction<T, I>& level_set,
@@ -634,10 +748,15 @@ bool classify_edges_with_backend(
     if (backend != LocalLevelSetBackend::bernstein)
         return classify_edges_and_mark_refine(mesh, level_set, level_set_id, tol, refine_on_uncertain);
 
-    const auto parent_poly = make_parent_polynomial_context<T, I>(
-        mesh.parent_cell_type, level_set);
-    return classify_edges_from_parent_polynomial(
-        mesh, level_set, parent_poly, level_set_id, tol, refine_on_uncertain, nullptr);
+    const auto local_level_set
+        = level_set.mesh != nullptr
+              ? make_local_level_set_function_bernstein<T, I>(
+                    *level_set.mesh, level_set, static_cast<I>(mesh.parent_cell_id))
+              : make_local_level_set_function_bernstein<T, I>(
+                    mesh.parent_cell_type, mesh.gdim, level_set,
+                    static_cast<I>(mesh.parent_cell_id));
+    return classify_edges_from_local_level_set(
+        mesh, local_level_set, level_set_id, tol, refine_on_uncertain, nullptr);
 }
 
 /// Classify all local-mesh edges from endpoint/interior interpolation-node signs.
@@ -974,15 +1093,20 @@ PolynomialCertificationResult<T, I> certify_local_mesh_polynomial(
     if (max_refine_levels <= 0)
         throw std::invalid_argument("certify_local_mesh_polynomial: max_refine_levels must be > 0");
 
-    const auto parent_poly = make_parent_polynomial_context<T, I>(
-        mesh.parent_cell_type, level_set);
+    const auto local_level_set
+        = level_set.mesh != nullptr
+              ? make_local_level_set_function_bernstein<T, I>(
+                    *level_set.mesh, level_set, static_cast<I>(mesh.parent_cell_id))
+              : make_local_level_set_function_bernstein<T, I>(
+                    mesh.parent_cell_type, mesh.gdim, level_set,
+                    static_cast<I>(mesh.parent_cell_id));
 
     PolynomialCertificationResult<T, I> out;
     for (int it = 0; it < max_refine_levels; ++it)
     {
         std::vector<uint8_t> marked_cells;
-        const bool need_refine = classify_edges_from_parent_polynomial(
-            mesh, level_set, parent_poly, level_set_id, tol, refine_on_uncertain, &marked_cells);
+        const bool need_refine = classify_edges_from_local_level_set(
+            mesh, local_level_set, level_set_id, tol, refine_on_uncertain, &marked_cells);
         out.iterations = it + 1;
 
         if (!need_refine)

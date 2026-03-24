@@ -35,6 +35,7 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/iso_refine.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping.h
   ${CMAKE_CURRENT_SOURCE_DIR}/level_set.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/local_level_set.h
   ${CMAKE_CURRENT_SOURCE_DIR}/local_mesh.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mesh_view.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.h
@@ -65,10 +66,3 @@ target_sources(cutcells PRIVATE
 
 target_compile_options(cutcells PRIVATE
   $<$<CONFIG:Release>:-O3>)
-
-if(BUILD_TESTING)
-  add_executable(cutcells_local_mesh_test
-    ${CMAKE_CURRENT_SOURCE_DIR}/local_mesh_test.cpp)
-  target_link_libraries(cutcells_local_mesh_test PRIVATE cutcells)
-  add_test(NAME cutcells_local_mesh_test COMMAND cutcells_local_mesh_test)
-endif()

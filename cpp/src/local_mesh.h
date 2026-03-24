@@ -20,6 +20,9 @@
 namespace cutcells
 {
 
+template <std::floating_point T, std::integral I>
+struct LocalLevelSetFunction;
+
 // ============================================================================
 // EdgeState
 // ============================================================================
@@ -309,14 +312,14 @@ int compute_edge_root_linear(
     int           level_set_id = 0);
 
 /// Compute one edge root using a full-cell Bernstein representation of the
-/// parent FEM level-set polynomial.
-template <std::floating_point T>
+/// local FEM level-set polynomial restricted to the current local edge.
+template <std::floating_point T, std::integral I = int>
 int compute_edge_root_bernstein(
-    LocalMesh<T>&             mesh,
-    const BernsteinCell<T>&   parent_poly,
-    int                       edge_id,
-    int                       level_set_id = 0,
-    T                         tol = static_cast<T>(1e-12));
+    LocalMesh<T>&                      mesh,
+    const LocalLevelSetFunction<T, I>& level_set,
+    int                                edge_id,
+    int                                level_set_id = 0,
+    T                                  tol = static_cast<T>(1e-12));
 
 /// Compute one edge root using selected root finder.
 ///

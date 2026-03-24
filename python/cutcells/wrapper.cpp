@@ -26,6 +26,7 @@
 #include "../../cpp/src/quadrature.h"
 #include "../../cpp/src/mesh_view.h"
 #include "../../cpp/src/level_set.h"
+#include "../../cpp/src/local_level_set.h"
 #include "../../cpp/src/iso_refine.h"
 #include "../../cpp/src/local_mesh.h"
 #include "../../cpp/src/edge_classification.h"
@@ -163,6 +164,8 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
 {
   using MeshViewT = cutcells::MeshView<T, int>;
   using LevelSetT = cutcells::LevelSetFunction<T, int>;
+  using LocalLevelSetT = cutcells::LocalLevelSetFunction<T, int>;
+  using LocalEdgeRestrictionT = cutcells::LocalLevelSetEdgeRestriction<T>;
 
   const std::string mesh_name = "MeshView_" + suffix;
   nb::class_<MeshViewT>(m, mesh_name.c_str(), "Lightweight mesh view")
@@ -247,6 +250,53 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
           },
           nb::rv_policy::reference_internal);
 
+  const std::string edge_name = "LocalLevelSetEdgeRestriction_" + suffix;
+  nb::class_<LocalEdgeRestrictionT>(m, edge_name.c_str(), "Local edge restriction")
+      .def_prop_ro("degree", [](const LocalEdgeRestrictionT& self) { return self.degree; })
+      .def_prop_ro(
+          "coeffs",
+          [](const LocalEdgeRestrictionT& self)
+          {
+            if (self.coeffs.empty())
+              return nb::ndarray<const T, nb::numpy>(nullptr, {0}, nb::handle());
+            return nb::ndarray<const T, nb::numpy>(
+                self.coeffs.data(),
+                {self.coeffs.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal);
+
+  const std::string local_ls_name = "LocalLevelSetFunction_" + suffix;
+  nb::class_<LocalLevelSetT>(m, local_ls_name.c_str(), "Cell-local level-set function")
+      .def_prop_ro("parent_cell_id", [](const LocalLevelSetT& self) { return self.parent_cell_id; })
+      .def_prop_ro("gdim", [](const LocalLevelSetT& self) { return self.gdim; })
+      .def_prop_ro("tdim", [](const LocalLevelSetT& self) { return self.tdim; })
+      .def_prop_ro("degree", [](const LocalLevelSetT& self) { return self.degree; })
+      .def_prop_ro("backend", [](const LocalLevelSetT& self) { return self.backend; })
+      .def("has_value", &LocalLevelSetT::has_value)
+      .def("has_gradient", &LocalLevelSetT::has_gradient)
+      .def("has_edge_restriction", &LocalLevelSetT::has_edge_restriction)
+      .def(
+          "value",
+          [](const LocalLevelSetT& self, const ndarray1<T>& x_ref)
+          {
+            return self.value(x_ref.data());
+          },
+          nb::arg("x_ref"))
+      .def(
+          "grad",
+          [](const LocalLevelSetT& self, const ndarray1<T>& x_ref)
+          {
+            auto* data = new std::vector<T>(static_cast<std::size_t>(self.tdim), T(0));
+            self.grad(x_ref.data(), data->data());
+            return nb::ndarray<const T, nb::numpy>(
+                data->data(),
+                {data->size()},
+                nb::capsule(data, [](void* p) noexcept { delete static_cast<std::vector<T>*>(p); }));
+          },
+          nb::arg("x_ref"))
+      .def("edge_restriction", &LocalLevelSetT::edge_restriction, nb::arg("edge_id"));
+
   const std::string ls_name = "LevelSetFunction_" + suffix;
   nb::class_<LevelSetT>(m, ls_name.c_str(), "Level-set function")
       .def(
@@ -330,6 +380,7 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
             self->nodal_values = nodal_values;
             self->gdim = gdim;
             self->degree = degree;
+            self->kind = LevelSetT::Kind::callable;
             self->owner = make_owner_from_objects(value_obj, grad_obj, nodal_owner);
           },
           nb::arg("value") = nb::none(),
@@ -339,6 +390,7 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
           nb::arg("degree") = -1)
       .def_prop_ro("gdim", [](const LevelSetT& self) { return self.gdim; })
       .def_prop_ro("degree", [](const LevelSetT& self) { return self.degree; })
+      .def_prop_ro("kind", [](const LevelSetT& self) { return self.kind; })
       .def("has_value", &LevelSetT::has_value)
       .def("has_gradient", &LevelSetT::has_gradient)
       .def("has_nodal_values", &LevelSetT::has_nodal_values)
@@ -364,7 +416,29 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
           },
           nb::arg("x"),
           nb::arg("cell_id") = -1)
+      .def(
+          "local",
+          [](const LevelSetT& self, int cell_id)
+          {
+            return self.local(cell_id);
+          },
+          nb::arg("cell_id"))
       .def("value_at_node", &LevelSetT::value_at_node)
+      .def_static(
+          "from_fem",
+          [](const MeshViewT& mesh,
+             const ndarray1<T>& nodal_values,
+             int degree)
+          {
+            return cutcells::make_level_set_function_from_fem<T, int>(
+                mesh,
+                std::span<const T>(nodal_values.data(), static_cast<std::size_t>(nodal_values.size())),
+                degree,
+                make_owner_from_objects(nb::cast(mesh), nb::cast(nodal_values)));
+          },
+          nb::arg("mesh"),
+          nb::arg("nodal_values"),
+          nb::arg("degree"))
       .def_prop_ro(
           "nodal_values",
           [](const LevelSetT& self)
@@ -437,6 +511,8 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
   {
     m.attr("MeshView") = m.attr(mesh_name.c_str());
     m.attr("LevelSetFunction") = m.attr(ls_name.c_str());
+    m.attr("LocalLevelSetFunction") = m.attr(local_ls_name.c_str());
+    m.attr("LocalLevelSetEdgeRestriction") = m.attr(edge_name.c_str());
   }
 }
 
@@ -1299,6 +1375,15 @@ NB_MODULE(_cutcellscpp, m)
     .value("nodal_signs", LocalLevelSetBackend::nodal_signs)
     .value("bernstein", LocalLevelSetBackend::bernstein)
     .value("analytical_callbacks", LocalLevelSetBackend::analytical_callbacks);
+
+  nb::enum_<cutcells::LevelSetFunction<double, int>::Kind>(m, "LevelSetKind")
+    .value("callable", cutcells::LevelSetFunction<double, int>::Kind::callable)
+    .value("fem_nodal", cutcells::LevelSetFunction<double, int>::Kind::fem_nodal);
+
+  nb::enum_<LocalLevelSetKind>(m, "LocalLevelSetKind")
+    .value("callable", LocalLevelSetKind::callable)
+    .value("bernstein", LocalLevelSetKind::bernstein)
+    .value("taylor", LocalLevelSetKind::taylor);
 
   declare_float<float>(m, "float32");
   declare_float<double>(m, "float64");

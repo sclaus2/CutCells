@@ -1468,13 +1468,13 @@ int compute_edge_root_linear(LocalMesh<T>& mesh, int edge_id, int level_set_id)
     return new_v_idx;
 }
 
-template <std::floating_point T>
+template <std::floating_point T, std::integral I>
 int compute_edge_root_bernstein(
-    LocalMesh<T>&           mesh,
-    const BernsteinCell<T>& parent_poly,
-    int                     edge_id,
-    int                     level_set_id,
-    T                       tol)
+    LocalMesh<T>&                      mesh,
+    const LocalLevelSetFunction<T, I>& level_set,
+    int                                edge_id,
+    int                                level_set_id,
+    T                                  tol)
 {
     if (edge_id < 0 || edge_id >= mesh.n_edges())
         throw std::invalid_argument("compute_edge_root_bernstein: invalid edge id");
@@ -1496,7 +1496,22 @@ int compute_edge_root_bernstein(
         static_cast<std::size_t>(mesh.tdim));
 
     std::vector<T> edge_coeffs;
-    restrict_bernstein_to_segment_1d<T>(parent_poly, x0_ref, x1_ref, edge_coeffs);
+    if (level_set.has_segment_restriction())
+    {
+        level_set.segment_restriction(x0_ref, x1_ref, edge_coeffs);
+    }
+    else if (level_set.has_edge_restriction()
+             && mesh.edge_parent_dim[static_cast<std::size_t>(edge_id)] == 1
+             && mesh.edge_parent_id[static_cast<std::size_t>(edge_id)] >= 0)
+    {
+        edge_coeffs = level_set.edge_restriction(
+            mesh.edge_parent_id[static_cast<std::size_t>(edge_id)]).coeffs;
+    }
+    else
+    {
+        throw std::invalid_argument(
+            "compute_edge_root_bernstein: no Bernstein restriction available for local edge");
+    }
     const auto root_info = bernstein_edge_root_info<T>(
         std::span<const T>(edge_coeffs.data(), edge_coeffs.size()), 64, tol, tol);
     const T t = std::clamp(root_info.t, T(0), T(1));
@@ -1527,10 +1542,8 @@ int compute_edge_root_bernstein(
     mesh.vertex_zero_mask.push_back(0);
     mesh.vertex_inside_mask.push_back(0);
 
-    const std::span<const T> x_root_ref(
-        mesh.vertex_ref_x.data() + static_cast<std::size_t>(new_v_idx * tdim),
-        static_cast<std::size_t>(tdim));
-    const T val = evaluate_bernstein_cell<T>(parent_poly, x_root_ref);
+    const T* x_root_ref = mesh.vertex_ref_x.data() + static_cast<std::size_t>(new_v_idx * tdim);
+    const T val = level_set.value(x_root_ref);
     mesh.vertex_phi[static_cast<std::size_t>(new_v_idx * n_ls + level_set_id)] = val;
     const uint64_t mask = (uint64_t(1) << level_set_id);
     if (std::abs(val) <= tol)
@@ -1677,8 +1690,13 @@ void compute_all_roots_with_backend(LocalMesh<T>& mesh,
 
     if (!level_set.has_nodal_values())
         throw std::invalid_argument("compute_all_roots_with_backend: Bernstein backend requires nodal values");
-    const auto parent_ctx = make_parent_polynomial_context<T, I>(
-        mesh.parent_cell_type, level_set);
+    const auto local_level_set
+        = level_set.mesh != nullptr
+              ? make_local_level_set_function_bernstein<T, I>(
+                    *level_set.mesh, level_set, static_cast<I>(mesh.parent_cell_id))
+              : make_local_level_set_function_bernstein<T, I>(
+                    mesh.parent_cell_type, mesh.gdim, level_set,
+                    static_cast<I>(mesh.parent_cell_id));
 
     drop_unreferenced_root_vertices(mesh);
     clear_edge_root_cache(mesh);
@@ -1688,7 +1706,7 @@ void compute_all_roots_with_backend(LocalMesh<T>& mesh,
     {
         if (mesh.edge_state[static_cast<std::size_t>(i)] != static_cast<uint8_t>(EdgeState::one_root))
             continue;
-        compute_edge_root_bernstein<T>(mesh, parent_ctx.bernstein, i, level_set_id, tol);
+        compute_edge_root_bernstein<T, I>(mesh, local_level_set, i, level_set_id, tol);
     }
 }
 
@@ -2498,8 +2516,8 @@ template void classify_local_edges<double>(LocalMesh<double>&, int);
 template void classify_local_edges<float>(LocalMesh<float>&, int);
 template int compute_edge_root_linear<double>(LocalMesh<double>&, int, int);
 template int compute_edge_root_linear<float>(LocalMesh<float>&, int, int);
-template int compute_edge_root_bernstein<double>(LocalMesh<double>&, const BernsteinCell<double>&, int, int, double);
-template int compute_edge_root_bernstein<float>(LocalMesh<float>&, const BernsteinCell<float>&, int, int, float);
+template int compute_edge_root_bernstein<double, int>(LocalMesh<double>&, const LocalLevelSetFunction<double, int>&, int, int, double);
+template int compute_edge_root_bernstein<float, int>(LocalMesh<float>&, const LocalLevelSetFunction<float, int>&, int, int, float);
 template int compute_edge_root<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, int, int, cell::edge_root::method);
 template int compute_edge_root<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, int, int, cell::edge_root::method);
 template void compute_all_roots_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, cell::edge_root::method, double);

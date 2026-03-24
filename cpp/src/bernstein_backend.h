@@ -660,6 +660,401 @@ inline int bernstein_sign_variation_count(std::span<const T> coeffs, T tol)
     return count;
 }
 
+// ============================================================================
+// Exact De Casteljau / blossom-based segment restriction helpers
+// ============================================================================
+
+/// Apply one multivariate blend step to a degree-r triangle Bernstein array.
+/// Input:  work[], size (r+1)(r+2)/2, Bernstein coefficients at degree r.
+/// Output: out[],  size r(r+1)/2,     Bernstein coefficients at degree r-1.
+/// Formula: out[β] = Σ_k lambda[k] * work[β + e_k]   for |β| = r-1.
+template <std::floating_point T>
+inline void simplex_bernstein_blend_step_triangle(
+    int                    r,
+    std::span<const T>     work,
+    const std::array<T,3>& lambda,
+    std::vector<T>&        out)
+{
+    const int r1 = r - 1;
+    out.resize(static_cast<std::size_t>(r1 + 1) * static_cast<std::size_t>(r1 + 2) / 2);
+    for (int b0 = 0; b0 <= r1; ++b0)
+        for (int b1 = 0; b1 <= r1 - b0; ++b1)
+        {
+            const int b2      = r1 - b0 - b1;
+            const int idx_out = triangle_ijk_to_flat(r1, b0, b1, b2);
+            out[static_cast<std::size_t>(idx_out)] =
+                lambda[0] * work[static_cast<std::size_t>(triangle_ijk_to_flat(r, b0 + 1, b1,     b2    ))]
+              + lambda[1] * work[static_cast<std::size_t>(triangle_ijk_to_flat(r, b0,     b1 + 1, b2    ))]
+              + lambda[2] * work[static_cast<std::size_t>(triangle_ijk_to_flat(r, b0,     b1,     b2 + 1))];
+        }
+}
+
+/// Apply one multivariate blend step to a degree-r tetrahedron Bernstein array.
+/// Input:  work[], size (r+1)(r+2)(r+3)/6.
+/// Output: out[],  size r(r+1)(r+2)/6.
+template <std::floating_point T>
+inline void simplex_bernstein_blend_step_tetrahedron(
+    int                    r,
+    std::span<const T>     work,
+    const std::array<T,4>& lambda,
+    std::vector<T>&        out)
+{
+    const int r1 = r - 1;
+    out.resize(static_cast<std::size_t>(r1 + 1)
+               * static_cast<std::size_t>(r1 + 2)
+               * static_cast<std::size_t>(r1 + 3) / 6);
+    for (int b0 = 0; b0 <= r1; ++b0)
+        for (int b1 = 0; b1 <= r1 - b0; ++b1)
+            for (int b2 = 0; b2 <= r1 - b0 - b1; ++b2)
+            {
+                const int b3      = r1 - b0 - b1 - b2;
+                const int idx_out = tetrahedron_ijkl_to_flat(r1, b0, b1, b2, b3);
+                out[static_cast<std::size_t>(idx_out)] =
+                    lambda[0] * work[static_cast<std::size_t>(tetrahedron_ijkl_to_flat(r, b0 + 1, b1,     b2,     b3    ))]
+                  + lambda[1] * work[static_cast<std::size_t>(tetrahedron_ijkl_to_flat(r, b0,     b1 + 1, b2,     b3    ))]
+                  + lambda[2] * work[static_cast<std::size_t>(tetrahedron_ijkl_to_flat(r, b0,     b1,     b2 + 1, b3    ))]
+                  + lambda[3] * work[static_cast<std::size_t>(tetrahedron_ijkl_to_flat(r, b0,     b1,     b2,     b3 + 1))];
+            }
+}
+
+/// Exact restriction of a triangle Bernstein polynomial to an arbitrary segment.
+///
+/// Uses the multivariate blossom formula via De Casteljau blend steps.
+/// Numerically exact (no Vandermonde solve): the j-th output Bernstein coefficient is
+///   d[j] = blossom(lam_end^j, lam_start^{p-j})
+/// computed by sharing the lam_end prefix across all j.
+template <std::floating_point T>
+inline void restrict_bernstein_triangle_to_segment_exact(
+    const BernsteinCell<T>& cell_poly,
+    std::span<const T>      x0_ref,     // length 2
+    std::span<const T>      x1_ref,     // length 2
+    std::vector<T>&         edge_coeffs)
+{
+    const int p = cell_poly.degree;
+    edge_coeffs.resize(static_cast<std::size_t>(p + 1));
+
+    // Barycentric coords: λ0 = 1-x-y, λ1 = x, λ2 = y
+    const std::array<T, 3> lam_start = {
+        T(1) - x0_ref[0] - x0_ref[1], x0_ref[0], x0_ref[1]};
+    const std::array<T, 3> lam_end = {
+        T(1) - x1_ref[0] - x1_ref[1], x1_ref[0], x1_ref[1]};
+
+    // D_end[j] = j sequential lam_end blend steps from parent coefficients (degree p-j).
+    // Built once and reused for each d[j].
+    std::vector<std::vector<T>> D_end(static_cast<std::size_t>(p + 1));
+    D_end[0].assign(cell_poly.coeffs.begin(), cell_poly.coeffs.end());
+    for (int j = 1; j <= p; ++j)
+        simplex_bernstein_blend_step_triangle<T>(
+            p - (j - 1),
+            std::span<const T>(D_end[j - 1].data(), D_end[j - 1].size()),
+            lam_end, D_end[j]);
+
+    // d[j] = apply (p-j) lam_start steps to D_end[j], reaching degree 0 (scalar)
+    for (int j = 0; j <= p; ++j)
+    {
+        if (p - j == 0)
+        {
+            edge_coeffs[static_cast<std::size_t>(j)] = D_end[j][0];
+            continue;
+        }
+        std::vector<T> work = D_end[j];
+        std::vector<T> tmp;
+        int cur_deg = p - j;
+        for (int k = 0; k < p - j; ++k)
+        {
+            simplex_bernstein_blend_step_triangle<T>(
+                cur_deg,
+                std::span<const T>(work.data(), work.size()),
+                lam_start, tmp);
+            --cur_deg;
+            std::swap(work, tmp);
+        }
+        edge_coeffs[static_cast<std::size_t>(j)] = work[0];
+    }
+}
+
+/// Exact restriction of a tetrahedron Bernstein polynomial to an arbitrary segment.
+/// Same blossom approach as the triangle case, using 4-component barycentric coords.
+template <std::floating_point T>
+inline void restrict_bernstein_tetrahedron_to_segment_exact(
+    const BernsteinCell<T>& cell_poly,
+    std::span<const T>      x0_ref,     // length 3
+    std::span<const T>      x1_ref,     // length 3
+    std::vector<T>&         edge_coeffs)
+{
+    const int p = cell_poly.degree;
+    edge_coeffs.resize(static_cast<std::size_t>(p + 1));
+
+    // Barycentric coords: λ0 = 1-x-y-z, λ1 = x, λ2 = y, λ3 = z
+    const std::array<T, 4> lam_start = {
+        T(1) - x0_ref[0] - x0_ref[1] - x0_ref[2],
+        x0_ref[0], x0_ref[1], x0_ref[2]};
+    const std::array<T, 4> lam_end = {
+        T(1) - x1_ref[0] - x1_ref[1] - x1_ref[2],
+        x1_ref[0], x1_ref[1], x1_ref[2]};
+
+    std::vector<std::vector<T>> D_end(static_cast<std::size_t>(p + 1));
+    D_end[0].assign(cell_poly.coeffs.begin(), cell_poly.coeffs.end());
+    for (int j = 1; j <= p; ++j)
+        simplex_bernstein_blend_step_tetrahedron<T>(
+            p - (j - 1),
+            std::span<const T>(D_end[j - 1].data(), D_end[j - 1].size()),
+            lam_end, D_end[j]);
+
+    for (int j = 0; j <= p; ++j)
+    {
+        if (p - j == 0)
+        {
+            edge_coeffs[static_cast<std::size_t>(j)] = D_end[j][0];
+            continue;
+        }
+        std::vector<T> work = D_end[j];
+        std::vector<T> tmp;
+        int cur_deg = p - j;
+        for (int k = 0; k < p - j; ++k)
+        {
+            simplex_bernstein_blend_step_tetrahedron<T>(
+                cur_deg,
+                std::span<const T>(work.data(), work.size()),
+                lam_start, tmp);
+            --cur_deg;
+            std::swap(work, tmp);
+        }
+        edge_coeffs[static_cast<std::size_t>(j)] = work[0];
+    }
+}
+
+/// Exact restriction of a quadrilateral Bernstein polynomial to an axis-aligned segment.
+///
+/// Red-refined quad sub-edges are always axis-aligned in reference coordinates.
+/// Throws std::invalid_argument for non-axis-aligned segments.
+///
+/// Algorithm:
+///   1. Collapse the constant direction by evaluating each 1-D slice with De Casteljau.
+///   2. Restrict the varying direction to the sub-interval [a,b] with De Casteljau splits.
+template <std::floating_point T>
+inline void restrict_bernstein_quad_to_segment_exact(
+    const BernsteinCell<T>& cell_poly,
+    std::span<const T>      x0_ref,     // length 2
+    std::span<const T>      x1_ref,     // length 2
+    std::vector<T>&         edge_coeffs)
+{
+    const int p   = cell_poly.degree;
+    const T   tol = T(1e-10);
+
+    const T dx = x1_ref[0] - x0_ref[0];
+    const T dy = x1_ref[1] - x0_ref[1];
+    const bool axis_x = (std::abs(dy) <= tol) && (std::abs(dx) > tol);
+    const bool axis_y = (std::abs(dx) <= tol) && (std::abs(dy) > tol);
+
+    if (!axis_x && !axis_y)
+        throw std::invalid_argument(
+            "restrict_bernstein_quad_to_segment_exact: non-axis-aligned segment");
+
+    // Step 1: collapse the constant direction
+    std::vector<T> collapsed(static_cast<std::size_t>(p + 1));
+    if (axis_x)
+    {
+        // y is constant; slice over i (x basis index), eval each y-column at y0
+        const T y0 = x0_ref[1];
+        for (int i = 0; i <= p; ++i)
+        {
+            std::vector<T> col(static_cast<std::size_t>(p + 1));
+            for (int j = 0; j <= p; ++j)
+                col[static_cast<std::size_t>(j)] =
+                    cell_poly.coeffs[static_cast<std::size_t>(quad_ij_to_flat(p, i, j))];
+            collapsed[static_cast<std::size_t>(i)] =
+                de_casteljau_eval_1d<T>(std::span<const T>(col.data(), col.size()), y0);
+        }
+    }
+    else
+    {
+        // x is constant; slice over j (y basis index), eval each x-row at x0
+        const T x0c = x0_ref[0];
+        for (int j = 0; j <= p; ++j)
+        {
+            std::vector<T> row(static_cast<std::size_t>(p + 1));
+            for (int i = 0; i <= p; ++i)
+                row[static_cast<std::size_t>(i)] =
+                    cell_poly.coeffs[static_cast<std::size_t>(quad_ij_to_flat(p, i, j))];
+            collapsed[static_cast<std::size_t>(j)] =
+                de_casteljau_eval_1d<T>(std::span<const T>(row.data(), row.size()), x0c);
+        }
+    }
+
+    // Step 2: restrict varying direction to sub-interval [a,b] (a <= b)
+    const T a = axis_x ? std::min(x0_ref[0], x1_ref[0]) : std::min(x0_ref[1], x1_ref[1]);
+    const T b = axis_x ? std::max(x0_ref[0], x1_ref[0]) : std::max(x0_ref[1], x1_ref[1]);
+
+    std::vector<T> working(collapsed.begin(), collapsed.end());
+    if (a > tol)
+    {
+        std::vector<T> left, right;
+        de_casteljau_split_1d<T>(
+            std::span<const T>(working.data(), working.size()), left, right, a);
+        working = std::move(right);
+    }
+    const T remaining = T(1) - a;
+    if (remaining > tol && b < T(1) - tol)
+    {
+        const T t_split = (b - a) / remaining;
+        std::vector<T> left, right;
+        de_casteljau_split_1d<T>(
+            std::span<const T>(working.data(), working.size()), left, right, t_split);
+        working = std::move(left);
+    }
+
+    edge_coeffs = std::move(working);
+    // Orient coefficients to match the direction from x0 to x1
+    if ((axis_x && x0_ref[0] > x1_ref[0]) || (axis_y && x0_ref[1] > x1_ref[1]))
+        std::reverse(edge_coeffs.begin(), edge_coeffs.end());
+}
+
+/// Exact restriction of a hexahedron Bernstein polynomial to an axis-aligned segment.
+///
+/// Red-refined hex sub-edges are always axis-aligned in reference coordinates.
+/// Throws std::invalid_argument for non-axis-aligned segments.
+///
+/// Algorithm: collapse the two constant directions with De Casteljau evaluation,
+/// then restrict the varying direction to its sub-interval.
+template <std::floating_point T>
+inline void restrict_bernstein_hex_to_segment_exact(
+    const BernsteinCell<T>& cell_poly,
+    std::span<const T>      x0_ref,     // length 3
+    std::span<const T>      x1_ref,     // length 3
+    std::vector<T>&         edge_coeffs)
+{
+    const int p   = cell_poly.degree;
+    const T   tol = T(1e-10);
+
+    const T dx = x1_ref[0] - x0_ref[0];
+    const T dy = x1_ref[1] - x0_ref[1];
+    const T dz = x1_ref[2] - x0_ref[2];
+    const bool axis_x = (std::abs(dy) <= tol) && (std::abs(dz) <= tol) && (std::abs(dx) > tol);
+    const bool axis_y = (std::abs(dx) <= tol) && (std::abs(dz) <= tol) && (std::abs(dy) > tol);
+    const bool axis_z = (std::abs(dx) <= tol) && (std::abs(dy) <= tol) && (std::abs(dz) > tol);
+
+    if (!axis_x && !axis_y && !axis_z)
+        throw std::invalid_argument(
+            "restrict_bernstein_hex_to_segment_exact: non-axis-aligned segment");
+
+    // Step 1: collapse the two constant directions
+    std::vector<T> collapsed(static_cast<std::size_t>(p + 1));
+    if (axis_x)
+    {
+        // Vary i; constant y0, z0
+        const T y0 = x0_ref[1];
+        const T z0 = x0_ref[2];
+        for (int i = 0; i <= p; ++i)
+        {
+            // First collapse k-direction at z0 for each j
+            std::vector<T> slice_j(static_cast<std::size_t>(p + 1));
+            for (int j = 0; j <= p; ++j)
+            {
+                std::vector<T> col_k(static_cast<std::size_t>(p + 1));
+                for (int k = 0; k <= p; ++k)
+                    col_k[static_cast<std::size_t>(k)] =
+                        cell_poly.coeffs[static_cast<std::size_t>(hex_ijk_to_flat(p, i, j, k))];
+                slice_j[static_cast<std::size_t>(j)] =
+                    de_casteljau_eval_1d<T>(std::span<const T>(col_k.data(), col_k.size()), z0);
+            }
+            // Then collapse j-direction at y0
+            collapsed[static_cast<std::size_t>(i)] =
+                de_casteljau_eval_1d<T>(std::span<const T>(slice_j.data(), slice_j.size()), y0);
+        }
+    }
+    else if (axis_y)
+    {
+        // Vary j; constant x0, z0
+        const T x0c = x0_ref[0];
+        const T z0  = x0_ref[2];
+        for (int j = 0; j <= p; ++j)
+        {
+            std::vector<T> slice_i(static_cast<std::size_t>(p + 1));
+            for (int i = 0; i <= p; ++i)
+            {
+                std::vector<T> col_k(static_cast<std::size_t>(p + 1));
+                for (int k = 0; k <= p; ++k)
+                    col_k[static_cast<std::size_t>(k)] =
+                        cell_poly.coeffs[static_cast<std::size_t>(hex_ijk_to_flat(p, i, j, k))];
+                slice_i[static_cast<std::size_t>(i)] =
+                    de_casteljau_eval_1d<T>(std::span<const T>(col_k.data(), col_k.size()), z0);
+            }
+            collapsed[static_cast<std::size_t>(j)] =
+                de_casteljau_eval_1d<T>(std::span<const T>(slice_i.data(), slice_i.size()), x0c);
+        }
+    }
+    else  // axis_z
+    {
+        // Vary k; constant x0, y0
+        const T x0c = x0_ref[0];
+        const T y0  = x0_ref[1];
+        for (int k = 0; k <= p; ++k)
+        {
+            std::vector<T> slice_i(static_cast<std::size_t>(p + 1));
+            for (int i = 0; i <= p; ++i)
+            {
+                std::vector<T> col_j(static_cast<std::size_t>(p + 1));
+                for (int j = 0; j <= p; ++j)
+                    col_j[static_cast<std::size_t>(j)] =
+                        cell_poly.coeffs[static_cast<std::size_t>(hex_ijk_to_flat(p, i, j, k))];
+                slice_i[static_cast<std::size_t>(i)] =
+                    de_casteljau_eval_1d<T>(std::span<const T>(col_j.data(), col_j.size()), y0);
+            }
+            collapsed[static_cast<std::size_t>(k)] =
+                de_casteljau_eval_1d<T>(std::span<const T>(slice_i.data(), slice_i.size()), x0c);
+        }
+    }
+
+    // Step 2: restrict varying direction to sub-interval [a,b]
+    T    a, b;
+    bool reversed;
+    if (axis_x)
+    {
+        a = std::min(x0_ref[0], x1_ref[0]);
+        b = std::max(x0_ref[0], x1_ref[0]);
+        reversed = (x0_ref[0] > x1_ref[0]);
+    }
+    else if (axis_y)
+    {
+        a = std::min(x0_ref[1], x1_ref[1]);
+        b = std::max(x0_ref[1], x1_ref[1]);
+        reversed = (x0_ref[1] > x1_ref[1]);
+    }
+    else
+    {
+        a = std::min(x0_ref[2], x1_ref[2]);
+        b = std::max(x0_ref[2], x1_ref[2]);
+        reversed = (x0_ref[2] > x1_ref[2]);
+    }
+
+    std::vector<T> working(collapsed.begin(), collapsed.end());
+    if (a > tol)
+    {
+        std::vector<T> left, right;
+        de_casteljau_split_1d<T>(
+            std::span<const T>(working.data(), working.size()), left, right, a);
+        working = std::move(right);
+    }
+    const T remaining = T(1) - a;
+    if (remaining > tol && b < T(1) - tol)
+    {
+        const T t_split = (b - a) / remaining;
+        std::vector<T> left, right;
+        de_casteljau_split_1d<T>(
+            std::span<const T>(working.data(), working.size()), left, right, t_split);
+        working = std::move(left);
+    }
+
+    edge_coeffs = std::move(working);
+    if (reversed)
+        std::reverse(edge_coeffs.begin(), edge_coeffs.end());
+}
+
+// ============================================================================
+// restrict_bernstein_to_segment_1d — dispatches to exact per-cell-type functions
+// ============================================================================
+
 template <std::floating_point T>
 inline void restrict_bernstein_to_segment_1d(
     const BernsteinCell<T>& cell_poly,
@@ -667,24 +1062,28 @@ inline void restrict_bernstein_to_segment_1d(
     std::span<const T> x1_ref,
     std::vector<T>& edge_coeffs)
 {
-    const int p = cell_poly.degree;
-    if (static_cast<int>(x0_ref.size()) != cell_poly.tdim || static_cast<int>(x1_ref.size()) != cell_poly.tdim)
+    if (static_cast<int>(x0_ref.size()) != cell_poly.tdim
+        || static_cast<int>(x1_ref.size()) != cell_poly.tdim)
         throw std::invalid_argument("restrict_bernstein_to_segment_1d: segment dimension mismatch");
 
-    std::vector<T> samples(static_cast<std::size_t>(p + 1), T(0));
-    std::vector<T> x(static_cast<std::size_t>(cell_poly.tdim), T(0));
-    for (int j = 0; j <= p; ++j)
+    switch (cell_poly.cell_type)
     {
-        const T t = (p == 0) ? T(0) : static_cast<T>(j) / static_cast<T>(p);
-        for (int d = 0; d < cell_poly.tdim; ++d)
-            x[static_cast<std::size_t>(d)] = (T(1) - t) * x0_ref[static_cast<std::size_t>(d)]
-                                             + t * x1_ref[static_cast<std::size_t>(d)];
-        samples[static_cast<std::size_t>(j)] = evaluate_bernstein_cell<T>(
-            cell_poly, std::span<const T>(x.data(), x.size()));
+    case cell::type::triangle:
+        restrict_bernstein_triangle_to_segment_exact<T>(cell_poly, x0_ref, x1_ref, edge_coeffs);
+        return;
+    case cell::type::tetrahedron:
+        restrict_bernstein_tetrahedron_to_segment_exact<T>(cell_poly, x0_ref, x1_ref, edge_coeffs);
+        return;
+    case cell::type::quadrilateral:
+        restrict_bernstein_quad_to_segment_exact<T>(cell_poly, x0_ref, x1_ref, edge_coeffs);
+        return;
+    case cell::type::hexahedron:
+        restrict_bernstein_hex_to_segment_exact<T>(cell_poly, x0_ref, x1_ref, edge_coeffs);
+        return;
+    default:
+        throw std::invalid_argument(
+            "restrict_bernstein_to_segment_1d: unsupported cell type");
     }
-
-    edge_coeffs = bernstein_coefficients_from_equispaced_nodal_1d<T>(
-        std::span<const T>(samples.data(), samples.size()));
 }
 
 template <std::floating_point T>

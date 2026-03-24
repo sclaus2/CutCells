@@ -20,6 +20,10 @@ include(CTest)
 # Source files
 add_subdirectory(src)
 
+if(BUILD_TESTING)
+  add_subdirectory(tests)
+endif()
+
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
   target_link_libraries(cutcells PUBLIC OpenMP::OpenMP_CXX)
