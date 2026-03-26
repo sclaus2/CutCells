@@ -161,30 +161,37 @@ namespace cutcells
         template <std::floating_point T>
         inline domain classify_cell_domain(std::span<const T> ls_values)
         {
-            int ulp = 2;
-            T tol = std::numeric_limits<T>::epsilon() * std::fabs(ls_values[0]*ls_values[1]) * ulp;
+            if (ls_values.empty())
+                return domain::unset;
 
-            domain marker = domain::unset;
+            T scale = T(0);
+            for (const T v : ls_values)
+                scale = std::max(scale, std::abs(v));
+            const T tol = std::numeric_limits<T>::epsilon()
+                        * std::max(T(1), scale) * T(8);
 
-            if(is_intersected(ls_values, tol))
+            int n_neg = 0;
+            int n_pos = 0;
+            int n_zero = 0;
+            for (const T v : ls_values)
             {
-                marker = domain::intersected;
-                return marker;
-            }
-
-            if(marker == domain::unset)
-            {
-                if(ls_values[0]>0)
-                {
-                    marker = domain::outside;
-                }
+                if (std::abs(v) <= tol)
+                    ++n_zero;
+                else if (v < T(0))
+                    ++n_neg;
                 else
-                {
-                    marker = domain::inside;
-                }
+                    ++n_pos;
             }
 
-            return marker;
+            if (n_neg > 0 && n_pos > 0)
+                return domain::intersected;
+            if (n_neg > 0)
+                return domain::inside;
+            if (n_pos > 0)
+                return domain::outside;
+
+            // All-zero degenerate touch case: keep deterministic non-cut classification.
+            return domain::inside;
         }
 
     }

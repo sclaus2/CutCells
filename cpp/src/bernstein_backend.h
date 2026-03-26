@@ -383,6 +383,35 @@ inline T evaluate_bernstein_cell(const BernsteinCell<T>& cell_poly, std::span<co
     }
 }
 
+/// @brief Evaluate the reference-space gradient of a Bernstein polynomial cell.
+/// @note  The full implementation lives in local_level_set.h.
+///        This declaration is kept here for forward-declaration / documentation only.
+///        Use local_level_set.h for the implementation.
+// (Implementation provided in local_level_set.h to avoid circular includes)
+
+/// @brief Transform a physical-space gradient to reference-space gradient via J^T multiplication.
+/// J is the affine Jacobian (tdim x gdim).
+/// @param J        Jacobian, row-major: J[i*gdim+j] = dxi_i/dx_j, size = tdim * gdim
+/// @param grad_phys  physical gradient, size = gdim
+/// @param grad_ref   output reference gradient, size = tdim
+/// @param tdim     topological dimension
+/// @param gdim     geometric dimension
+template <std::floating_point T>
+inline void physical_grad_to_reference_grad(
+    const T* J,
+    const T* grad_phys,
+    T*       grad_ref,
+    int      tdim,
+    int      gdim)
+{
+    for (int i = 0; i < tdim; ++i)
+    {
+        grad_ref[i] = T(0);
+        for (int j = 0; j < gdim; ++j)
+            grad_ref[i] += J[i * gdim + j] * grad_phys[j];
+    }
+}
+
 template <std::floating_point T>
 inline void extract_edge_bernstein_coeffs(
     const BernsteinCell<T>& cell_poly,

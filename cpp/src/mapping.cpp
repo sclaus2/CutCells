@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cmath>
 #include <array>
+#include <string>
 
 namespace cutcells::cell
 {
@@ -156,42 +157,38 @@ void push_forward_affine(type parent_type,
                          std::span<const T> X_ref,
                          std::span<T> x_phys)
 {
-  assert(X_ref.size() == x_phys.size());
-  const int n = static_cast<int>(X_ref.size()) / gdim;
-  const T* x0 = parent_vertex_coords.data();
+  const int tdim = get_tdim(parent_type);
+  if (tdim <= 0 || tdim > 3)
+    throw std::invalid_argument("push_forward_affine: invalid parent cell topological dimension");
+  if (gdim < tdim || gdim > 3)
+    throw std::invalid_argument("push_forward_affine: invalid geometric dimension");
+  if (X_ref.size() % static_cast<std::size_t>(tdim) != 0)
+    throw std::invalid_argument("push_forward_affine: X_ref has invalid size");
 
-  T J[9] = {};
-  build_jacobian(parent_type, parent_vertex_coords, gdim, J);
+  const int n = static_cast<int>(X_ref.size() / static_cast<std::size_t>(tdim));
+  if (x_phys.size() != static_cast<std::size_t>(n * gdim))
+  {
+    throw std::invalid_argument(
+      "push_forward_affine: x_phys has invalid size (X_ref="
+      + std::to_string(X_ref.size())
+      + ", x_phys="
+      + std::to_string(x_phys.size())
+      + ", tdim="
+      + std::to_string(tdim)
+      + ", gdim="
+      + std::to_string(gdim)
+      + ")");
+  }
 
-  if (gdim == 1)
+  for (int i = 0; i < n; ++i)
   {
-    for (int i = 0; i < n; ++i)
-    {
-      T y[1];
-      mat_vec_1x1(J, X_ref.data() + i, y);
-      x_phys[i] = x0[0] + y[0];
-    }
-  }
-  else if (gdim == 2)
-  {
-    for (int i = 0; i < n; ++i)
-    {
-      T y[2];
-      mat_vec_2x2(J, X_ref.data() + 2*i, y);
-      x_phys[2*i    ] = x0[0] + y[0];
-      x_phys[2*i + 1] = x0[1] + y[1];
-    }
-  }
-  else // gdim == 3
-  {
-    for (int i = 0; i < n; ++i)
-    {
-      T y[3];
-      mat_vec_3x3(J, X_ref.data() + 3*i, y);
-      x_phys[3*i    ] = x0[0] + y[0];
-      x_phys[3*i + 1] = x0[1] + y[1];
-      x_phys[3*i + 2] = x0[2] + y[2];
-    }
+    ref_to_phys_affine<T>(
+      parent_type,
+      std::span<const T>(parent_vertex_coords.data(), parent_vertex_coords.size()),
+      gdim,
+      tdim,
+      X_ref.data() + static_cast<std::size_t>(i * tdim),
+      x_phys.data() + static_cast<std::size_t>(i * gdim));
   }
 }
 

@@ -30,6 +30,7 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/triangulation.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh_curved.h
   ${CMAKE_CURRENT_SOURCE_DIR}/edge_classification.h
   ${CMAKE_CURRENT_SOURCE_DIR}/edge_root.h
   ${CMAKE_CURRENT_SOURCE_DIR}/iso_refine.h
@@ -39,10 +40,12 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/local_mesh.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mesh_view.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/quadrature_curved.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature_tables.h
   ${CMAKE_CURRENT_SOURCE_DIR}/span_math.h
   ${CMAKE_CURRENT_SOURCE_DIR}/utils.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_tikz.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/curved_mesh.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.h
   PARENT_SCOPE)
 
@@ -56,11 +59,14 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_tetrahedron.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh_curved.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/bernstein_backend.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/iso_refine.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/local_mesh.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/quadrature_curved.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/curved_mesh.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.cpp
 )
 

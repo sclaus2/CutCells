@@ -18,6 +18,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -46,6 +47,233 @@ struct EdgeKeyHash
         return h0 ^ (h1 + 0x9e3779b97f4a7c15ULL + (h0 << 6) + (h0 >> 2));
     }
 };
+
+struct ZeroOwnerKey
+{
+    uint64_t zero_mask = 0;
+    uint8_t dim = 0;
+    int32_t parent_dim = -1;
+    int32_t parent_id = -1;
+
+    bool operator==(const ZeroOwnerKey& other) const noexcept
+    {
+        return zero_mask == other.zero_mask
+            && dim == other.dim
+            && parent_dim == other.parent_dim
+            && parent_id == other.parent_id;
+    }
+};
+
+struct ZeroOwnerKeyHash
+{
+    std::size_t operator()(const ZeroOwnerKey& k) const noexcept
+    {
+        std::size_t h = std::hash<uint64_t>{}(k.zero_mask);
+        h ^= std::hash<uint8_t>{}(k.dim) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= std::hash<int32_t>{}(k.parent_dim) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= std::hash<int32_t>{}(k.parent_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+template <std::floating_point T, typename EvalPhi, typename EvalGrad>
+cell::edge_root::RootSolveInfo<T> solve_edge_root_on_segment(
+    std::span<const T>      p0,
+    std::span<const T>      p1,
+    EvalPhi&&               eval_phi,
+    EvalGrad&&              eval_grad,
+    bool                    has_exact_grad,
+    cell::edge_root::method root_method,
+    T                       tol)
+{
+    using RootInfo = cell::edge_root::RootSolveInfo<T>;
+    if (p0.size() != p1.size())
+        throw std::invalid_argument("solve_edge_root_on_segment: inconsistent point dimensions");
+
+    std::vector<T> x(static_cast<std::size_t>(p0.size()), T(0));
+    std::vector<T> direction(static_cast<std::size_t>(p0.size()), T(0));
+    for (std::size_t d = 0; d < p0.size(); ++d)
+        direction[d] = p1[d] - p0[d];
+
+    int eval_count = 0;
+    auto eval = [&](T t) -> T
+    {
+        for (std::size_t d = 0; d < p0.size(); ++d)
+            x[d] = p0[d] + t * direction[d];
+        ++eval_count;
+        return eval_phi(std::span<const T>(x.data(), x.size()));
+    };
+
+    RootInfo best;
+    best.t = T(0.5);
+    best.residual = std::numeric_limits<T>::max();
+
+    const auto update_best = [&](T t, T value)
+    {
+        const T residual = std::abs(value);
+        if (residual < best.residual)
+        {
+            best.t = std::clamp(t, T(0), T(1));
+            best.residual = residual;
+        }
+    };
+
+    const T f0 = eval(T(0));
+    const T f1 = eval(T(1));
+    best.evaluations = 2;
+    update_best(T(0), f0);
+    update_best(T(1), f1);
+
+    if (std::abs(f0) <= tol)
+    {
+        best.t = T(0);
+        best.residual = std::abs(f0);
+        best.converged = true;
+        return best;
+    }
+    if (std::abs(f1) <= tol)
+    {
+        best.t = T(1);
+        best.residual = std::abs(f1);
+        best.converged = true;
+        return best;
+    }
+
+    const auto solve_on_bracket = [&](T a, T b, T fa, T fb) -> RootInfo
+    {
+        RootInfo info;
+        const T t_linear = cell::edge_root::linear_root_parameter<T>(fa, fb, T(0));
+        int iterations = 0;
+        bool converged = false;
+        T t = t_linear;
+
+        if (root_method == cell::edge_root::method::linear)
+        {
+            t = t_linear;
+        }
+        else if (root_method == cell::edge_root::method::brent)
+        {
+            t = cell::edge_root::brent_parameter<T>(
+                eval, a, b, fa, fb, 64, tol, tol, &iterations, &converged);
+        }
+        else if (root_method == cell::edge_root::method::newton)
+        {
+            t = cell::edge_root::newton_parameter<T>(
+                eval, a, b, fa, fb, t_linear, 64, tol, tol, &iterations, &converged);
+        }
+        else
+        {
+            t = cell::edge_root::itp_parameter<T>(
+                eval, a, b, fa, fb, t_linear, 64, tol, tol, &iterations, &converged);
+        }
+
+        const T f = eval(t);
+        info.t = std::clamp(t, T(0), T(1));
+        info.residual = std::abs(f);
+        info.iterations = iterations;
+        info.evaluations = 1;
+        info.converged = converged || (info.residual <= tol);
+        return info;
+    };
+
+    bool have_bracket = (f0 * f1 < T(0));
+    T a = T(0);
+    T b = T(1);
+    T fa = f0;
+    T fb = f1;
+
+    if (!have_bracket)
+    {
+        const int n_scan = 32;
+        T prev_t = T(0);
+        T prev_f = f0;
+        for (int i = 1; i <= n_scan; ++i)
+        {
+            const T t = static_cast<T>(i) / static_cast<T>(n_scan);
+            const T f = eval(t);
+            update_best(t, f);
+            if (std::abs(f) <= tol)
+            {
+                best.t = t;
+                best.residual = std::abs(f);
+                best.evaluations = eval_count;
+                best.converged = true;
+                return best;
+            }
+            if (prev_f * f < T(0))
+            {
+                a = prev_t;
+                b = t;
+                fa = prev_f;
+                fb = f;
+                have_bracket = true;
+                break;
+            }
+            prev_t = t;
+            prev_f = f;
+        }
+    }
+
+    if (have_bracket)
+    {
+        RootInfo info = solve_on_bracket(a, b, fa, fb);
+        info.evaluations += eval_count;
+        return info;
+    }
+
+    if (root_method == cell::edge_root::method::newton && has_exact_grad)
+    {
+        std::vector<T> grad(static_cast<std::size_t>(p0.size()), T(0));
+        T t = best.t;
+        for (int iter = 0; iter < 64; ++iter)
+        {
+            const T f = eval(t);
+            update_best(t, f);
+            if (std::abs(f) <= tol)
+            {
+                best.t = t;
+                best.residual = std::abs(f);
+                best.evaluations = eval_count;
+                best.iterations = iter + 1;
+                best.converged = true;
+                return best;
+            }
+
+            for (std::size_t d = 0; d < p0.size(); ++d)
+                x[d] = p0[d] + t * direction[d];
+            eval_grad(
+                std::span<const T>(x.data(), x.size()),
+                std::span<T>(grad.data(), grad.size()));
+
+            T dphidt = T(0);
+            for (std::size_t d = 0; d < p0.size(); ++d)
+                dphidt += grad[d] * direction[d];
+
+            if (!std::isfinite(dphidt) || std::abs(dphidt) <= T(1e-14))
+                break;
+
+            const T t_newton = std::clamp(t - f / dphidt, T(0), T(1));
+            if (std::abs(t_newton - t) <= tol)
+                break;
+            t = t_newton;
+        }
+    }
+
+    RootInfo info = cell::edge_root::find_root_parameter_info<T>(
+        p0,
+        p1,
+        [&](std::span<const T> xp) -> T { return eval_phi(xp); },
+        root_method,
+        T(0),
+        64,
+        tol,
+        tol);
+    info.evaluations += eval_count;
+    if (info.residual < best.residual)
+        return info;
+    best.evaluations = eval_count;
+    return best;
+}
 
 inline int background_edge_id_from_corners(cell::type ct, int pv0, int pv1)
 {
@@ -279,13 +507,18 @@ void build_local_edges(LocalMesh<T>& mesh)
         mesh.edge_parent_dim[static_cast<std::size_t>(i)] = pdim;
         mesh.edge_parent_id[static_cast<std::size_t>(i)] = pid;
     }
-    mesh.edge_state.assign(n_edges, static_cast<uint8_t>(EdgeState::uncertain));
-    mesh.edge_root_vertex.assign(n_edges, -1);
-    mesh.edge_root_parameter.assign(n_edges, T(-1));
-    mesh.edge_root_iterations.assign(n_edges, 0);
-    mesh.edge_root_evaluations.assign(n_edges, 0);
-    mesh.edge_root_converged.assign(n_edges, 0);
-    mesh.edge_root_residual.assign(n_edges, T(0));
+    const int n_ls = mesh.n_level_sets;
+    const int ne_ls = n_edges * n_ls;
+    mesh.edge_state.assign(static_cast<std::size_t>(ne_ls), static_cast<uint8_t>(EdgeState::uncertain));
+    mesh.edge_cert.assign(
+        static_cast<std::size_t>(ne_ls),
+        static_cast<uint8_t>(EdgeCertification::unresolved));
+    mesh.edge_root_vertex.assign(static_cast<std::size_t>(ne_ls), -1);
+    mesh.edge_root_parameter.assign(static_cast<std::size_t>(ne_ls), T(-1));
+    mesh.edge_root_iterations.assign(static_cast<std::size_t>(ne_ls), 0);
+    mesh.edge_root_evaluations.assign(static_cast<std::size_t>(ne_ls), 0);
+    mesh.edge_root_converged.assign(static_cast<std::size_t>(ne_ls), 0);
+    mesh.edge_root_residual.assign(static_cast<std::size_t>(ne_ls), T(0));
 }
 
 inline std::span<const std::array<int, 2>> cut_edge_order(cell::type ct)
@@ -655,6 +888,30 @@ void append_subdivided_cells(
         cell_types.push_back(child_cell_type);
     }
 }
+struct FaceKey
+{
+    std::array<int32_t, 4> verts = {-1, -1, -1, -1};
+
+    bool operator==(const FaceKey& other) const noexcept
+    {
+        return verts == other.verts;
+    }
+};
+
+struct FaceKeyHash
+{
+    std::size_t operator()(const FaceKey& k) const noexcept
+    {
+        std::size_t h = 0;
+        for (int32_t v : k.verts)
+        {
+            const auto hv = std::hash<int32_t>{}(v);
+            h ^= hv + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        }
+        return h;
+    }
+};
+
 } // namespace
 
 // ============================================================================
@@ -705,11 +962,19 @@ void init_local_mesh_from_template(
     mesh.vertex_parent_id.assign(tpl.vertex_parent_id.begin(), tpl.vertex_parent_id.end());
     mesh.vertex_root_edge_id.assign(static_cast<std::size_t>(nv), -1);
 
+    const std::span<const double> ref_coords = tpl.ref_vertex_coords.empty()
+        ? ((nv == cell::get_num_vertices(parent_cell_type))
+               ? p1_ref_coords(parent_cell_type)
+               : iso_p1_ref_coords(parent_cell_type, infer_lagrange_order(parent_cell_type, nv)))
+        : std::span<const double>(tpl.ref_vertex_coords.data(), tpl.ref_vertex_coords.size());
+    if (static_cast<int>(ref_coords.size()) != nv * tdim)
+        throw std::invalid_argument("init_local_mesh_from_template: template reference coordinates have invalid size");
+
     for (int i = 0; i < nv; ++i)
     {
         for (int d = 0; d < tdim; ++d)
             mesh.vertex_ref_x[static_cast<std::size_t>(i * tdim + d)] = static_cast<T>(
-                tpl.ref_vertex_coords[static_cast<std::size_t>(i * tdim + d)]);
+                ref_coords[static_cast<std::size_t>(i * tdim + d)]);
         for (int d = 0; d < gdim; ++d)
             mesh.vertex_x[i * gdim + d] = parent_cell_coords[i * gdim + d];
     }
@@ -732,6 +997,7 @@ void init_local_mesh_from_template(
     mesh.vertex_phi.assign(static_cast<std::size_t>(nvd * n_level_sets), T(0));
 
     build_local_edges(mesh);
+    build_local_faces(mesh);
     rebuild_parent_entity_maps(mesh);
 }
 
@@ -792,6 +1058,7 @@ void init_local_mesh_from_cell(
     mesh.vertex_phi.assign(static_cast<std::size_t>(nvd * n_level_sets), T(0));
 
     build_local_edges(mesh);
+    build_local_faces(mesh);
     rebuild_parent_entity_maps(mesh);
 }
 
@@ -832,8 +1099,14 @@ void refine_local_mesh_from_template(
 
     std::vector<T> mapped_template_coords(static_cast<std::size_t>(tpl.n_vertices * gdim), T(0));
     std::vector<T> parent_p1(parent_cell_coords.begin(), parent_cell_coords.end());
-    const std::vector<T> ref_coords_t(
-        tpl.ref_vertex_coords.begin(), tpl.ref_vertex_coords.end());
+    const std::span<const double> ref_coords = tpl.ref_vertex_coords.empty()
+        ? ((tpl.n_vertices == cell::get_num_vertices(parent_cell_type))
+               ? p1_ref_coords(parent_cell_type)
+               : iso_p1_ref_coords(parent_cell_type, infer_lagrange_order(parent_cell_type, tpl.n_vertices)))
+        : std::span<const double>(tpl.ref_vertex_coords.data(), tpl.ref_vertex_coords.size());
+    if (static_cast<int>(ref_coords.size()) != tpl.n_vertices * tpl.tdim)
+        throw std::invalid_argument("refine_local_mesh_from_template: template reference coordinates have invalid size");
+    const std::vector<T> ref_coords_t(ref_coords.begin(), ref_coords.end());
 
     cell::push_forward_affine(
         parent_cell_type, parent_p1, gdim,
@@ -1094,7 +1367,839 @@ void red_refine_marked_cells(
     mesh.vertex_phi.assign(static_cast<std::size_t>(nv * mesh.n_level_sets), T(0));
 
     build_local_edges(mesh);
+    build_local_faces(mesh);
     rebuild_parent_entity_maps(mesh);
+}
+
+template <std::floating_point T>
+void build_local_faces(LocalMesh<T>& mesh)
+{
+    // No-op for non-volume meshes
+    if (mesh.tdim < 3)
+    {
+        mesh.face_vertices.clear();
+        mesh.face_offsets.clear();
+        mesh.face_types.clear();
+        mesh.face_parent_dim.clear();
+        mesh.face_parent_id.clear();
+        mesh.cell_face_offsets.clear();
+        mesh.cell_faces_flat.clear();
+        mesh.parent_face_to_local_face.clear();
+        return;
+    }
+
+    const int nc = mesh.n_cells();
+    std::unordered_map<FaceKey, int32_t, FaceKeyHash> face_to_id;
+    face_to_id.reserve(static_cast<std::size_t>(nc * 8));
+
+    std::vector<std::array<int32_t, 4>> unique_faces;
+    std::vector<cell::type> unique_face_types;
+    std::vector<int32_t>    unique_face_parent_dim;
+    std::vector<int32_t>    unique_face_parent_id;
+
+    mesh.cell_face_offsets.resize(static_cast<std::size_t>(nc + 1));
+    mesh.cell_faces_flat.clear();
+
+    // Determine number of background faces for parent_face_to_local_face
+    const int n_bg_faces = cell::num_faces(mesh.parent_cell_type);
+    mesh.parent_face_to_local_face.assign(static_cast<std::size_t>(std::max(0, n_bg_faces)), -1);
+
+    for (int c = 0; c < nc; ++c)
+    {
+        mesh.cell_face_offsets[static_cast<std::size_t>(c)] =
+            static_cast<int32_t>(mesh.cell_faces_flat.size());
+
+        const int cv0 = mesh.cell_offsets[static_cast<std::size_t>(c)];
+        const cell::type ct = mesh.cell_types[static_cast<std::size_t>(c)];
+
+        // Get face definitions for this cell type
+        const int nf_cell = cell::num_faces(ct);
+        if (nf_cell == 0)
+            continue;
+
+        const auto face_defs = cell::faces(ct);
+        const auto face_sizes = cell::face_vertex_counts(ct);
+
+        for (int f = 0; f < nf_cell; ++f)
+        {
+            const int fsz = face_sizes[static_cast<std::size_t>(f)];
+            const auto& fdef = face_defs[static_cast<std::size_t>(f)];
+
+            // Gather global vertex ids for this face
+            std::array<int32_t, 4> gv = {-1, -1, -1, -1};
+            for (int k = 0; k < fsz; ++k)
+            {
+                const int local_v = fdef[static_cast<std::size_t>(k)];
+                gv[static_cast<std::size_t>(k)] =
+                    mesh.cell_vertices[static_cast<std::size_t>(cv0 + local_v)];
+            }
+
+            // Canonical key: sorted vertex ids
+            FaceKey key;
+            key.verts = gv;
+            std::sort(key.verts.begin(), key.verts.begin() + fsz);
+
+            const auto it = face_to_id.find(key);
+            int32_t face_idx = 0;
+            if (it == face_to_id.end())
+            {
+                face_idx = static_cast<int32_t>(unique_faces.size());
+                unique_faces.push_back(gv);
+
+                // Face type
+                const cell::type ftype = (fsz == 3) ? cell::type::triangle : cell::type::quadrilateral;
+                unique_face_types.push_back(ftype);
+
+                // Infer background face parent (only for hexahedron currently;
+                // tetrahedron, prism, pyramid can be added later)
+                int32_t bg_face_dim = -1;
+                int32_t bg_face_id = -1;
+                if (mesh.parent_cell_type == cell::type::tetrahedron
+                    && mesh.tdim == 3)
+                {
+                    const auto bg_faces = cell::faces(cell::type::tetrahedron);
+                    const auto bg_fsizes = cell::face_vertex_counts(cell::type::tetrahedron);
+                    const int n_bg_f = cell::num_faces(cell::type::tetrahedron);
+                    for (int bg_f = 0; bg_f < n_bg_f; ++bg_f)
+                    {
+                        const int bfsz = bg_fsizes[static_cast<std::size_t>(bg_f)];
+                        const auto& bfdef = bg_faces[static_cast<std::size_t>(bg_f)];
+                        bool all_on = true;
+                        for (int k = 0; k < fsz && all_on; ++k)
+                        {
+                            const int32_t gvk = gv[static_cast<std::size_t>(k)];
+                            bool found_v = false;
+                            for (int bk = 0; bk < bfsz && !found_v; ++bk)
+                            {
+                                const int bg_local_v = bfdef[static_cast<std::size_t>(bk)];
+                                // Check vertex_parent_dim and vertex_parent_id
+                                const int pdim = mesh.vertex_parent_dim[static_cast<std::size_t>(gvk)];
+                                const int pid = mesh.vertex_parent_id[static_cast<std::size_t>(gvk)];
+                                if (pdim == 0 && pid == bg_local_v)
+                                    found_v = true;
+                            }
+                            if (!found_v)
+                                all_on = false;
+                        }
+                        if (all_on)
+                        {
+                            bg_face_dim = 2;
+                            bg_face_id = bg_f;
+                            break;
+                        }
+                    }
+                }
+                else if (mesh.parent_cell_type == cell::type::hexahedron)
+                {
+                    // Use the existing infer_background_face_parent logic for hexahedra
+                    // (simplified: check all face vertices against background face definition)
+                    const auto bg_faces = cell::faces(cell::type::hexahedron);
+                    const int n_bg_f = cell::num_faces(cell::type::hexahedron);
+                    for (int bg_f = 0; bg_f < n_bg_f; ++bg_f)
+                    {
+                        bool all_on = true;
+                        for (int k = 0; k < fsz && all_on; ++k)
+                        {
+                            const int32_t gvk = gv[static_cast<std::size_t>(k)];
+                            if (!vertex_lies_on_background_face(mesh, gvk, bg_f))
+                                all_on = false;
+                        }
+                        if (all_on)
+                        {
+                            bg_face_dim = 2;
+                            bg_face_id = bg_f;
+                            break;
+                        }
+                    }
+                }
+
+                unique_face_parent_dim.push_back(bg_face_dim);
+                unique_face_parent_id.push_back(bg_face_id);
+
+                if (bg_face_id >= 0 && bg_face_id < n_bg_faces)
+                {
+                    if (mesh.parent_face_to_local_face[static_cast<std::size_t>(bg_face_id)] < 0)
+                        mesh.parent_face_to_local_face[static_cast<std::size_t>(bg_face_id)] = face_idx;
+                }
+
+                face_to_id.emplace(key, face_idx);
+            }
+            else
+            {
+                face_idx = it->second;
+            }
+            mesh.cell_faces_flat.push_back(face_idx);
+        }
+    }
+    mesh.cell_face_offsets[static_cast<std::size_t>(nc)] =
+        static_cast<int32_t>(mesh.cell_faces_flat.size());
+
+    // Build CSR face arrays
+    const int n_faces = static_cast<int>(unique_faces.size());
+    mesh.face_offsets.resize(static_cast<std::size_t>(n_faces + 1));
+    mesh.face_vertices.clear();
+    mesh.face_offsets[0] = 0;
+    for (int f = 0; f < n_faces; ++f)
+    {
+        const auto& gv = unique_faces[static_cast<std::size_t>(f)];
+        const cell::type ftype = unique_face_types[static_cast<std::size_t>(f)];
+        const int fsz = (ftype == cell::type::triangle) ? 3 : 4;
+        for (int k = 0; k < fsz; ++k)
+            mesh.face_vertices.push_back(gv[static_cast<std::size_t>(k)]);
+        mesh.face_offsets[static_cast<std::size_t>(f + 1)] =
+            static_cast<int32_t>(mesh.face_vertices.size());
+    }
+    mesh.face_types = std::move(unique_face_types);
+    mesh.face_parent_dim = std::move(unique_face_parent_dim);
+    mesh.face_parent_id = std::move(unique_face_parent_id);
+}
+
+// ============================================================================
+// build_zero_entities / topology caches
+// ============================================================================
+
+namespace
+{
+
+template <std::floating_point T>
+void clear_zero_entity_compat_views(LocalMesh<T>& mesh)
+{
+    mesh.iface_vertices.clear();
+    mesh.iface_offsets.clear();
+    mesh.iface_level_set_id.clear();
+    mesh.iface_parent_cell.clear();
+    mesh.curved_iface_ref_nodes.clear();
+    mesh.curved_iface_offsets.clear();
+    mesh.curved_iface_converged.clear();
+    mesh.curved_iface_status.clear();
+}
+
+template <std::floating_point T>
+void sync_iface_compatibility_view(LocalMesh<T>& mesh)
+{
+    clear_zero_entity_compat_views(mesh);
+    mesh.iface_offsets.push_back(0);
+
+    const int codim1_dim = std::max(0, mesh.tdim - 1);
+    const int n_zero = mesh.n_zero_entities();
+    for (int ze = 0; ze < n_zero; ++ze)
+    {
+        if (mesh.zero_entity_dim[static_cast<std::size_t>(ze)] != codim1_dim)
+            continue;
+        const uint64_t zm = mesh.zero_entity_zero_mask[static_cast<std::size_t>(ze)];
+        if (zm == 0 || (zm & (zm - 1)) != 0)
+            continue;
+
+        const int z0 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze)];
+        const int z1 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze + 1)];
+        for (int i = z0; i < z1; ++i)
+            mesh.iface_vertices.push_back(mesh.zero_entity_vertices[static_cast<std::size_t>(i)]);
+        mesh.iface_offsets.push_back(static_cast<int32_t>(mesh.iface_vertices.size()));
+        mesh.iface_level_set_id.push_back(static_cast<int32_t>(std::countr_zero(zm)));
+        mesh.iface_parent_cell.push_back(mesh.zero_entity_parent_cell[static_cast<std::size_t>(ze)]);
+    }
+}
+
+template <std::floating_point T>
+void append_zero_entity(
+    LocalMesh<T>&         mesh,
+    uint8_t               dim,
+    uint64_t              zero_mask,
+    std::span<const int32_t> verts,
+    int32_t               parent_cell,
+    int32_t               parent_dim = -1,
+    int32_t               parent_id = -1,
+    std::span<const int32_t> face_edge_vertices = {})
+{
+    mesh.zero_entity_dim.push_back(dim);
+    mesh.zero_entity_zero_mask.push_back(zero_mask);
+    mesh.zero_entity_sign_mask.push_back(0);
+    mesh.zero_entity_parent_cell.push_back(parent_cell);
+    mesh.zero_entity_parent_dim.push_back(parent_dim);
+    mesh.zero_entity_parent_id.push_back(parent_id);
+    mesh.zero_entity_is_owned.push_back(uint8_t(1));
+
+    if (mesh.zero_entity_offsets.empty())
+        mesh.zero_entity_offsets.push_back(0);
+    for (int32_t v : verts)
+        mesh.zero_entity_vertices.push_back(v);
+    mesh.zero_entity_offsets.push_back(static_cast<int32_t>(mesh.zero_entity_vertices.size()));
+
+    if (dim == 1 && verts.size() >= 2)
+    {
+        mesh.zero_entity_endpoint_v0.push_back(verts[0]);
+        mesh.zero_entity_endpoint_v1.push_back(verts[1]);
+    }
+    else
+    {
+        mesh.zero_entity_endpoint_v0.push_back(-1);
+        mesh.zero_entity_endpoint_v1.push_back(-1);
+    }
+
+    if (mesh.zero_face_edge_offsets.empty())
+        mesh.zero_face_edge_offsets.push_back(0);
+    for (int32_t ev : face_edge_vertices)
+        mesh.zero_face_edge_vertices.push_back(ev);
+    mesh.zero_face_edge_offsets.push_back(static_cast<int32_t>(mesh.zero_face_edge_vertices.size()));
+}
+
+template <std::floating_point T>
+void clear_zero_topology_caches(LocalMesh<T>& mesh)
+{
+    mesh.zero_chain_offsets.clear();
+    mesh.zero_chain_entity_ids.clear();
+    mesh.zero_chain_entity_reversed.clear();
+    mesh.zero_chain_is_closed.clear();
+    mesh.zero_chain_zero_mask.clear();
+
+    mesh.zero_patch_offsets.clear();
+    mesh.zero_patch_entity_ids.clear();
+    mesh.zero_patch_entity_oriented.clear();
+    mesh.zero_patch_is_closed.clear();
+    mesh.zero_patch_zero_mask.clear();
+}
+
+template <std::floating_point T>
+void sync_curved_zero_compatibility_view(LocalMesh<T>& mesh)
+{
+    mesh.curved_zero_offsets.assign(
+        static_cast<std::size_t>(mesh.n_zero_entities() + 1), 0);
+    mesh.curved_zero_ref_nodes.clear();
+    mesh.curved_zero_converged.clear();
+    mesh.curved_zero_status.clear();
+
+    std::vector<int32_t> iface_to_zero;
+    const int n_zero = mesh.n_zero_entities();
+    const int codim1_dim = std::max(0, mesh.tdim - 1);
+    for (int ze = 0; ze < n_zero; ++ze)
+    {
+        if (mesh.zero_entity_dim[static_cast<std::size_t>(ze)] != codim1_dim)
+            continue;
+        const uint64_t zm = mesh.zero_entity_zero_mask[static_cast<std::size_t>(ze)];
+        if (zm == 0 || (zm & (zm - 1)) != 0)
+            continue;
+        iface_to_zero.push_back(ze);
+    }
+
+    if (mesh.curved_iface_offsets.empty()
+        || static_cast<int>(mesh.curved_iface_offsets.size()) != static_cast<int>(iface_to_zero.size()) + 1)
+        return;
+
+    for (std::size_t iface_id = 0; iface_id < iface_to_zero.size(); ++iface_id)
+    {
+        const int ze = iface_to_zero[iface_id];
+        const int c0 = mesh.curved_iface_offsets[iface_id];
+        const int c1 = mesh.curved_iface_offsets[iface_id + 1];
+        const int n_nodes = c1 - c0;
+        mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)] = n_nodes;
+    }
+
+    for (int ze = 0; ze < n_zero; ++ze)
+        mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)] += mesh.curved_zero_offsets[static_cast<std::size_t>(ze)];
+
+    const int total_nodes = mesh.curved_zero_offsets.back();
+    mesh.curved_zero_ref_nodes.resize(static_cast<std::size_t>(total_nodes * mesh.tdim), T(0));
+    mesh.curved_zero_converged.resize(static_cast<std::size_t>(total_nodes), 0);
+    mesh.curved_zero_status.resize(
+        static_cast<std::size_t>(total_nodes),
+        static_cast<uint8_t>(CurveStatus::failed));
+
+    for (std::size_t iface_id = 0; iface_id < iface_to_zero.size(); ++iface_id)
+    {
+        const int ze = iface_to_zero[iface_id];
+        const int src0 = mesh.curved_iface_offsets[iface_id];
+        const int src1 = mesh.curved_iface_offsets[iface_id + 1];
+        const int dst0 = mesh.curved_zero_offsets[static_cast<std::size_t>(ze)];
+        const int n_nodes = src1 - src0;
+
+        for (int i = 0; i < n_nodes; ++i)
+        {
+            mesh.curved_zero_converged[static_cast<std::size_t>(dst0 + i)]
+                = mesh.curved_iface_converged[static_cast<std::size_t>(src0 + i)];
+            if (!mesh.curved_iface_status.empty())
+            {
+                mesh.curved_zero_status[static_cast<std::size_t>(dst0 + i)]
+                    = mesh.curved_iface_status[static_cast<std::size_t>(src0 + i)];
+            }
+            for (int d = 0; d < mesh.tdim; ++d)
+            {
+                mesh.curved_zero_ref_nodes[static_cast<std::size_t>((dst0 + i) * mesh.tdim + d)]
+                    = mesh.curved_iface_ref_nodes[static_cast<std::size_t>((src0 + i) * mesh.tdim + d)];
+            }
+        }
+    }
+}
+
+} // namespace
+
+template <std::floating_point T>
+void build_zero_entities(LocalMesh<T>& mesh, int level_set_id)
+{
+    const uint64_t zero_mask = uint64_t(1) << level_set_id;
+
+    if (mesh.zero_entity_offsets.empty())
+        mesh.zero_entity_offsets.push_back(0);
+    if (mesh.zero_face_edge_offsets.empty())
+        mesh.zero_face_edge_offsets.push_back(0);
+
+    clear_zero_topology_caches(mesh);
+
+    constexpr uint8_t D_INSIDE  = static_cast<uint8_t>(cell::domain::inside);
+    constexpr uint8_t D_OUTSIDE = static_cast<uint8_t>(cell::domain::outside);
+
+    if (mesh.tdim == 2)
+    {
+        const int ne = mesh.n_edges();
+        const int nc = mesh.n_cells();
+        std::vector<int32_t> edge_adj_cell0(static_cast<std::size_t>(ne), -1);
+        std::vector<int32_t> edge_adj_cell1(static_cast<std::size_t>(ne), -1);
+        std::vector<uint8_t> edge_added(static_cast<std::size_t>(ne), uint8_t(0));
+
+        for (int c = 0; c < nc; ++c)
+        {
+            const int e_start = mesh.cell_edge_offsets[static_cast<std::size_t>(c)];
+            const int e_end   = mesh.cell_edge_offsets[static_cast<std::size_t>(c + 1)];
+            for (int ei = e_start; ei < e_end; ++ei)
+            {
+                const int eid = mesh.cell_edges_flat[static_cast<std::size_t>(ei)];
+                if (edge_adj_cell0[static_cast<std::size_t>(eid)] < 0)
+                    edge_adj_cell0[static_cast<std::size_t>(eid)] = static_cast<int32_t>(c);
+                else
+                    edge_adj_cell1[static_cast<std::size_t>(eid)] = static_cast<int32_t>(c);
+            }
+        }
+
+        // Touch-only zero edges: keep them as interface entities directly.
+        for (int e = 0; e < ne; ++e)
+        {
+            const auto st = static_cast<EdgeState>(mesh.edge_state_for(e, level_set_id));
+            if (st != EdgeState::on_interface)
+                continue;
+
+            const std::array<int32_t, 2> verts = {
+                mesh.edge_vertices[static_cast<std::size_t>(2 * e)],
+                mesh.edge_vertices[static_cast<std::size_t>(2 * e + 1)]};
+            const int32_t owner_cell = (edge_adj_cell0[static_cast<std::size_t>(e)] >= 0)
+                ? edge_adj_cell0[static_cast<std::size_t>(e)]
+                : edge_adj_cell1[static_cast<std::size_t>(e)];
+            append_zero_entity(mesh, 1, zero_mask,
+                               std::span<const int32_t>(verts.data(), verts.size()),
+                               owner_cell,
+                               mesh.edge_parent_dim[static_cast<std::size_t>(e)],
+                               mesh.edge_parent_id[static_cast<std::size_t>(e)]);
+            edge_added[static_cast<std::size_t>(e)] = uint8_t(1);
+        }
+
+        for (int e = 0; e < ne; ++e)
+        {
+            if (edge_added[static_cast<std::size_t>(e)] != 0)
+                continue;
+            const int32_t c0 = edge_adj_cell0[static_cast<std::size_t>(e)];
+            const int32_t c1 = edge_adj_cell1[static_cast<std::size_t>(e)];
+            if (c0 < 0 || c1 < 0)
+                continue;
+
+            const uint8_t d0 = mesh.cell_domain[static_cast<std::size_t>(c0)];
+            const uint8_t d1 = mesh.cell_domain[static_cast<std::size_t>(c1)];
+            if (!((d0 == D_INSIDE && d1 == D_OUTSIDE) ||
+                  (d0 == D_OUTSIDE && d1 == D_INSIDE)))
+                continue;
+
+            const std::array<int32_t, 2> verts = {
+                mesh.edge_vertices[static_cast<std::size_t>(2 * e)],
+                mesh.edge_vertices[static_cast<std::size_t>(2 * e + 1)]};
+            const int32_t parent_c = (d0 == D_INSIDE) ? c0 : c1;
+            const int32_t carrier_dim = mesh.edge_parent_dim[static_cast<std::size_t>(e)];
+            const int32_t carrier_id = mesh.edge_parent_id[static_cast<std::size_t>(e)];
+            append_zero_entity(mesh, 1, zero_mask,
+                               std::span<const int32_t>(verts.data(), verts.size()),
+                               parent_c,
+                               carrier_dim,
+                               carrier_id);
+            edge_added[static_cast<std::size_t>(e)] = uint8_t(1);
+        }
+    }
+    else if (mesh.tdim == 3)
+    {
+        const int nf = mesh.n_faces();
+        const int nc = mesh.n_cells();
+        std::vector<int32_t> face_adj_cell0(static_cast<std::size_t>(nf), -1);
+        std::vector<int32_t> face_adj_cell1(static_cast<std::size_t>(nf), -1);
+        std::vector<uint8_t> face_added(static_cast<std::size_t>(nf), uint8_t(0));
+
+        for (int c = 0; c < nc; ++c)
+        {
+            const int f_start = mesh.cell_face_offsets[static_cast<std::size_t>(c)];
+            const int f_end   = mesh.cell_face_offsets[static_cast<std::size_t>(c + 1)];
+            for (int fi = f_start; fi < f_end; ++fi)
+            {
+                const int fid = mesh.cell_faces_flat[static_cast<std::size_t>(fi)];
+                if (face_adj_cell0[static_cast<std::size_t>(fid)] < 0)
+                    face_adj_cell0[static_cast<std::size_t>(fid)] = static_cast<int32_t>(c);
+                else
+                    face_adj_cell1[static_cast<std::size_t>(fid)] = static_cast<int32_t>(c);
+            }
+        }
+
+        // Touch-only zero faces: if all face vertices are zero for this level set,
+        // keep the face directly as a zero entity without volume cutting.
+        for (int f = 0; f < nf; ++f)
+        {
+            const int f0 = mesh.face_offsets[static_cast<std::size_t>(f)];
+            const int f1 = mesh.face_offsets[static_cast<std::size_t>(f + 1)];
+            const int n_face_verts = f1 - f0;
+            bool all_zero = (n_face_verts > 0);
+            std::vector<int32_t> verts(static_cast<std::size_t>(n_face_verts));
+            for (int i = 0; i < n_face_verts; ++i)
+            {
+                const int32_t lv = mesh.face_vertices[static_cast<std::size_t>(f0 + i)];
+                verts[static_cast<std::size_t>(i)] = lv;
+                if ((mesh.vertex_zero_mask[static_cast<std::size_t>(lv)] & zero_mask) == 0)
+                    all_zero = false;
+            }
+            if (!all_zero)
+                continue;
+
+            std::vector<int32_t> edge_pairs;
+            edge_pairs.reserve(static_cast<std::size_t>(2 * n_face_verts));
+            for (int i = 0; i < n_face_verts; ++i)
+            {
+                const int32_t a = verts[static_cast<std::size_t>(i)];
+                const int32_t b = verts[static_cast<std::size_t>((i + 1) % n_face_verts)];
+                edge_pairs.push_back(a);
+                edge_pairs.push_back(b);
+            }
+
+            const int32_t owner_cell = (face_adj_cell0[static_cast<std::size_t>(f)] >= 0)
+                ? face_adj_cell0[static_cast<std::size_t>(f)]
+                : face_adj_cell1[static_cast<std::size_t>(f)];
+            append_zero_entity(
+                mesh, 2, zero_mask,
+                std::span<const int32_t>(verts.data(), verts.size()),
+                owner_cell,
+                mesh.face_parent_dim[static_cast<std::size_t>(f)],
+                mesh.face_parent_id[static_cast<std::size_t>(f)],
+                std::span<const int32_t>(edge_pairs.data(), edge_pairs.size()));
+            face_added[static_cast<std::size_t>(f)] = uint8_t(1);
+        }
+
+        for (int f = 0; f < nf; ++f)
+        {
+            if (face_added[static_cast<std::size_t>(f)] != 0)
+                continue;
+            const int32_t c0 = face_adj_cell0[static_cast<std::size_t>(f)];
+            const int32_t c1 = face_adj_cell1[static_cast<std::size_t>(f)];
+            if (c0 < 0 || c1 < 0)
+                continue;
+
+            const uint8_t d0 = mesh.cell_domain[static_cast<std::size_t>(c0)];
+            const uint8_t d1 = mesh.cell_domain[static_cast<std::size_t>(c1)];
+            if (!((d0 == D_INSIDE && d1 == D_OUTSIDE) ||
+                  (d0 == D_OUTSIDE && d1 == D_INSIDE)))
+                continue;
+
+            const int f0 = mesh.face_offsets[static_cast<std::size_t>(f)];
+            const int f1 = mesh.face_offsets[static_cast<std::size_t>(f + 1)];
+            const int n_face_verts = f1 - f0;
+            std::vector<int32_t> verts(static_cast<std::size_t>(n_face_verts));
+            for (int i = 0; i < n_face_verts; ++i)
+                verts[static_cast<std::size_t>(i)] =
+                    mesh.face_vertices[static_cast<std::size_t>(f0 + i)];
+
+            std::vector<int32_t> edge_pairs;
+            edge_pairs.reserve(static_cast<std::size_t>(2 * n_face_verts));
+            for (int i = 0; i < n_face_verts; ++i)
+            {
+                const int32_t a = verts[static_cast<std::size_t>(i)];
+                const int32_t b = verts[static_cast<std::size_t>((i + 1) % n_face_verts)];
+                edge_pairs.push_back(a);
+                edge_pairs.push_back(b);
+            }
+
+            const int32_t parent_c = (d0 == D_INSIDE) ? c0 : c1;
+            append_zero_entity(
+                mesh, 2, zero_mask,
+                std::span<const int32_t>(verts.data(), verts.size()),
+                parent_c,
+                mesh.face_parent_dim[static_cast<std::size_t>(f)],
+                mesh.face_parent_id[static_cast<std::size_t>(f)],
+                std::span<const int32_t>(edge_pairs.data(), edge_pairs.size()));
+            face_added[static_cast<std::size_t>(f)] = uint8_t(1);
+        }
+    }
+
+    sync_iface_compatibility_view(mesh);
+    ++mesh.zero_entity_version;
+    mesh.curved_cache_version = 0;
+    mesh.curved_cache_zero_version = 0;
+}
+
+template <std::floating_point T>
+void build_interface_entities(LocalMesh<T>& mesh, int level_set_id)
+{
+    build_zero_entities(mesh, level_set_id);
+}
+
+template <std::floating_point T>
+void assign_zero_entity_ownership(
+    std::span<LocalMesh<T>*> local_meshes,
+    uint64_t                 zero_mask)
+{
+    struct Candidate
+    {
+        LocalMesh<T>* mesh = nullptr;
+        int entity_id = -1;
+        int parent_cell_id = -1;
+    };
+
+    std::unordered_map<ZeroOwnerKey, std::vector<Candidate>, ZeroOwnerKeyHash> groups;
+
+    for (LocalMesh<T>* mesh : local_meshes)
+    {
+        if (mesh == nullptr)
+            continue;
+        const int n_zero = mesh->n_zero_entities();
+        for (int ze = 0; ze < n_zero; ++ze)
+        {
+            if (mesh->zero_entity_zero_mask[static_cast<std::size_t>(ze)] != zero_mask)
+                continue;
+
+            const int32_t parent_dim = mesh->zero_entity_parent_dim[static_cast<std::size_t>(ze)];
+            const int32_t parent_id = mesh->zero_entity_parent_id[static_cast<std::size_t>(ze)];
+            mesh->zero_entity_is_owned[static_cast<std::size_t>(ze)] = uint8_t(1);
+
+            if (parent_dim < 0 || parent_id < 0)
+                continue;
+
+            const ZeroOwnerKey key{
+                zero_mask,
+                mesh->zero_entity_dim[static_cast<std::size_t>(ze)],
+                parent_dim,
+                parent_id};
+            groups[key].push_back(Candidate{mesh, ze, mesh->parent_cell_id});
+        }
+    }
+
+    for (auto& [key, candidates] : groups)
+    {
+        (void)key;
+        if (candidates.empty())
+            continue;
+
+        Candidate* owner = &candidates.front();
+        for (auto& cand : candidates)
+        {
+            if (cand.parent_cell_id < owner->parent_cell_id)
+                owner = &cand;
+        }
+
+        for (auto& cand : candidates)
+        {
+            cand.mesh->zero_entity_is_owned[static_cast<std::size_t>(cand.entity_id)]
+                = (&cand == owner) ? uint8_t(1) : uint8_t(0);
+        }
+    }
+}
+
+template <std::floating_point T>
+void build_zero_chains(LocalMesh<T>& mesh, uint64_t zero_mask)
+{
+    mesh.zero_chain_offsets.clear();
+    mesh.zero_chain_entity_ids.clear();
+    mesh.zero_chain_entity_reversed.clear();
+    mesh.zero_chain_is_closed.clear();
+    mesh.zero_chain_zero_mask.clear();
+    mesh.zero_chain_offsets.push_back(0);
+
+    const int n_zero = mesh.n_zero_entities();
+    std::vector<int32_t> entities;
+    entities.reserve(static_cast<std::size_t>(n_zero));
+    std::unordered_map<int32_t, std::vector<int32_t>> endpoint_to_entities;
+
+    for (int ze = 0; ze < n_zero; ++ze)
+    {
+        if (mesh.zero_entity_dim[static_cast<std::size_t>(ze)] != 1)
+            continue;
+        if (mesh.zero_entity_zero_mask[static_cast<std::size_t>(ze)] != zero_mask)
+            continue;
+        const int32_t v0 = mesh.zero_entity_endpoint_v0[static_cast<std::size_t>(ze)];
+        const int32_t v1 = mesh.zero_entity_endpoint_v1[static_cast<std::size_t>(ze)];
+        if (v0 < 0 || v1 < 0)
+            continue;
+        entities.push_back(ze);
+        endpoint_to_entities[v0].push_back(ze);
+        endpoint_to_entities[v1].push_back(ze);
+    }
+
+    for (const auto& [vertex, incident] : endpoint_to_entities)
+    {
+        (void)vertex;
+        if (incident.size() > 2)
+            throw std::runtime_error("build_zero_chains: endpoint degree > 2");
+    }
+
+    std::unordered_map<int32_t, uint8_t> visited;
+    auto other_endpoint = [&](int32_t ze, int32_t v) -> int32_t
+    {
+        const int32_t a = mesh.zero_entity_endpoint_v0[static_cast<std::size_t>(ze)];
+        const int32_t b = mesh.zero_entity_endpoint_v1[static_cast<std::size_t>(ze)];
+        return (a == v) ? b : a;
+    };
+
+    auto append_chain = [&](int32_t start_entity, int32_t start_vertex, bool closed)
+    {
+        int32_t current_entity = start_entity;
+        int32_t current_vertex = start_vertex;
+
+        while (true)
+        {
+            if (visited[current_entity])
+                break;
+            visited[current_entity] = 1;
+
+            const int32_t a = mesh.zero_entity_endpoint_v0[static_cast<std::size_t>(current_entity)];
+            const int32_t b = mesh.zero_entity_endpoint_v1[static_cast<std::size_t>(current_entity)];
+            const bool reversed = (current_vertex == b);
+            mesh.zero_chain_entity_ids.push_back(current_entity);
+            mesh.zero_chain_entity_reversed.push_back(reversed ? uint8_t(1) : uint8_t(0));
+
+            const int32_t next_vertex = reversed ? a : b;
+            const auto it = endpoint_to_entities.find(next_vertex);
+            if (it == endpoint_to_entities.end())
+                break;
+
+            int32_t next_entity = -1;
+            for (const int32_t cand : it->second)
+            {
+                if (!visited[cand])
+                {
+                    next_entity = cand;
+                    break;
+                }
+            }
+
+            if (next_entity < 0)
+                break;
+
+            current_entity = next_entity;
+            current_vertex = next_vertex;
+        }
+
+        mesh.zero_chain_offsets.push_back(static_cast<int32_t>(mesh.zero_chain_entity_ids.size()));
+        mesh.zero_chain_is_closed.push_back(closed ? uint8_t(1) : uint8_t(0));
+        mesh.zero_chain_zero_mask.push_back(zero_mask);
+    };
+
+    for (const auto& [vertex, incident] : endpoint_to_entities)
+    {
+        if (incident.size() != 1)
+            continue;
+        const int32_t ze = incident.front();
+        if (visited[ze])
+            continue;
+        append_chain(ze, vertex, false);
+    }
+
+    for (const int32_t ze : entities)
+    {
+        if (visited[ze])
+            continue;
+        const int32_t start_v = mesh.zero_entity_endpoint_v0[static_cast<std::size_t>(ze)];
+        append_chain(ze, start_v, true);
+    }
+}
+
+template <std::floating_point T>
+void build_zero_patches(LocalMesh<T>& mesh, uint64_t zero_mask)
+{
+    mesh.zero_patch_offsets.clear();
+    mesh.zero_patch_entity_ids.clear();
+    mesh.zero_patch_entity_oriented.clear();
+    mesh.zero_patch_is_closed.clear();
+    mesh.zero_patch_zero_mask.clear();
+    mesh.zero_patch_offsets.push_back(0);
+
+    const int n_zero = mesh.n_zero_entities();
+    std::vector<int32_t> faces;
+    std::unordered_map<EdgeKey, std::vector<int32_t>, EdgeKeyHash> edge_to_faces;
+
+    auto normalize_edge = [](int32_t a, int32_t b) -> EdgeKey
+    {
+        return (a < b) ? EdgeKey{a, b} : EdgeKey{b, a};
+    };
+
+    for (int ze = 0; ze < n_zero; ++ze)
+    {
+        if (mesh.zero_entity_dim[static_cast<std::size_t>(ze)] != 2)
+            continue;
+        if (mesh.zero_entity_zero_mask[static_cast<std::size_t>(ze)] != zero_mask)
+            continue;
+        faces.push_back(ze);
+
+        const int e0 = mesh.zero_face_edge_offsets[static_cast<std::size_t>(ze)];
+        const int e1 = mesh.zero_face_edge_offsets[static_cast<std::size_t>(ze + 1)];
+        for (int i = e0; i + 1 < e1; i += 2)
+        {
+            const EdgeKey key = normalize_edge(
+                mesh.zero_face_edge_vertices[static_cast<std::size_t>(i)],
+                mesh.zero_face_edge_vertices[static_cast<std::size_t>(i + 1)]);
+            edge_to_faces[key].push_back(ze);
+        }
+    }
+
+    for (const auto& [edge, incident] : edge_to_faces)
+    {
+        (void)edge;
+        if (incident.size() > 2)
+            throw std::runtime_error("build_zero_patches: shared edge incident to >2 faces");
+    }
+
+    std::unordered_map<int32_t, std::vector<int32_t>> face_adj;
+    std::unordered_map<int32_t, uint8_t> face_boundary;
+    for (const auto& [edge, incident] : edge_to_faces)
+    {
+        (void)edge;
+        if (incident.size() == 1)
+            face_boundary[incident.front()] = 1;
+        else if (incident.size() == 2)
+        {
+            face_adj[incident[0]].push_back(incident[1]);
+            face_adj[incident[1]].push_back(incident[0]);
+        }
+    }
+
+    std::unordered_map<int32_t, uint8_t> visited;
+    for (const int32_t ze : faces)
+    {
+        if (visited[ze])
+            continue;
+
+        std::vector<int32_t> stack = {ze};
+        bool closed = true;
+        while (!stack.empty())
+        {
+            const int32_t cur = stack.back();
+            stack.pop_back();
+            if (visited[cur])
+                continue;
+            visited[cur] = 1;
+
+            mesh.zero_patch_entity_ids.push_back(cur);
+            mesh.zero_patch_entity_oriented.push_back(0);
+            if (face_boundary[cur])
+                closed = false;
+
+            for (const int32_t nb : face_adj[cur])
+            {
+                if (!visited[nb])
+                    stack.push_back(nb);
+            }
+        }
+
+        mesh.zero_patch_offsets.push_back(static_cast<int32_t>(mesh.zero_patch_entity_ids.size()));
+        mesh.zero_patch_is_closed.push_back(closed ? uint8_t(1) : uint8_t(0));
+        mesh.zero_patch_zero_mask.push_back(zero_mask);
+    }
 }
 
 template <std::floating_point T>
@@ -1141,13 +2246,14 @@ void classify_local_edges(LocalMesh<T>& mesh, int level_set_id)
         bool inside0 = (mesh.vertex_inside_mask[v0] & mask);
         bool inside1 = (mesh.vertex_inside_mask[v1] & mask);
 
-        if (zero0 || zero1) {
-            mesh.edge_state[i] = static_cast<uint8_t>(EdgeState::near_tangency);
+        if (zero0 && zero1) {
+            mesh.edge_state_for(i, level_set_id) = static_cast<uint8_t>(EdgeState::zero_edge);
         } else if (inside0 == inside1) {
-            mesh.edge_state[i] = static_cast<uint8_t>(EdgeState::no_root);
+            mesh.edge_state_for(i, level_set_id) = static_cast<uint8_t>(EdgeState::uncut);
         } else {
-            mesh.edge_state[i] = static_cast<uint8_t>(EdgeState::one_root);
+            mesh.edge_state_for(i, level_set_id) = static_cast<uint8_t>(EdgeState::single_cross);
         }
+        mesh.edge_cert_for(i, level_set_id) = static_cast<uint8_t>(EdgeCertification::certified);
     }
 }
 
@@ -1419,8 +2525,8 @@ int compute_edge_root_linear(LocalMesh<T>& mesh, int edge_id, int level_set_id)
     if (level_set_id < 0 || level_set_id >= mesh.n_level_sets)
         throw std::invalid_argument("compute_edge_root_linear: invalid level_set_id");
 
-    if (mesh.edge_root_vertex[static_cast<std::size_t>(edge_id)] >= 0)
-        return mesh.edge_root_vertex[static_cast<std::size_t>(edge_id)];
+    if (mesh.edge_root_vertex_for(edge_id, level_set_id) >= 0)
+        return mesh.edge_root_vertex_for(edge_id, level_set_id);
 
     int v0_idx = mesh.edge_vertices[edge_id * 2];
     int v1_idx = mesh.edge_vertices[edge_id * 2 + 1];
@@ -1459,12 +2565,12 @@ int compute_edge_root_linear(LocalMesh<T>& mesh, int edge_id, int level_set_id)
     mesh.vertex_zero_mask.push_back(1ULL << level_set_id);
     mesh.vertex_inside_mask.push_back(0);
 
-    mesh.edge_root_vertex[edge_id] = new_v_idx;
-    mesh.edge_root_parameter[static_cast<std::size_t>(edge_id)] = s;
-    mesh.edge_root_iterations[static_cast<std::size_t>(edge_id)] = 0;
-    mesh.edge_root_evaluations[static_cast<std::size_t>(edge_id)] = 0;
-    mesh.edge_root_converged[static_cast<std::size_t>(edge_id)] = 1;
-    mesh.edge_root_residual[static_cast<std::size_t>(edge_id)] = std::abs(val0 + s * (val1 - val0));
+    mesh.edge_root_vertex_for(edge_id, level_set_id) = new_v_idx;
+    mesh.edge_root_parameter_for(edge_id, level_set_id) = s;
+    mesh.edge_root_iterations_for(edge_id, level_set_id) = 0;
+    mesh.edge_root_evaluations_for(edge_id, level_set_id) = 0;
+    mesh.edge_root_converged_for(edge_id, level_set_id) = 1;
+    mesh.edge_root_residual_for(edge_id, level_set_id) = std::abs(val0 + s * (val1 - val0));
     return new_v_idx;
 }
 
@@ -1474,14 +2580,15 @@ int compute_edge_root_bernstein(
     const LocalLevelSetFunction<T, I>& level_set,
     int                                edge_id,
     int                                level_set_id,
+    cell::edge_root::method            root_method,
     T                                  tol)
 {
     if (edge_id < 0 || edge_id >= mesh.n_edges())
         throw std::invalid_argument("compute_edge_root_bernstein: invalid edge id");
     if (level_set_id < 0 || level_set_id >= mesh.n_level_sets)
         throw std::invalid_argument("compute_edge_root_bernstein: invalid level_set_id");
-    if (mesh.edge_root_vertex[static_cast<std::size_t>(edge_id)] >= 0)
-        return mesh.edge_root_vertex[static_cast<std::size_t>(edge_id)];
+    if (mesh.edge_root_vertex_for(edge_id, level_set_id) >= 0)
+        return mesh.edge_root_vertex_for(edge_id, level_set_id);
     if (mesh.vertex_ref_x.size() != static_cast<std::size_t>(mesh.n_vertices() * mesh.tdim))
         throw std::invalid_argument("compute_edge_root_bernstein: missing reference coordinates");
 
@@ -1495,25 +2602,16 @@ int compute_edge_root_bernstein(
         mesh.vertex_ref_x.data() + static_cast<std::size_t>(v1_idx * mesh.tdim),
         static_cast<std::size_t>(mesh.tdim));
 
-    std::vector<T> edge_coeffs;
-    if (level_set.has_segment_restriction())
+    auto phi = [&](std::span<const T> x) -> T
     {
-        level_set.segment_restriction(x0_ref, x1_ref, edge_coeffs);
-    }
-    else if (level_set.has_edge_restriction()
-             && mesh.edge_parent_dim[static_cast<std::size_t>(edge_id)] == 1
-             && mesh.edge_parent_id[static_cast<std::size_t>(edge_id)] >= 0)
+        return level_set.value(x.data());
+    };
+    auto grad = [&](std::span<const T> x, std::span<T> g)
     {
-        edge_coeffs = level_set.edge_restriction(
-            mesh.edge_parent_id[static_cast<std::size_t>(edge_id)]).coeffs;
-    }
-    else
-    {
-        throw std::invalid_argument(
-            "compute_edge_root_bernstein: no Bernstein restriction available for local edge");
-    }
-    const auto root_info = bernstein_edge_root_info<T>(
-        std::span<const T>(edge_coeffs.data(), edge_coeffs.size()), 64, tol, tol);
+        level_set.grad(x.data(), g.data());
+    };
+    const auto root_info = solve_edge_root_on_segment<T>(
+        x0_ref, x1_ref, phi, grad, level_set.has_gradient(), root_method, tol);
     const T t = std::clamp(root_info.t, T(0), T(1));
 
     const int new_v_idx = mesh.n_vertices();
@@ -1551,12 +2649,12 @@ int compute_edge_root_bernstein(
     else if (val < T(0))
         mesh.vertex_inside_mask.back() |= mask;
 
-    mesh.edge_root_vertex[static_cast<std::size_t>(edge_id)] = new_v_idx;
-    mesh.edge_root_parameter[static_cast<std::size_t>(edge_id)] = t;
-    mesh.edge_root_iterations[static_cast<std::size_t>(edge_id)] = root_info.iterations;
-    mesh.edge_root_evaluations[static_cast<std::size_t>(edge_id)] = root_info.evaluations;
-    mesh.edge_root_converged[static_cast<std::size_t>(edge_id)] = root_info.converged ? 1 : 0;
-    mesh.edge_root_residual[static_cast<std::size_t>(edge_id)] = root_info.residual;
+    mesh.edge_root_vertex_for(edge_id, level_set_id) = new_v_idx;
+    mesh.edge_root_parameter_for(edge_id, level_set_id) = t;
+    mesh.edge_root_iterations_for(edge_id, level_set_id) = root_info.iterations;
+    mesh.edge_root_evaluations_for(edge_id, level_set_id) = root_info.evaluations;
+    mesh.edge_root_converged_for(edge_id, level_set_id) = root_info.converged ? 1 : 0;
+    mesh.edge_root_residual_for(edge_id, level_set_id) = root_info.residual;
     return new_v_idx;
 }
 
@@ -1574,8 +2672,8 @@ int compute_edge_root(LocalMesh<T>& mesh,
         throw std::invalid_argument("compute_edge_root: invalid edge id");
     if (level_set_id < 0 || level_set_id >= mesh.n_level_sets)
         throw std::invalid_argument("compute_edge_root: invalid level_set_id");
-    if (mesh.edge_root_vertex[static_cast<std::size_t>(edge_id)] >= 0)
-        return mesh.edge_root_vertex[static_cast<std::size_t>(edge_id)];
+    if (mesh.edge_root_vertex_for(edge_id, level_set_id) >= 0)
+        return mesh.edge_root_vertex_for(edge_id, level_set_id);
 
     const int v0_idx = mesh.edge_vertices[static_cast<std::size_t>(edge_id * 2)];
     const int v1_idx = mesh.edge_vertices[static_cast<std::size_t>(edge_id * 2 + 1)];
@@ -1591,9 +2689,13 @@ int compute_edge_root(LocalMesh<T>& mesh,
     {
         return level_set.value(x.data(), static_cast<I>(mesh.parent_cell_id));
     };
+    auto grad = [&](std::span<const T> x, std::span<T> g)
+    {
+        level_set.grad(x.data(), static_cast<I>(mesh.parent_cell_id), g.data());
+    };
 
-    const auto root_info = cell::edge_root::find_root_parameter_info<T>(
-        p0, p1, phi, root_method, T(0), 64, static_cast<T>(1e-12), static_cast<T>(1e-12));
+    const auto root_info = solve_edge_root_on_segment<T>(
+        p0, p1, phi, grad, level_set.has_gradient(), root_method, static_cast<T>(1e-12));
     const T t = root_info.t;
 
     const int new_v_idx = mesh.n_vertices();
@@ -1628,12 +2730,12 @@ int compute_edge_root(LocalMesh<T>& mesh,
     else if (val < T(0))
         mesh.vertex_inside_mask.back() |= mask;
 
-    mesh.edge_root_vertex[static_cast<std::size_t>(edge_id)] = new_v_idx;
-    mesh.edge_root_parameter[static_cast<std::size_t>(edge_id)] = t;
-    mesh.edge_root_iterations[static_cast<std::size_t>(edge_id)] = root_info.iterations;
-    mesh.edge_root_evaluations[static_cast<std::size_t>(edge_id)] = root_info.evaluations;
-    mesh.edge_root_converged[static_cast<std::size_t>(edge_id)] = root_info.converged ? 1 : 0;
-    mesh.edge_root_residual[static_cast<std::size_t>(edge_id)] = root_info.residual;
+    mesh.edge_root_vertex_for(edge_id, level_set_id) = new_v_idx;
+    mesh.edge_root_parameter_for(edge_id, level_set_id) = t;
+    mesh.edge_root_iterations_for(edge_id, level_set_id) = root_info.iterations;
+    mesh.edge_root_evaluations_for(edge_id, level_set_id) = root_info.evaluations;
+    mesh.edge_root_converged_for(edge_id, level_set_id) = root_info.converged ? 1 : 0;
+    mesh.edge_root_residual_for(edge_id, level_set_id) = root_info.residual;
     return new_v_idx;
 }
 
@@ -1644,7 +2746,7 @@ void compute_all_roots_linear(LocalMesh<T>& mesh, int level_set_id)
     clear_edge_root_cache(mesh);
     int ne = mesh.n_edges();
     for (int i = 0; i < ne; ++i) {
-        if (mesh.edge_state[i] == static_cast<uint8_t>(EdgeState::one_root)) {
+        if (mesh.edge_state_for(i, level_set_id) == static_cast<uint8_t>(EdgeState::one_root)) {
             compute_edge_root_linear(mesh, i, level_set_id);
         }
     }
@@ -1668,7 +2770,7 @@ void compute_all_roots(LocalMesh<T>& mesh,
     const int ne = mesh.n_edges();
     for (int i = 0; i < ne; ++i)
     {
-        if (mesh.edge_state[static_cast<std::size_t>(i)] != static_cast<uint8_t>(EdgeState::one_root))
+        if (mesh.edge_state_for(i, level_set_id) != static_cast<uint8_t>(EdgeState::one_root))
             continue;
         compute_edge_root<T, I>(mesh, level_set, i, level_set_id, root_method);
     }
@@ -1704,9 +2806,10 @@ void compute_all_roots_with_backend(LocalMesh<T>& mesh,
     const int ne = mesh.n_edges();
     for (int i = 0; i < ne; ++i)
     {
-        if (mesh.edge_state[static_cast<std::size_t>(i)] != static_cast<uint8_t>(EdgeState::one_root))
+        if (mesh.edge_state_for(i, level_set_id) != static_cast<uint8_t>(EdgeState::one_root))
             continue;
-        compute_edge_root_bernstein<T, I>(mesh, local_level_set, i, level_set_id, tol);
+        compute_edge_root_bernstein<T, I>(
+            mesh, local_level_set, i, level_set_id, root_method, tol);
     }
 }
 
@@ -1772,14 +2875,50 @@ int map_cut_vertex_to_local_mesh(
             mesh, parent_cell_vertices, parent_cell_edges, parent_cell_type, local_parent_e);
         if (local_mesh_e >= 0 && local_mesh_e < mesh.n_edges())
         {
-            int rv = mesh.edge_root_vertex[static_cast<std::size_t>(local_mesh_e)];
-            if (rv < 0
-                && mesh.edge_state[static_cast<std::size_t>(local_mesh_e)] == static_cast<uint8_t>(EdgeState::one_root))
+            const auto edge_state = static_cast<EdgeState>(
+                mesh.edge_state_for(local_mesh_e, level_set_id));
+            int rv = mesh.edge_root_vertex_for(local_mesh_e, level_set_id);
+            if (rv < 0 && edge_state == EdgeState::one_root)
             {
                 rv = compute_edge_root_linear(mesh, local_mesh_e, level_set_id);
             }
             if (rv >= 0)
                 return rv;
+
+            // The legacy cut tables still emit edge-root tokens in zero-touch
+            // cases. Reuse exact zero endpoints instead of fabricating a
+            // spurious interior root vertex.
+            if (edge_state != EdgeState::single_cross)
+            {
+                const int ev0 = mesh.edge_vertices[static_cast<std::size_t>(2 * local_mesh_e)];
+                const int ev1 = mesh.edge_vertices[static_cast<std::size_t>(2 * local_mesh_e + 1)];
+                const uint64_t mask = (uint64_t(1) << level_set_id);
+                const bool zero0 = (mesh.vertex_zero_mask[static_cast<std::size_t>(ev0)] & mask) != 0;
+                const bool zero1 = (mesh.vertex_zero_mask[static_cast<std::size_t>(ev1)] & mask) != 0;
+
+                if (zero0 && !zero1)
+                    return ev0;
+                if (zero1 && !zero0)
+                    return ev1;
+                if (zero0 && zero1)
+                {
+                    const std::span<const T> xv(
+                        cut_cell._vertex_coords.data() + static_cast<std::size_t>(lv * gdim),
+                        static_cast<std::size_t>(gdim));
+                    T dist0 = T(0);
+                    T dist1 = T(0);
+                    for (int d = 0; d < gdim; ++d)
+                    {
+                        const T dx0 = xv[static_cast<std::size_t>(d)]
+                            - mesh.vertex_x[static_cast<std::size_t>(ev0 * gdim + d)];
+                        const T dx1 = xv[static_cast<std::size_t>(d)]
+                            - mesh.vertex_x[static_cast<std::size_t>(ev1 * gdim + d)];
+                        dist0 += dx0 * dx0;
+                        dist1 += dx1 * dx1;
+                    }
+                    return (dist0 <= dist1) ? ev0 : ev1;
+                }
+            }
         }
     }
 
@@ -1795,11 +2934,60 @@ int map_cut_vertex_to_local_mesh(
     for (int d = 0; d < gdim; ++d)
         mesh.vertex_x.push_back(xv[static_cast<std::size_t>(d)]);
 
-    // Keep reference coordinates sized and coherent. If unavailable, append zeros.
+    // Reconstruct reference coordinates for vertices that originate from
+    // a parent-cell vertex or cut-edge root token. This avoids corrupting
+    // later curved-interface reconstruction with zero reference points.
     if (!mesh.vertex_ref_x.empty())
     {
-        for (int d = 0; d < tdim; ++d)
-            mesh.vertex_ref_x.push_back(T(0));
+        std::vector<T> x_ref(static_cast<std::size_t>(tdim), T(0));
+
+        if (token >= 100 && token < 200)
+        {
+            const int local_parent_v = static_cast<int>(token - 100);
+            if (local_parent_v >= 0 && local_parent_v < static_cast<int>(parent_cell_vertices.size()))
+            {
+                const int gv = parent_cell_vertices[static_cast<std::size_t>(local_parent_v)];
+                for (int d = 0; d < tdim; ++d)
+                {
+                    x_ref[static_cast<std::size_t>(d)]
+                        = mesh.vertex_ref_x[static_cast<std::size_t>(gv * tdim + d)];
+                }
+            }
+        }
+        else if (token >= 0 && token < 100)
+        {
+            const int local_parent_e = static_cast<int>(token);
+            const int local_mesh_e = local_edge_for_cut_edge_token(
+                mesh, parent_cell_vertices, parent_cell_edges, parent_cell_type, local_parent_e);
+            if (local_mesh_e >= 0 && local_mesh_e < mesh.n_edges())
+            {
+                const int ev0 = mesh.edge_vertices[static_cast<std::size_t>(2 * local_mesh_e)];
+                const int ev1 = mesh.edge_vertices[static_cast<std::size_t>(2 * local_mesh_e + 1)];
+
+                T s = T(0.5);
+                T den = T(0);
+                T num = T(0);
+                for (int d = 0; d < gdim; ++d)
+                {
+                    const T dx = mesh.vertex_x[static_cast<std::size_t>(ev1 * gdim + d)]
+                               - mesh.vertex_x[static_cast<std::size_t>(ev0 * gdim + d)];
+                    den += dx * dx;
+                    num += (xv[static_cast<std::size_t>(d)]
+                            - mesh.vertex_x[static_cast<std::size_t>(ev0 * gdim + d)]) * dx;
+                }
+                if (den > std::numeric_limits<T>::epsilon())
+                    s = std::clamp(num / den, T(0), T(1));
+
+                for (int d = 0; d < tdim; ++d)
+                {
+                    const T r0 = mesh.vertex_ref_x[static_cast<std::size_t>(ev0 * tdim + d)];
+                    const T r1 = mesh.vertex_ref_x[static_cast<std::size_t>(ev1 * tdim + d)];
+                    x_ref[static_cast<std::size_t>(d)] = r0 + s * (r1 - r0);
+                }
+            }
+        }
+
+        mesh.vertex_ref_x.insert(mesh.vertex_ref_x.end(), x_ref.begin(), x_ref.end());
     }
 
     int32_t parent_dim = -1;
@@ -1827,11 +3015,6 @@ int map_cut_vertex_to_local_mesh(
     mesh.vertex_phi.resize(mesh.vertex_phi.size() + static_cast<std::size_t>(nls), T(0));
     mesh.vertex_zero_mask.push_back(0);
     mesh.vertex_inside_mask.push_back(0);
-    if (token >= 0 && token < 100 && level_set_id >= 0 && level_set_id < nls)
-    {
-        mesh.vertex_zero_mask.back() = (uint64_t(1) << level_set_id);
-        mesh.vertex_phi[static_cast<std::size_t>(new_v * nls + level_set_id)] = T(0);
-    }
     return new_v;
 }
 
@@ -1902,6 +3085,98 @@ inline bool is_cut_root_token(cell::type parent_cell_type, int32_t token)
     return token >= 0 && token < cell::num_edges(parent_cell_type);
 }
 
+enum class CutRejectReason : uint8_t
+{
+    none = 0,
+    empty_fragment = 1,
+    new_volume_edge_intersects = 2,
+    root_split_edge_extra_root = 3,
+    interface_edge_extra_root = 4,
+    reference_reconstruction_failed = 5,
+    max_depth_uncertified = 6
+};
+
+enum class CutSubcellEdgeRole : uint8_t
+{
+    original_edge = 0,
+    interface_edge = 1,
+    root_split_edge = 2,
+    new_volume_edge = 3
+};
+
+inline const char* cut_reject_reason_name(CutRejectReason reason)
+{
+    switch (reason)
+    {
+        case CutRejectReason::none:
+            return "none";
+        case CutRejectReason::empty_fragment:
+            return "empty_fragment";
+        case CutRejectReason::new_volume_edge_intersects:
+            return "new_volume_edge_intersects";
+        case CutRejectReason::root_split_edge_extra_root:
+            return "root_split_edge_extra_root";
+        case CutRejectReason::interface_edge_extra_root:
+            return "interface_edge_extra_root";
+        case CutRejectReason::reference_reconstruction_failed:
+            return "reference_reconstruction_failed";
+        case CutRejectReason::max_depth_uncertified:
+            return "max_depth_uncertified";
+    }
+    return "unknown";
+}
+
+inline int first_marked_local_cell(std::span<const uint8_t> marked_cells)
+{
+    for (int c = 0; c < static_cast<int>(marked_cells.size()); ++c)
+    {
+        if (marked_cells[static_cast<std::size_t>(c)] != 0)
+            return c;
+    }
+    return -1;
+}
+
+template <std::floating_point T>
+int owning_local_cell_for_edge(const LocalMesh<T>& mesh, int edge_id)
+{
+    for (int c = 0; c < mesh.n_cells(); ++c)
+    {
+        const int ce0 = mesh.cell_edge_offsets[static_cast<std::size_t>(c)];
+        const int ce1 = mesh.cell_edge_offsets[static_cast<std::size_t>(c + 1)];
+        for (int ce = ce0; ce < ce1; ++ce)
+        {
+            if (mesh.cell_edges_flat[static_cast<std::size_t>(ce)] == edge_id)
+                return c;
+        }
+    }
+    return -1;
+}
+
+template <std::floating_point T>
+[[noreturn]] void throw_max_depth_uncertified(
+    const LocalMesh<T>& mesh,
+    int                 local_cell_id,
+    CutRejectReason     reason)
+{
+    std::ostringstream oss;
+    oss << "decompose_local_mesh_with_backend: parent cell " << mesh.parent_cell_id
+        << " local cell " << local_cell_id
+        << " uncertified at max_refine_depth (" << cut_reject_reason_name(reason) << ")";
+    throw std::runtime_error(oss.str());
+}
+
+inline void record_first_reject(
+    int             cell_id,
+    CutRejectReason reason,
+    int*            first_invalid_cell,
+    CutRejectReason* first_reject_reason)
+{
+    if (first_invalid_cell != nullptr && *first_invalid_cell < 0)
+        *first_invalid_cell = cell_id;
+    if (first_reject_reason != nullptr && *first_reject_reason == CutRejectReason::none)
+        *first_reject_reason = reason;
+}
+
 template <std::floating_point T>
 EdgeOrigin classify_cut_edge_origin(
     cell::type                parent_cell_type,
@@ -1949,6 +3224,36 @@ EdgeOrigin classify_cut_edge_origin(
     }
 
     return EdgeOrigin::lut_new;
+}
+
+template <std::floating_point T>
+CutSubcellEdgeRole classify_cut_subcell_edge_role(
+    cell::type              parent_cell_type,
+    const cell::CutCell<T>& cut_cell,
+    int                     lv0,
+    int                     lv1)
+{
+    const auto origin = classify_cut_edge_origin(parent_cell_type, cut_cell, lv0, lv1);
+    if (origin == EdgeOrigin::original)
+        return CutSubcellEdgeRole::original_edge;
+    if (origin == EdgeOrigin::root_split)
+        return CutSubcellEdgeRole::root_split_edge;
+
+    if (static_cast<int>(cut_cell._vertex_parent_entity.size())
+        != static_cast<int>(cut_cell._vertex_coords.size()) / cut_cell._gdim)
+    {
+        return CutSubcellEdgeRole::new_volume_edge;
+    }
+
+    const int32_t token0 = cut_cell._vertex_parent_entity[static_cast<std::size_t>(lv0)];
+    const int32_t token1 = cut_cell._vertex_parent_entity[static_cast<std::size_t>(lv1)];
+    if (is_cut_root_token(parent_cell_type, token0)
+        && is_cut_root_token(parent_cell_type, token1))
+    {
+        return CutSubcellEdgeRole::interface_edge;
+    }
+
+    return CutSubcellEdgeRole::new_volume_edge;
 }
 
 template <std::floating_point T>
@@ -2063,6 +3368,159 @@ bool edge_contains_root(
     return false;
 }
 
+template <std::floating_point T>
+bool cut_vertex_reference_coords(
+    const LocalMesh<T>&              mesh,
+    std::span<const int32_t>         parent_cell_vertices,
+    std::span<const int32_t>         parent_cell_edges,
+    cell::type                       parent_cell_type,
+    const cell::CutCell<T>&          cut_cell,
+    int                              local_vertex_id,
+    int                              level_set_id,
+    std::span<T>                     x_ref)
+{
+    if (static_cast<int>(cut_cell._vertex_parent_entity.size())
+        != static_cast<int>(cut_cell._vertex_coords.size()) / cut_cell._gdim)
+    {
+        return false;
+    }
+    if (static_cast<int>(x_ref.size()) != mesh.tdim)
+        return false;
+
+    const int32_t token = cut_cell._vertex_parent_entity[static_cast<std::size_t>(local_vertex_id)];
+    if (token >= 100 && token < 200)
+    {
+        const int local_parent_v = static_cast<int>(token - 100);
+        if (local_parent_v < 0 || local_parent_v >= static_cast<int>(parent_cell_vertices.size()))
+            return false;
+        const int gv = parent_cell_vertices[static_cast<std::size_t>(local_parent_v)];
+        for (int d = 0; d < mesh.tdim; ++d)
+            x_ref[static_cast<std::size_t>(d)]
+                = mesh.vertex_ref_x[static_cast<std::size_t>(gv * mesh.tdim + d)];
+        return true;
+    }
+
+    if (token >= 0 && token < 100)
+    {
+        const int local_parent_e = static_cast<int>(token);
+        const int local_mesh_e = local_edge_for_cut_edge_token(
+            mesh, parent_cell_vertices, parent_cell_edges, parent_cell_type, local_parent_e);
+        if (local_mesh_e < 0 || local_mesh_e >= mesh.n_edges())
+            return false;
+        const int rv = mesh.edge_root_vertex_for(local_mesh_e, level_set_id);
+        if (rv < 0 || rv >= mesh.n_vertices())
+            return false;
+        for (int d = 0; d < mesh.tdim; ++d)
+            x_ref[static_cast<std::size_t>(d)]
+                = mesh.vertex_ref_x[static_cast<std::size_t>(rv * mesh.tdim + d)];
+        return true;
+    }
+
+    return false;
+}
+
+template <std::floating_point T, std::integral I>
+bool certify_cut_edge_bernstein(
+    const LocalMesh<T>&              mesh,
+    std::span<const int32_t>         parent_cell_vertices,
+    std::span<const int32_t>         parent_cell_edges,
+    cell::type                       parent_cell_type,
+    const ParentPolynomialContext<T>& parent_poly,
+    const cell::CutCell<T>&          cut_cell,
+    int                              level_set_id,
+    int                              lv0,
+    int                              lv1,
+    T                                tol,
+    CutRejectReason&                 reject_reason)
+{
+    reject_reason = CutRejectReason::none;
+    const auto role = classify_cut_subcell_edge_role(
+        parent_cell_type, cut_cell, lv0, lv1);
+    if (role == CutSubcellEdgeRole::original_edge)
+        return true;
+
+    std::vector<T> x0_ref(static_cast<std::size_t>(mesh.tdim), T(0));
+    std::vector<T> x1_ref(static_cast<std::size_t>(mesh.tdim), T(0));
+    if (!cut_vertex_reference_coords(
+            mesh, parent_cell_vertices, parent_cell_edges, parent_cell_type,
+            cut_cell, lv0, level_set_id, std::span<T>(x0_ref.data(), x0_ref.size()))
+        || !cut_vertex_reference_coords(
+            mesh, parent_cell_vertices, parent_cell_edges, parent_cell_type,
+            cut_cell, lv1, level_set_id, std::span<T>(x1_ref.data(), x1_ref.size())))
+    {
+        reject_reason = CutRejectReason::reference_reconstruction_failed;
+        return false;
+    }
+
+    const T ev0 = evaluate_bernstein_cell<T>(
+        parent_poly.bernstein, std::span<const T>(x0_ref.data(), x0_ref.size()));
+    const T ev1 = evaluate_bernstein_cell<T>(
+        parent_poly.bernstein, std::span<const T>(x1_ref.data(), x1_ref.size()));
+    std::vector<T> edge_coeffs;
+    restrict_bernstein_to_segment_1d<T>(
+        parent_poly.bernstein,
+        std::span<const T>(x0_ref.data(), x0_ref.size()),
+        std::span<const T>(x1_ref.data(), x1_ref.size()),
+        edge_coeffs);
+    const auto raw = classify_edge_from_full_cell_bernstein<T>(
+        std::span<const T>(edge_coeffs.data(), edge_coeffs.size()), tol);
+    const auto interior_samples = sample_interior_bernstein_edge<T>(
+        std::span<const T>(edge_coeffs.data(), edge_coeffs.size()));
+    const T root_endpoint_tol = std::max(T(32) * tol, T(1e-10));
+    const auto topo = classify_edge_zero_topology<T>(
+        ev0, ev1,
+        std::span<const std::pair<T, T>>(interior_samples.data(), interior_samples.size()),
+        raw.state, tol, root_endpoint_tol);
+    const int nonzero_endpoint_sign = sign_with_tol(
+        sign_with_tol(ev0, tol) == 0 ? ev1 : ev0, tol);
+    bool root_split_interior_same_sign = true;
+    for (const auto& sample : interior_samples)
+    {
+        const int si = sign_with_tol(sample.second, tol);
+        if (si != 0 && nonzero_endpoint_sign != 0 && si != nonzero_endpoint_sign)
+        {
+            root_split_interior_same_sign = false;
+            break;
+        }
+    }
+
+    switch (role)
+    {
+        case CutSubcellEdgeRole::interface_edge:
+        {
+            const bool ok = topo.endpoint_zero_count == 2
+                            && topo.interior_root_count == 0;
+            if (!ok)
+                reject_reason = CutRejectReason::interface_edge_extra_root;
+            return ok;
+        }
+        case CutSubcellEdgeRole::root_split_edge:
+        {
+            const bool ok = topo.endpoint_zero_count == 1
+                            && topo.interior_root_count == 0
+                            && root_split_interior_same_sign;
+            if (!ok)
+                reject_reason = CutRejectReason::root_split_edge_extra_root;
+            return ok;
+        }
+        case CutSubcellEdgeRole::new_volume_edge:
+        {
+            const bool ok = (topo.endpoint_zero_count == 1)
+                                ? (topo.interior_root_count == 0
+                                   && root_split_interior_same_sign)
+                                : (topo.state == EdgeState::uncut);
+            if (!ok)
+                reject_reason = CutRejectReason::new_volume_edge_intersects;
+            return ok;
+        }
+        case CutSubcellEdgeRole::original_edge:
+            return true;
+    }
+
+    reject_reason = CutRejectReason::max_depth_uncertified;
+    return false;
+}
+
 template <std::floating_point T, std::integral I>
 bool certify_subcell(
     const LevelSetFunction<T, I>&  level_set,
@@ -2099,6 +3557,49 @@ bool certify_subcell(
 }
 
 template <std::floating_point T, std::integral I>
+bool certify_subcell_bernstein(
+    const LocalMesh<T>&              mesh,
+    std::span<const int32_t>         parent_cell_vertices,
+    std::span<const int32_t>         parent_cell_edges,
+    const ParentPolynomialContext<T>& parent_poly,
+    const cell::CutCell<T>&          cut_cell,
+    cell::type                       parent_cell_type,
+    int                              level_set_id,
+    int                              cell_id,
+    T                                tol,
+    bool                             debug,
+    CutRejectReason*                 reject_reason)
+{
+    std::vector<int32_t> edges;
+    std::vector<uint8_t> edge_origin;
+    build_subcell_edges(cut_cell, parent_cell_type, cell_id, edges, edge_origin);
+
+    for (std::size_t e = 0; e < edge_origin.size(); ++e)
+    {
+        const auto origin = static_cast<EdgeOrigin>(edge_origin[e]);
+        if (origin == EdgeOrigin::original)
+            continue;
+
+        const int lv0 = edges[2 * e];
+        const int lv1 = edges[2 * e + 1];
+        CutRejectReason edge_reject_reason = CutRejectReason::none;
+        if (!certify_cut_edge_bernstein<T, I>(
+                mesh, parent_cell_vertices, parent_cell_edges, parent_cell_type,
+                parent_poly, cut_cell, level_set_id, lv0, lv1, tol, edge_reject_reason))
+        {
+            if (reject_reason != nullptr && *reject_reason == CutRejectReason::none)
+                *reject_reason = edge_reject_reason;
+            if (debug)
+                std::cout << "invalid bernstein edge detected: "
+                          << cut_reject_reason_name(edge_reject_reason) << "\n";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+template <std::floating_point T, std::integral I>
 bool certify_cut(
     const LevelSetFunction<T, I>&  level_set,
     const cell::CutCell<T>&        cut_cell,
@@ -2109,6 +3610,12 @@ bool certify_cut(
     bool                           debug)
 {
     const int nsub = cell::num_cells(cut_cell);
+    if (nsub == 0)
+    {
+        if (debug)
+            std::cout << "empty cut detected\n";
+        return false;
+    }
     for (int i = 0; i < nsub; ++i)
     {
         if (!certify_subcell(
@@ -2122,6 +3629,53 @@ bool certify_cut(
 }
 
 template <std::floating_point T, std::integral I>
+bool certify_cut_bernstein(
+    const LocalMesh<T>&              mesh,
+    std::span<const int32_t>         parent_cell_vertices,
+    std::span<const int32_t>         parent_cell_edges,
+    const ParentPolynomialContext<T>& parent_poly,
+    const cell::CutCell<T>&          cut_cell,
+    cell::type                       parent_cell_type,
+    int                              level_set_id,
+    T                                tol,
+    bool                             debug,
+    CutRejectReason*                 reject_reason)
+{
+    const int nsub = cell::num_cells(cut_cell);
+    if (nsub == 0)
+    {
+        if (reject_reason != nullptr)
+            *reject_reason = CutRejectReason::empty_fragment;
+        if (debug)
+            std::cout << "empty bernstein cut detected\n";
+        return false;
+    }
+    for (int i = 0; i < nsub; ++i)
+    {
+        CutRejectReason subcell_reject_reason = CutRejectReason::none;
+        if (!certify_subcell_bernstein<T, I>(
+                mesh, parent_cell_vertices, parent_cell_edges, parent_poly,
+                cut_cell, parent_cell_type, level_set_id, i, tol, debug,
+                &subcell_reject_reason))
+        {
+            if (reject_reason != nullptr && *reject_reason == CutRejectReason::none)
+                *reject_reason = subcell_reject_reason;
+            return false;
+        }
+    }
+    return true;
+}
+
+template <std::floating_point T>
+cell::domain classify_uncut_touch_cell_domain(std::span<const T> ls_values, T tol);
+
+template <std::floating_point T>
+int count_cell_one_root_edges(
+    const LocalMesh<T>&      mesh,
+    std::span<const int32_t> parent_cell_edges,
+    int                      level_set_id);
+
+template <std::floating_point T, std::integral I>
 bool certify_cut_on_local_mesh(
     LocalMesh<T>&                 mesh,
     const LevelSetFunction<T, I>& level_set,
@@ -2130,10 +3684,21 @@ bool certify_cut_on_local_mesh(
     T                             tol,
     std::vector<uint8_t>&         marked_cells,
     int&                          invalid_cells,
-    bool                          debug)
+    bool                          debug,
+    int*                          first_invalid_cell,
+    CutRejectReason*              first_reject_reason)
 {
     marked_cells.assign(static_cast<std::size_t>(mesh.n_cells()), uint8_t(0));
     invalid_cells = 0;
+    if (first_invalid_cell != nullptr)
+        *first_invalid_cell = -1;
+    if (first_reject_reason != nullptr)
+        *first_reject_reason = CutRejectReason::none;
+    const bool use_bernstein_cert
+        = level_set.has_nodal_values() && level_set.kind == LevelSetFunction<T, I>::Kind::fem_nodal;
+    ParentPolynomialContext<T> parent_poly;
+    if (use_bernstein_cert)
+        parent_poly = make_parent_polynomial_context<T, I>(mesh.parent_cell_type, level_set);
 
     const int nc = mesh.n_cells();
     for (int c = 0; c < nc; ++c)
@@ -2171,6 +3736,8 @@ bool certify_cut_on_local_mesh(
             std::span<const T>(ls_values.data(), ls_values.size()));
         if (dom != cell::domain::intersected)
             continue;
+        if (count_cell_one_root_edges(mesh, parent_cell_edges, level_set_id) == 0)
+            continue;
 
         const int n_cut_edges = cell::num_edges(ct);
         std::vector<T> edge_root_coords(static_cast<std::size_t>(n_cut_edges * mesh.gdim), T(0));
@@ -2183,10 +3750,10 @@ bool certify_cut_on_local_mesh(
             if (local_mesh_e < 0 || local_mesh_e >= mesh.n_edges())
                 continue;
 
-            if (mesh.edge_state[static_cast<std::size_t>(local_mesh_e)]
+            if (mesh.edge_state_for(local_mesh_e, level_set_id)
                 == static_cast<uint8_t>(EdgeState::one_root))
             {
-                const int rv = mesh.edge_root_vertex[static_cast<std::size_t>(local_mesh_e)];
+                const int rv = mesh.edge_root_vertex_for(local_mesh_e, level_set_id);
                 if (rv < 0 || rv >= mesh.n_vertices())
                 {
                     missing_root = true;
@@ -2205,6 +3772,9 @@ bool certify_cut_on_local_mesh(
         {
             marked_cells[static_cast<std::size_t>(c)] = 1;
             ++invalid_cells;
+            record_first_reject(
+                c, CutRejectReason::reference_reconstruction_failed,
+                first_invalid_cell, first_reject_reason);
             continue;
         }
 
@@ -2231,22 +3801,296 @@ bool certify_cut_on_local_mesh(
             cut_outside,
             triangulate);
 
-        const bool inside_ok = certify_cut(
-            level_set, cut_inside, ct,
-            std::span<const T>(ls_values.data(), ls_values.size()),
-            mesh.parent_cell_id, tol, debug);
-        const bool outside_ok = certify_cut(
-            level_set, cut_outside, ct,
-            std::span<const T>(ls_values.data(), ls_values.size()),
-            mesh.parent_cell_id, tol, debug);
+        if (cell::num_cells(cut_inside) == 0 || cell::num_cells(cut_outside) == 0)
+        {
+            marked_cells[static_cast<std::size_t>(c)] = 1;
+            ++invalid_cells;
+            record_first_reject(
+                c, CutRejectReason::empty_fragment,
+                first_invalid_cell, first_reject_reason);
+            continue;
+        }
+
+        CutRejectReason inside_reason = CutRejectReason::none;
+        const bool inside_ok = use_bernstein_cert
+            ? certify_cut_bernstein<T, I>(
+                mesh, parent_cell_vertices, parent_cell_edges, parent_poly,
+                cut_inside, ct, level_set_id, tol, debug, &inside_reason)
+            : certify_cut(
+                level_set, cut_inside, ct,
+                std::span<const T>(ls_values.data(), ls_values.size()),
+                mesh.parent_cell_id, tol, debug);
+        CutRejectReason outside_reason = CutRejectReason::none;
+        const bool outside_ok = use_bernstein_cert
+            ? certify_cut_bernstein<T, I>(
+                mesh, parent_cell_vertices, parent_cell_edges, parent_poly,
+                cut_outside, ct, level_set_id, tol, debug, &outside_reason)
+            : certify_cut(
+                level_set, cut_outside, ct,
+                std::span<const T>(ls_values.data(), ls_values.size()),
+                mesh.parent_cell_id, tol, debug);
         if (!inside_ok || !outside_ok)
         {
             marked_cells[static_cast<std::size_t>(c)] = 1;
             ++invalid_cells;
+            record_first_reject(
+                c,
+                inside_ok ? outside_reason : inside_reason,
+                first_invalid_cell,
+                first_reject_reason);
         }
     }
 
     return invalid_cells > 0;
+}
+
+template <std::floating_point T, std::integral I>
+bool certify_final_local_mesh_edges_bernstein(
+    const LocalMesh<T>&              mesh,
+    const LevelSetFunction<T, I>&    level_set,
+    int                              level_set_id,
+    T                                tol,
+    std::vector<uint8_t>&            marked_cells,
+    int*                             first_invalid_cell,
+    CutRejectReason*                 first_reject_reason)
+{
+    marked_cells.assign(static_cast<std::size_t>(mesh.n_cells()), uint8_t(0));
+    if (first_invalid_cell != nullptr)
+        *first_invalid_cell = -1;
+    if (first_reject_reason != nullptr)
+        *first_reject_reason = CutRejectReason::none;
+
+    if (!(level_set.has_nodal_values()
+          && level_set.kind == LevelSetFunction<T, I>::Kind::fem_nodal))
+    {
+        return false;
+    }
+
+    const auto parent_poly = make_parent_polynomial_context<T, I>(
+        mesh.parent_cell_type, level_set);
+    const int ne = mesh.n_edges();
+    const T root_endpoint_tol = std::max(T(32) * tol, T(1e-10));
+    bool any_invalid = false;
+
+    for (int e = 0; e < ne; ++e)
+    {
+        const int lv0 = mesh.edge_vertices[static_cast<std::size_t>(2 * e)];
+        const int lv1 = mesh.edge_vertices[static_cast<std::size_t>(2 * e + 1)];
+        if (lv0 < 0 || lv1 < 0 || lv0 >= mesh.n_vertices() || lv1 >= mesh.n_vertices())
+            continue;
+
+        std::vector<T> x0_ref(static_cast<std::size_t>(mesh.tdim), T(0));
+        std::vector<T> x1_ref(static_cast<std::size_t>(mesh.tdim), T(0));
+        for (int d = 0; d < mesh.tdim; ++d)
+        {
+            x0_ref[static_cast<std::size_t>(d)]
+                = mesh.vertex_ref_x[static_cast<std::size_t>(lv0 * mesh.tdim + d)];
+            x1_ref[static_cast<std::size_t>(d)]
+                = mesh.vertex_ref_x[static_cast<std::size_t>(lv1 * mesh.tdim + d)];
+        }
+
+        const T ev0 = evaluate_bernstein_cell<T>(
+            parent_poly.bernstein, std::span<const T>(x0_ref.data(), x0_ref.size()));
+        const T ev1 = evaluate_bernstein_cell<T>(
+            parent_poly.bernstein, std::span<const T>(x1_ref.data(), x1_ref.size()));
+        std::vector<T> edge_coeffs;
+        restrict_bernstein_to_segment_1d<T>(
+            parent_poly.bernstein,
+            std::span<const T>(x0_ref.data(), x0_ref.size()),
+            std::span<const T>(x1_ref.data(), x1_ref.size()),
+            edge_coeffs);
+        const auto raw = classify_edge_from_full_cell_bernstein<T>(
+            std::span<const T>(edge_coeffs.data(), edge_coeffs.size()), tol);
+        const auto interior_samples = sample_interior_bernstein_edge<T>(
+            std::span<const T>(edge_coeffs.data(), edge_coeffs.size()));
+        const auto topo = classify_edge_zero_topology<T>(
+            ev0, ev1,
+            std::span<const std::pair<T, T>>(interior_samples.data(), interior_samples.size()),
+            raw.state, tol, root_endpoint_tol);
+
+        const bool zero0 = sign_with_tol(ev0, tol) == 0;
+        const bool zero1 = sign_with_tol(ev1, tol) == 0;
+        const int nonzero_endpoint_sign = sign_with_tol(zero0 ? ev1 : ev0, tol);
+        bool root_split_interior_same_sign = true;
+        for (const auto& sample : interior_samples)
+        {
+            const int si = sign_with_tol(sample.second, tol);
+            if (si != 0 && nonzero_endpoint_sign != 0 && si != nonzero_endpoint_sign)
+            {
+                root_split_interior_same_sign = false;
+                break;
+            }
+        }
+        bool ok = false;
+        CutRejectReason reject_reason = CutRejectReason::none;
+        if (zero0 && zero1)
+        {
+            ok = topo.endpoint_zero_count == 2 && topo.interior_root_count == 0;
+            if (!ok)
+                reject_reason = CutRejectReason::interface_edge_extra_root;
+        }
+        else if (zero0 || zero1)
+        {
+            ok = topo.endpoint_zero_count == 1
+                 && topo.interior_root_count == 0
+                 && root_split_interior_same_sign;
+            if (!ok)
+                reject_reason = CutRejectReason::root_split_edge_extra_root;
+        }
+        else
+        {
+            ok = topo.state == EdgeState::uncut;
+            if (!ok)
+                reject_reason = CutRejectReason::new_volume_edge_intersects;
+        }
+
+        if (ok)
+            continue;
+
+        any_invalid = true;
+        const int owner_cell = owning_local_cell_for_edge(mesh, e);
+        if (owner_cell >= 0)
+        {
+            marked_cells[static_cast<std::size_t>(owner_cell)] = 1;
+            record_first_reject(
+                owner_cell, reject_reason, first_invalid_cell, first_reject_reason);
+        }
+    }
+
+    return any_invalid;
+}
+
+template <std::floating_point T>
+cell::domain classify_uncut_touch_cell_domain(std::span<const T> ls_values, T tol)
+{
+    bool has_neg = false;
+    bool has_pos = false;
+    for (const T v : ls_values)
+    {
+        if (std::abs(v) <= tol)
+            continue;
+        if (v < T(0))
+            has_neg = true;
+        else
+            has_pos = true;
+    }
+
+    if (has_neg && !has_pos)
+        return cell::domain::inside;
+    if (has_pos && !has_neg)
+        return cell::domain::outside;
+    if (!has_neg && !has_pos)
+        return cell::domain::inside;
+    return cell::domain::intersected;
+}
+
+template <std::floating_point T>
+int count_cell_one_root_edges(
+    const LocalMesh<T>&      mesh,
+    std::span<const int32_t> parent_cell_edges,
+    int                      level_set_id)
+{
+    int count = 0;
+    for (const int32_t eid : parent_cell_edges)
+    {
+        if (eid < 0 || eid >= mesh.n_edges())
+            continue;
+        if (mesh.edge_state_for(eid, level_set_id)
+            == static_cast<uint8_t>(EdgeState::one_root))
+        {
+            ++count;
+        }
+    }
+    return count;
+}
+
+template <std::floating_point T>
+bool mark_zero_topology_cells(
+    const LocalMesh<T>&  mesh,
+    int                  level_set_id,
+    std::vector<uint8_t>& marked_cells)
+{
+    (void)mesh;
+    (void)level_set_id;
+    marked_cells.clear();
+    return false;
+}
+
+template <std::floating_point T>
+bool bernstein_parent_has_interior_sign_contradiction(
+    cell::type         parent_cell_type,
+    int                degree,
+    std::span<const T> nodal_values,
+    T                  tol)
+{
+    if (degree <= 1)
+        return false;
+
+    const RefinementTemplate& tpl = iso_p1_template(parent_cell_type, degree);
+    if (static_cast<int>(nodal_values.size()) != tpl.n_vertices)
+        return false;
+
+    const int n_corner_vertices = cell::get_num_vertices(parent_cell_type);
+    int corner_sign = 0;
+    for (int i = 0; i < n_corner_vertices; ++i)
+    {
+        const int si = sign_with_tol(nodal_values[static_cast<std::size_t>(i)], tol);
+        if (si == 0)
+            continue;
+        if (corner_sign == 0)
+            corner_sign = si;
+        else if (corner_sign != si)
+            return false;
+    }
+    if (corner_sign == 0)
+        return false;
+
+    for (int i = n_corner_vertices; i < tpl.n_vertices; ++i)
+    {
+        if (tpl.vertex_parent_dim[static_cast<std::size_t>(i)] != tpl.tdim)
+            continue;
+        const int si = sign_with_tol(nodal_values[static_cast<std::size_t>(i)], tol);
+        if (si != 0 && si != corner_sign)
+            return true;
+    }
+
+    return false;
+}
+
+template <std::floating_point T, std::integral I>
+void seed_local_mesh_from_template_if_needed(
+    LocalMesh<T>&                 mesh,
+    const LevelSetFunction<T, I>& level_set,
+    LocalLevelSetBackend          backend,
+    int                           level_set_id,
+    T                             tol)
+{
+    (void)level_set_id;
+    if (backend != LocalLevelSetBackend::bernstein)
+        return;
+    if (!level_set.has_nodal_values())
+        return;
+    if (mesh.n_cells() != 1)
+        return;
+    if (mesh.cell_types.size() != 1
+        || mesh.cell_types[0] != mesh.parent_cell_type)
+    {
+        return;
+    }
+
+    const int degree = bernstein_level_set_degree(mesh, level_set);
+    const bool interior_contradiction
+        = bernstein_parent_has_interior_sign_contradiction<T>(
+            mesh.parent_cell_type, degree, level_set.nodal_values, tol);
+    if (!interior_contradiction)
+        return;
+
+    // Keep template seeding only for true parent-cell interior contradictions.
+    // Parent-edge multi-cross ambiguity is handled later by the normal shared
+    // local-cell marking/refinement path so nearby uncut children are not
+    // created up front by a whole-parent iso subdivision.
+    refine_local_mesh_from_template(
+        mesh, iso_p1_template(mesh.parent_cell_type, degree));
 }
 
 } // namespace
@@ -2335,6 +4179,33 @@ void decompose_local_mesh_from_cached_roots(
             continue;
         }
 
+        const int n_one_root = count_cell_one_root_edges(mesh, parent_cell_edges, level_set_id);
+        if (n_one_root == 0)
+        {
+            // Bernstein edge analysis found no root on any edge of this cell.
+            // Trust the certification: classify as inside/outside based on the
+            // vertex with the largest absolute level-set value.
+            T max_abs = T(0);
+            T dominant_val = T(0);
+            for (const T v : ls_values)
+            {
+                if (std::abs(v) > max_abs)
+                {
+                    max_abs = std::abs(v);
+                    dominant_val = v;
+                }
+            }
+            const cell::domain no_root_dom = (dominant_val <= T(0))
+                                                 ? cell::domain::inside
+                                                 : cell::domain::outside;
+            new_cell_types.push_back(ct);
+            new_cell_domain.push_back(static_cast<uint8_t>(no_root_dom));
+            for (int j = 0; j < nv; ++j)
+                new_cell_vertices.push_back(parent_cell_vertices[static_cast<std::size_t>(j)]);
+            new_cell_offsets.push_back(static_cast<int32_t>(new_cell_vertices.size()));
+            continue;
+        }
+
         const int n_cut_edges = cell::num_edges(ct);
         std::vector<T> edge_root_coords(static_cast<std::size_t>(n_cut_edges * mesh.gdim), T(0));
         std::vector<uint8_t> edge_has_root(static_cast<std::size_t>(n_cut_edges), 0);
@@ -2344,12 +4215,12 @@ void decompose_local_mesh_from_cached_roots(
                 mesh, parent_cell_vertices, parent_cell_edges, ct, te);
             if (local_mesh_e < 0 || local_mesh_e >= mesh.n_edges())
                 continue;
-            if (mesh.edge_state[static_cast<std::size_t>(local_mesh_e)]
+            if (mesh.edge_state_for(local_mesh_e, level_set_id)
                 != static_cast<uint8_t>(EdgeState::one_root))
             {
                 continue;
             }
-            int rv = mesh.edge_root_vertex[static_cast<std::size_t>(local_mesh_e)];
+            int rv = mesh.edge_root_vertex_for(local_mesh_e, level_set_id);
             if (rv < 0 && fill_missing_linear)
                 rv = compute_edge_root_linear(mesh, local_mesh_e, level_set_id);
             if (rv < 0 || rv >= mesh.n_vertices())
@@ -2384,6 +4255,16 @@ void decompose_local_mesh_from_cached_roots(
             std::span<const uint8_t>(edge_has_root.data(), edge_has_root.size()),
             cut_outside,
             triangulate);
+
+        if (cell::num_cells(cut_inside) == 0 || cell::num_cells(cut_outside) == 0)
+        {
+            std::ostringstream oss;
+            oss << "decompose_local_mesh_from_cached_roots: parent cell "
+                << mesh.parent_cell_id
+                << " local cell " << c
+                << " produced an empty cut fragment";
+            throw std::runtime_error(oss.str());
+        }
 
         append_cut_fragments(
             mesh, cut_inside, ct, parent_cell_vertices, parent_cell_edges,
@@ -2449,12 +4330,19 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
     if (static_cast<int>(mesh.vertex_root_edge_id.size()) != mesh.n_vertices())
         mesh.vertex_root_edge_id.assign(static_cast<std::size_t>(mesh.n_vertices()), -1);
 
+    seed_local_mesh_from_template_if_needed<T, I>(
+        mesh, level_set, backend, level_set_id, tol);
+    const bool hard_fail_on_max_depth
+        = backend == LocalLevelSetBackend::bernstein
+          && level_set.has_nodal_values()
+          && level_set.kind == LevelSetFunction<T, I>::Kind::fem_nodal;
+
     for (int depth = 0; ; ++depth)
     {
         if (backend == LocalLevelSetBackend::bernstein)
         {
             certify_local_mesh_polynomial<T, I>(
-                mesh, level_set, level_set_id, 8, tol, true);
+                mesh, level_set, level_set_id, 4, tol, true);
         }
         else
         {
@@ -2462,18 +4350,91 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
                 mesh, level_set, backend, level_set_id, tol, false);
         }
 
+        std::vector<uint8_t> zero_topology_marks;
+        if (mark_zero_topology_cells(mesh, level_set_id, zero_topology_marks))
+        {
+            result.refine_iterations = depth + 1;
+            if (depth >= max_refine_depth)
+            {
+                if (hard_fail_on_max_depth)
+                {
+                    const int local_cell_id = first_marked_local_cell(
+                        std::span<const uint8_t>(
+                            zero_topology_marks.data(), zero_topology_marks.size()));
+                    throw_max_depth_uncertified(
+                        mesh,
+                        local_cell_id >= 0 ? local_cell_id : 0,
+                        CutRejectReason::max_depth_uncertified);
+                }
+                decompose_local_mesh_linear(mesh, level_set_id, triangulate);
+                result.certified = false;
+                result.hit_max_depth = true;
+                return result;
+            }
+
+            red_refine_marked_cells(
+                mesh, std::span<const uint8_t>(zero_topology_marks.data(), zero_topology_marks.size()));
+            continue;
+        }
+
         compute_all_roots_with_backend<T, I>(
             mesh, level_set, backend, level_set_id, root_method, tol);
 
         std::vector<uint8_t> marked_cells;
         int invalid_cells = 0;
+        int first_invalid_cell = -1;
+        CutRejectReason first_reject_reason = CutRejectReason::none;
         const bool need_refine = certify_cut_on_local_mesh<T, I>(
             mesh, level_set, level_set_id, triangulate, tol,
-            marked_cells, invalid_cells, debug);
+            marked_cells, invalid_cells, debug,
+            &first_invalid_cell, &first_reject_reason);
 
         if (!need_refine)
         {
             decompose_local_mesh_from_cached_roots(mesh, level_set_id, triangulate, false);
+
+            std::vector<uint8_t> final_marked_cells;
+            int final_first_invalid_cell = -1;
+            CutRejectReason final_reject_reason = CutRejectReason::none;
+            const bool final_need_refine = certify_final_local_mesh_edges_bernstein<T, I>(
+                mesh, level_set, level_set_id, tol,
+                final_marked_cells, &final_first_invalid_cell, &final_reject_reason);
+            if (final_need_refine)
+            {
+                result.invalid_cells = 0;
+                for (const uint8_t mark : final_marked_cells)
+                    result.invalid_cells += (mark != 0) ? 1 : 0;
+                result.refine_iterations = depth + 1;
+                if (depth >= max_refine_depth)
+                {
+                    if (hard_fail_on_max_depth)
+                    {
+                        if (final_first_invalid_cell < 0)
+                        {
+                            final_first_invalid_cell = first_marked_local_cell(
+                                std::span<const uint8_t>(
+                                    final_marked_cells.data(), final_marked_cells.size()));
+                        }
+                        if (final_reject_reason == CutRejectReason::none)
+                            final_reject_reason = CutRejectReason::max_depth_uncertified;
+                        throw_max_depth_uncertified(
+                            mesh,
+                            final_first_invalid_cell >= 0 ? final_first_invalid_cell : 0,
+                            final_reject_reason);
+                    }
+                    decompose_local_mesh_linear(mesh, level_set_id, triangulate);
+                    result.certified = false;
+                    result.hit_max_depth = true;
+                    return result;
+                }
+
+                red_refine_marked_cells(
+                    mesh,
+                    std::span<const uint8_t>(
+                        final_marked_cells.data(), final_marked_cells.size()));
+                continue;
+            }
+
             result.certified = true;
             result.invalid_cells = 0;
             result.refine_iterations = depth;
@@ -2490,6 +4451,20 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
 
         if (depth >= max_refine_depth)
         {
+            if (hard_fail_on_max_depth)
+            {
+                if (first_invalid_cell < 0)
+                {
+                    first_invalid_cell = first_marked_local_cell(
+                        std::span<const uint8_t>(marked_cells.data(), marked_cells.size()));
+                }
+                if (first_reject_reason == CutRejectReason::none)
+                    first_reject_reason = CutRejectReason::max_depth_uncertified;
+                throw_max_depth_uncertified(
+                    mesh,
+                    first_invalid_cell >= 0 ? first_invalid_cell : 0,
+                    first_reject_reason);
+            }
             decompose_local_mesh_linear(mesh, level_set_id, triangulate);
             result.certified = false;
             result.hit_max_depth = true;
@@ -2501,7 +4476,233 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
     }
 }
 
+// ============================================================================
+// curve_interface_entities_with_backend
+// ============================================================================
+
+template <std::floating_point T, std::integral I>
+void curve_interface_entities_with_backend(
+    LocalMesh<T>&                      mesh,
+    const LevelSetFunction<T, I>&      level_set,
+    LocalLevelSetBackend               backend,
+    int                                level_set_id,
+    int                                geom_order,
+    T                                  tol)
+{
+    mesh.curved_fallback_count = 0;
+
+    if (backend == LocalLevelSetBackend::bernstein)
+    {
+        if (!level_set.has_nodal_values())
+            throw std::invalid_argument(
+                "curve_interface_entities_with_backend: Bernstein backend requires nodal values");
+
+        const auto local_phi =
+            level_set.mesh != nullptr
+                ? make_local_level_set_function_bernstein<T, I>(
+                      *level_set.mesh, level_set, static_cast<I>(mesh.parent_cell_id))
+                : make_local_level_set_function_bernstein<T, I>(
+                      mesh.parent_cell_type, mesh.gdim, level_set,
+                      static_cast<I>(mesh.parent_cell_id));
+
+        auto eval_phi = [&local_phi](const T* x_ref, int /*tdim*/) -> T
+        {
+            return local_phi.value_fn(x_ref);
+        };
+
+        auto eval_grad = [&local_phi](const T* x_ref, int /*tdim*/, T* grad_out)
+        {
+            local_phi.grad_fn(x_ref, grad_out);
+        };
+
+        curve_interface_entities(mesh, eval_phi, eval_grad,
+                                 level_set_id, geom_order, tol);
+    }
+    else if ((backend == LocalLevelSetBackend::analytical_callbacks
+              || backend == LocalLevelSetBackend::nodal_signs)
+             && level_set.has_value() && level_set.has_gradient())
+    {
+        const int tdim = mesh.tdim;
+        const int gdim = mesh.gdim;
+        const int cell_id = mesh.parent_cell_id;
+
+        auto eval_phi = [&](const T* x_ref, int /*td*/) -> T
+        {
+            std::array<T, 3> x_phys = {T(0), T(0), T(0)};
+            cell::ref_to_phys_affine<T>(
+                mesh.parent_cell_type,
+                std::span<const T>(mesh.parent_cell_coords_p1.data(),
+                                   mesh.parent_cell_coords_p1.size()),
+                gdim,
+                tdim,
+                x_ref,
+                x_phys.data());
+            return level_set.value(x_phys.data(), cell_id);
+        };
+
+        auto eval_grad = [&](const T* x_ref, int /*td*/, T* grad_out)
+        {
+            std::array<T, 3> x_phys = {T(0), T(0), T(0)};
+            cell::ref_to_phys_affine<T>(
+                mesh.parent_cell_type,
+                std::span<const T>(mesh.parent_cell_coords_p1.data(),
+                                   mesh.parent_cell_coords_p1.size()),
+                gdim,
+                tdim,
+                x_ref,
+                x_phys.data());
+
+            std::array<T, 3> grad_phys = {T(0), T(0), T(0)};
+            level_set.grad(x_phys.data(), cell_id, grad_phys.data());
+
+            std::vector<T> J(static_cast<std::size_t>(gdim * tdim), T(0));
+            cell::compute_jacobian<T>(
+                mesh.parent_cell_type,
+                std::span<const T>(mesh.parent_cell_coords_p1.data(),
+                                   mesh.parent_cell_coords_p1.size()),
+                gdim,
+                tdim,
+                x_ref,
+                J.data());
+
+            for (int k = 0; k < tdim; ++k)
+            {
+                T val = T(0);
+                for (int d = 0; d < gdim; ++d)
+                    val += J[static_cast<std::size_t>(d * tdim + k)] * grad_phys[static_cast<std::size_t>(d)];
+                grad_out[k] = val;
+            }
+        };
+
+        curve_interface_entities(mesh, eval_phi, eval_grad,
+                                 level_set_id, geom_order, tol);
+    }
+    else
+    {
+        throw std::invalid_argument(
+            "curve_interface_entities_with_backend: unsupported backend or "
+            "level set missing value/gradient functions");
+    }
+}
+
+template <std::floating_point T, std::integral I>
+void curve_zero_entities_with_backend(
+    LocalMesh<T>&                      mesh,
+    const LevelSetFunction<T, I>&      level_set,
+    LocalLevelSetBackend               backend,
+    int                                level_set_id,
+    int                                geom_order,
+    T                                  tol)
+{
+    mesh.curved_fallback_count = 0;
+
+    if (backend == LocalLevelSetBackend::bernstein)
+    {
+        if (!level_set.has_nodal_values())
+            throw std::invalid_argument(
+                "curve_zero_entities_with_backend: Bernstein backend requires nodal values");
+
+        const auto local_phi =
+            level_set.mesh != nullptr
+                ? make_local_level_set_function_bernstein<T, I>(
+                      *level_set.mesh, level_set, static_cast<I>(mesh.parent_cell_id))
+                : make_local_level_set_function_bernstein<T, I>(
+                      mesh.parent_cell_type, mesh.gdim, level_set,
+                      static_cast<I>(mesh.parent_cell_id));
+
+        auto eval_phi = [&local_phi](const T* x_ref, int /*tdim*/) -> T
+        {
+            return local_phi.value_fn(x_ref);
+        };
+
+        auto eval_grad = [&local_phi](const T* x_ref, int /*tdim*/, T* grad_out)
+        {
+            local_phi.grad_fn(x_ref, grad_out);
+        };
+
+        curve_zero_entities_impl(mesh, eval_phi, eval_grad,
+                                 level_set_id, geom_order, tol);
+    }
+    else if ((backend == LocalLevelSetBackend::analytical_callbacks
+              || backend == LocalLevelSetBackend::nodal_signs)
+             && level_set.has_value() && level_set.has_gradient())
+    {
+        const int tdim = mesh.tdim;
+        const int gdim = mesh.gdim;
+        const int cell_id = mesh.parent_cell_id;
+
+        auto eval_phi = [&](const T* x_ref, int /*td*/) -> T
+        {
+            std::array<T, 3> x_phys = {T(0), T(0), T(0)};
+            cell::ref_to_phys_affine<T>(
+                mesh.parent_cell_type,
+                std::span<const T>(mesh.parent_cell_coords_p1.data(),
+                                   mesh.parent_cell_coords_p1.size()),
+                gdim,
+                tdim,
+                x_ref,
+                x_phys.data());
+            return level_set.value(x_phys.data(), cell_id);
+        };
+
+        auto eval_grad = [&](const T* x_ref, int /*td*/, T* grad_out)
+        {
+            std::array<T, 3> x_phys = {T(0), T(0), T(0)};
+            cell::ref_to_phys_affine<T>(
+                mesh.parent_cell_type,
+                std::span<const T>(mesh.parent_cell_coords_p1.data(),
+                                   mesh.parent_cell_coords_p1.size()),
+                gdim,
+                tdim,
+                x_ref,
+                x_phys.data());
+
+            std::array<T, 3> grad_phys = {T(0), T(0), T(0)};
+            level_set.grad(x_phys.data(), cell_id, grad_phys.data());
+
+            std::vector<T> J(static_cast<std::size_t>(gdim * tdim), T(0));
+            cell::compute_jacobian<T>(
+                mesh.parent_cell_type,
+                std::span<const T>(mesh.parent_cell_coords_p1.data(),
+                                   mesh.parent_cell_coords_p1.size()),
+                gdim,
+                tdim,
+                x_ref,
+                J.data());
+
+            for (int k = 0; k < tdim; ++k)
+            {
+                T val = T(0);
+                for (int d = 0; d < gdim; ++d)
+                    val += J[static_cast<std::size_t>(d * tdim + k)] * grad_phys[static_cast<std::size_t>(d)];
+                grad_out[k] = val;
+            }
+        };
+
+        curve_zero_entities_impl(mesh, eval_phi, eval_grad,
+                                 level_set_id, geom_order, tol);
+    }
+    else
+    {
+        throw std::invalid_argument(
+            "curve_zero_entities_with_backend: unsupported backend or "
+            "level set missing value/gradient functions");
+    }
+}
+
 // Explicit instantiations for common types
+template void build_local_faces<double>(LocalMesh<double>&);
+template void build_local_faces<float>(LocalMesh<float>&);
+template void build_zero_entities<double>(LocalMesh<double>&, int);
+template void build_zero_entities<float>(LocalMesh<float>&, int);
+template void assign_zero_entity_ownership<double>(std::span<LocalMesh<double>*>, uint64_t);
+template void assign_zero_entity_ownership<float>(std::span<LocalMesh<float>*>, uint64_t);
+template void build_interface_entities<double>(LocalMesh<double>&, int);
+template void build_interface_entities<float>(LocalMesh<float>&, int);
+template void build_zero_chains<double>(LocalMesh<double>&, uint64_t);
+template void build_zero_chains<float>(LocalMesh<float>&, uint64_t);
+template void build_zero_patches<double>(LocalMesh<double>&, uint64_t);
+template void build_zero_patches<float>(LocalMesh<float>&, uint64_t);
 template void init_local_mesh_from_template<double>(LocalMesh<double>&, const RefinementTemplate&, std::span<const double>, cell::type, int, int);
 template void init_local_mesh_from_template<float>(LocalMesh<float>&, const RefinementTemplate&, std::span<const float>, cell::type, int, int);
 template void init_local_mesh_from_cell<double>(LocalMesh<double>&, std::span<const double>, cell::type, int, int);
@@ -2516,8 +4717,8 @@ template void classify_local_edges<double>(LocalMesh<double>&, int);
 template void classify_local_edges<float>(LocalMesh<float>&, int);
 template int compute_edge_root_linear<double>(LocalMesh<double>&, int, int);
 template int compute_edge_root_linear<float>(LocalMesh<float>&, int, int);
-template int compute_edge_root_bernstein<double, int>(LocalMesh<double>&, const LocalLevelSetFunction<double, int>&, int, int, double);
-template int compute_edge_root_bernstein<float, int>(LocalMesh<float>&, const LocalLevelSetFunction<float, int>&, int, int, float);
+template int compute_edge_root_bernstein<double, int>(LocalMesh<double>&, const LocalLevelSetFunction<double, int>&, int, int, cell::edge_root::method, double);
+template int compute_edge_root_bernstein<float, int>(LocalMesh<float>&, const LocalLevelSetFunction<float, int>&, int, int, cell::edge_root::method, float);
 template int compute_edge_root<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, int, int, cell::edge_root::method);
 template int compute_edge_root<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, int, int, cell::edge_root::method);
 template void compute_all_roots_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, cell::edge_root::method, double);
@@ -2534,5 +4735,9 @@ template void decompose_local_mesh<double, int>(LocalMesh<double>&, const LevelS
 template void decompose_local_mesh<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, int, cell::edge_root::method, bool);
 template LUTCertificationResult<double, int> decompose_local_mesh_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, cell::edge_root::method, bool, int, double, bool);
 template LUTCertificationResult<float, int> decompose_local_mesh_with_backend<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, cell::edge_root::method, bool, int, float, bool);
+template void curve_interface_entities_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, int, double);
+template void curve_interface_entities_with_backend<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, int, float);
+template void curve_zero_entities_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, int, double);
+template void curve_zero_entities_with_backend<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, int, float);
 
 } // namespace cutcells

@@ -101,6 +101,109 @@ inline T evaluate_edge_function(Phi& phi, const std::span<const T> p0, const std
     return static_cast<T>(std::invoke(phi, std::span<const T>(x.data(), gdim)));
 }
 
+/// General-purpose Brent solver on an arbitrary real interval [a, b].
+///
+/// Unlike brent_parameter, this does NOT clamp the result to [0, 1].
+/// Use this when the parameter domain extends beyond the unit interval,
+/// e.g. for ray-parameter root finding.
+///
+/// @param eval  callable T(T) — function whose root is sought
+/// @param a     left bracket
+/// @param b     right bracket
+/// @param fa    eval(a)
+/// @param fb    eval(b) — must satisfy fa * fb <= 0
+/// @param max_iter  maximum iterations
+/// @param xtol  tolerance on bracket width
+/// @param ftol  tolerance on function value
+template <std::floating_point T, typename Eval>
+inline T brent_solve(Eval&& eval, T a, T b, T fa, T fb,
+                     int max_iter, T xtol, T ftol,
+                     int* out_iterations = nullptr,
+                     bool* out_converged = nullptr)
+{
+    if (out_iterations)
+        *out_iterations = 0;
+    if (out_converged)
+        *out_converged = false;
+
+    if (std::abs(fa) <= ftol)
+    {
+        if (out_converged) *out_converged = true;
+        return a;
+    }
+    if (std::abs(fb) <= ftol)
+    {
+        if (out_converged) *out_converged = true;
+        return b;
+    }
+    if (fa * fb > T(0))
+        return T(0.5) * (a + b);
+
+    T c = a, fc = fa;
+    T d = b - a, e = d;
+
+    for (int iter = 0; iter < max_iter; ++iter)
+    {
+        if ((fb > T(0) && fc > T(0)) || (fb < T(0) && fc < T(0)))
+        {
+            c = a; fc = fa; d = b - a; e = d;
+        }
+        if (std::abs(fc) < std::abs(fb))
+        {
+            a = b; fa = fb; b = c; fb = fc; c = a; fc = fa;
+        }
+
+        const T eps  = std::numeric_limits<T>::epsilon();
+        const T tol1 = T(2) * eps * std::abs(b) + T(0.5) * xtol;
+        const T xm   = T(0.5) * (c - b);
+
+        if (std::abs(xm) <= tol1 || std::abs(fb) <= ftol)
+        {
+            if (out_iterations) *out_iterations = iter + 1;
+            if (out_converged)  *out_converged = true;
+            return b;
+        }
+
+        if (std::abs(e) >= tol1 && std::abs(fa) > std::abs(fb))
+        {
+            T s = fb / fa;
+            T p, q;
+            if (a == c)
+            {
+                p = T(2) * xm * s;
+                q = T(1) - s;
+            }
+            else
+            {
+                T q0 = fa / fc, r = fb / fc;
+                p = s * (T(2) * xm * q0 * (q0 - r) - (b - a) * (r - T(1)));
+                q = (q0 - T(1)) * (r - T(1)) * (s - T(1));
+            }
+            if (p > T(0)) q = -q;
+            p = std::abs(p);
+
+            const T min1 = T(3) * xm * q - std::abs(tol1 * q);
+            const T min2 = std::abs(e * q);
+            if (T(2) * p < std::min(min1, min2))
+            { e = d; d = p / q; }
+            else
+            { d = xm; e = d; }
+        }
+        else
+        {
+            d = xm; e = d;
+        }
+
+        a = b; fa = fb;
+        if (std::abs(d) > tol1) b += d;
+        else b += (xm > T(0) ? tol1 : -tol1);
+        fb = eval(b);
+    }
+
+    if (out_iterations) *out_iterations = max_iter;
+    return b;
+}
+
 template <std::floating_point T, typename Eval>
 inline T brent_parameter(Eval&& eval, T a, T b, T fa, T fb,
                          const int max_iter, const T xtol, const T ftol,
@@ -708,4 +811,368 @@ inline void compute_case_intersections_from_edge_mask(
         edge_ip_map[edge_id] = ip++;
     }
 }
+/// Result of a ray root-finding solve: phi(x_s + t*d) = 0.
+template <std::floating_point T>
+struct RayRootResult
+{
+    bool valid = false;
+    bool ambiguous_two_sided = false;
+    bool used_gradient_dir = false;
+    bool used_fallback_dir = false;
+
+    T    t = T(0);
+    T    phi_at_root = std::numeric_limits<T>::max();
+    T    dist = std::numeric_limits<T>::max();
+    T    residual = std::numeric_limits<T>::max();
+    int  iterations = 0;
+    int  evaluations = 0;
+    bool converged = false;
+    bool domain_exit = false;
+    bool gradient_degenerate = false;
+
+    std::array<T, 3> x_ref = {T(0), T(0), T(0)};
+
+    bool pos_valid = false;
+    bool neg_valid = false;
+    T pos_t = T(0);
+    T neg_t = T(0);
+};
+
+template <std::floating_point T>
+struct RaySearchOptions
+{
+    int max_iter = 64;
+    T xtol = T(1e-12);
+    T ftol = T(1e-12);
+    T domain_tol = T(1e-10);
+    std::array<T, 3> probe_scales = {T(1), T(2), T(4)};
+    T max_probe_distance = std::numeric_limits<T>::infinity();
+};
+
+/// Check whether a reference point is inside the parent cell reference domain.
+///
+/// @param x_ref      reference coordinates, size = tdim
+/// @param cell_type  cell type defining the reference domain
+/// @param tol        tolerance for boundary proximity
+template <std::floating_point T>
+inline bool is_inside_reference_domain(
+    std::span<const T> x_ref,
+    cutcells::cell::type cell_type,
+    T                  tol = T(1e-10))
+{
+    using cutcells::cell::type;
+    switch (cell_type)
+    {
+    case type::interval:
+    {
+        return x_ref[0] >= -tol && x_ref[0] <= T(1) + tol;
+    }
+    case type::triangle:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        return x >= -tol && y >= -tol && (x + y) <= T(1) + tol;
+    }
+    case type::tetrahedron:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        const T z = x_ref[2];
+        return x >= -tol && y >= -tol && z >= -tol && (x + y + z) <= T(1) + tol;
+    }
+    case type::quadrilateral:
+    {
+        return x_ref[0] >= -tol && x_ref[0] <= T(1) + tol
+            && x_ref[1] >= -tol && x_ref[1] <= T(1) + tol;
+    }
+    case type::hexahedron:
+    {
+        return x_ref[0] >= -tol && x_ref[0] <= T(1) + tol
+            && x_ref[1] >= -tol && x_ref[1] <= T(1) + tol
+            && x_ref[2] >= -tol && x_ref[2] <= T(1) + tol;
+    }
+    case type::prism:
+    {
+        // Prism: triangle in (x,y) x interval in z
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        const T z = x_ref[2];
+        return x >= -tol && y >= -tol && (x + y) <= T(1) + tol
+            && z >= -tol && z <= T(1) + tol;
+    }
+    case type::pyramid:
+    {
+        // Pyramid: x,y in [0, 1-z], z in [0, 1]
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        const T z = x_ref[2];
+        const T limit = T(1) - z;
+        return z >= -tol && z <= T(1) + tol
+            && x >= -tol && x <= limit + tol
+            && y >= -tol && y <= limit + tol;
+    }
+    default:
+        return false;
+    }
+}
+
+/// Solve phi(x_s + t*d) = 0 for t using Newton → Brent → bisection fallback chain.
+///
+/// @param eval_phi   callable (const T* x_ref, int tdim) -> T
+/// @param eval_grad  callable (const T* x_ref, int tdim, T* grad_out) -> void (reference-space gradient)
+/// @param x_s        starting point in reference coordinates, size = tdim
+/// @param d          ray direction in reference coordinates, size = tdim
+/// @param cell_type  reference domain for the domain-exit check
+/// @param tdim       topological dimension
+/// @param h_local    local entity size for scale-aware bracket probing (segment length or face diameter)
+/// @param tol        convergence tolerance
+template <std::floating_point T, typename EvalPhi, typename EvalGrad>
+inline RayRootResult<T> find_ray_root_one_direction(
+    EvalPhi&&            eval_phi,
+    EvalGrad&&           eval_grad,
+    std::span<const T>   x_s,
+    std::span<const T>   d,
+    cutcells::cell::type cell_type,
+    int                  tdim,
+    T                    h_local,
+    int                  sign,
+    const RaySearchOptions<T>& opts)
+{
+    RayRootResult<T> result;
+    if (sign != 1 && sign != -1)
+        throw std::invalid_argument("find_ray_root_one_direction: sign must be +1 or -1");
+    if (tdim <= 0 || tdim > 3)
+        throw std::invalid_argument("find_ray_root_one_direction: tdim must be in [1, 3]");
+
+    // Compute norm of direction
+    T d_norm = T(0);
+    for (int k = 0; k < tdim; ++k)
+        d_norm += d[k] * d[k];
+    d_norm = std::sqrt(d_norm);
+
+    if (d_norm < opts.ftol)
+    {
+        result.gradient_degenerate = true;
+        return result;
+    }
+
+    // Normalized direction
+    std::vector<T> d_hat(static_cast<std::size_t>(tdim));
+    for (int k = 0; k < tdim; ++k)
+        d_hat[static_cast<std::size_t>(k)] = d[k] / d_norm;
+
+    // Helper: evaluate phi at x_s + t * d_hat
+    std::vector<T> x_tmp(static_cast<std::size_t>(tdim));
+    const auto phi_at_t = [&](T t_val) -> T
+    {
+        for (int k = 0; k < tdim; ++k)
+            x_tmp[static_cast<std::size_t>(k)] = x_s[k] + t_val * d_hat[static_cast<std::size_t>(k)];
+        ++result.evaluations;
+        return eval_phi(x_tmp.data(), tdim);
+    };
+
+    T t_a = T(0);
+    T f_a = phi_at_t(T(0));
+
+    // Check if already at root
+    if (std::abs(f_a) <= opts.ftol)
+    {
+        result.t = T(0);
+        result.phi_at_root = f_a;
+        result.dist = T(0);
+        result.residual = std::abs(f_a);
+        result.converged = true;
+        result.valid = true;
+        for (int k = 0; k < tdim; ++k)
+            result.x_ref[static_cast<std::size_t>(k)] = x_s[static_cast<std::size_t>(k)];
+        return result;
+    }
+
+    // Find a bracket
+    T t_b = T(0);
+    T f_b = T(0);
+    bool have_bracket = false;
+
+    for (const T scale : opts.probe_scales)
+    {
+        const T unclamped = scale * h_local;
+        const T max_probe = std::isfinite(opts.max_probe_distance)
+            ? std::min(unclamped, opts.max_probe_distance)
+            : unclamped;
+        const T t_probe = static_cast<T>(sign) * max_probe;
+        // Check that probe is inside reference domain
+        for (int k = 0; k < tdim; ++k)
+            x_tmp[static_cast<std::size_t>(k)] = x_s[k] + t_probe * d_hat[static_cast<std::size_t>(k)];
+        if (!is_inside_reference_domain<T>(
+                std::span<const T>(x_tmp.data(), static_cast<std::size_t>(tdim)),
+                cell_type, opts.domain_tol))
+            continue;
+
+        const T f_probe = phi_at_t(t_probe);
+        if (std::abs(f_probe) <= opts.ftol)
+        {
+            result.t = t_probe;
+            result.phi_at_root = f_probe;
+            result.dist = std::abs(t_probe);
+            result.residual = std::abs(f_probe);
+            result.converged = true;
+            result.valid = true;
+            for (int k = 0; k < tdim; ++k)
+                result.x_ref[static_cast<std::size_t>(k)]
+                    = x_s[static_cast<std::size_t>(k)] + t_probe * d_hat[static_cast<std::size_t>(k)];
+            return result;
+        }
+
+        if (f_a * f_probe <= T(0))
+        {
+            t_b = t_probe;
+            f_b = f_probe;
+            have_bracket = true;
+            break;
+        }
+
+        // Keep the smaller-magnitude endpoint as t_a
+        if (std::abs(f_probe) < std::abs(f_a))
+        {
+            t_a = t_probe;
+            f_a = f_probe;
+        }
+    }
+
+    if (!have_bracket)
+    {
+        // No sign change found; return best estimate
+        result.t = t_a;
+        result.phi_at_root = f_a;
+        result.dist = std::abs(t_a);
+        result.residual = std::abs(f_a);
+        result.converged = false;
+        return result;
+    }
+
+    // Ensure t_a < t_b
+    if (t_a > t_b)
+    {
+        std::swap(t_a, t_b);
+        std::swap(f_a, f_b);
+    }
+
+    // Newton iterations with bracket safety
+    const int max_iter = opts.max_iter;
+    T t = T(0.5) * (t_a + t_b);
+    // Try initial Newton step from t_a
+    {
+        std::vector<T> grad(static_cast<std::size_t>(tdim));
+        for (int k = 0; k < tdim; ++k)
+            x_tmp[static_cast<std::size_t>(k)] = x_s[k] + t_a * d_hat[static_cast<std::size_t>(k)];
+        eval_grad(x_tmp.data(), tdim, grad.data());
+        T dphidt = T(0);
+        for (int k = 0; k < tdim; ++k)
+            dphidt += grad[static_cast<std::size_t>(k)] * d_hat[static_cast<std::size_t>(k)];
+        if (std::abs(dphidt) > T(1e-14))
+        {
+            const T t_newton = t_a - f_a / dphidt;
+            if (t_newton > t_a && t_newton < t_b)
+                t = t_newton;
+        }
+    }
+
+    // Brent fallback (unclamped — ray parameter can be negative)
+    int brent_iters = 0;
+    bool brent_converged = false;
+    const T t_brent = brent_solve<T>(
+        phi_at_t, t_a, t_b, f_a, f_b,
+        max_iter, opts.xtol, opts.ftol, &brent_iters, &brent_converged);
+    result.iterations += brent_iters;
+    t = t_brent;
+
+    const T f_final = phi_at_t(t);
+    result.t = t;
+    result.phi_at_root = f_final;
+    result.dist = std::abs(t);
+    result.residual = std::abs(f_final);
+    result.converged = (result.residual <= opts.ftol) || brent_converged;
+
+    // Check domain exit
+    for (int k = 0; k < tdim; ++k)
+        x_tmp[static_cast<std::size_t>(k)] = x_s[k] + t * d_hat[static_cast<std::size_t>(k)];
+    result.domain_exit = !is_inside_reference_domain<T>(
+        std::span<const T>(x_tmp.data(), static_cast<std::size_t>(tdim)),
+        cell_type, opts.domain_tol);
+    result.valid = result.converged && !result.domain_exit;
+    for (int k = 0; k < tdim; ++k)
+        result.x_ref[static_cast<std::size_t>(k)] = x_tmp[static_cast<std::size_t>(k)];
+
+    return result;
+}
+
+template <std::floating_point T, typename EvalPhi, typename EvalGrad>
+inline RayRootResult<T> find_ray_root_nearest(
+    EvalPhi&&            eval_phi,
+    EvalGrad&&           eval_grad,
+    std::span<const T>   x_s,
+    std::span<const T>   d,
+    cutcells::cell::type cell_type,
+    int                  tdim,
+    T                    h_local,
+    const RaySearchOptions<T>& opts)
+{
+    auto pos = find_ray_root_one_direction<T>(
+        eval_phi, eval_grad, x_s, d, cell_type, tdim, h_local, +1, opts);
+    auto neg = find_ray_root_one_direction<T>(
+        eval_phi, eval_grad, x_s, d, cell_type, tdim, h_local, -1, opts);
+
+    RayRootResult<T> out;
+    out.evaluations = pos.evaluations + neg.evaluations;
+    out.iterations = pos.iterations + neg.iterations;
+    out.gradient_degenerate = pos.gradient_degenerate && neg.gradient_degenerate;
+
+    out.pos_valid = pos.valid;
+    out.neg_valid = neg.valid;
+    out.pos_t = pos.t;
+    out.neg_t = neg.t;
+    out.ambiguous_two_sided = pos.valid && neg.valid;
+
+    if (pos.valid && neg.valid)
+        out = (std::abs(pos.t) <= std::abs(neg.t)) ? pos : neg;
+    else if (pos.valid)
+        out = pos;
+    else if (neg.valid)
+        out = neg;
+    else
+        out = (pos.residual <= neg.residual) ? pos : neg;
+
+    out.pos_valid = pos.valid;
+    out.neg_valid = neg.valid;
+    out.pos_t = pos.t;
+    out.neg_t = neg.t;
+    out.ambiguous_two_sided = pos.valid && neg.valid;
+    out.evaluations = pos.evaluations + neg.evaluations;
+    out.iterations = pos.iterations + neg.iterations;
+    out.gradient_degenerate = pos.gradient_degenerate && neg.gradient_degenerate;
+    return out;
+}
+
+/// Backward-compatible wrapper: now uses symmetric nearest-root search.
+template <std::floating_point T, typename EvalPhi, typename EvalGrad>
+inline RayRootResult<T> find_ray_root(
+    EvalPhi&&            eval_phi,
+    EvalGrad&&           eval_grad,
+    std::span<const T>   x_s,
+    std::span<const T>   d,
+    cutcells::cell::type cell_type,
+    int                  tdim,
+    T                    h_local = T(1),
+    T                    tol = T(1e-12))
+{
+    RaySearchOptions<T> opts;
+    opts.xtol = tol;
+    opts.ftol = tol;
+    opts.domain_tol = std::max<T>(tol, T(1e-10));
+    return find_ray_root_nearest<T>(
+        std::forward<EvalPhi>(eval_phi),
+        std::forward<EvalGrad>(eval_grad),
+        x_s, d, cell_type, tdim, h_local, opts);
+}
+
 } // namespace cutcells::cell::edge_root

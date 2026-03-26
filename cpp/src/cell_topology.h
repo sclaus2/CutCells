@@ -129,6 +129,22 @@ inline std::span<const std::array<int, 2>> edges(type cell_type)
 // Face definitions (for interface stitching, optional future use)
 //-----------------------------------------------------------------------------
 
+/// Tetrahedron: 4 faces (triangles), Basix face order.
+/// Stored with max 4 vertices per face, using -1 padding for triangles.
+/// Basix face ordering:
+///   Face 0: {1, 2, 3}
+///   Face 1: {0, 2, 3}
+///   Face 2: {0, 1, 3}
+///   Face 3: {0, 1, 2}
+inline constexpr std::array<std::array<int, 4>, 4> tetrahedron_faces = {{
+    {1, 2, 3, -1},
+    {0, 2, 3, -1},
+    {0, 1, 3, -1},
+    {0, 1, 2, -1}
+}};
+
+inline constexpr std::array<int, 4> tetrahedron_face_sizes = {3, 3, 3, 3};
+
 /// Hexahedron: 6 faces (quads), Basix face order.
 inline constexpr std::array<std::array<int, 4>, 6> hexahedron_faces = {{
     {0, 1, 2, 3},
@@ -181,6 +197,49 @@ inline constexpr int num_faces(type cell_type)
     case type::pyramid:       return 5;
     default:
         throw std::invalid_argument("Unknown cell type in num_faces");
+    }
+}
+
+//-----------------------------------------------------------------------------
+// Face accessor (returns span to face array for cell type)
+//-----------------------------------------------------------------------------
+
+/// Get faces for a given cell type.
+/// @param cell_type The cell type
+/// @return Span of face vertex arrays [v0, v1, v2, v3] per face (-1 = padding for triangular faces)
+inline std::span<const std::array<int, 4>> faces(type cell_type)
+{
+    switch (cell_type)
+    {
+    case type::tetrahedron:
+        return std::span(tetrahedron_faces);
+    case type::hexahedron:
+        return std::span(hexahedron_faces);
+    case type::prism:
+        return std::span(prism_faces);
+    case type::pyramid:
+        return std::span(pyramid_faces);
+    default:
+        throw std::invalid_argument("faces(): unsupported cell type (no face definitions)");
+    }
+}
+
+/// Get face vertex counts for a given cell type.
+/// Returns a span of ints, one per face, giving the number of vertices in that face.
+inline std::span<const int> face_vertex_counts(type cell_type)
+{
+    switch (cell_type)
+    {
+    case type::tetrahedron:
+        return std::span(tetrahedron_face_sizes);
+    case type::hexahedron:
+        return std::span(hexahedron_face_sizes);
+    case type::prism:
+        return std::span(prism_face_sizes);
+    case type::pyramid:
+        return std::span(pyramid_face_sizes);
+    default:
+        throw std::invalid_argument("face_vertex_counts(): unsupported cell type");
     }
 }
 

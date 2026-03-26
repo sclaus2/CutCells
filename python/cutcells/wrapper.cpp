@@ -18,18 +18,21 @@
 #include <memory>
 #include <optional>
 
-#include "../../cpp/src/cell_types.h"
-#include "../../cpp/src/cut_cell.h"
-#include "../../cpp/src/cut_mesh.h"
-#include "../../cpp/src/write_vtk.h"
-#include "../../cpp/src/mapping.h"
-#include "../../cpp/src/quadrature.h"
-#include "../../cpp/src/mesh_view.h"
-#include "../../cpp/src/level_set.h"
-#include "../../cpp/src/local_level_set.h"
-#include "../../cpp/src/iso_refine.h"
-#include "../../cpp/src/local_mesh.h"
-#include "../../cpp/src/edge_classification.h"
+#include <cutcells/cell_types.h>
+#include <cutcells/cut_cell.h>
+#include <cutcells/cut_mesh.h>
+#include <cutcells/cut_mesh_curved.h>
+#include <cutcells/write_vtk.h>
+#include <cutcells/mapping.h>
+#include <cutcells/quadrature.h>
+#include <cutcells/quadrature_curved.h>
+#include <cutcells/mesh_view.h>
+#include <cutcells/level_set.h>
+#include <cutcells/local_level_set.h>
+#include <cutcells/iso_refine.h>
+#include <cutcells/local_mesh.h>
+#include <cutcells/curved_mesh.h>
+#include <cutcells/edge_classification.h>
 
 namespace nb = nanobind;
 
@@ -534,9 +537,11 @@ void declare_float(nb::module_& m, std::string type)
       .def_prop_ro("gdim", [](const LocalMeshT& self) { return self.gdim; })
       .def_prop_ro("tdim", [](const LocalMeshT& self) { return self.tdim; })
       .def_prop_ro("parent_cell_id", [](const LocalMeshT& self) { return self.parent_cell_id; })
+      .def_prop_ro("n_level_sets", [](const LocalMeshT& self) { return self.n_level_sets; })
       .def("n_vertices", &LocalMeshT::n_vertices)
       .def("n_edges", &LocalMeshT::n_edges)
       .def("n_cells", &LocalMeshT::n_cells)
+      .def("n_faces", &LocalMeshT::n_faces)
       .def_prop_ro("vertex_x",
         [](const LocalMeshT& self) {
           return nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>(
@@ -569,50 +574,81 @@ void declare_float(nb::module_& m, std::string type)
         nb::rv_policy::reference_internal)
       .def_prop_ro("edge_state",
         [](const LocalMeshT& self) {
-          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
-            self.edge_state.data(), {self.edge_state.size()},
+          const std::size_t shape[2] = {
+            static_cast<std::size_t>(self.n_edges()),
+            static_cast<std::size_t>(self.n_level_sets)};
+          return nb::ndarray<const uint8_t, nb::numpy>(
+            self.edge_state.data(), 2, shape,
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("edge_cert",
+        [](const LocalMeshT& self) {
+          const std::size_t shape[2] = {
+            static_cast<std::size_t>(self.n_edges()),
+            static_cast<std::size_t>(self.n_level_sets)};
+          return nb::ndarray<const uint8_t, nb::numpy>(
+            self.edge_cert.data(), 2, shape,
             nb::cast(self, nb::rv_policy::reference));
         },
         nb::rv_policy::reference_internal)
       .def_prop_ro("edge_root_vertex",
         [](const LocalMeshT& self) {
-          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
-            self.edge_root_vertex.data(), {self.edge_root_vertex.size()},
+          const std::size_t shape[2] = {
+            static_cast<std::size_t>(self.n_edges()),
+            static_cast<std::size_t>(self.n_level_sets)};
+          return nb::ndarray<const int32_t, nb::numpy>(
+            self.edge_root_vertex.data(), 2, shape,
             nb::cast(self, nb::rv_policy::reference));
         },
         nb::rv_policy::reference_internal)
       .def_prop_ro("edge_root_parameter",
         [](const LocalMeshT& self) {
-          return nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>(
-            self.edge_root_parameter.data(), {self.edge_root_parameter.size()},
+          const std::size_t shape[2] = {
+            static_cast<std::size_t>(self.n_edges()),
+            static_cast<std::size_t>(self.n_level_sets)};
+          return nb::ndarray<const T, nb::numpy>(
+            self.edge_root_parameter.data(), 2, shape,
             nb::cast(self, nb::rv_policy::reference));
         },
         nb::rv_policy::reference_internal)
       .def_prop_ro("edge_root_iterations",
         [](const LocalMeshT& self) {
-          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
-            self.edge_root_iterations.data(), {self.edge_root_iterations.size()},
+          const std::size_t shape[2] = {
+            static_cast<std::size_t>(self.n_edges()),
+            static_cast<std::size_t>(self.n_level_sets)};
+          return nb::ndarray<const int32_t, nb::numpy>(
+            self.edge_root_iterations.data(), 2, shape,
             nb::cast(self, nb::rv_policy::reference));
         },
         nb::rv_policy::reference_internal)
       .def_prop_ro("edge_root_evaluations",
         [](const LocalMeshT& self) {
-          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
-            self.edge_root_evaluations.data(), {self.edge_root_evaluations.size()},
+          const std::size_t shape[2] = {
+            static_cast<std::size_t>(self.n_edges()),
+            static_cast<std::size_t>(self.n_level_sets)};
+          return nb::ndarray<const int32_t, nb::numpy>(
+            self.edge_root_evaluations.data(), 2, shape,
             nb::cast(self, nb::rv_policy::reference));
         },
         nb::rv_policy::reference_internal)
       .def_prop_ro("edge_root_converged",
         [](const LocalMeshT& self) {
-          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
-            self.edge_root_converged.data(), {self.edge_root_converged.size()},
+          const std::size_t shape[2] = {
+            static_cast<std::size_t>(self.n_edges()),
+            static_cast<std::size_t>(self.n_level_sets)};
+          return nb::ndarray<const uint8_t, nb::numpy>(
+            self.edge_root_converged.data(), 2, shape,
             nb::cast(self, nb::rv_policy::reference));
         },
         nb::rv_policy::reference_internal)
       .def_prop_ro("edge_root_residual",
         [](const LocalMeshT& self) {
-          return nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>(
-            self.edge_root_residual.data(), {self.edge_root_residual.size()},
+          const std::size_t shape[2] = {
+            static_cast<std::size_t>(self.n_edges()),
+            static_cast<std::size_t>(self.n_level_sets)};
+          return nb::ndarray<const T, nb::numpy>(
+            self.edge_root_residual.data(), 2, shape,
             nb::cast(self, nb::rv_policy::reference));
         },
         nb::rv_policy::reference_internal)
@@ -622,7 +658,269 @@ void declare_float(nb::module_& m, std::string type)
             self.cell_domain.data(), {self.cell_domain.size()},
             nb::cast(self, nb::rv_policy::reference));
         },
+        nb::rv_policy::reference_internal)
+      // ---- zero entities / topology caches ----
+      .def_prop_ro("zero_entity_dim",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_entity_dim.data(), {self.zero_entity_dim.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_entity_zero_mask",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const uint64_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_entity_zero_mask.data(), {self.zero_entity_zero_mask.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_entity_vertices",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_entity_vertices.data(), {self.zero_entity_vertices.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_entity_offsets",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_entity_offsets.data(), {self.zero_entity_offsets.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_entity_parent_cell",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_entity_parent_cell.data(), {self.zero_entity_parent_cell.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_entity_parent_dim",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_entity_parent_dim.data(), {self.zero_entity_parent_dim.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_entity_parent_id",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_entity_parent_id.data(), {self.zero_entity_parent_id.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_entity_is_owned",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_entity_is_owned.data(), {self.zero_entity_is_owned.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_entity_endpoint_v0",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_entity_endpoint_v0.data(), {self.zero_entity_endpoint_v0.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_entity_endpoint_v1",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_entity_endpoint_v1.data(), {self.zero_entity_endpoint_v1.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_face_edge_vertices",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_face_edge_vertices.data(), {self.zero_face_edge_vertices.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_face_edge_offsets",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_face_edge_offsets.data(), {self.zero_face_edge_offsets.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("curved_zero_ref_nodes",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.curved_zero_ref_nodes.data(), {self.curved_zero_ref_nodes.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("curved_zero_offsets",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.curved_zero_offsets.data(), {self.curved_zero_offsets.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("curved_zero_converged",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.curved_zero_converged.data(), {self.curved_zero_converged.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("curved_zero_status",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.curved_zero_status.data(), {self.curved_zero_status.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_chain_offsets",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_chain_offsets.data(), {self.zero_chain_offsets.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_chain_entity_ids",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_chain_entity_ids.data(), {self.zero_chain_entity_ids.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_chain_entity_reversed",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_chain_entity_reversed.data(), {self.zero_chain_entity_reversed.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_patch_offsets",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_patch_offsets.data(), {self.zero_patch_offsets.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_patch_entity_ids",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_patch_entity_ids.data(), {self.zero_patch_entity_ids.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def_prop_ro("zero_patch_entity_oriented",
+        [](const LocalMeshT& self) {
+          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.zero_patch_entity_oriented.data(), {self.zero_patch_entity_oriented.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        }, nb::rv_policy::reference_internal)
+      .def("n_zero_entities", &LocalMeshT::n_zero_entities)
+      .def("n_zero_chains", &LocalMeshT::n_zero_chains)
+      .def("n_zero_patches", &LocalMeshT::n_zero_patches)
+      // ---- straight interface entities ----
+      .def_prop_ro("iface_vertices",
+        [](const LocalMeshT& self) {
+          if (self.iface_vertices.empty())
+            return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              nullptr, {std::size_t(0)}, nb::handle());
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.iface_vertices.data(), {self.iface_vertices.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("iface_offsets",
+        [](const LocalMeshT& self) {
+          if (self.iface_offsets.empty())
+            return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              nullptr, {std::size_t(0)}, nb::handle());
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.iface_offsets.data(), {self.iface_offsets.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("iface_level_set_id",
+        [](const LocalMeshT& self) {
+          if (self.iface_level_set_id.empty())
+            return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              nullptr, {std::size_t(0)}, nb::handle());
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.iface_level_set_id.data(), {self.iface_level_set_id.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("iface_parent_cell",
+        [](const LocalMeshT& self) {
+          if (self.iface_parent_cell.empty())
+            return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              nullptr, {std::size_t(0)}, nb::handle());
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.iface_parent_cell.data(), {self.iface_parent_cell.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def("n_iface_entities", &LocalMeshT::n_iface_entities)
+      // ---- curved interface entity cache ----
+      .def_prop_ro("curved_iface_ref_nodes",
+        [](const LocalMeshT& self) {
+          if (self.curved_iface_ref_nodes.empty())
+            return nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              nullptr, {std::size_t(0)}, nb::handle());
+          return nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.curved_iface_ref_nodes.data(),
+            {self.curved_iface_ref_nodes.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("curved_iface_offsets",
+        [](const LocalMeshT& self) {
+          if (self.curved_iface_offsets.empty())
+            return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              nullptr, {std::size_t(0)}, nb::handle());
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.curved_iface_offsets.data(),
+            {self.curved_iface_offsets.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("curved_iface_converged",
+        [](const LocalMeshT& self) {
+          if (self.curved_iface_converged.empty())
+            return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              nullptr, {std::size_t(0)}, nb::handle());
+          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.curved_iface_converged.data(),
+            {self.curved_iface_converged.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("curved_iface_status",
+        [](const LocalMeshT& self) {
+          if (self.curved_iface_status.empty())
+            return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+              nullptr, {std::size_t(0)}, nb::handle());
+          return nb::ndarray<const uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.curved_iface_status.data(),
+            {self.curved_iface_status.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      // ---- curved geometry cache ----
+      .def_prop_ro("curved_geometry_order",
+        [](const LocalMeshT& self) { return self.curved_geometry_order; })
+      .def_prop_ro("curved_fallback_count",
+        [](const LocalMeshT& self) { return self.curved_fallback_count; })
+      .def_prop_ro("curved_ambiguous_count",
+        [](const LocalMeshT& self) { return self.curved_ambiguous_count; })
+      .def_prop_ro("curved_failed_count",
+        [](const LocalMeshT& self) { return self.curved_failed_count; });
+
+    // ---- BernsteinCell and lagrange_to_bernstein_cell ----
+    using BernsteinCellT = cutcells::BernsteinCell<T>;
+    const std::string bc_name = "BernsteinCell_" + type;
+    nb::class_<BernsteinCellT>(m, bc_name.c_str(), "Bernstein polynomial on a reference cell")
+      .def(nb::init<>())
+      .def_prop_ro("cell_type", [](const BernsteinCellT& self) { return self.cell_type; })
+      .def_prop_ro("degree", [](const BernsteinCellT& self) { return self.degree; })
+      .def_prop_ro("tdim", [](const BernsteinCellT& self) { return self.tdim; })
+      .def_prop_ro("coeffs",
+        [](const BernsteinCellT& self) {
+          return nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.coeffs.data(), {self.coeffs.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
         nb::rv_policy::reference_internal);
+
+    const std::string ltb_name = "lagrange_to_bernstein_cell_" + type;
+    m.def(
+      ltb_name.c_str(),
+      [](cell::type cell_type, int order,
+         const ndarray1<T>& lagrange_values) {
+        return cutcells::make_bernstein_cell<T>(
+          cell_type, order,
+          std::span<const T>(lagrange_values.data(), lagrange_values.size()));
+      },
+      nb::arg("cell_type"),
+      nb::arg("order"),
+      nb::arg("lagrange_values"),
+      "Convert Lagrange nodal values to a BernsteinCell.");
 
     const std::string init_name = "init_local_mesh_from_template_" + type;
     m.def(
@@ -763,6 +1061,117 @@ void declare_float(nb::module_& m, std::string type)
       nb::arg("tol") = static_cast<T>(1e-14),
       nb::arg("backend") = LocalLevelSetBackend::nodal_signs,
       "Decompose a local mesh into phi<0 and phi>0 fragments using cached roots.");
+
+    const std::string build_iface_name = "build_interface_entities_" + type;
+    const std::string build_zero_name = "build_zero_entities_" + type;
+    m.def(
+      build_zero_name.c_str(),
+      [](LocalMeshT& mesh, int level_set_id) {
+        nb::gil_scoped_release release;
+        cutcells::build_zero_entities<T>(mesh, level_set_id);
+      },
+      nb::arg("mesh"),
+      nb::arg("level_set_id") = 0,
+      "Build straight zero entities after decomposition.");
+
+    m.def(
+      build_iface_name.c_str(),
+      [](LocalMeshT& mesh, int level_set_id) {
+        nb::gil_scoped_release release;
+        cutcells::build_interface_entities<T>(mesh, level_set_id);
+      },
+      nb::arg("mesh"),
+      nb::arg("level_set_id") = 0,
+      "Build straight interface entities after decomposition.");
+
+    const std::string curve_iface_name = "curve_interface_entities_" + type;
+    const std::string curve_zero_name = "curve_zero_entities_" + type;
+    m.def(
+      curve_zero_name.c_str(),
+      [](LocalMeshT& mesh,
+         const LevelSetT& level_set,
+         int level_set_id,
+         int geom_order,
+         T tol,
+         LocalLevelSetBackend backend) {
+        const LocalLevelSetBackend resolved_backend =
+          (backend == LocalLevelSetBackend::nodal_signs && level_set.has_value())
+            ? LocalLevelSetBackend::analytical_callbacks
+            : backend;
+        nb::gil_scoped_release release;
+        cutcells::curve_zero_entities_with_backend<T, int>(
+          mesh, level_set, resolved_backend, level_set_id, geom_order, tol);
+      },
+      nb::arg("mesh"),
+      nb::arg("level_set"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("geom_order") = 2,
+      nb::arg("tol") = static_cast<T>(1e-12),
+      nb::arg("backend") = LocalLevelSetBackend::nodal_signs,
+      "Curve zero entities by projecting high-order nodes onto the isosurface.");
+
+    m.def(
+      curve_iface_name.c_str(),
+      [](LocalMeshT& mesh,
+         const LevelSetT& level_set,
+         int level_set_id,
+         int geom_order,
+         T tol,
+         LocalLevelSetBackend backend) {
+        const LocalLevelSetBackend resolved_backend =
+          (backend == LocalLevelSetBackend::nodal_signs && level_set.has_value())
+            ? LocalLevelSetBackend::analytical_callbacks
+            : backend;
+        nb::gil_scoped_release release;
+        cutcells::curve_interface_entities_with_backend<T, int>(
+          mesh, level_set, resolved_backend, level_set_id, geom_order, tol);
+      },
+      nb::arg("mesh"),
+      nb::arg("level_set"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("geom_order") = 2,
+      nb::arg("tol") = static_cast<T>(1e-12),
+      nb::arg("backend") = LocalLevelSetBackend::nodal_signs,
+      "Curve interface entities by projecting GL nodes onto the isosurface.");
+
+    const std::string build_chain_name = "build_zero_chains_" + type;
+    m.def(
+      build_chain_name.c_str(),
+      [](LocalMeshT& mesh, uint64_t zero_mask) {
+        nb::gil_scoped_release release;
+        cutcells::build_zero_chains<T>(mesh, zero_mask);
+      },
+      nb::arg("mesh"),
+      nb::arg("zero_mask"),
+      "Build connected chains of dim-1 zero entities for the given zero mask.");
+
+    const std::string build_patch_name = "build_zero_patches_" + type;
+    m.def(
+      build_patch_name.c_str(),
+      [](LocalMeshT& mesh, uint64_t zero_mask) {
+        nb::gil_scoped_release release;
+        cutcells::build_zero_patches<T>(mesh, zero_mask);
+      },
+      nb::arg("mesh"),
+      nb::arg("zero_mask"),
+      "Build connected patches of dim-2 zero entities for the given zero mask.");
+
+    const std::string assign_zero_owner_name = "assign_zero_entity_ownership_" + type;
+    m.def(
+      assign_zero_owner_name.c_str(),
+      [](nb::list meshes_list, uint64_t zero_mask) {
+        std::vector<LocalMesh<T>*> ptrs;
+        ptrs.reserve(meshes_list.size());
+        for (auto item : meshes_list)
+          ptrs.push_back(&nb::cast<LocalMesh<T>&>(item));
+        nb::gil_scoped_release release;
+        cutcells::assign_zero_entity_ownership<T>(
+          std::span<LocalMesh<T>*>(ptrs.data(), ptrs.size()),
+          zero_mask);
+      },
+      nb::arg("local_meshes"),
+      nb::arg("zero_mask"),
+      "Assign deterministic quadrature ownership for zero entities sharing a background carrier.");
 
     const std::string root_segment_name = "find_root_on_segment_" + type;
     m.def(
@@ -1283,8 +1692,312 @@ void declare_float(nb::module_& m, std::string type)
       "Map reference-space quadrature points to physical space.\n"
       "Returns a flat numpy array of shape (total_num_points * 3,).");
 
+    // ---- append_interface_quadrature_curved ----
+    const std::string ai_curved_name = "append_interface_quadrature_curved_" + type;
+    m.def(ai_curved_name.c_str(),
+      [](const LocalMeshT& mesh, int zero_entity_id, int order,
+         quadrature::QuadratureRules<T>& rules) {
+          nb::gil_scoped_release release;
+          quadrature::append_interface_quadrature_curved<T>(
+              mesh, zero_entity_id, order, rules);
+      },
+      nb::arg("mesh"), nb::arg("zero_entity_id"), nb::arg("order"), nb::arg("rules"),
+      "Append curved Pk quadrature for one zero entity to rules.");
+
+    // ---- append_volume_quadrature_curved ----
+    const std::string av_curved_name = "append_volume_quadrature_curved_" + type;
+    m.def(av_curved_name.c_str(),
+      [](const LocalMeshT& mesh, int cell_id, int level_set_id, int order,
+         quadrature::QuadratureRules<T>& rules) {
+          nb::gil_scoped_release release;
+          int fallback_count = 0;
+          quadrature::append_volume_quadrature_curved<T>(
+              mesh, cell_id, level_set_id, order, rules, fallback_count);
+      },
+      nb::arg("mesh"), nb::arg("cell_id"), nb::arg("level_set_id"),
+      nb::arg("order"), nb::arg("rules"),
+      "Append curved volume quadrature for one inside sub-cell to rules.");
+
+    // ---- make_quadrature_curved ----
+    const std::string mqc_name = "make_quadrature_curved_" + type;
+    m.def(mqc_name.c_str(),
+      [](const LocalMeshT& mesh, int level_set_id, int order) {
+          quadrature::QuadratureRules<T> vol_rules, iface_rules;
+          {
+              nb::gil_scoped_release release;
+              quadrature::make_quadrature_curved<T>(
+                  mesh, level_set_id, order, vol_rules, iface_rules);
+          }
+          return nb::make_tuple(std::move(vol_rules), std::move(iface_rules));
+      },
+      nb::arg("mesh"), nb::arg("level_set_id"), nb::arg("order"),
+      "Build curved quadrature for all inside sub-cells and interface entities.\n"
+      "Returns (volume_rules, interface_rules) as a tuple.");
+
+    const std::string mqc_phys_name = "make_quadrature_curved_physical_points_" + type;
+    m.def(mqc_phys_name.c_str(),
+      [](const LocalMeshT& mesh, int level_set_id, int order) {
+          quadrature::QuadratureRules<T> vol_rules, iface_rules;
+          std::vector<T> vol_phys_points, iface_phys_points;
+          {
+              nb::gil_scoped_release release;
+              quadrature::make_quadrature_curved<T>(
+                  mesh, level_set_id, order,
+                  vol_rules, vol_phys_points,
+                  iface_rules, iface_phys_points);
+          }
+          return nb::make_tuple(
+              std::move(vol_rules),
+              as_nbarray(std::move(vol_phys_points)),
+              std::move(iface_rules),
+              as_nbarray(std::move(iface_phys_points)));
+      },
+      nb::arg("mesh"), nb::arg("level_set_id"), nb::arg("order"),
+      "Build curved quadrature and return the matching physical quadrature points.\n"
+      "Returns (volume_rules, volume_physical_points, interface_rules, interface_physical_points).");
+
+    // ---- CurvedGlobalMesh binding ----
+    using CurvedMeshT = mesh::CurvedGlobalMesh<T>;
+    const std::string cgm_name = "CurvedGlobalMesh_" + type;
+
+    nb::class_<CurvedMeshT>(m, cgm_name.c_str())
+      .def(nb::init<>())
+      .def_prop_ro("gdim", [](const CurvedMeshT& self) { return self.gdim; })
+      .def_prop_ro("geom_order", [](const CurvedMeshT& self) { return self.geom_order; })
+      .def_prop_ro("level_set_id", [](const CurvedMeshT& self) { return self.level_set_id; })
+      .def_prop_ro("n_fallback_nodes", [](const CurvedMeshT& self) { return self.n_fallback_nodes; })
+      .def("n_vertices", &CurvedMeshT::n_vertices)
+      .def("n_cells", &CurvedMeshT::n_cells)
+      .def_prop_ro(
+        "vertex_coords",
+        [](const CurvedMeshT& self) {
+          return nb::ndarray<const T, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.vertex_coords.data(), {self.vertex_coords.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro(
+        "connectivity",
+        [](const CurvedMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.connectivity.data(), {self.connectivity.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro(
+        "offsets",
+        [](const CurvedMeshT& self) {
+          return nb::ndarray<const int32_t, nb::numpy, nb::shape<-1>, nb::c_contig>(
+            self.offsets.data(), {self.offsets.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal);
+
+    // ---- CurvedCutMeshResult binding ----
+    using CurvedCutResultT = mesh::CurvedCutMeshResult<T>;
+    const std::string ccmr_name = "CurvedCutMeshResult_" + type;
+    nb::class_<CurvedCutResultT>(m, ccmr_name.c_str())
+      .def(nb::init<>())
+      .def_prop_ro(
+        "inside",
+        [](const CurvedCutResultT& self) -> const CurvedMeshT& { return self.inside; },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro(
+        "interface",
+        [](const CurvedCutResultT& self) -> const CurvedMeshT& { return self.interface; },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro(
+        "outside",
+        [](const CurvedCutResultT& self) -> const CurvedMeshT& { return self.outside; },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro(
+        "inside_vis",
+        [](const CurvedCutResultT& self) -> const mesh::CutMesh<T>& { return self.inside_vis; },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro(
+        "interface_vis",
+        [](const CurvedCutResultT& self) -> const mesh::CutMesh<T>& { return self.interface_vis; },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro(
+        "outside_vis",
+        [](const CurvedCutResultT& self) -> const mesh::CutMesh<T>& { return self.outside_vis; },
+        nb::rv_policy::reference_internal)
+      .def("n_local_meshes", [](const CurvedCutResultT& self) {
+          return static_cast<int>(self.local_meshes.size());
+        })
+      .def(
+        "local_mesh",
+        [](CurvedCutResultT& self, int i) -> LocalMeshT& {
+          if (i < 0 || i >= static_cast<int>(self.local_meshes.size()))
+            throw std::out_of_range("CurvedCutMeshResult.local_mesh: index out of range");
+          return self.local_meshes[static_cast<std::size_t>(i)];
+        },
+        nb::arg("i"),
+        nb::rv_policy::reference_internal)
+      .def_prop_ro("n_parent_inside", [](const CurvedCutResultT& self) { return self.n_parent_inside; })
+      .def_prop_ro("n_parent_outside", [](const CurvedCutResultT& self) { return self.n_parent_outside; })
+      .def_prop_ro("n_parent_intersected", [](const CurvedCutResultT& self) { return self.n_parent_intersected; });
+
+    const std::string ccm_cut_name = "cut_vtk_mesh_curved_" + type;
+    m.def(
+      ccm_cut_name.c_str(),
+      [](const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& points,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offset,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& vtk_type,
+         nb::callable value_callable,
+         nb::object grad_callable_obj,
+         const std::string& backend,
+         int geom_order,
+         int vis_subdivision,
+         T tol)
+      {
+        LevelSetT level_set;
+        level_set.gdim = 3;
+        level_set.degree = -1;
+        level_set.kind = LevelSetT::Kind::callable;
+        level_set.owner = make_owner_from_objects(value_callable, grad_callable_obj);
+        level_set.value_fn = [value_callable](const T* x, int cell_id) -> T
+        {
+          nb::gil_scoped_acquire gil;
+          nb::ndarray<const T, nb::numpy> x_arr(x, {static_cast<std::size_t>(3)}, nb::handle());
+          try
+          {
+            return nb::cast<T>(value_callable(x_arr, cell_id));
+          }
+          catch (const nb::python_error&)
+          {
+            return nb::cast<T>(value_callable(x_arr));
+          }
+        };
+        if (!grad_callable_obj.is_none())
+        {
+          nb::callable grad_callable = nb::cast<nb::callable>(grad_callable_obj);
+          level_set.grad_fn = [grad_callable](const T* x, int cell_id, T* g) -> void
+          {
+            nb::gil_scoped_acquire gil;
+            nb::ndarray<const T, nb::numpy> x_arr(
+              x, {static_cast<std::size_t>(3)}, nb::handle());
+            nb::object result;
+            try
+            {
+              result = grad_callable(x_arr, cell_id);
+            }
+            catch (const nb::python_error&)
+            {
+              result = grad_callable(x_arr);
+            }
+
+            auto grad_arr = nb::cast<ndarray1<T>>(result);
+            const T* grad_ptr = grad_arr.data();
+            const std::size_t n = std::min<std::size_t>(3, grad_arr.size());
+            for (std::size_t i = 0; i < n; ++i)
+              g[i] = grad_ptr[i];
+            for (std::size_t i = n; i < 3; ++i)
+              g[i] = T(0);
+          };
+        }
+
+        nb::gil_scoped_release release;
+        return mesh::cut_vtk_mesh_curved<T>(
+          std::span<const T>(points.data(), points.size()),
+          std::span<const int>(connectivity.data(), connectivity.size()),
+          std::span<const int>(offset.data(), offset.size()),
+          std::span<const int>(vtk_type.data(), vtk_type.size()),
+          level_set,
+          geom_order,
+          backend,
+          vis_subdivision,
+          tol);
+      },
+      nb::arg("points"),
+      nb::arg("connectivity"),
+      nb::arg("offset"),
+      nb::arg("vtk_type"),
+      nb::arg("f"),
+      nb::arg("grad") = nb::none(),
+      nb::arg("backend") = "bernstein",
+      nb::arg("geom_order") = 4,
+      nb::arg("vis_subdivision") = 3,
+      nb::arg("tol") = static_cast<T>(1e-12),
+      "Whole-mesh curved cut pipeline using callable f(x) and optional grad(x).");
+
+    // ---- assemble_curved_interface_mesh (convenience: builds cache if needed) ----
+    const std::string aci_name = "assemble_curved_interface_mesh_" + type;
+    m.def(
+      aci_name.c_str(),
+      [](nb::list meshes_list,
+         const LevelSetT& level_set,
+         LocalLevelSetBackend backend,
+         int level_set_id,
+         int geom_order,
+         T tol)
+      {
+        std::vector<LocalMesh<T>*> ptrs;
+        ptrs.reserve(meshes_list.size());
+        for (auto item : meshes_list)
+          ptrs.push_back(&nb::cast<LocalMesh<T>&>(item));
+        const LocalLevelSetBackend resolved_backend =
+          (backend == LocalLevelSetBackend::nodal_signs && level_set.has_value())
+            ? LocalLevelSetBackend::analytical_callbacks
+            : backend;
+        nb::gil_scoped_release release;
+        return mesh::assemble_curved_interface_mesh<T, int>(
+          std::span<LocalMesh<T>*>(ptrs.data(), ptrs.size()),
+          level_set, resolved_backend, level_set_id, geom_order, tol);
+      },
+      nb::arg("local_meshes"),
+      nb::arg("level_set"),
+      nb::arg("backend") = LocalLevelSetBackend::nodal_signs,
+      nb::arg("level_set_id") = 0,
+      nb::arg("geom_order") = 2,
+      nb::arg("tol") = static_cast<T>(1e-12),
+      "Assemble curved interface mesh. Builds interface entity cache if not done.");
+
+    // ---- assemble_curved_interface_mesh_from_cache (no level set needed) ----
+    const std::string aci_cache_name = "assemble_curved_interface_mesh_from_cache_" + type;
+    m.def(
+      aci_cache_name.c_str(),
+      [](nb::list meshes_list, int level_set_id, int geom_order)
+      {
+        std::vector<const LocalMesh<T>*> ptrs;
+        ptrs.reserve(meshes_list.size());
+        for (auto item : meshes_list)
+          ptrs.push_back(&nb::cast<const LocalMesh<T>&>(item));
+        nb::gil_scoped_release release;
+        return mesh::assemble_curved_interface_mesh<T>(
+          std::span<const LocalMesh<T>*>(ptrs.data(), ptrs.size()),
+          level_set_id, geom_order);
+      },
+      nb::arg("local_meshes"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("geom_order") = 2,
+      "Assemble curved interface mesh directly from the iface entity cache.");
+
+
+    const std::string acv_name = "assemble_curved_volume_mesh_" + type;
+    m.def(
+      acv_name.c_str(),
+      [](nb::list meshes_list, int level_set_id, int geom_order)
+      {
+        std::vector<const LocalMesh<T>*> ptrs;
+        ptrs.reserve(meshes_list.size());
+        for (auto item : meshes_list)
+          ptrs.push_back(&nb::cast<const LocalMesh<T>&>(item));
+        nb::gil_scoped_release release;
+        return mesh::assemble_curved_volume_mesh<T>(
+          std::span<const LocalMesh<T>*>(ptrs.data(), ptrs.size()),
+          level_set_id, geom_order);
+      },
+      nb::arg("local_meshes"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("geom_order") = 2,
+      "Assemble curved volume mesh (phi<0 sub-cells) from decomposed LocalMeshes.");
+
     if constexpr (std::is_same_v<T, double>)
     {
+      m.attr("BernsteinCell") = m.attr(bc_name.c_str());
+      m.attr("lagrange_to_bernstein_cell") = m.attr(ltb_name.c_str());
       m.attr("LocalMesh") = m.attr(lm_name.c_str());
       m.attr("init_local_mesh_from_template") = m.attr(init_name.c_str());
       m.attr("init_local_mesh_from_cell") = m.attr(init_cell_name.c_str());
@@ -1292,6 +2005,23 @@ void declare_float(nb::module_& m, std::string type)
       m.attr("compute_roots_on_local_mesh") = m.attr(roots_name.c_str());
       m.attr("decompose_local_mesh") = m.attr(decompose_name.c_str());
       m.attr("find_root_on_segment") = m.attr(root_segment_name.c_str());
+      m.attr("CurvedGlobalMesh") = m.attr(cgm_name.c_str());
+      m.attr("CurvedCutMeshResult") = m.attr(ccmr_name.c_str());
+      m.attr("cut_vtk_mesh_curved") = m.attr(ccm_cut_name.c_str());
+      m.attr("assemble_curved_interface_mesh") = m.attr(aci_name.c_str());
+      m.attr("assemble_curved_interface_mesh_from_cache") = m.attr(aci_cache_name.c_str());
+      m.attr("assemble_curved_volume_mesh") = m.attr(acv_name.c_str());
+      m.attr("build_zero_entities") = m.attr(build_zero_name.c_str());
+      m.attr("build_interface_entities") = m.attr(build_iface_name.c_str());
+      m.attr("curve_zero_entities") = m.attr(curve_zero_name.c_str());
+      m.attr("curve_interface_entities") = m.attr(curve_iface_name.c_str());
+      m.attr("build_zero_chains") = m.attr(build_chain_name.c_str());
+      m.attr("build_zero_patches") = m.attr(build_patch_name.c_str());
+      m.attr("assign_zero_entity_ownership") = m.attr(assign_zero_owner_name.c_str());
+      m.attr("append_interface_quadrature_curved") = m.attr(ai_curved_name.c_str());
+      m.attr("append_volume_quadrature_curved")    = m.attr(av_curved_name.c_str());
+      m.attr("make_quadrature_curved")             = m.attr(mqc_name.c_str());
+      m.attr("make_quadrature_curved_physical_points") = m.attr(mqc_phys_name.c_str());
     }
 }
 

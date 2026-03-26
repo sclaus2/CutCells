@@ -4,6 +4,10 @@ cmake_minimum_required(VERSION 3.21)
 # Set project name and version number
 project(CutCells VERSION "0.2.0" LANGUAGES CXX C)
 
+if(DEFINED ENV{CONDA_PREFIX} AND NOT "$ENV{CONDA_PREFIX}" STREQUAL "")
+  list(PREPEND CMAKE_PREFIX_PATH "$ENV{CONDA_PREFIX}")
+endif()
+
 # Use C++20
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -70,4 +74,3 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/CutCellsConfig.cmake ${CMAKE_CURRENT_B
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cutcells COMPONENT Development)
 install(EXPORT CutCellsTargets FILE CutCellsTargets.cmake NAMESPACE CUTCELLS::
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cutcells)
-

@@ -12,6 +12,7 @@
 #include <vector>
 #include <concepts>
 #include <array>
+#include <algorithm>
 #include <stdexcept>
 
 namespace cutcells::cell
@@ -103,15 +104,13 @@ void complete_from_physical(CutCell<T>& cut_cell);
 
 /// @brief Affine push-forward for a batch of n reference points.
 ///
-/// Maps X_ref (flat, n*gdim) from parent reference space to physical space
-/// x_phys (flat, n*gdim) via  x = x0 + J * X  where J is derived from
-/// parent_vertex_coords and parent_type in VTK vertex ordering.
+/// Maps X_ref (flat, n*tdim) from parent reference space to physical space
+/// x_phys (flat, n*gdim) via the parent-cell P1 mapping.
 ///
 /// @param parent_type         cell type of the parent element
 /// @param parent_vertex_coords flat physical vertex coords in VTK ordering
-/// @param gdim                geometric / topological dimension (must equal
-///                            the topological dimension of parent_type)
-/// @param X_ref               flat input: n * gdim reference coordinates
+/// @param gdim                geometric dimension of the embedding space
+/// @param X_ref               flat input: n * tdim reference coordinates
 /// @param x_phys              flat output: n * gdim physical coordinates
 template <std::floating_point T>
 void push_forward_affine(type parent_type,
@@ -136,5 +135,338 @@ void pull_back_affine(type parent_type,
                       int gdim,
                       std::span<const T> x_phys,
                       std::span<T> X_ref);
+
+/// @brief Push-forward one reference point to physical space using P1 shape
+/// functions on the parent reference cell.
+///
+/// Works for simplex and non-simplex cells (quadrilateral/hexahedron/prism/
+/// pyramid) using the corresponding first-order reference basis.
+template <std::floating_point T>
+inline void ref_to_phys_affine(type parent_type,
+                               std::span<const T> parent_vertex_coords,
+                               int gdim,
+                               int tdim,
+                               const T* x_ref,
+                               T* x_phys);
+
+/// @brief Compute Jacobian J = d x_phys / d x_ref at one reference point.
+///
+/// J is stored row-major with shape (gdim, tdim):
+///   J[d * tdim + k] = d x_d / d xi_k.
+template <std::floating_point T>
+inline void compute_jacobian(type parent_type,
+                             std::span<const T> parent_vertex_coords,
+                             int gdim,
+                             int tdim,
+                             const T* x_ref,
+                             T* J);
+
+namespace detail
+{
+template <std::floating_point T>
+inline void eval_p1_shape(type ct, std::span<const T> x_ref, std::span<T> N)
+{
+    const int n_vertices = get_num_vertices(ct);
+    if (static_cast<int>(N.size()) != n_vertices)
+        throw std::invalid_argument("eval_p1_shape: invalid N size");
+
+    std::fill(N.begin(), N.end(), T(0));
+
+    switch (ct)
+    {
+    case type::interval:
+    {
+        const T x = x_ref[0];
+        N[0] = T(1) - x;
+        N[1] = x;
+        return;
+    }
+    case type::triangle:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        N[0] = T(1) - x - y;
+        N[1] = x;
+        N[2] = y;
+        return;
+    }
+    case type::tetrahedron:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        const T z = x_ref[2];
+        N[0] = T(1) - x - y - z;
+        N[1] = x;
+        N[2] = y;
+        N[3] = z;
+        return;
+    }
+    case type::quadrilateral:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        N[0] = (T(1) - x) * (T(1) - y);
+        N[1] = x * (T(1) - y);
+        N[2] = x * y;
+        N[3] = (T(1) - x) * y;
+        return;
+    }
+    case type::hexahedron:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        const T z = x_ref[2];
+        const T mx = T(1) - x;
+        const T my = T(1) - y;
+        const T mz = T(1) - z;
+        N[0] = mx * my * mz;
+        N[1] = x * my * mz;
+        N[2] = x * y * mz;
+        N[3] = mx * y * mz;
+        N[4] = mx * my * z;
+        N[5] = x * my * z;
+        N[6] = x * y * z;
+        N[7] = mx * y * z;
+        return;
+    }
+    case type::prism:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        const T z = x_ref[2];
+        const T a = T(1) - x - y;
+        N[0] = a * (T(1) - z);
+        N[1] = x * (T(1) - z);
+        N[2] = y * (T(1) - z);
+        N[3] = a * z;
+        N[4] = x * z;
+        N[5] = y * z;
+        return;
+    }
+    case type::pyramid:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        const T z = x_ref[2];
+        const T r = T(1) - z;
+        if (r <= T(1e-12))
+        {
+            N[0] = T(0);
+            N[1] = T(0);
+            N[2] = T(0);
+            N[3] = T(0);
+            N[4] = T(1);
+            return;
+        }
+        const T inv_r = T(1) / r;
+        const T xy_r = x * y * inv_r;
+        N[0] = r - x - y + xy_r;
+        N[1] = x - xy_r;
+        N[2] = xy_r;
+        N[3] = y - xy_r;
+        N[4] = z;
+        return;
+    }
+    default:
+        throw std::invalid_argument("eval_p1_shape: unsupported parent cell type");
+    }
+}
+
+template <std::floating_point T>
+inline void eval_p1_shape_grad(type ct, std::span<const T> x_ref, std::span<T> dN)
+{
+    const int tdim = get_tdim(ct);
+    const int n_vertices = get_num_vertices(ct);
+    if (static_cast<int>(dN.size()) != n_vertices * tdim)
+        throw std::invalid_argument("eval_p1_shape_grad: invalid dN size");
+
+    std::fill(dN.begin(), dN.end(), T(0));
+
+    auto set_grad = [&](int i, int k, T val)
+    {
+        dN[static_cast<std::size_t>(i * tdim + k)] = val;
+    };
+
+    switch (ct)
+    {
+    case type::interval:
+        set_grad(0, 0, T(-1));
+        set_grad(1, 0, T(1));
+        return;
+    case type::triangle:
+        set_grad(0, 0, T(-1)); set_grad(0, 1, T(-1));
+        set_grad(1, 0, T(1));  set_grad(1, 1, T(0));
+        set_grad(2, 0, T(0));  set_grad(2, 1, T(1));
+        return;
+    case type::tetrahedron:
+        set_grad(0, 0, T(-1)); set_grad(0, 1, T(-1)); set_grad(0, 2, T(-1));
+        set_grad(1, 0, T(1));  set_grad(1, 1, T(0));  set_grad(1, 2, T(0));
+        set_grad(2, 0, T(0));  set_grad(2, 1, T(1));  set_grad(2, 2, T(0));
+        set_grad(3, 0, T(0));  set_grad(3, 1, T(0));  set_grad(3, 2, T(1));
+        return;
+    case type::quadrilateral:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        set_grad(0, 0, -(T(1) - y)); set_grad(0, 1, -(T(1) - x));
+        set_grad(1, 0,  (T(1) - y)); set_grad(1, 1, -x);
+        set_grad(2, 0,  y);          set_grad(2, 1, x);
+        set_grad(3, 0, -y);          set_grad(3, 1, T(1) - x);
+        return;
+    }
+    case type::hexahedron:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        const T z = x_ref[2];
+        const T mx = T(1) - x;
+        const T my = T(1) - y;
+        const T mz = T(1) - z;
+
+        set_grad(0, 0, -my * mz); set_grad(0, 1, -mx * mz); set_grad(0, 2, -mx * my);
+        set_grad(1, 0,  my * mz); set_grad(1, 1, -x  * mz); set_grad(1, 2, -x  * my);
+        set_grad(2, 0,  y  * mz); set_grad(2, 1,  x  * mz); set_grad(2, 2, -x  * y);
+        set_grad(3, 0, -y  * mz); set_grad(3, 1,  mx * mz); set_grad(3, 2, -mx * y);
+        set_grad(4, 0, -my * z ); set_grad(4, 1, -mx * z ); set_grad(4, 2,  mx * my);
+        set_grad(5, 0,  my * z ); set_grad(5, 1, -x  * z ); set_grad(5, 2,  x  * my);
+        set_grad(6, 0,  y  * z ); set_grad(6, 1,  x  * z ); set_grad(6, 2,  x  * y);
+        set_grad(7, 0, -y  * z ); set_grad(7, 1,  mx * z ); set_grad(7, 2,  mx * y);
+        return;
+    }
+    case type::prism:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        const T z = x_ref[2];
+        set_grad(0, 0, -(T(1) - z)); set_grad(0, 1, -(T(1) - z)); set_grad(0, 2, -(T(1) - x - y));
+        set_grad(1, 0,  (T(1) - z)); set_grad(1, 1, T(0));        set_grad(1, 2, -x);
+        set_grad(2, 0,  T(0));       set_grad(2, 1, (T(1) - z));  set_grad(2, 2, -y);
+        set_grad(3, 0, -z);          set_grad(3, 1, -z);          set_grad(3, 2, (T(1) - x - y));
+        set_grad(4, 0,  z);          set_grad(4, 1, T(0));        set_grad(4, 2, x);
+        set_grad(5, 0,  T(0));       set_grad(5, 1, z);           set_grad(5, 2, y);
+        return;
+    }
+    case type::pyramid:
+    {
+        const T x = x_ref[0];
+        const T y = x_ref[1];
+        const T z = x_ref[2];
+        const T r = T(1) - z;
+        if (r <= T(1e-12))
+        {
+            const auto cols = jacobian_col_indices(ct);
+            const int ncols = get_tdim(ct);
+            for (int k = 0; k < ncols; ++k)
+            {
+                for (int i = 0; i < n_vertices; ++i)
+                    set_grad(i, k, T(0));
+                set_grad(0, k, T(-1));
+                const int vk = cols[static_cast<std::size_t>(k)];
+                if (vk >= 0 && vk < n_vertices)
+                    set_grad(vk, k, T(1));
+            }
+            return;
+        }
+        const T inv_r = T(1) / r;
+        const T inv_r2 = inv_r * inv_r;
+        set_grad(0, 0, -T(1) + y * inv_r);
+        set_grad(0, 1, -T(1) + x * inv_r);
+        set_grad(0, 2, -T(1) + x * y * inv_r2);
+
+        set_grad(1, 0, T(1) - y * inv_r);
+        set_grad(1, 1, -x * inv_r);
+        set_grad(1, 2, -x * y * inv_r2);
+
+        set_grad(2, 0, y * inv_r);
+        set_grad(2, 1, x * inv_r);
+        set_grad(2, 2, x * y * inv_r2);
+
+        set_grad(3, 0, -y * inv_r);
+        set_grad(3, 1, T(1) - x * inv_r);
+        set_grad(3, 2, -x * y * inv_r2);
+
+        set_grad(4, 0, T(0));
+        set_grad(4, 1, T(0));
+        set_grad(4, 2, T(1));
+        return;
+    }
+    default:
+        throw std::invalid_argument("eval_p1_shape_grad: unsupported parent cell type");
+    }
+}
+} // namespace detail
+
+template <std::floating_point T>
+inline void ref_to_phys_affine(type parent_type,
+                               std::span<const T> parent_vertex_coords,
+                               int gdim,
+                               int tdim,
+                               const T* x_ref,
+                               T* x_phys)
+{
+    if (gdim <= 0 || gdim > 3)
+        throw std::invalid_argument("ref_to_phys_affine: gdim must be in [1, 3]");
+    if (tdim != get_tdim(parent_type))
+        throw std::invalid_argument("ref_to_phys_affine: tdim does not match parent type");
+
+    const int n_vertices = get_num_vertices(parent_type);
+    if (static_cast<int>(parent_vertex_coords.size()) != n_vertices * gdim)
+        throw std::invalid_argument("ref_to_phys_affine: invalid parent_vertex_coords size");
+
+    std::vector<T> N(static_cast<std::size_t>(n_vertices), T(0));
+    detail::eval_p1_shape<T>(
+        parent_type,
+        std::span<const T>(x_ref, static_cast<std::size_t>(tdim)),
+        std::span<T>(N.data(), N.size()));
+
+    for (int d = 0; d < gdim; ++d)
+    {
+        T val = T(0);
+        for (int i = 0; i < n_vertices; ++i)
+        {
+            val += N[static_cast<std::size_t>(i)]
+                * parent_vertex_coords[static_cast<std::size_t>(i * gdim + d)];
+        }
+        x_phys[d] = val;
+    }
+}
+
+template <std::floating_point T>
+inline void compute_jacobian(type parent_type,
+                             std::span<const T> parent_vertex_coords,
+                             int gdim,
+                             int tdim,
+                             const T* x_ref,
+                             T* J)
+{
+    if (gdim <= 0 || gdim > 3)
+        throw std::invalid_argument("compute_jacobian: gdim must be in [1, 3]");
+    if (tdim != get_tdim(parent_type))
+        throw std::invalid_argument("compute_jacobian: tdim does not match parent type");
+
+    const int n_vertices = get_num_vertices(parent_type);
+    if (static_cast<int>(parent_vertex_coords.size()) != n_vertices * gdim)
+        throw std::invalid_argument("compute_jacobian: invalid parent_vertex_coords size");
+
+    std::vector<T> dN(static_cast<std::size_t>(n_vertices * tdim), T(0));
+    detail::eval_p1_shape_grad<T>(
+        parent_type,
+        std::span<const T>(x_ref, static_cast<std::size_t>(tdim)),
+        std::span<T>(dN.data(), dN.size()));
+
+    for (int d = 0; d < gdim; ++d)
+    {
+        for (int k = 0; k < tdim; ++k)
+        {
+            T val = T(0);
+            for (int i = 0; i < n_vertices; ++i)
+            {
+                val += parent_vertex_coords[static_cast<std::size_t>(i * gdim + d)]
+                     * dN[static_cast<std::size_t>(i * tdim + k)];
+            }
+            J[static_cast<std::size_t>(d * tdim + k)] = val;
+        }
+    }
+}
 
 } // namespace cutcells::cell
