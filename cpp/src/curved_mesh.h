@@ -13,6 +13,7 @@
 #include "cell_types.h"
 #include "level_set.h"
 #include "local_mesh.h"
+#include "mapping_curved.h"
 
 namespace cutcells::mesh
 {
@@ -99,5 +100,24 @@ CurvedGlobalMesh<T> assemble_curved_volume_mesh(
     std::span<const LocalMesh<T>*> local_meshes,
     int level_set_id,
     int geom_order);
+
+/// Overload with explicit mapping backend selection.
+///
+/// When backend is gordon_hall, sub-cells touching the interface are
+/// output as high-order elements with geometry nodes sampled from the
+/// Gordon-Hall mapping. Otherwise, P1 geometry is emitted for all cells.
+///
+/// @param local_meshes     pointers to decomposed LocalMeshes with curved cache
+/// @param level_set_id     which level set
+/// @param geom_order       Pk order for curved elements
+/// @param volume_backend   mapping backend for curved cells
+/// @param vis_subdivision  number of visualisation subdivisions per edge (>= 1)
+template <std::floating_point T>
+CurvedGlobalMesh<T> assemble_curved_volume_mesh(
+    std::span<const LocalMesh<T>*> local_meshes,
+    int level_set_id,
+    int geom_order,
+    mapping::CurvedMappingBackend volume_backend,
+    int vis_subdivision = 1);
 
 } // namespace cutcells::mesh

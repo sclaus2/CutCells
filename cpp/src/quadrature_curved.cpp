@@ -7,7 +7,9 @@
 #include "quadrature.h"
 #include "quadrature_tables.h"
 #include "local_mesh.h"
+#include "bernstein_backend.h"
 #include "mapping.h"
+#include "mapping_curved.h"
 #include "cell_flags.h"
 
 #include <cassert>
@@ -18,165 +20,21 @@
 namespace cutcells::quadrature
 {
 
+// Use mapping helpers from the shared header
+using mapping::eval_pk_map;
+using mapping::eval_pk_deriv;
+using mapping::eval_collapsed_triangle;
+using mapping::eval_gh_triangle_one_curved_edge;
+using mapping::eval_gh_quad_one_curved_edge;
+using mapping::eval_gh_tet_one_curved_face;
+using mapping::eval_gh_tet_one_curved_tri_face;
+using mapping::eval_gh_face_triangle;
+using mapping::eval_gh_face_quad;
+using mapping::face_surface_metric;
+using mapping::CurvedMappingBackend;
+
 namespace
 {
-// ============================================================================
-// Pk Lagrange basis on [0,1] with Gauss-Lobatto nodes
-//
-// Node positions: {0, gl_pts[0], ..., gl_pts[p-2], 1}   (total = p+1 nodes)
-// Basis function j evaluated at parameter s:
-//   L_j(s) = product_{k != j} (s - t_k) / (t_j - t_k)
-// ============================================================================
-
-/// Evaluate all p+1 Lagrange basis functions at parameter s ∈ [0,1].
-/// gl_interior: the p-1 interior GL points in (0,1) (ascending order).
-/// out: output array of size p+1.
-template <std::floating_point T>
-void eval_lagrange_basis_gl(T s,
-                             const T* gl_interior,
-                             int p,
-                             T* out)
-{
-    // Build full node array: {0, gl_0, ..., gl_{p-2}, 1}
-    const int n_nodes = p + 1;
-
-    // Eval using Lagrange formula
-    // For each basis j: L_j(s) = prod_{k != j} (s - t_k) / (t_j - t_k)
-    // nodes: t_0 = 0, t_1..t_{p-1} = gl_interior, t_p = 1
-    auto node_pos = [&](int j) -> T {
-        if (j == 0)   return T(0);
-        if (j == p)   return T(1);
-        return gl_interior[j - 1];
-    };
-
-    for (int j = 0; j < n_nodes; ++j)
-    {
-        T tj = node_pos(j);
-        T num = T(1);
-        T den = T(1);
-        for (int k = 0; k < n_nodes; ++k)
-        {
-            if (k == j) continue;
-            T tk = node_pos(k);
-            num *= (s - tk);
-            den *= (tj - tk);
-        }
-        out[j] = (std::abs(den) < T(1e-30)) ? T(0) : num / den;
-    }
-}
-
-/// Evaluate derivative of all p+1 Lagrange basis functions at parameter s.
-/// dL_j(s)/ds = sum_{m != j} prod_{k != j, k != m} (s - t_k) / (t_j - t_k)
-template <std::floating_point T>
-void eval_lagrange_deriv_gl(T s,
-                              const T* gl_interior,
-                              int p,
-                              T* dout)
-{
-    const int n_nodes = p + 1;
-
-    auto node_pos = [&](int j) -> T {
-        if (j == 0)   return T(0);
-        if (j == p)   return T(1);
-        return gl_interior[j - 1];
-    };
-
-    for (int j = 0; j < n_nodes; ++j)
-    {
-        T tj = node_pos(j);
-        T den = T(1);
-        for (int k = 0; k < n_nodes; ++k)
-        {
-            if (k == j) continue;
-            den *= (tj - node_pos(k));
-        }
-
-        T sum = T(0);
-        for (int m = 0; m < n_nodes; ++m)
-        {
-            if (m == j) continue;
-            T prod = T(1);
-            for (int k = 0; k < n_nodes; ++k)
-            {
-                if (k == j || k == m) continue;
-                prod *= (s - node_pos(k));
-            }
-            sum += prod;
-        }
-        dout[j] = (std::abs(den) < T(1e-30)) ? T(0) : sum / den;
-    }
-}
-
-/// Evaluate the Pk-curved physical position x(s) on one interface entity.
-/// s ∈ [0,1] is the parameter along the segment.
-/// Nodes: p+1 total — v0 (endpoint), interior GL nodes, v1 (endpoint).
-///
-/// All coordinates are 2D physical (vertex_x space).
-template <std::floating_point T>
-void eval_pk_map(T s,
-                 const T* x_v0,   // physical coords of v0 (2-D)
-                 const T* x_v1,   // physical coords of v1 (2-D)
-                 const T* x_int,  // flat physical coords of p-1 interior nodes
-                 const T* gl_pts, // interior GL pts in (0,1)
-                 int p,
-                 int gdim,
-                 T* x_out)        // output: gdim coords
-{
-    const int n_nodes = p + 1;
-
-    // Scratch for basis values
-    T L[16] = {};    // up to order 15
-    assert(n_nodes <= 16);
-
-    eval_lagrange_basis_gl(s, gl_pts, p, L);
-
-    for (int d = 0; d < gdim; ++d)
-        x_out[d] = T(0);
-
-    // j = 0: v0
-    for (int d = 0; d < gdim; ++d)
-        x_out[d] += L[0] * x_v0[d];
-
-    // j = 1..p-1: interior nodes
-    for (int j = 1; j < p; ++j)
-        for (int d = 0; d < gdim; ++d)
-            x_out[d] += L[j] * x_int[(j - 1) * gdim + d];
-
-    // j = p: v1
-    for (int d = 0; d < gdim; ++d)
-        x_out[d] += L[p] * x_v1[d];
-}
-
-/// Evaluate dx/ds (derivative of Pk physical map w.r.t. parameter s).
-template <std::floating_point T>
-void eval_pk_deriv(T s,
-                   const T* x_v0,
-                   const T* x_v1,
-                   const T* x_int,
-                   const T* gl_pts,
-                   int p,
-                   int gdim,
-                   T* dx_out)
-{
-    const int n_nodes = p + 1;
-    T dL[16] = {};
-    assert(n_nodes <= 16);
-
-    eval_lagrange_deriv_gl(s, gl_pts, p, dL);
-
-    for (int d = 0; d < gdim; ++d)
-        dx_out[d] = T(0);
-
-    for (int d = 0; d < gdim; ++d)
-        dx_out[d] += dL[0] * x_v0[d];
-
-    for (int j = 1; j < p; ++j)
-        for (int d = 0; d < gdim; ++d)
-            dx_out[d] += dL[j] * x_int[(j - 1) * gdim + d];
-
-    for (int d = 0; d < gdim; ++d)
-        dx_out[d] += dL[p] * x_v1[d];
-}
 
 template <std::floating_point T>
 inline void append_physical_point(
@@ -204,6 +62,125 @@ inline void map_parent_ref_to_phys(
         mesh.tdim,
         x_ref,
         x_phys);
+}
+
+template <std::floating_point T>
+inline cell::type zero_face_type(const LocalMesh<T>& mesh, int zero_entity_id)
+{
+    const int z0 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id)];
+    const int z1 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id + 1)];
+    const int n_face_verts = z1 - z0;
+    if (n_face_verts == 3)
+        return cell::type::triangle;
+    if (n_face_verts == 4)
+        return cell::type::quadrilateral;
+    return cell::type::point;
+}
+
+template <std::floating_point T>
+inline void build_zero_face_coordinate_polys(
+    const LocalMesh<T>&          mesh,
+    int                          zero_entity_id,
+    int                          geom_order,
+    std::vector<BernsteinCell<T>>& coord_polys)
+{
+    const cell::type face_type = zero_face_type(mesh, zero_entity_id);
+    if (face_type != cell::type::triangle
+        && face_type != cell::type::quadrilateral)
+        throw std::invalid_argument(
+            "build_zero_face_coordinate_polys: unsupported zero-face type");
+
+    const int tdim = mesh.tdim;
+    const int z0 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id)];
+    const int z1 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id + 1)];
+    const int n_face_verts = z1 - z0;
+    if ((face_type == cell::type::triangle && n_face_verts != 3)
+        || (face_type == cell::type::quadrilateral && n_face_verts != 4))
+        throw std::invalid_argument(
+            "build_zero_face_coordinate_polys: inconsistent face vertex count");
+
+    const bool has_curved =
+        geom_order >= 2
+        && !mesh.curved_zero_offsets.empty()
+        && static_cast<int>(mesh.curved_zero_offsets.size()) == mesh.n_zero_entities() + 1;
+    const int node_start = has_curved
+        ? mesh.curved_zero_offsets[static_cast<std::size_t>(zero_entity_id)] : 0;
+    const int node_end = has_curved
+        ? mesh.curved_zero_offsets[static_cast<std::size_t>(zero_entity_id + 1)] : 0;
+    const int n_face_interior = node_end - node_start;
+    const int expected_face_interior = (face_type == cell::type::triangle)
+        ? (geom_order - 1) * (geom_order - 2) / 2
+        : (geom_order - 1) * (geom_order - 1);
+    const bool use_curved = has_curved && n_face_interior == expected_face_interior;
+
+    const int degree = use_curved ? geom_order : 1;
+    const RefinementTemplate& tpl = (degree == 1)
+        ? p1_template(face_type)
+        : iso_p1_template(face_type, degree);
+
+    std::vector<T> face_nodes_ref(
+        static_cast<std::size_t>(tpl.n_vertices * tdim), T(0));
+
+    std::array<const T*, 4> face_corners = {nullptr, nullptr, nullptr, nullptr};
+    for (int i = 0; i < n_face_verts; ++i)
+    {
+        const int lv = mesh.zero_entity_vertices[static_cast<std::size_t>(z0 + i)];
+        face_corners[static_cast<std::size_t>(i)]
+            = &mesh.vertex_ref_x[static_cast<std::size_t>(lv * tdim)];
+    }
+
+    int interior_id = 0;
+    for (int i = 0; i < tpl.n_vertices; ++i)
+    {
+        const T* cached = nullptr;
+        if (use_curved && tpl.vertex_parent_dim[static_cast<std::size_t>(i)] == 2)
+        {
+            cached = &mesh.curved_zero_ref_nodes[
+                static_cast<std::size_t>((node_start + interior_id) * tdim)];
+            ++interior_id;
+        }
+
+        T* x_node = &face_nodes_ref[static_cast<std::size_t>(i * tdim)];
+        if (cached != nullptr)
+        {
+            for (int d = 0; d < tdim; ++d)
+                x_node[d] = cached[d];
+            continue;
+        }
+
+        const T u = static_cast<T>(
+            tpl.ref_vertex_coords[static_cast<std::size_t>(i * tpl.tdim + 0)]);
+        const T v = static_cast<T>(
+            tpl.ref_vertex_coords[static_cast<std::size_t>(i * tpl.tdim + 1)]);
+
+        if (face_type == cell::type::triangle)
+        {
+            for (int d = 0; d < tdim; ++d)
+                x_node[d] = (T(1) - u - v) * face_corners[0][d]
+                          + u * face_corners[1][d]
+                          + v * face_corners[2][d];
+        }
+        else
+        {
+            for (int d = 0; d < tdim; ++d)
+                x_node[d] = (T(1) - u) * (T(1) - v) * face_corners[0][d]
+                          + u * (T(1) - v) * face_corners[1][d]
+                          + u * v * face_corners[2][d]
+                          + (T(1) - u) * v * face_corners[3][d];
+        }
+    }
+
+    coord_polys.assign(static_cast<std::size_t>(tdim), BernsteinCell<T>{});
+    std::vector<T> lagrange_values(static_cast<std::size_t>(tpl.n_vertices), T(0));
+    for (int d = 0; d < tdim; ++d)
+    {
+        for (int i = 0; i < tpl.n_vertices; ++i)
+            lagrange_values[static_cast<std::size_t>(i)]
+                = face_nodes_ref[static_cast<std::size_t>(i * tdim + d)];
+        coord_polys[static_cast<std::size_t>(d)] = make_bernstein_cell<T>(
+            face_type, degree,
+            std::span<const T>(lagrange_values.data(), lagrange_values.size()));
+    }
 }
 
 } // anonymous namespace
@@ -251,7 +228,78 @@ void append_interface_quadrature_curved(
     const int z1 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id + 1)];
     const int n_ent_verts = z1 - z0;
     if (n_ent_verts < 2)
-        return;   // degenerate or 3D (TODO: extend)
+        return;
+
+    // 3D interface face quadrature.
+    //
+    // Phase D currently stores curved interior face nodes in the zero-entity
+    // cache, while the boundary edges remain straight. For triangular zero
+    // faces, build a regular degree-p lattice on the face, overwrite the
+    // interior lattice nodes with the cached curved positions, and integrate
+    // over the resulting piecewise-planar surface patch.
+    if (tdim == 3 && (n_ent_verts == 3 || n_ent_verts == 4))
+    {
+        const cell::type face_type = zero_face_type(mesh, zero_entity_id);
+        std::vector<BernsteinCell<T>> coord_polys;
+        build_zero_face_coordinate_polys(
+            mesh, zero_entity_id, geom_order, coord_polys);
+
+        if (rules._tdim == 0)
+            rules._tdim = tdim;
+        if (rules._offset.empty())
+            rules._offset.push_back(0);
+
+        const auto& face_rule = get_reference_rule<T>(face_type, order);
+        const int nq = face_rule._num_points;
+        std::vector<T> J(static_cast<std::size_t>(gdim * tdim), T(0));
+
+        for (int q = 0; q < nq; ++q)
+        {
+            const T* can_pt = face_rule._points.data()
+                + static_cast<std::size_t>(q) * face_rule._tdim;
+            T x_ref_q[3] = {T(0), T(0), T(0)};
+            T dF_du_ref[3] = {T(0), T(0), T(0)};
+            T dF_dv_ref[3] = {T(0), T(0), T(0)};
+            if (face_type == cell::type::triangle)
+            {
+                eval_gh_face_triangle<T>(
+                    std::span<const BernsteinCell<T>>(coord_polys.data(), coord_polys.size()),
+                    can_pt[0], can_pt[1],
+                    x_ref_q, dF_du_ref, dF_dv_ref);
+            }
+            else
+            {
+                eval_gh_face_quad<T>(
+                    std::span<const BernsteinCell<T>>(coord_polys.data(), coord_polys.size()),
+                    can_pt[0], can_pt[1],
+                    x_ref_q, dF_du_ref, dF_dv_ref);
+            }
+
+            cell::compute_jacobian<T>(
+                mesh.parent_cell_type,
+                std::span<const T>(mesh.parent_cell_coords_p1.data(),
+                                   mesh.parent_cell_coords_p1.size()),
+                gdim,
+                tdim,
+                x_ref_q,
+                J.data());
+
+            const T jac = face_surface_metric<T>(
+                std::span<const T>(J.data(), J.size()),
+                dF_du_ref, dF_dv_ref, gdim, tdim);
+
+            for (int d = 0; d < tdim; ++d)
+                rules._points.push_back(x_ref_q[d]);
+            T x_phys_q[3] = {};
+            map_parent_ref_to_phys(mesh, x_ref_q, x_phys_q);
+            append_physical_point(&physical_points, x_phys_q, gdim);
+            rules._weights.push_back(face_rule._weights[q] * jac);
+        }
+
+        rules._parent_map.push_back(static_cast<int32_t>(mesh.parent_cell_id));
+        rules._offset.push_back(static_cast<int32_t>(rules._weights.size()));
+        return;
+    }
 
     int lv0 = mesh.zero_entity_endpoint_v0[static_cast<std::size_t>(zero_entity_id)];
     int lv1 = mesh.zero_entity_endpoint_v1[static_cast<std::size_t>(zero_entity_id)];
@@ -400,7 +448,8 @@ void append_volume_quadrature_curved(
 {
     std::vector<T> ignored_physical_points;
     append_volume_quadrature_curved(
-        mesh, cell_id, level_set_id, order, rules, fallback_count, ignored_physical_points);
+        mesh, cell_id, level_set_id, order, rules, fallback_count,
+        ignored_physical_points, CurvedMappingBackend::collapsed);
 }
 
 template <std::floating_point T>
@@ -412,6 +461,38 @@ void append_volume_quadrature_curved(
     QuadratureRules<T>& rules,
     int& fallback_count,
     std::vector<T>& physical_points)
+{
+    append_volume_quadrature_curved(
+        mesh, cell_id, level_set_id, order, rules, fallback_count,
+        physical_points, CurvedMappingBackend::collapsed);
+}
+
+template <std::floating_point T>
+void append_volume_quadrature_curved(
+    const LocalMesh<T>& mesh,
+    int cell_id,
+    int level_set_id,
+    int order,
+    QuadratureRules<T>& rules,
+    int& fallback_count,
+    CurvedMappingBackend vol_backend)
+{
+    std::vector<T> ignored_physical_points;
+    append_volume_quadrature_curved(
+        mesh, cell_id, level_set_id, order, rules, fallback_count,
+        ignored_physical_points, vol_backend);
+}
+
+template <std::floating_point T>
+void append_volume_quadrature_curved(
+    const LocalMesh<T>& mesh,
+    int cell_id,
+    int level_set_id,
+    int order,
+    QuadratureRules<T>& rules,
+    int& fallback_count,
+    std::vector<T>& physical_points,
+    CurvedMappingBackend vol_backend)
 {
     const int gdim  = mesh.gdim;
     const int tdim  = mesh.tdim;
@@ -569,6 +650,8 @@ void append_volume_quadrature_curved(
     int cell_if_a = -1;
     int cell_if_b = -1;
     bool iface_reversed_for_cell = false;
+    // For 3D: face zero entity vertex IDs
+    std::vector<int32_t> touching_face_verts;
 
     if (has_curved && tdim == 2 && ctype == cell::type::triangle)
     {
@@ -604,12 +687,202 @@ void append_volume_quadrature_curved(
             }
         }
     }
+    else if (has_curved && tdim == 3 && ctype == cell::type::tetrahedron)
+    {
+        // 3D: check if any face of this tet matches a face zero entity
+        const uint64_t zero_mask = uint64_t(1) << level_set_id;
+        const int n_zero = mesh.n_zero_entities();
 
-    // ---- no interface contact: affine path ----
-    if (touching_ze < 0 || !has_curved || tdim != 2
-        || ctype != cell::type::triangle)
+        // Gather this cell's vertices as a set for face matching
+        std::vector<int32_t> cell_verts(static_cast<std::size_t>(nv));
+        for (int j = 0; j < nv; ++j)
+            cell_verts[static_cast<std::size_t>(j)]
+                = mesh.cell_vertices[static_cast<std::size_t>(c0 + j)];
+
+        for (int ze = 0; ze < n_zero && touching_ze < 0; ++ze)
+        {
+            if (mesh.zero_entity_dim[static_cast<std::size_t>(ze)] != 2)
+                continue;
+            if ((mesh.zero_entity_zero_mask[static_cast<std::size_t>(ze)] & zero_mask) == 0)
+                continue;
+
+            // Get face vertices
+            const int fe0 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze)];
+            const int fe1 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze + 1)];
+            const int n_fv = fe1 - fe0;
+
+            // Check if all face vertices belong to this cell
+            bool all_in_cell = true;
+            std::vector<int32_t> fv(static_cast<std::size_t>(n_fv));
+            for (int i = 0; i < n_fv; ++i)
+            {
+                fv[static_cast<std::size_t>(i)]
+                    = mesh.zero_entity_vertices[static_cast<std::size_t>(fe0 + i)];
+                bool found = false;
+                for (int j = 0; j < nv; ++j)
+                {
+                    if (fv[static_cast<std::size_t>(i)] == cell_verts[static_cast<std::size_t>(j)])
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                {
+                    all_in_cell = false;
+                    break;
+                }
+            }
+            if (all_in_cell && n_fv >= 3)
+            {
+                touching_ze = ze;
+                touching_face_verts = fv;
+            }
+        }
+    }
+
+    // ---- no interface contact or unsupported cell type: affine path ----
+    const bool can_do_curved_2d = (tdim == 2 && ctype == cell::type::triangle
+                                   && touching_ze >= 0);
+    const bool can_do_curved_3d = (tdim == 3 && ctype == cell::type::tetrahedron
+                                   && touching_ze >= 0
+                                   && !touching_face_verts.empty());
+    if (!has_curved || (!can_do_curved_2d && !can_do_curved_3d))
     {
         append_affine_subcell();
+        return;
+    }
+
+    if (can_do_curved_3d)
+    {
+        // ---- 3D: GH tet quadrature for tet touching one curved triangular face ----
+        const int ze = touching_ze;
+
+        // Identify the face vertices and the opposite (apex) vertex
+        const int n_face_verts = static_cast<int>(touching_face_verts.size());
+        if (n_face_verts != 3)
+        {
+            // Only triangular faces supported for now
+            append_affine_subcell();
+            return;
+        }
+
+        // Find the apex vertex (not on the face)
+        int apex_vid = -1;
+        for (int j = 0; j < nv; ++j)
+        {
+            const int lv = mesh.cell_vertices[static_cast<std::size_t>(c0 + j)];
+            bool on_face = false;
+            for (int i = 0; i < n_face_verts; ++i)
+            {
+                if (lv == touching_face_verts[static_cast<std::size_t>(i)])
+                {
+                    on_face = true;
+                    break;
+                }
+            }
+            if (!on_face)
+            {
+                apex_vid = lv;
+                break;
+            }
+        }
+        if (apex_vid < 0)
+        {
+            append_affine_subcell();
+            return;
+        }
+
+        const T* r_apex = &mesh.vertex_ref_x[static_cast<std::size_t>(apex_vid * tdim)];
+        std::vector<BernsteinCell<T>> face_coord_polys;
+        build_zero_face_coordinate_polys(mesh, ze, mesh.curved_geometry_order, face_coord_polys);
+
+        const auto& tet_rule = get_reference_rule<T>(cell::type::tetrahedron, order);
+        const int nq = tet_rule._num_points;
+
+        bool jac_valid = true;
+        int det_sign_3d = 0;
+        std::vector<T> J(static_cast<std::size_t>(gdim * tdim), T(0));
+        const int n_pts_total = nq;
+        std::vector<T> pts_out, wts_out;
+        pts_out.reserve(static_cast<std::size_t>(n_pts_total * tdim));
+        wts_out.reserve(static_cast<std::size_t>(n_pts_total));
+
+        for (int q = 0; q < nq && jac_valid; ++q)
+        {
+            const T* can_pt = tet_rule._points.data()
+                + static_cast<std::size_t>(q) * tet_rule._tdim;
+            const T xi_q = can_pt[0];
+            const T eta_q = can_pt[1];
+            const T zeta_q = can_pt[2];
+
+            T F_ref[3] = {};
+            T dF_dxi[3] = {};
+            T dF_deta[3] = {};
+            T dF_dzeta[3] = {};
+
+            eval_gh_tet_one_curved_tri_face<T>(
+                xi_q, eta_q, zeta_q,
+                std::span<const BernsteinCell<T>>(face_coord_polys.data(), face_coord_polys.size()),
+                r_apex,
+                F_ref, dF_dxi, dF_deta, dF_dzeta);
+
+            cell::compute_jacobian<T>(
+                mesh.parent_cell_type,
+                std::span<const T>(mesh.parent_cell_coords_p1.data(),
+                                   mesh.parent_cell_coords_p1.size()),
+                gdim, tdim, F_ref, J.data());
+
+            std::array<T, 3> col_xi = {T(0), T(0), T(0)};
+            std::array<T, 3> col_eta = {T(0), T(0), T(0)};
+            std::array<T, 3> col_zeta = {T(0), T(0), T(0)};
+            for (int d = 0; d < gdim; ++d)
+            {
+                for (int k = 0; k < tdim; ++k)
+                {
+                    const T Jdk = J[static_cast<std::size_t>(d * tdim + k)];
+                    col_xi[static_cast<std::size_t>(d)]   += Jdk * dF_dxi[k];
+                    col_eta[static_cast<std::size_t>(d)]  += Jdk * dF_deta[k];
+                    col_zeta[static_cast<std::size_t>(d)] += Jdk * dF_dzeta[k];
+                }
+            }
+
+            const T det_J = mapping::det_3d(
+                col_xi.data(), col_eta.data(), col_zeta.data());
+            const T det_abs = std::abs(det_J);
+            const T det_tol = T(64) * std::numeric_limits<T>::epsilon();
+
+            if (det_abs > det_tol)
+            {
+                const int sgn = (det_J > T(0)) ? 1 : -1;
+                if (det_sign_3d == 0)
+                    det_sign_3d = sgn;
+                else if (sgn != det_sign_3d)
+                {
+                    jac_valid = false;
+                    break;
+                }
+            }
+
+            for (int d = 0; d < tdim; ++d)
+                pts_out.push_back(F_ref[d]);
+            T x_phys_q[3] = {};
+            map_parent_ref_to_phys(mesh, F_ref, x_phys_q);
+            append_physical_point(&physical_points, x_phys_q, gdim);
+            wts_out.push_back(tet_rule._weights[q] * det_abs);
+        }
+
+        if (!jac_valid)
+        {
+            ++fallback_count;
+            append_affine_subcell();
+            return;
+        }
+
+        rules._points.insert(rules._points.end(), pts_out.begin(), pts_out.end());
+        rules._weights.insert(rules._weights.end(), wts_out.begin(), wts_out.end());
+        rules._parent_map.push_back(static_cast<int32_t>(mesh.parent_cell_id));
+        rules._offset.push_back(static_cast<int32_t>(rules._weights.size()));
         return;
     }
 
@@ -707,29 +980,36 @@ void append_volume_quadrature_curved(
         const T s = quad1d._points[qi];
         const T ws = quad1d._weights[qi];
 
-        // Evaluate Pk map and derivative at s in parent reference space.
-        T gamma_ref[3] = {};
-        T dgamma_ref[3] = {};
-        eval_pk_map(s, r_va, r_vb, x_int_ref.data(), gl_pts,
-                    geom_order, tdim, gamma_ref);
-        eval_pk_deriv(s, r_va, r_vb, x_int_ref.data(), gl_pts,
-                      geom_order, tdim, dgamma_ref);
-
         for (int qj = 0; qj < nq1; ++qj)
         {
             const T t = quad1d._points[qj];
             const T wt = quad1d._weights[qj];
 
-            // Blended map in parent reference space:
-            //   F_ref = (1-t)*gamma_ref(s) + t*r_opp.
+            // Evaluate mapping in parent reference space.
+            // Both backends produce identical results for triangles with
+            // one curved edge. The GH formulation generalises to quads
+            // and multiple curved edges.
             T F_ref[3] = {};
             T col_s_ref[3] = {};
             T col_t_ref[3] = {};
-            for (int k = 0; k < tdim; ++k)
+
+            if (vol_backend == CurvedMappingBackend::gordon_hall)
             {
-                F_ref[k] = (T(1) - t) * gamma_ref[k] + t * r_opp[k];
-                col_s_ref[k] = (T(1) - t) * dgamma_ref[k];
-                col_t_ref[k] = r_opp[k] - gamma_ref[k];
+                eval_gh_triangle_one_curved_edge(
+                    s, t,
+                    r_va, r_vb,
+                    x_int_ref.data(), gl_pts, geom_order,
+                    r_opp, tdim,
+                    F_ref, col_s_ref, col_t_ref);
+            }
+            else
+            {
+                eval_collapsed_triangle(
+                    s, t,
+                    r_va, r_vb,
+                    x_int_ref.data(), gl_pts, geom_order,
+                    r_opp, tdim,
+                    F_ref, col_s_ref, col_t_ref);
             }
 
             // Parent Jacobian J_parent(F_ref), then map columns to physical:
@@ -772,10 +1052,10 @@ void append_volume_quadrature_curved(
                 // sign flips across quadrature points (fold-over).
                 if (det_abs > det_tol)
                 {
-                    const int s = (det_oriented > T(0)) ? 1 : -1;
+                    const int sgn = (det_oriented > T(0)) ? 1 : -1;
                     if (det_sign == 0)
-                        det_sign = s;
-                    else if (s != det_sign)
+                        det_sign = sgn;
+                    else if (sgn != det_sign)
                     {
                         jac_valid = false;
                         break;
@@ -836,7 +1116,8 @@ void make_quadrature_curved(
         volume_rules,
         ignored_volume_points,
         interface_rules,
-        ignored_interface_points);
+        ignored_interface_points,
+        CurvedMappingBackend::collapsed);
 }
 
 template <std::floating_point T>
@@ -849,6 +1130,46 @@ void make_quadrature_curved(
     QuadratureRules<T>& interface_rules,
     std::vector<T>& interface_physical_points)
 {
+    make_quadrature_curved(
+        mesh, level_set_id, order,
+        volume_rules, volume_physical_points,
+        interface_rules, interface_physical_points,
+        CurvedMappingBackend::collapsed);
+}
+
+template <std::floating_point T>
+void make_quadrature_curved(
+    const LocalMesh<T>& mesh,
+    int level_set_id,
+    int order,
+    QuadratureRules<T>& volume_rules,
+    QuadratureRules<T>& interface_rules,
+    CurvedMappingBackend volume_backend)
+{
+    std::vector<T> ignored_volume_points;
+    std::vector<T> ignored_interface_points;
+    make_quadrature_curved(
+        mesh,
+        level_set_id,
+        order,
+        volume_rules,
+        ignored_volume_points,
+        interface_rules,
+        ignored_interface_points,
+        volume_backend);
+}
+
+template <std::floating_point T>
+void make_quadrature_curved(
+    const LocalMesh<T>& mesh,
+    int level_set_id,
+    int order,
+    QuadratureRules<T>& volume_rules,
+    std::vector<T>& volume_physical_points,
+    QuadratureRules<T>& interface_rules,
+    std::vector<T>& interface_physical_points,
+    CurvedMappingBackend volume_backend)
+{
     // Reset outputs
     volume_rules    = {};
     interface_rules = {};
@@ -860,7 +1181,7 @@ void make_quadrature_curved(
     const uint64_t zero_mask = uint64_t(1) << level_set_id;
     const int codim1_dim = std::max(0, mesh.tdim - 1);
 
-    // Interface quadrature
+    // Interface quadrature (independent of volume mapping backend)
     for (int ze = 0; ze < n_zero; ++ze)
     {
         if (mesh.zero_entity_dim[static_cast<std::size_t>(ze)] != codim1_dim)
@@ -883,7 +1204,8 @@ void make_quadrature_curved(
         if (dom != static_cast<uint8_t>(cell::domain::inside))
             continue;
         append_volume_quadrature_curved(
-            mesh, c, level_set_id, order, volume_rules, fallback_count, volume_physical_points);
+            mesh, c, level_set_id, order, volume_rules, fallback_count,
+            volume_physical_points, volume_backend);
     }
 }
 
@@ -908,6 +1230,14 @@ template void append_volume_quadrature_curved<float>(
     const LocalMesh<float>&, int, int, int, QuadratureRules<float>&, int&, std::vector<float>&);
 template void append_volume_quadrature_curved<double>(
     const LocalMesh<double>&, int, int, int, QuadratureRules<double>&, int&, std::vector<double>&);
+template void append_volume_quadrature_curved<float>(
+    const LocalMesh<float>&, int, int, int, QuadratureRules<float>&, int&, CurvedMappingBackend);
+template void append_volume_quadrature_curved<double>(
+    const LocalMesh<double>&, int, int, int, QuadratureRules<double>&, int&, CurvedMappingBackend);
+template void append_volume_quadrature_curved<float>(
+    const LocalMesh<float>&, int, int, int, QuadratureRules<float>&, int&, std::vector<float>&, CurvedMappingBackend);
+template void append_volume_quadrature_curved<double>(
+    const LocalMesh<double>&, int, int, int, QuadratureRules<double>&, int&, std::vector<double>&, CurvedMappingBackend);
 
 template void make_quadrature_curved<float>(
     const LocalMesh<float>&, int, int,
@@ -923,5 +1253,23 @@ template void make_quadrature_curved<double>(
     const LocalMesh<double>&, int, int,
     QuadratureRules<double>&, std::vector<double>&,
     QuadratureRules<double>&, std::vector<double>&);
+template void make_quadrature_curved<float>(
+    const LocalMesh<float>&, int, int,
+    QuadratureRules<float>&, QuadratureRules<float>&,
+    CurvedMappingBackend);
+template void make_quadrature_curved<double>(
+    const LocalMesh<double>&, int, int,
+    QuadratureRules<double>&, QuadratureRules<double>&,
+    CurvedMappingBackend);
+template void make_quadrature_curved<float>(
+    const LocalMesh<float>&, int, int,
+    QuadratureRules<float>&, std::vector<float>&,
+    QuadratureRules<float>&, std::vector<float>&,
+    CurvedMappingBackend);
+template void make_quadrature_curved<double>(
+    const LocalMesh<double>&, int, int,
+    QuadratureRules<double>&, std::vector<double>&,
+    QuadratureRules<double>&, std::vector<double>&,
+    CurvedMappingBackend);
 
 } // namespace cutcells::quadrature

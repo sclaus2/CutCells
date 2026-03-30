@@ -238,7 +238,7 @@ inline T brent_parameter(Eval&& eval, T a, T b, T fa, T fb,
 
     for (int iter = 0; iter < max_iter; ++iter)
     {
-        if ((fb > T(0) && fc > T(0)) || (fb < T(0) && fc < T(0)))
+        if ((fb > 0 && fc > 0) || (fb < 0 && fc < 0))
         {
             c = a;
             fc = fa;
@@ -248,14 +248,14 @@ inline T brent_parameter(Eval&& eval, T a, T b, T fa, T fb,
 
         if (std::abs(fc) < std::abs(fb))
         {
-            const T a_old = a;
-            const T fa_old = fa;
+            // Three-way rotation: new b = c_old (better), new a = b_old, new c = b_old.
+            // Execute sequentially so that after  a = b,  'a' already holds b_old.
             a = b;
             fa = fb;
             b = c;
             fb = fc;
-            c = a_old;
-            fc = fa_old;
+            c = a;   // a is already b_old — maintains bracket [b, c] with f(b)*f(c) ≤ 0
+            fc = fa; // fa is already fb_old
         }
 
         const T eps = std::numeric_limits<T>::epsilon();
@@ -274,9 +274,7 @@ inline T brent_parameter(Eval&& eval, T a, T b, T fa, T fb,
         if (std::abs(e) >= tol1 && std::abs(fa) > std::abs(fb))
         {
             T s = fb / fa;
-            T p = T(0);
-            T q = T(0);
-
+            T p, q;
             if (a == c)
             {
                 p = T(2) * xm * s;
@@ -284,8 +282,8 @@ inline T brent_parameter(Eval&& eval, T a, T b, T fa, T fb,
             }
             else
             {
-                const T q0 = fa / fc;
-                const T r = fb / fc;
+                T r = fb / fc;
+                T q0 = fa / fc;
                 p = s * (T(2) * xm * q0 * (q0 - r) - (b - a) * (r - T(1)));
                 q = (q0 - T(1)) * (r - T(1)) * (s - T(1));
             }
@@ -293,9 +291,8 @@ inline T brent_parameter(Eval&& eval, T a, T b, T fa, T fb,
             if (p > T(0))
                 q = -q;
             p = std::abs(p);
-
-            const T min1 = T(3) * xm * q - std::abs(tol1 * q);
-            const T min2 = std::abs(e * q);
+            T min1 = T(3) * xm * q - std::abs(tol1 * q);
+            T min2 = std::abs(e * q);
             if (T(2) * p < std::min(min1, min2))
             {
                 e = d;
@@ -315,12 +312,10 @@ inline T brent_parameter(Eval&& eval, T a, T b, T fa, T fb,
 
         a = b;
         fa = fb;
-
         if (std::abs(d) > tol1)
             b += d;
         else
-            b += (xm > T(0) ? tol1 : -tol1);
-
+            b += (xm > 0 ? tol1 : -tol1);
         fb = eval(b);
     }
 
@@ -328,7 +323,6 @@ inline T brent_parameter(Eval&& eval, T a, T b, T fa, T fb,
         *out_iterations = max_iter;
     return clamp01<T>(b);
 }
-
 template <std::floating_point T, typename Eval>
 inline T itp_parameter(Eval&& eval, T a, T b, T fa, T fb, const T initial_guess,
                        const int max_iter, const T xtol, const T ftol,
@@ -358,7 +352,6 @@ inline T itp_parameter(Eval&& eval, T a, T b, T fa, T fb, const T initial_guess,
 
     // Use the linear guess first to contract the bracket if possible.
     const T t0 = std::clamp(initial_guess, a, b);
-    if (t0 > a && t0 < b)
     {
         const T f0 = eval(t0);
         if (std::abs(f0) <= ftol)
@@ -400,8 +393,11 @@ inline T itp_parameter(Eval&& eval, T a, T b, T fa, T fb, const T initial_guess,
         const T m = T(0.5) * (a + b);
         const T xf = (a * fb - b * fa) / (fb - fa);
         const T sigma = (m >= xf) ? T(1) : T(-1);
-        const T delta = k1 * std::pow(width, k2);
-        const T xt = (std::abs(m - xf) <= delta) ? (xf + sigma * delta) : m;
+
+        // Truncation: delta = min(k1 * width^k2, |m - xf|)
+        // Then xt = xf + sigma * delta  (clamps between xf and m).
+        const T delta = std::min(k1 * std::pow(width, k2), std::abs(m - xf));
+        const T xt = xf + sigma * delta;
 
         T r = xtol * std::ldexp(T(1), std::max(0, n_max - iter)) - T(0.5) * width;
         r = std::max(T(0), r);

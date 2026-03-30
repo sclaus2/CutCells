@@ -9,6 +9,7 @@
 #include <cmath>
 #include <limits>
 #include <concepts>
+#include <string>
 
 namespace cutcells
 {

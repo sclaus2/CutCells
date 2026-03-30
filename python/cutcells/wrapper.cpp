@@ -32,6 +32,7 @@
 #include <cutcells/iso_refine.h>
 #include <cutcells/local_mesh.h>
 #include <cutcells/curved_mesh.h>
+#include <cutcells/mapping_curved.h>
 #include <cutcells/edge_classification.h>
 
 namespace nb = nanobind;
@@ -1756,6 +1757,52 @@ void declare_float(nb::module_& m, std::string type)
       "Build curved quadrature and return the matching physical quadrature points.\n"
       "Returns (volume_rules, volume_physical_points, interface_rules, interface_physical_points).");
 
+    const std::string mqc_phys_backend_name =
+      "make_quadrature_curved_physical_points_with_backend_" + type;
+    m.def(mqc_phys_backend_name.c_str(),
+      [](const LocalMeshT& mesh, int level_set_id, int order,
+         mapping::CurvedMappingBackend volume_backend) {
+          quadrature::QuadratureRules<T> vol_rules, iface_rules;
+          std::vector<T> vol_phys_points, iface_phys_points;
+          {
+              nb::gil_scoped_release release;
+              quadrature::make_quadrature_curved<T>(
+                  mesh, level_set_id, order,
+                  vol_rules, vol_phys_points,
+                  iface_rules, iface_phys_points,
+                  volume_backend);
+          }
+          return nb::make_tuple(
+              std::move(vol_rules),
+              as_nbarray(std::move(vol_phys_points)),
+              std::move(iface_rules),
+              as_nbarray(std::move(iface_phys_points)));
+      },
+      nb::arg("mesh"), nb::arg("level_set_id"), nb::arg("order"),
+      nb::arg("volume_backend") = mapping::CurvedMappingBackend::collapsed,
+      "Build curved quadrature with explicit volume mapping backend and return\n"
+      "the matching physical quadrature points.\n"
+      "Returns (volume_rules, volume_physical_points, interface_rules, interface_physical_points).");
+
+    // ---- make_quadrature_curved with backend selection ----
+    const std::string mqc_backend_name = "make_quadrature_curved_with_backend_" + type;
+    m.def(mqc_backend_name.c_str(),
+      [](const LocalMeshT& mesh, int level_set_id, int order,
+         mapping::CurvedMappingBackend volume_backend) {
+          quadrature::QuadratureRules<T> vol_rules, iface_rules;
+          {
+              nb::gil_scoped_release release;
+              quadrature::make_quadrature_curved<T>(
+                  mesh, level_set_id, order, vol_rules, iface_rules,
+                  volume_backend);
+          }
+          return nb::make_tuple(std::move(vol_rules), std::move(iface_rules));
+      },
+      nb::arg("mesh"), nb::arg("level_set_id"), nb::arg("order"),
+      nb::arg("volume_backend") = mapping::CurvedMappingBackend::collapsed,
+      "Build curved quadrature with explicit volume mapping backend.\n"
+      "Returns (volume_rules, interface_rules) as a tuple.");
+
     // ---- CurvedGlobalMesh binding ----
     using CurvedMeshT = mesh::CurvedGlobalMesh<T>;
     const std::string cgm_name = "CurvedGlobalMesh_" + type;
@@ -1994,6 +2041,29 @@ void declare_float(nb::module_& m, std::string type)
       nb::arg("geom_order") = 2,
       "Assemble curved volume mesh (phi<0 sub-cells) from decomposed LocalMeshes.");
 
+    const std::string acv_backend_name = "assemble_curved_volume_mesh_with_backend_" + type;
+    m.def(
+      acv_backend_name.c_str(),
+      [](nb::list meshes_list, int level_set_id, int geom_order,
+         mapping::CurvedMappingBackend volume_backend, int vis_subdivision)
+      {
+        std::vector<const LocalMesh<T>*> ptrs;
+        ptrs.reserve(meshes_list.size());
+        for (auto item : meshes_list)
+          ptrs.push_back(&nb::cast<const LocalMesh<T>&>(item));
+        nb::gil_scoped_release release;
+        return mesh::assemble_curved_volume_mesh<T>(
+          std::span<const LocalMesh<T>*>(ptrs.data(), ptrs.size()),
+          level_set_id, geom_order, volume_backend, vis_subdivision);
+      },
+      nb::arg("local_meshes"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("geom_order") = 2,
+      nb::arg("volume_backend") = mapping::CurvedMappingBackend::collapsed,
+      nb::arg("vis_subdivision") = 1,
+      "Assemble curved volume mesh with explicit mapping backend.\n"
+      "When gordon_hall, interface-touching cells get GH-mapped geometry nodes.");
+
     if constexpr (std::is_same_v<T, double>)
     {
       m.attr("BernsteinCell") = m.attr(bc_name.c_str());
@@ -2021,7 +2091,11 @@ void declare_float(nb::module_& m, std::string type)
       m.attr("append_interface_quadrature_curved") = m.attr(ai_curved_name.c_str());
       m.attr("append_volume_quadrature_curved")    = m.attr(av_curved_name.c_str());
       m.attr("make_quadrature_curved")             = m.attr(mqc_name.c_str());
+      m.attr("make_quadrature_curved_with_backend") = m.attr(mqc_backend_name.c_str());
       m.attr("make_quadrature_curved_physical_points") = m.attr(mqc_phys_name.c_str());
+      m.attr("make_quadrature_curved_physical_points_with_backend")
+        = m.attr(mqc_phys_backend_name.c_str());
+      m.attr("assemble_curved_volume_mesh_with_backend") = m.attr(acv_backend_name.c_str());
     }
 }
 
@@ -2105,6 +2179,10 @@ NB_MODULE(_cutcellscpp, m)
     .value("nodal_signs", LocalLevelSetBackend::nodal_signs)
     .value("bernstein", LocalLevelSetBackend::bernstein)
     .value("analytical_callbacks", LocalLevelSetBackend::analytical_callbacks);
+
+  nb::enum_<mapping::CurvedMappingBackend>(m, "CurvedMappingBackend")
+    .value("collapsed", mapping::CurvedMappingBackend::collapsed)
+    .value("gordon_hall", mapping::CurvedMappingBackend::gordon_hall);
 
   nb::enum_<cutcells::LevelSetFunction<double, int>::Kind>(m, "LevelSetKind")
     .value("callable", cutcells::LevelSetFunction<double, int>::Kind::callable)

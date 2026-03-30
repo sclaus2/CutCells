@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "local_mesh.h"
+#include "green_split.h"
 #include "cell_subdivision.h"
 #include "cell_topology.h"
 #include "edge_classification.h"
@@ -307,42 +308,6 @@ inline bool background_edge_on_hexahedron_face(int edge_id, int face_id)
 }
 
 template <std::floating_point T>
-bool vertex_lies_on_background_edge(const LocalMesh<T>& mesh, int lv, int bg_edge_id)
-{
-    if (bg_edge_id < 0 || bg_edge_id >= cell::num_edges(mesh.parent_cell_type))
-        return false;
-
-    const int pdim = mesh.vertex_parent_dim[static_cast<std::size_t>(lv)];
-    const int pid = mesh.vertex_parent_id[static_cast<std::size_t>(lv)];
-    if (pdim == 1 && pid == bg_edge_id)
-        return true;
-    if (pdim == 0)
-    {
-        const auto edge = cell::edges(mesh.parent_cell_type)[static_cast<std::size_t>(bg_edge_id)];
-        return pid == edge[0] || pid == edge[1];
-    }
-    return false;
-}
-
-template <std::floating_point T>
-std::pair<int32_t, int32_t> infer_background_edge_parent(
-    const LocalMesh<T>& mesh,
-    int                 lv0,
-    int                 lv1)
-{
-    const int n_parent_edges = cell::num_edges(mesh.parent_cell_type);
-    for (int pe = 0; pe < n_parent_edges; ++pe)
-    {
-        if (vertex_lies_on_background_edge(mesh, lv0, pe)
-            && vertex_lies_on_background_edge(mesh, lv1, pe))
-        {
-            return {1, pe};
-        }
-    }
-    return {-1, -1};
-}
-
-template <std::floating_point T>
 bool vertex_lies_on_background_face(const LocalMesh<T>& mesh, int lv, int bg_face_id)
 {
     if (mesh.parent_cell_type != cell::type::hexahedron)
@@ -447,6 +412,8 @@ struct VertexDedupKeyHash
         return h;
     }
 };
+
+} // namespace  // end of first anonymous namespace
 
 template <std::floating_point T>
 void build_local_edges(LocalMesh<T>& mesh)
@@ -911,8 +878,6 @@ struct FaceKeyHash
         return h;
     }
 };
-
-} // namespace
 
 // ============================================================================
 // LocalMesh Implementation
@@ -1646,6 +1611,22 @@ void append_zero_entity(
 template <std::floating_point T>
 void clear_zero_topology_caches(LocalMesh<T>& mesh)
 {
+    mesh.zero_entity_dim.clear();
+    mesh.zero_entity_zero_mask.clear();
+    mesh.zero_entity_sign_mask.clear();
+    mesh.zero_entity_vertices.clear();
+    mesh.zero_entity_offsets.clear();
+    mesh.zero_entity_parent_cell.clear();
+    mesh.zero_entity_parent_dim.clear();
+    mesh.zero_entity_parent_id.clear();
+    mesh.zero_entity_is_owned.clear();
+    mesh.zero_entity_endpoint_v0.clear();
+    mesh.zero_entity_endpoint_v1.clear();
+    mesh.zero_face_edge_vertices.clear();
+    mesh.zero_face_edge_offsets.clear();
+
+    clear_zero_entity_compat_views(mesh);
+
     mesh.zero_chain_offsets.clear();
     mesh.zero_chain_entity_ids.clear();
     mesh.zero_chain_entity_reversed.clear();
@@ -2147,24 +2128,29 @@ void build_zero_patches(LocalMesh<T>& mesh, uint64_t zero_mask)
         }
     }
 
-    for (const auto& [edge, incident] : edge_to_faces)
-    {
-        (void)edge;
-        if (incident.size() > 2)
-            throw std::runtime_error("build_zero_patches: shared edge incident to >2 faces");
-    }
-
     std::unordered_map<int32_t, std::vector<int32_t>> face_adj;
     std::unordered_map<int32_t, uint8_t> face_boundary;
     for (const auto& [edge, incident] : edge_to_faces)
     {
         (void)edge;
         if (incident.size() == 1)
-            face_boundary[incident.front()] = 1;
-        else if (incident.size() == 2)
         {
-            face_adj[incident[0]].push_back(incident[1]);
-            face_adj[incident[1]].push_back(incident[0]);
+            face_boundary[incident.front()] = 1;
+            continue;
+        }
+
+        for (std::size_t i = 0; i < incident.size(); ++i)
+        {
+            const int32_t fi = incident[i];
+            auto& adj = face_adj[fi];
+            for (std::size_t j = 0; j < incident.size(); ++j)
+            {
+                if (i == j)
+                    continue;
+                const int32_t fj = incident[j];
+                if (std::find(adj.begin(), adj.end(), fj) == adj.end())
+                    adj.push_back(fj);
+            }
         }
     }
 
@@ -4093,7 +4079,129 @@ void seed_local_mesh_from_template_if_needed(
         mesh, iso_p1_template(mesh.parent_cell_type, degree));
 }
 
+// Green split functions are in green_split.h / green_split.cpp.
+
 } // namespace
+// ============================================================================
+// resolve_multi_root_edges — green-split loop for multi-cross resolution
+// ============================================================================
+
+template <std::floating_point T, std::integral I>
+bool resolve_multi_root_edges(
+    LocalMesh<T>&                 mesh,
+    const LevelSetFunction<T, I>& level_set,
+    LocalLevelSetBackend          backend,
+    int                           level_set_id,
+    T                             tol,
+    int                           max_iterations)
+{
+    if (level_set_id < 0 || level_set_id >= mesh.n_level_sets)
+        throw std::invalid_argument("resolve_multi_root_edges: invalid level_set_id");
+
+    // Build Bernstein local level-set function once (for polynomial backend)
+    // The segment_restriction closure captures the parent polynomial and
+    // can produce 1D Bernstein coefficients for any edge given its ref coords.
+    const bool use_bernstein = (backend == LocalLevelSetBackend::bernstein);
+    LocalLevelSetFunction<T, I> local_ls;
+    if (use_bernstein)
+    {
+        local_ls = level_set.mesh != nullptr
+            ? make_local_level_set_function_bernstein<T, I>(
+                  *level_set.mesh, level_set, static_cast<I>(mesh.parent_cell_id))
+            : make_local_level_set_function_bernstein<T, I>(
+                  mesh.parent_cell_type, mesh.gdim, level_set,
+                  static_cast<I>(mesh.parent_cell_id));
+    }
+
+    for (int iter = 0; iter < max_iterations; ++iter)
+    {
+        // (Re-)classify all edges
+        if (use_bernstein)
+        {
+            classify_edges_from_local_level_set<T, I>(
+                mesh, local_ls, level_set_id, tol, false, nullptr);
+        }
+        else
+        {
+            classify_edges_with_backend<T, I>(
+                mesh, level_set, backend, level_set_id, tol, false);
+        }
+
+        // Find the first multi_cross or uncertain edge
+        int target_edge = -1;
+        const int ne = mesh.n_edges();
+        for (int e = 0; e < ne; ++e)
+        {
+            const auto st = static_cast<EdgeState>(
+                mesh.edge_state_for(e, level_set_id));
+            if (st == EdgeState::multi_cross || st == EdgeState::uncertain)
+            {
+                target_edge = e;
+                break;
+            }
+        }
+
+        if (target_edge < 0)
+            return true; // all edges are at most single_cross
+
+        // Find separator parameter for this edge
+        T t_sep = T(0.5);
+        if (use_bernstein
+            && mesh.vertex_ref_x.size() == static_cast<std::size_t>(mesh.n_vertices() * mesh.tdim))
+        {
+            const int v0 = mesh.edge_vertices[static_cast<std::size_t>(2 * target_edge)];
+            const int v1 = mesh.edge_vertices[static_cast<std::size_t>(2 * target_edge + 1)];
+            const std::span<const T> x0_ref(
+                mesh.vertex_ref_x.data() + static_cast<std::size_t>(v0 * mesh.tdim),
+                static_cast<std::size_t>(mesh.tdim));
+            const std::span<const T> x1_ref(
+                mesh.vertex_ref_x.data() + static_cast<std::size_t>(v1 * mesh.tdim),
+                static_cast<std::size_t>(mesh.tdim));
+            std::vector<T> edge_coeffs;
+            local_ls.segment_restriction(x0_ref, x1_ref, edge_coeffs);
+            t_sep = find_separator_on_edge_bernstein<T>(
+                std::span<const T>(edge_coeffs.data(), edge_coeffs.size()), tol);
+        }
+        else
+        {
+            t_sep = find_separator_on_edge_midpoint<T>(
+                mesh, target_edge, level_set_id, tol);
+        }
+
+        // Attempt green split
+        const bool green_ok = green_split_one_edge(mesh, target_edge, t_sep);
+        if (!green_ok)
+        {
+            // Fall back to red refinement of incident cells
+            const int nc = mesh.n_cells();
+            std::vector<uint8_t> marks(static_cast<std::size_t>(nc), 0);
+            // Mark cells incident on this edge
+            // Re-find incident cells (green_split_one_edge may have failed
+            // before modifying the mesh, so the edge is still valid)
+            const auto incident = cells_incident_on_edge(mesh, target_edge);
+            for (const int c : incident)
+                marks[static_cast<std::size_t>(c)] = 1;
+            red_refine_marked_cells(
+                mesh, std::span<const uint8_t>(marks.data(), marks.size()));
+        }
+
+        // Evaluate level-set values at new vertices (needed for next
+        // classification round). The classify functions populate
+        // vertex_phi from the parent polynomial, so this is handled
+        // implicitly in the next iteration.
+    }
+
+    // max_iterations reached — check if any multi-cross edges remain
+    const int ne = mesh.n_edges();
+    for (int e = 0; e < ne; ++e)
+    {
+        const auto st = static_cast<EdgeState>(
+            mesh.edge_state_for(e, level_set_id));
+        if (st == EdgeState::multi_cross || st == EdgeState::uncertain)
+            return false;
+    }
+    return true;
+}
 
 template <std::floating_point T, std::integral I>
 bool certify_cut_subcells(
@@ -4284,6 +4392,7 @@ void decompose_local_mesh_from_cached_roots(
     deduplicate_zero_vertices(
         mesh, level_set_id, root_vertex_merge_tol<T>(), root_vertex_merge_tol<T>());
     build_local_edges(mesh);
+    build_local_faces(mesh);
     rebuild_parent_entity_maps(mesh);
 }
 
@@ -4330,14 +4439,13 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
     if (static_cast<int>(mesh.vertex_root_edge_id.size()) != mesh.n_vertices())
         mesh.vertex_root_edge_id.assign(static_cast<std::size_t>(mesh.n_vertices()), -1);
 
+    // Step 1: Seed the local mesh from a refinement template if needed
     seed_local_mesh_from_template_if_needed<T, I>(
         mesh, level_set, backend, level_set_id, tol);
-    const bool hard_fail_on_max_depth
-        = backend == LocalLevelSetBackend::bernstein
-          && level_set.has_nodal_values()
-          && level_set.kind == LevelSetFunction<T, I>::Kind::fem_nodal;
 
-    for (int depth = 0; ; ++depth)
+    // Step 2: Initial classification and red refinement for zero-topology
+    // or interior-sign conflicts (pre-LUT refinement loop)
+    for (int depth = 0; depth <= max_refine_depth; ++depth)
     {
         if (backend == LocalLevelSetBackend::bernstein)
         {
@@ -4356,16 +4464,7 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
             result.refine_iterations = depth + 1;
             if (depth >= max_refine_depth)
             {
-                if (hard_fail_on_max_depth)
-                {
-                    const int local_cell_id = first_marked_local_cell(
-                        std::span<const uint8_t>(
-                            zero_topology_marks.data(), zero_topology_marks.size()));
-                    throw_max_depth_uncertified(
-                        mesh,
-                        local_cell_id >= 0 ? local_cell_id : 0,
-                        CutRejectReason::max_depth_uncertified);
-                }
+                // Hit max depth during zero-topology refinement
                 decompose_local_mesh_linear(mesh, level_set_id, triangulate);
                 result.certified = false;
                 result.hit_max_depth = true;
@@ -4373,107 +4472,44 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
             }
 
             red_refine_marked_cells(
-                mesh, std::span<const uint8_t>(zero_topology_marks.data(), zero_topology_marks.size()));
+                mesh, std::span<const uint8_t>(
+                    zero_topology_marks.data(), zero_topology_marks.size()));
             continue;
         }
 
-        compute_all_roots_with_backend<T, I>(
-            mesh, level_set, backend, level_set_id, root_method, tol);
-
-        std::vector<uint8_t> marked_cells;
-        int invalid_cells = 0;
-        int first_invalid_cell = -1;
-        CutRejectReason first_reject_reason = CutRejectReason::none;
-        const bool need_refine = certify_cut_on_local_mesh<T, I>(
-            mesh, level_set, level_set_id, triangulate, tol,
-            marked_cells, invalid_cells, debug,
-            &first_invalid_cell, &first_reject_reason);
-
-        if (!need_refine)
-        {
-            decompose_local_mesh_from_cached_roots(mesh, level_set_id, triangulate, false);
-
-            std::vector<uint8_t> final_marked_cells;
-            int final_first_invalid_cell = -1;
-            CutRejectReason final_reject_reason = CutRejectReason::none;
-            const bool final_need_refine = certify_final_local_mesh_edges_bernstein<T, I>(
-                mesh, level_set, level_set_id, tol,
-                final_marked_cells, &final_first_invalid_cell, &final_reject_reason);
-            if (final_need_refine)
-            {
-                result.invalid_cells = 0;
-                for (const uint8_t mark : final_marked_cells)
-                    result.invalid_cells += (mark != 0) ? 1 : 0;
-                result.refine_iterations = depth + 1;
-                if (depth >= max_refine_depth)
-                {
-                    if (hard_fail_on_max_depth)
-                    {
-                        if (final_first_invalid_cell < 0)
-                        {
-                            final_first_invalid_cell = first_marked_local_cell(
-                                std::span<const uint8_t>(
-                                    final_marked_cells.data(), final_marked_cells.size()));
-                        }
-                        if (final_reject_reason == CutRejectReason::none)
-                            final_reject_reason = CutRejectReason::max_depth_uncertified;
-                        throw_max_depth_uncertified(
-                            mesh,
-                            final_first_invalid_cell >= 0 ? final_first_invalid_cell : 0,
-                            final_reject_reason);
-                    }
-                    decompose_local_mesh_linear(mesh, level_set_id, triangulate);
-                    result.certified = false;
-                    result.hit_max_depth = true;
-                    return result;
-                }
-
-                red_refine_marked_cells(
-                    mesh,
-                    std::span<const uint8_t>(
-                        final_marked_cells.data(), final_marked_cells.size()));
-                continue;
-            }
-
-            result.certified = true;
-            result.invalid_cells = 0;
-            result.refine_iterations = depth;
-            return result;
-        }
-
-        result.invalid_cells = invalid_cells;
-        result.refine_iterations = depth + 1;
-        if (debug)
-        {
-            std::cerr << "rejecting LUT cut and refining local cells: depth=" << depth
-                      << " invalid_cells=" << invalid_cells << "\n";
-        }
-
-        if (depth >= max_refine_depth)
-        {
-            if (hard_fail_on_max_depth)
-            {
-                if (first_invalid_cell < 0)
-                {
-                    first_invalid_cell = first_marked_local_cell(
-                        std::span<const uint8_t>(marked_cells.data(), marked_cells.size()));
-                }
-                if (first_reject_reason == CutRejectReason::none)
-                    first_reject_reason = CutRejectReason::max_depth_uncertified;
-                throw_max_depth_uncertified(
-                    mesh,
-                    first_invalid_cell >= 0 ? first_invalid_cell : 0,
-                    first_reject_reason);
-            }
-            decompose_local_mesh_linear(mesh, level_set_id, triangulate);
-            result.certified = false;
-            result.hit_max_depth = true;
-            return result;
-        }
-
-        red_refine_marked_cells(
-            mesh, std::span<const uint8_t>(marked_cells.data(), marked_cells.size()));
+        // No zero-topology issues — proceed to multi-root resolution
+        break;
     }
+
+    // Step 3: Resolve multi-root edges via green splits
+    const bool all_resolved = resolve_multi_root_edges<T, I>(
+        mesh, level_set, backend, level_set_id, tol, max_refine_depth * 4);
+
+    if (!all_resolved && debug)
+    {
+        std::cerr << "decompose_local_mesh_with_backend: parent cell "
+                  << mesh.parent_cell_id
+                  << " has unresolved multi-root edges after green splits\n";
+    }
+
+    // Step 4: Final edge classification (after green splits may have changed topology)
+    if (backend == LocalLevelSetBackend::bernstein)
+    {
+        classify_edges_with_backend<T, I>(
+            mesh, level_set, backend, level_set_id, tol, false);
+    }
+
+    // Step 5: Compute roots on all single_cross edges
+    compute_all_roots_with_backend<T, I>(
+        mesh, level_set, backend, level_set_id, root_method, tol);
+
+    // Step 6: Single LUT cutting — no post-LUT certification or rejection
+    decompose_local_mesh_from_cached_roots(mesh, level_set_id, triangulate, false);
+
+    result.certified = all_resolved;
+    result.invalid_cells = 0;
+    result.refine_iterations = 0;
+    return result;
 }
 
 // ============================================================================
@@ -4490,6 +4526,13 @@ void curve_interface_entities_with_backend(
     T                                  tol)
 {
     mesh.curved_fallback_count = 0;
+
+    if (mesh.tdim == 3)
+    {
+        curve_zero_entities_with_backend(
+            mesh, level_set, backend, level_set_id, geom_order, tol);
+        return;
+    }
 
     if (backend == LocalLevelSetBackend::bernstein)
     {
@@ -4735,6 +4778,8 @@ template void decompose_local_mesh<double, int>(LocalMesh<double>&, const LevelS
 template void decompose_local_mesh<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, int, cell::edge_root::method, bool);
 template LUTCertificationResult<double, int> decompose_local_mesh_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, cell::edge_root::method, bool, int, double, bool);
 template LUTCertificationResult<float, int> decompose_local_mesh_with_backend<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, cell::edge_root::method, bool, int, float, bool);
+template bool resolve_multi_root_edges<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, double, int);
+template bool resolve_multi_root_edges<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, float, int);
 template void curve_interface_entities_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, int, double);
 template void curve_interface_entities_with_backend<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, int, float);
 template void curve_zero_entities_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, int, double);

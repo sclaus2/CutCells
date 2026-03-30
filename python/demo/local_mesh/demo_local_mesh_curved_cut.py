@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
-from mpl_toolkits.mplot3d.art3d import Line3DCollection
+from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
 import cutcells
 
@@ -62,12 +62,12 @@ def demo_triangle_curved(root_method=cutcells.EdgeRootMethod.brent):
     cutcells.compute_roots_on_local_mesh(
         lm, ls, level_set_id=0, root_method=root_method, tol=1e-13
     )
-    edge_state = np.asarray(lm.edge_state, dtype=np.uint8).copy()
-    root_param = np.asarray(lm.edge_root_parameter, dtype=np.float64).copy()
-    root_iter = np.asarray(lm.edge_root_iterations, dtype=np.int32).copy()
-    root_eval = np.asarray(lm.edge_root_evaluations, dtype=np.int32).copy()
-    root_conv = np.asarray(lm.edge_root_converged, dtype=np.uint8).copy()
-    root_res = np.asarray(lm.edge_root_residual, dtype=np.float64).copy()
+    edge_state = np.asarray(lm.edge_state, dtype=np.uint8).flatten()
+    root_param = np.asarray(lm.edge_root_parameter, dtype=np.float64).flatten()
+    root_iter = np.asarray(lm.edge_root_iterations, dtype=np.int32).flatten()
+    root_eval = np.asarray(lm.edge_root_evaluations, dtype=np.int32).flatten()
+    root_conv = np.asarray(lm.edge_root_converged, dtype=np.uint8).flatten()
+    root_res = np.asarray(lm.edge_root_residual, dtype=np.float64).flatten()
     one_root_edges = np.flatnonzero(edge_state == 1)
     if one_root_edges.size:
         print(f"[triangle] root_method={root_method.name}, one_root_edges={one_root_edges.size}")
@@ -184,19 +184,19 @@ def demo_tetrahedron_curved(root_method=cutcells.EdgeRootMethod.itp):
     cutcells.compute_roots_on_local_mesh(
         lm, ls, level_set_id=0, root_method=root_method, tol=1e-13
     )
-    edge_state = np.asarray(lm.edge_state, dtype=np.uint8).copy()
-    root_iter = np.asarray(lm.edge_root_iterations, dtype=np.int32).copy()
-    root_eval = np.asarray(lm.edge_root_evaluations, dtype=np.int32).copy()
-    root_res = np.asarray(lm.edge_root_residual, dtype=np.float64).copy()
-    root_conv = np.asarray(lm.edge_root_converged, dtype=np.uint8).copy()
-    root_param = np.asarray(lm.edge_root_parameter, dtype=np.float64).copy()
+    edge_state = np.asarray(lm.edge_state, dtype=np.uint8).flatten()
+    root_iter = np.asarray(lm.edge_root_iterations, dtype=np.int32).flatten()
+    root_eval = np.asarray(lm.edge_root_evaluations, dtype=np.int32).flatten()
+    root_res = np.asarray(lm.edge_root_residual, dtype=np.float64).flatten()
+    root_conv = np.asarray(lm.edge_root_converged, dtype=np.uint8).flatten()
+    root_param = np.asarray(lm.edge_root_parameter, dtype=np.float64).flatten()
     one_root_edges = np.flatnonzero(edge_state == 1)
     if one_root_edges.size:
         n_conv = int(np.count_nonzero(root_conv[one_root_edges]))
         n_total = int(one_root_edges.size)
         conv_rate = 100.0 * n_conv / max(1, n_total)
         print(
-            f"[tetrahedron] root_method={root_method.name}, one_root_edges={one_root_edges.size}, "
+            f"[tetrahedron] root_method={root_method.name}, one_root_edges={n_total}, "
             f"converged={n_conv}/{n_total} ({conv_rate:.1f}%), "
             f"avg_it={root_iter[one_root_edges].mean():.2f}, "
             f"avg_eval={root_eval[one_root_edges].mean():.2f}, "
@@ -204,8 +204,8 @@ def demo_tetrahedron_curved(root_method=cutcells.EdgeRootMethod.itp):
         )
         for e in one_root_edges:
             print(
-                f"  edge {int(e):3d}: t={root_param[e]:.6f}, it={root_iter[e]:2d}, "
-                f"eval={root_eval[e]:2d}, converged={bool(root_conv[e])}, residual={root_res[e]:.3e}"
+                f"  edge {int(e):3d}: t={float(root_param[e]):.6f}, it={int(root_iter[e]):2d}, "
+                f"eval={int(root_eval[e]):2d}, converged={bool(root_conv[e])}, residual={float(root_res[e]):.3e}"
             )
 
     cutcells.decompose_local_mesh(
@@ -224,38 +224,96 @@ def demo_tetrahedron_curved(root_method=cutcells.EdgeRootMethod.itp):
 
     inside_segments = []
     outside_segments = []
+    interface_tris = []   # triangular facets with domain==1
 
     for i in range(lm.n_cells()):
         c0, c1 = offsets[i], offsets[i + 1]
-        tet = cells[c0:c1]
-        if tet.size != 4:
-            continue
-        verts = x[tet]
-        segs = [
-            [verts[0], verts[1]],
-            [verts[0], verts[2]],
-            [verts[0], verts[3]],
-            [verts[1], verts[2]],
-            [verts[1], verts[3]],
-            [verts[2], verts[3]],
-        ]
-        if int(cell_domain[i]) == 0:
-            inside_segments.extend(segs)
-        elif int(cell_domain[i]) == 2:
-            outside_segments.extend(segs)
+        verts_idx = cells[c0:c1]
+        dom = int(cell_domain[i])
+        if verts_idx.size == 4:
+            # Tetrahedral cell — draw wireframe edges
+            verts = x[verts_idx]
+            segs = [
+                [verts[0], verts[1]],
+                [verts[0], verts[2]],
+                [verts[0], verts[3]],
+                [verts[1], verts[2]],
+                [verts[1], verts[3]],
+                [verts[2], verts[3]],
+            ]
+            if dom == 0:
+                inside_segments.extend(segs)
+            elif dom == 2:
+                outside_segments.extend(segs)
+        elif verts_idx.size == 3:
+            # Triangular cell — collect interface facets (domain==1)
+            if dom == 1:
+                interface_tris.append(x[verts_idx])
 
-    fig = plt.figure(figsize=(7, 6))
+    # ---------------------------------------------------------------
+    # Figure
+    # ---------------------------------------------------------------
+    fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(111, projection="3d")
+
+    # Inside / outside wireframe
     if inside_segments:
-        ax.add_collection3d(Line3DCollection(inside_segments, colors="tab:blue", linewidths=0.7, alpha=0.8))
+        ax.add_collection3d(
+            Line3DCollection(inside_segments, colors="tab:blue", linewidths=0.6, alpha=0.55,
+                             label="inside tets")
+        )
     if outside_segments:
-        ax.add_collection3d(Line3DCollection(outside_segments, colors="tab:orange", linewidths=0.7, alpha=0.6))
-    ax.scatter(x[:, 0], x[:, 1], x[:, 2], s=8, c="black", depthshade=False)
+        ax.add_collection3d(
+            Line3DCollection(outside_segments, colors="tab:orange", linewidths=0.6, alpha=0.35,
+                             label="outside tets")
+        )
+
+    # Piecewise-linear interface patches
+    if interface_tris:
+        pc = Poly3DCollection(
+            interface_tris,
+            facecolor="tab:green",
+            edgecolor="darkgreen",
+            linewidths=0.8,
+            alpha=0.70,
+            label="PL interface",
+            zorder=4,
+        )
+        ax.add_collection3d(pc)
+
+    # Computed root vertices
+    ax.scatter(x[:, 0], x[:, 1], x[:, 2], s=8, c="black", depthshade=False, zorder=3)
+    root_vids_tet = np.unique(np.asarray(lm.edge_root_vertex, dtype=np.int32).flatten())
+    root_vids_tet = root_vids_tet[root_vids_tet >= 0]
+    if root_vids_tet.size:
+        xr = x[root_vids_tet]
+        ax.scatter(xr[:, 0], xr[:, 1], xr[:, 2], s=25, c="crimson", marker="o",
+                   depthshade=False, zorder=5, label="computed roots")
+
+    # Exact sphere surface for comparison
+    cx, cy, cz, radius = 0.35, 0.30, 0.28, 0.23
+    u = np.linspace(0, 2 * np.pi, 40)
+    v = np.linspace(0, np.pi, 20)
+    sx = cx + radius * np.outer(np.cos(u), np.sin(v))
+    sy = cy + radius * np.outer(np.sin(u), np.sin(v))
+    sz = cz + radius * np.outer(np.ones_like(u), np.cos(v))
+    ax.plot_surface(sx, sy, sz, color="crimson", alpha=0.15, linewidth=0,
+                    antialiased=True, label="exact sphere")
+    # Add a proxy artist for the legend (plot_surface legend support is limited)
+    from matplotlib.patches import Patch
+    legend_proxy = [
+        Patch(facecolor="tab:blue", alpha=0.55, label="inside tets"),
+        Patch(facecolor="tab:orange", alpha=0.55, label="outside tets"),
+        Patch(facecolor="tab:green", alpha=0.70, label="PL interface"),
+        Patch(facecolor="crimson", alpha=0.35, label="exact sphere"),
+    ]
+
     ax.set_title(f"Curved Tetrahedron Cut (root={root_method.name})")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_zlabel("z")
     ax.set_box_aspect((1, 1, 1))
+    ax.legend(handles=legend_proxy, loc="upper left", fontsize=8)
     fig.tight_layout()
     plt.show()
     n_conv = int(np.count_nonzero(root_conv[one_root_edges])) if one_root_edges.size else 0

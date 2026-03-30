@@ -61,6 +61,7 @@ try:
         CellType,
         EdgeRootMethod,
         LocalLevelSetBackend,
+        CurvedMappingBackend,
         CutCell_float32,
         CutCell_float64,
         CutCells_float32,
@@ -164,11 +165,18 @@ try:
         append_volume_quadrature_curved_float32,
         append_volume_quadrature_curved_float64,
         make_quadrature_curved,
+        make_quadrature_curved_with_backend,
+        make_quadrature_curved_with_backend_float32,
+        make_quadrature_curved_with_backend_float64,
         make_quadrature_curved_physical_points,
+        make_quadrature_curved_physical_points_with_backend,
         make_quadrature_curved_physical_points_float32,
         make_quadrature_curved_physical_points_float64,
         make_quadrature_curved_float32,
         make_quadrature_curved_float64,
+        assemble_curved_volume_mesh_with_backend,
+        assemble_curved_volume_mesh_with_backend_float32,
+        assemble_curved_volume_mesh_with_backend_float64,
     )
 except ModuleNotFoundError as exc:
     raise ModuleNotFoundError(

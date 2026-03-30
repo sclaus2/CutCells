@@ -6,6 +6,7 @@
 #pragma once
 
 #include "local_mesh.h"
+#include "mapping_curved.h"
 #include "quadrature.h"
 
 #include <concepts>
@@ -86,6 +87,28 @@ void append_volume_quadrature_curved(
     int& fallback_count,
     std::vector<T>& physical_points);
 
+/// Overloads with explicit mapping backend selection.
+template <std::floating_point T>
+void append_volume_quadrature_curved(
+    const LocalMesh<T>& mesh,
+    int cell_id,
+    int level_set_id,
+    int order,
+    QuadratureRules<T>& rules,
+    int& fallback_count,
+    mapping::CurvedMappingBackend backend);
+
+template <std::floating_point T>
+void append_volume_quadrature_curved(
+    const LocalMesh<T>& mesh,
+    int cell_id,
+    int level_set_id,
+    int order,
+    QuadratureRules<T>& rules,
+    int& fallback_count,
+    std::vector<T>& physical_points,
+    mapping::CurvedMappingBackend backend);
+
 /// @brief Build curved quadrature rules for all inside cells and interface
 ///        entities of one level set in a LocalMesh.
 ///
@@ -119,5 +142,26 @@ void make_quadrature_curved(
     std::vector<T>& volume_physical_points,
     QuadratureRules<T>& interface_rules,
     std::vector<T>& interface_physical_points);
+
+/// Overloads with explicit mapping backend selection for volume quadrature.
+template <std::floating_point T>
+void make_quadrature_curved(
+    const LocalMesh<T>& mesh,
+    int level_set_id,
+    int order,
+    QuadratureRules<T>& volume_rules,
+    QuadratureRules<T>& interface_rules,
+    mapping::CurvedMappingBackend volume_backend);
+
+template <std::floating_point T>
+void make_quadrature_curved(
+    const LocalMesh<T>& mesh,
+    int level_set_id,
+    int order,
+    QuadratureRules<T>& volume_rules,
+    std::vector<T>& volume_physical_points,
+    QuadratureRules<T>& interface_rules,
+    std::vector<T>& interface_physical_points,
+    mapping::CurvedMappingBackend volume_backend);
 
 } // namespace cutcells::quadrature

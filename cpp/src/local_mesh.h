@@ -588,6 +588,22 @@ void decompose_local_mesh(
 template <std::floating_point T>
 void build_local_faces(LocalMesh<T>& mesh);
 
+/// Build or rebuild the edge layer of a local mesh (cell_edge_offsets,
+/// cell_edges_flat, edge_vertices, n_edges_*).
+template <std::floating_point T>
+void build_local_edges(LocalMesh<T>& mesh);
+
+/// Build or rebuild the face layer of a local mesh (face_vertices,
+/// face_offsets, face_types, face_parent_*, cell_face_offsets,
+/// cell_faces_flat).  No-op for tdim < 3.
+template <std::floating_point T>
+void build_local_faces(LocalMesh<T>& mesh);
+
+/// Rebuild vertex_parent_*, edge_parent_*, and face_parent_* maps for
+/// all vertices and edges (and faces when tdim == 3) of the local mesh.
+template <std::floating_point T>
+void rebuild_parent_entity_maps(LocalMesh<T>& mesh);
+
 /// Build mixed-dimensional straight zero entities after decomposition.
 ///
 /// The current extraction path populates codim-1 entities directly from the
@@ -629,6 +645,30 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
     int                                max_refine_depth = 6,
     T                                  tol = static_cast<T>(1e-14),
     bool                               debug = false);
+
+/// Resolve all multi-root edges on the local mesh by recursively applying
+/// green splits before LUT cutting.
+///
+/// For each edge classified as multi_cross or uncertain, this routine:
+///   1. Identifies a separator parameter strictly between two consecutive
+///      roots (using Bernstein subdivision for the polynomial backend,
+///      or midpoint evaluation for the analytic backend).
+///   2. Inserts a separator vertex on that edge.
+///   3. Applies a shape-specific green refinement split to all cells
+///      incident on that edge.
+///   4. Reclassifies the affected child edges.
+///   5. Repeats until every local edge has at most one root.
+///
+/// Returns true if all edges are resolved (at most one_root).
+/// Returns false if max_iterations was hit with unresolved edges remaining.
+template <std::floating_point T, std::integral I = int>
+bool resolve_multi_root_edges(
+    LocalMesh<T>&                      mesh,
+    const LevelSetFunction<T, I>&      level_set,
+    LocalLevelSetBackend               backend,
+    int                                level_set_id = 0,
+    T                                  tol = static_cast<T>(1e-14),
+    int                                max_iterations = 20);
 
 /// Curve all interface entities with backend dispatch.
 ///
@@ -1637,7 +1677,278 @@ inline void curve_zero_entities_impl(
     }
     else if (tdim == 3)
     {
-        // 3D face curving: deferred — curved_zero_ref_nodes stays zeroed
+        // 3D face curving: project interior face nodes onto the zero level set.
+        //
+        // For a triangular face of order p, the number of interior face nodes
+        // is (p-1)(p-2)/2. For a quad face: (p-1)^2.
+        //
+        // Each interior node starts at its straight (bilinear/barycentric)
+        // position within the face and is projected onto phi=0 via Newton
+        // iteration along the gradient direction.
+
+        // For the node count in the cache, we use:
+        // - n_interior for 1D (edge) entities = geom_order - 1  (already handled by offset calculation above)
+        // - n_interior for 2D (face) entities = depends on face shape
+
+        // Re-do the offset calculation for 3D where dim-2 entities are faces
+        // and may have varying interior node counts.
+        // The initial offset calculation above used n_interior = geom_order - 1
+        // which is correct for edge entities. For face entities we need to recompute.
+
+        // Recompute offsets for qualifying face entities
+        for (int ze = 0; ze < n_zero; ++ze)
+        {
+            const auto ze_dim = mesh.zero_entity_dim[static_cast<std::size_t>(ze)];
+            if (ze_dim != codim1_dim) // codim1_dim = tdim - 1 = 2
+                continue;
+            if (!((mesh.zero_entity_zero_mask[static_cast<std::size_t>(ze)] >> level_set_id)
+                  & uint64_t(1)))
+                continue;
+
+            // Determine face shape from vertex count
+            const int f0 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze)];
+            const int f1 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze + 1)];
+            const int n_face_verts = f1 - f0;
+
+            int n_face_interior = 0;
+            if (n_face_verts == 3) // triangle
+                n_face_interior = (geom_order - 1) * (geom_order - 2) / 2;
+            else if (n_face_verts == 4) // quad
+                n_face_interior = (geom_order - 1) * (geom_order - 1);
+
+            // Override the count set by the initial loop (which assumed n_interior)
+            // We need to adjust: the initial loop set n_interior = geom_order - 1
+            // but for faces we need n_face_interior.
+            // Reconstruct the offset entry for this entity.
+            mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)]
+                = mesh.curved_zero_offsets[static_cast<std::size_t>(ze)]
+                + static_cast<int32_t>(n_face_interior);
+        }
+
+        // Fix up offsets for non-qualifying entities after the face entities
+        // (the prefix sum needs to be re-done since we changed face entries)
+        // Actually, let's redo the full prefix sum from scratch for correctness.
+        mesh.curved_zero_offsets.assign(
+            static_cast<std::size_t>(n_zero + 1), 0);
+        for (int ze = 0; ze < n_zero; ++ze)
+        {
+            const auto ze_dim = mesh.zero_entity_dim[static_cast<std::size_t>(ze)];
+            if (!((mesh.zero_entity_zero_mask[static_cast<std::size_t>(ze)] >> level_set_id)
+                  & uint64_t(1)))
+            {
+                mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)] = 0;
+                continue;
+            }
+
+            if (ze_dim == 1) // edge entity
+            {
+                mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)]
+                    = static_cast<int32_t>(n_interior);
+            }
+            else if (ze_dim == 2) // face entity
+            {
+                const int f0 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze)];
+                const int f1 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze + 1)];
+                const int n_face_verts = f1 - f0;
+
+                int n_face_interior = 0;
+                if (n_face_verts == 3)
+                    n_face_interior = (geom_order - 1) * (geom_order - 2) / 2;
+                else if (n_face_verts == 4)
+                    n_face_interior = (geom_order - 1) * (geom_order - 1);
+
+                mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)]
+                    = static_cast<int32_t>(n_face_interior);
+            }
+            else
+            {
+                mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)] = 0;
+            }
+        }
+
+        // Exclusive prefix sum
+        for (int i = 0; i < n_zero; ++i)
+        {
+            mesh.curved_zero_offsets[static_cast<std::size_t>(i + 1)] +=
+                mesh.curved_zero_offsets[static_cast<std::size_t>(i)];
+        }
+
+        const int total_nodes_3d =
+            mesh.curved_zero_offsets[static_cast<std::size_t>(n_zero)];
+        mesh.curved_zero_ref_nodes.resize(
+            static_cast<std::size_t>(total_nodes_3d * tdim), T(0));
+        mesh.curved_zero_converged.resize(
+            static_cast<std::size_t>(total_nodes_3d), 0);
+        mesh.curved_zero_status.assign(
+            static_cast<std::size_t>(total_nodes_3d),
+            static_cast<uint8_t>(CurveStatus::failed));
+
+        // Bounding box type for domain checks
+        const cell::type bbox_type = cell::type::hexahedron;
+
+        // Project face interior nodes
+        for (int ze = 0; ze < n_zero; ++ze)
+        {
+            if (mesh.zero_entity_dim[static_cast<std::size_t>(ze)] != 2)
+                continue;
+            if (!((mesh.zero_entity_zero_mask[static_cast<std::size_t>(ze)] >> level_set_id)
+                  & uint64_t(1)))
+                continue;
+
+            const int node_start =
+                mesh.curved_zero_offsets[static_cast<std::size_t>(ze)];
+            const int node_end =
+                mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)];
+            const int n_face_nodes = node_end - node_start;
+            if (n_face_nodes <= 0)
+                continue;
+
+            // Get face vertices in reference space
+            const int f0 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze)];
+            const int f1 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze + 1)];
+            const int n_fv = f1 - f0;
+
+            // Gather face vertex reference coordinates
+            std::vector<T> face_ref(static_cast<std::size_t>(n_fv * tdim));
+            for (int i = 0; i < n_fv; ++i)
+            {
+                const int vid = mesh.zero_entity_vertices[static_cast<std::size_t>(f0 + i)];
+                for (int k = 0; k < tdim; ++k)
+                    face_ref[static_cast<std::size_t>(i * tdim + k)]
+                        = mesh.vertex_ref_x[static_cast<std::size_t>(vid * tdim + k)];
+            }
+
+            // Generate interior node positions on a regular grid in face param space
+            // For triangles: use barycentric coordinates (L1, L2, L3) with
+            //   L_i = i_k / p for i_k = 1..p-1, sum < p
+            // For quads: tensor product of GL interior points
+
+            int node_idx = 0;
+            if (n_fv == 3) // triangular face
+            {
+                // Interior nodes with barycentric coordinates (i/p, j/p, k/p)
+                // where i,j,k >= 1 and i+j+k = p
+                const T dp = static_cast<T>(geom_order);
+                for (int j = 1; j < geom_order; ++j)
+                {
+                    for (int i = 1; i < geom_order - j; ++i)
+                    {
+                        const T L0 = static_cast<T>(i) / dp;
+                        const T L1 = static_cast<T>(j) / dp;
+                        // L2 = 1 - L0 - L1
+                        // Reference position = L0*v0 + L1*v1 + (1-L0-L1)*v2
+                        // Actually: barycentric -> face coords
+                        // x_ref = (1-L0-L1)*fv0 + L0*fv1 + L1*fv2
+                        T* out = &mesh.curved_zero_ref_nodes[
+                            static_cast<std::size_t>((node_start + node_idx) * tdim)];
+                        for (int k = 0; k < tdim; ++k)
+                        {
+                            out[k] = (T(1) - L0 - L1) * face_ref[static_cast<std::size_t>(0 * tdim + k)]
+                                   + L0 * face_ref[static_cast<std::size_t>(1 * tdim + k)]
+                                   + L1 * face_ref[static_cast<std::size_t>(2 * tdim + k)];
+                        }
+                        ++node_idx;
+                    }
+                }
+            }
+            else if (n_fv == 4) // quad face
+            {
+                // Tensor product of equispaced interior points
+                for (int j = 1; j < geom_order; ++j)
+                {
+                    const T v_param = static_cast<T>(j) / static_cast<T>(geom_order);
+                    for (int i = 1; i < geom_order; ++i)
+                    {
+                        const T u_param = static_cast<T>(i) / static_cast<T>(geom_order);
+                        T* out = &mesh.curved_zero_ref_nodes[
+                            static_cast<std::size_t>((node_start + node_idx) * tdim)];
+                        // Bilinear interpolation: (1-u)(1-v)*v0 + u(1-v)*v1 + uv*v2 + (1-u)v*v3
+                        for (int k = 0; k < tdim; ++k)
+                        {
+                            out[k] = (T(1) - u_param) * (T(1) - v_param) * face_ref[static_cast<std::size_t>(0 * tdim + k)]
+                                   + u_param * (T(1) - v_param) * face_ref[static_cast<std::size_t>(1 * tdim + k)]
+                                   + u_param * v_param * face_ref[static_cast<std::size_t>(2 * tdim + k)]
+                                   + (T(1) - u_param) * v_param * face_ref[static_cast<std::size_t>(3 * tdim + k)];
+                        }
+                        ++node_idx;
+                    }
+                }
+            }
+
+            // Now project each interior node onto phi=0 via Newton iteration
+            for (int ni = 0; ni < n_face_nodes; ++ni)
+            {
+                const int abs_idx = node_start + ni;
+                T* out = &mesh.curved_zero_ref_nodes[
+                    static_cast<std::size_t>(abs_idx * tdim)];
+
+                // Newton projection: x_{n+1} = x_n - (phi(x_n) / |grad|^2) * grad
+                std::array<T, 3> x_cur = {T(0), T(0), T(0)};
+                for (int k = 0; k < tdim; ++k)
+                    x_cur[static_cast<std::size_t>(k)] = out[k];
+
+                bool converged = false;
+                for (int it = 0; it < 20; ++it)
+                {
+                    const T f = eval_phi(x_cur.data(), tdim);
+                    if (std::abs(f) <= std::max<T>(tol, static_cast<T>(1e-12)))
+                    {
+                        converged = true;
+                        break;
+                    }
+
+                    std::array<T, 3> g = {T(0), T(0), T(0)};
+                    eval_grad(x_cur.data(), tdim, g.data());
+                    T g2 = T(0);
+                    for (int k = 0; k < tdim; ++k)
+                        g2 += g[static_cast<std::size_t>(k)]
+                            * g[static_cast<std::size_t>(k)];
+                    if (g2 <= static_cast<T>(1e-20))
+                        break;
+
+                    T step = f / g2;
+
+                    // Line search with backtracking for domain safety
+                    std::array<T, 3> x_trial = x_cur;
+                    for (int k = 0; k < tdim; ++k)
+                        x_trial[static_cast<std::size_t>(k)] -= step * g[static_cast<std::size_t>(k)];
+
+                    for (int bt = 0; bt < 6; ++bt)
+                    {
+                        if (cell::edge_root::is_inside_reference_domain<T>(
+                                std::span<const T>(x_trial.data(),
+                                                   static_cast<std::size_t>(tdim)),
+                                bbox_type,
+                                std::max<T>(tol, static_cast<T>(1e-10))))
+                            break;
+                        step *= T(0.5);
+                        for (int k = 0; k < tdim; ++k)
+                            x_trial[static_cast<std::size_t>(k)]
+                                = x_cur[static_cast<std::size_t>(k)]
+                                - step * g[static_cast<std::size_t>(k)];
+                    }
+                    x_cur = x_trial;
+                }
+
+                if (converged)
+                {
+                    for (int k = 0; k < tdim; ++k)
+                        out[k] = x_cur[static_cast<std::size_t>(k)];
+                    mesh.curved_zero_converged[static_cast<std::size_t>(abs_idx)] = 1;
+                    mesh.curved_zero_status[static_cast<std::size_t>(abs_idx)]
+                        = static_cast<uint8_t>(CurveStatus::accepted);
+                }
+                else
+                {
+                    // Keep straight position (already in out)
+                    mesh.curved_zero_converged[static_cast<std::size_t>(abs_idx)] = 0;
+                    mesh.curved_zero_status[static_cast<std::size_t>(abs_idx)]
+                        = static_cast<uint8_t>(CurveStatus::failed);
+                    ++mesh.curved_fallback_count;
+                    ++mesh.curved_failed_count;
+                }
+            }
+        }
     }
 
     mesh.curved_geometry_order = geom_order;

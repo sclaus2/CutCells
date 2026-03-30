@@ -46,7 +46,9 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/utils.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_tikz.h
   ${CMAKE_CURRENT_SOURCE_DIR}/curved_mesh.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mapping_curved.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/green_split.h
   PARENT_SCOPE)
 
 target_sources(cutcells PRIVATE
@@ -64,6 +66,7 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/iso_refine.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/local_mesh.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/green_split.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature_curved.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/curved_mesh.cpp
