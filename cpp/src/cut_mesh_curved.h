@@ -28,6 +28,7 @@ struct CurvedCutMeshResult
 
     CutMesh<T> inside_vis;
     CutMesh<T> interface_vis;
+    CutMesh<T> interface_curved_vis;
     CutMesh<T> outside_vis;
 
     std::vector<LocalMesh<T>> local_meshes;
@@ -44,7 +45,9 @@ CurvedCutMeshResult<T> cut_mesh_view_curved(
     int                             geom_order = 4,
     std::string_view                backend = "bernstein",
     int                             vis_subdivision = 3,
-    T                               tol = static_cast<T>(1e-12));
+    T                               tol = static_cast<T>(1e-12),
+    bool                            repair_diagonals = false,
+    int                             max_repair_depth = 3);
 
 template <std::floating_point T>
 CurvedCutMeshResult<T> cut_vtk_mesh_curved(
@@ -56,6 +59,8 @@ CurvedCutMeshResult<T> cut_vtk_mesh_curved(
     int                             geom_order = 4,
     std::string_view                backend = "bernstein",
     int                             vis_subdivision = 3,
-    T                               tol = static_cast<T>(1e-12));
+    T                               tol = static_cast<T>(1e-12),
+    bool                            repair_diagonals = false,
+    int                             max_repair_depth = 3);
 
 } // namespace cutcells::mesh

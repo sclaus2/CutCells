@@ -105,20 +105,10 @@ inline LevelSetFunction<T, I> make_level_set_function_from_callable(
 }
 
 template <std::floating_point T, std::integral I = int>
-inline LevelSetFunction<T, I> make_level_set_function_from_fem(
+LevelSetFunction<T, I> make_level_set_function_from_fem(
     const MeshView<T, I>&                      mesh,
     std::span<const T>                         nodal_values,
     int                                        degree,
-    std::shared_ptr<void>                      owner = nullptr)
-{
-  LevelSetFunction<T, I> level_set;
-  level_set.nodal_values = nodal_values;
-  level_set.owner = std::move(owner);
-  level_set.mesh = &mesh;
-  level_set.gdim = mesh.gdim;
-  level_set.degree = degree;
-  level_set.kind = LevelSetFunction<T, I>::Kind::fem_nodal;
-  return level_set;
-}
+    std::shared_ptr<void>                      owner = nullptr);
 
 } // namespace cutcells

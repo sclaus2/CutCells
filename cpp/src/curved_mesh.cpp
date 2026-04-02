@@ -14,12 +14,68 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
 namespace
 {
+
+struct SurfacePointKey
+{
+    int64_t x = 0;
+    int64_t y = 0;
+    int64_t z = 0;
+
+    bool operator==(const SurfacePointKey& other) const noexcept
+    {
+        return x == other.x && y == other.y && z == other.z;
+    }
+};
+
+struct SurfacePointKeyHash
+{
+    std::size_t operator()(const SurfacePointKey& k) const noexcept
+    {
+        std::size_t h = std::hash<int64_t>{}(k.x);
+        h ^= std::hash<int64_t>{}(k.y) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= std::hash<int64_t>{}(k.z) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+template <std::floating_point T>
+SurfacePointKey make_surface_point_key(const T* x_phys, int gdim, T tol)
+{
+    const T inv = T(1) / tol;
+    SurfacePointKey key;
+    key.x = static_cast<int64_t>(std::llround(x_phys[0] * inv));
+    key.y = (gdim >= 2) ? static_cast<int64_t>(std::llround(x_phys[1] * inv)) : 0;
+    key.z = (gdim >= 3) ? static_cast<int64_t>(std::llround(x_phys[2] * inv)) : 0;
+    return key;
+}
+
+template <std::floating_point T>
+int32_t add_or_get_surface_point(
+    cutcells::mesh::CurvedGlobalMesh<T>& mesh,
+    std::unordered_map<SurfacePointKey, int32_t, SurfacePointKeyHash>& point_map,
+    int32_t& gv_count,
+    const T* x_phys,
+    int gdim,
+    T tol)
+{
+    const auto key = make_surface_point_key(x_phys, gdim, tol);
+    const auto it = point_map.find(key);
+    if (it != point_map.end())
+        return it->second;
+
+    const int32_t gv = gv_count++;
+    for (int d = 0; d < gdim; ++d)
+        mesh.vertex_coords.push_back(x_phys[d]);
+    point_map.emplace(key, gv);
+    return gv;
+}
 
 /// Push-forward a single reference point to physical space using parent P1
 /// affine map for the given LocalMesh.
@@ -51,14 +107,7 @@ template <std::floating_point T>
 inline cutcells::cell::type zero_face_type(const cutcells::LocalMesh<T>& mesh,
                                            int zero_entity_id)
 {
-    const int z0 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id)];
-    const int z1 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id + 1)];
-    const int n_face_verts = z1 - z0;
-    if (n_face_verts == 3)
-        return cutcells::cell::type::triangle;
-    if (n_face_verts == 4)
-        return cutcells::cell::type::quadrilateral;
-    return cutcells::cell::type::point;
+    return cutcells::zero_entity_face_type(mesh, zero_entity_id);
 }
 
 template <std::floating_point T>
@@ -76,85 +125,12 @@ inline void build_zero_face_coordinate_polys(
             "build_zero_face_coordinate_polys: unsupported zero-face type");
 
     const int tdim = mesh.tdim;
-    const int z0 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id)];
-    const int z1 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id + 1)];
-    const int n_face_verts = z1 - z0;
-
-    const bool has_curved =
-        geom_order >= 2
-        && !mesh.curved_zero_offsets.empty()
-        && static_cast<int>(mesh.curved_zero_offsets.size()) == mesh.n_zero_entities() + 1;
-    const int node_start = has_curved
-        ? mesh.curved_zero_offsets[static_cast<std::size_t>(zero_entity_id)] : 0;
-    const int node_end = has_curved
-        ? mesh.curved_zero_offsets[static_cast<std::size_t>(zero_entity_id + 1)] : 0;
-    const int n_face_interior = node_end - node_start;
-    const int expected_face_interior = (face_type == cutcells::cell::type::triangle)
-        ? (geom_order - 1) * (geom_order - 2) / 2
-        : (geom_order - 1) * (geom_order - 1);
-    const bool use_curved = has_curved && n_face_interior == expected_face_interior;
-
-    const int degree = use_curved ? geom_order : 1;
+    std::vector<T> face_nodes_ref;
+    const int degree = cutcells::build_zero_face_nodes_ref(
+        mesh, zero_entity_id, geom_order, face_nodes_ref, fallback_nodes);
     const auto& tpl = (degree == 1)
         ? cutcells::p1_template(face_type)
         : cutcells::iso_p1_template(face_type, degree);
-
-    std::vector<T> face_nodes_ref(
-        static_cast<std::size_t>(tpl.n_vertices * tdim), T(0));
-
-    std::array<const T*, 4> face_corners = {nullptr, nullptr, nullptr, nullptr};
-    for (int i = 0; i < n_face_verts; ++i)
-    {
-        const int lv = mesh.zero_entity_vertices[static_cast<std::size_t>(z0 + i)];
-        face_corners[static_cast<std::size_t>(i)]
-            = &mesh.vertex_ref_x[static_cast<std::size_t>(lv * tdim)];
-    }
-
-    int interior_id = 0;
-    for (int i = 0; i < tpl.n_vertices; ++i)
-    {
-        const T* cached = nullptr;
-        if (use_curved && tpl.vertex_parent_dim[static_cast<std::size_t>(i)] == 2)
-        {
-            const int cache_id = node_start + interior_id;
-            if (fallback_nodes != nullptr
-                && !mesh.curved_zero_converged.empty()
-                && !mesh.curved_zero_converged[static_cast<std::size_t>(cache_id)])
-                ++(*fallback_nodes);
-            cached = &mesh.curved_zero_ref_nodes[
-                static_cast<std::size_t>(cache_id * tdim)];
-            ++interior_id;
-        }
-
-        T* x_node = &face_nodes_ref[static_cast<std::size_t>(i * tdim)];
-        if (cached != nullptr)
-        {
-            for (int d = 0; d < tdim; ++d)
-                x_node[d] = cached[d];
-            continue;
-        }
-
-        const T u = static_cast<T>(
-            tpl.ref_vertex_coords[static_cast<std::size_t>(i * tpl.tdim + 0)]);
-        const T v = static_cast<T>(
-            tpl.ref_vertex_coords[static_cast<std::size_t>(i * tpl.tdim + 1)]);
-
-        if (face_type == cutcells::cell::type::triangle)
-        {
-            for (int d = 0; d < tdim; ++d)
-                x_node[d] = (T(1) - u - v) * face_corners[0][d]
-                          + u * face_corners[1][d]
-                          + v * face_corners[2][d];
-        }
-        else
-        {
-            for (int d = 0; d < tdim; ++d)
-                x_node[d] = (T(1) - u) * (T(1) - v) * face_corners[0][d]
-                          + u * (T(1) - v) * face_corners[1][d]
-                          + u * v * face_corners[2][d]
-                          + (T(1) - u) * v * face_corners[3][d];
-        }
-    }
 
     coord_polys.assign(static_cast<std::size_t>(tdim), cutcells::BernsteinCell<T>{});
     std::vector<T> lagrange_values(static_cast<std::size_t>(tpl.n_vertices), T(0));
@@ -197,6 +173,8 @@ CurvedGlobalMesh<T> assemble_curved_interface_mesh(
     const int gdim = result.gdim;
 
     int32_t gv_count = 0;
+    constexpr T surface_merge_tol = static_cast<T>(1e-10);
+    std::unordered_map<SurfacePointKey, int32_t, SurfacePointKeyHash> point_map;
     result.offsets.push_back(0);
 
     for (std::size_t mi = 0; mi < local_meshes.size(); ++mi)
@@ -256,6 +234,7 @@ CurvedGlobalMesh<T> assemble_curved_interface_mesh(
                     };
 
                     result.connectivity.push_back(get_or_add_endpoint(lv0));
+                    result.connectivity.push_back(get_or_add_endpoint(lv1));
                     const int32_t node_start = has_curved ? mesh.curved_zero_offsets[static_cast<std::size_t>(ze)] : 0;
                     const int32_t node_end = has_curved ? mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)] : 0;
                     auto append_curved_node = [&](int32_t ni)
@@ -282,7 +261,6 @@ CurvedGlobalMesh<T> assemble_curved_interface_mesh(
                         for (int32_t ni = node_start; ni < node_end; ++ni)
                             append_curved_node(ni);
                     }
-                    result.connectivity.push_back(get_or_add_endpoint(lv1));
                     result.offsets.push_back(static_cast<int32_t>(result.connectivity.size()));
                     result.cell_types.push_back(cell::type::interval);
                 }
@@ -305,43 +283,29 @@ CurvedGlobalMesh<T> assemble_curved_interface_mesh(
                 for (int pi = p0; pi < p1; ++pi)
                 {
                     const int ze = mesh.zero_patch_entity_ids[static_cast<std::size_t>(pi)];
-                    const int z0 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze)];
-                    const int z1 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze + 1)];
-                    for (int i = z0; i < z1; ++i)
-                    {
-                        const int lv = mesh.zero_entity_vertices[static_cast<std::size_t>(i)];
-                        for (int d = 0; d < gdim; ++d)
-                            result.vertex_coords.push_back(mesh.vertex_x[static_cast<std::size_t>(lv * gdim + d)]);
-                        result.connectivity.push_back(gv_count++);
-                    }
+                    const auto face_type = zero_face_type(mesh, ze);
+                    std::vector<T> face_nodes_ref;
+                    const int degree = cutcells::build_zero_face_nodes_ref(
+                        mesh, ze, geom_order, face_nodes_ref, &result.n_fallback_nodes);
+                    const auto& tpl = (degree == 1)
+                        ? cutcells::p1_template(face_type)
+                        : cutcells::iso_p1_template(face_type, degree);
+                    const auto& vtk_to_basix
+                        = cutcells::vtk_lagrange_to_basix_permutation(face_type, degree);
 
-                    // For 3D curved faces, append cached face-interior nodes after the
-                    // corner vertices. The cache ordering is the canonical local face
-                    // ordering currently produced by curve_zero_entities_impl.
-                    const int32_t node_start = has_curved
-                        ? mesh.curved_zero_offsets[static_cast<std::size_t>(ze)]
-                        : 0;
-                    const int32_t node_end = has_curved
-                        ? mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)]
-                        : 0;
-                    for (int32_t ni = node_start; ni < node_end; ++ni)
+                    for (int vtk_vi = 0; vtk_vi < tpl.n_vertices; ++vtk_vi)
                     {
-                        const bool converged = !mesh.curved_zero_converged.empty()
-                            && mesh.curved_zero_converged[static_cast<std::size_t>(ni)];
-                        if (!converged)
-                            ++result.n_fallback_nodes;
-                        const T* x_ref = &mesh.curved_zero_ref_nodes[
-                            static_cast<std::size_t>(ni * tdim)];
+                        const int vi = vtk_to_basix[static_cast<std::size_t>(vtk_vi)];
+                        const T* x_ref = &face_nodes_ref[static_cast<std::size_t>(vi * tdim)];
                         std::vector<T> x_phys(static_cast<std::size_t>(gdim));
                         ref_to_phys_single(mesh, x_ref, x_phys.data());
-                        for (int d = 0; d < gdim; ++d)
-                            result.vertex_coords.push_back(
-                                x_phys[static_cast<std::size_t>(d)]);
-                        result.connectivity.push_back(gv_count++);
+                        result.connectivity.push_back(add_or_get_surface_point(
+                            result, point_map, gv_count, x_phys.data(), gdim,
+                            surface_merge_tol));
                     }
 
                     result.offsets.push_back(static_cast<int32_t>(result.connectivity.size()));
-                    result.cell_types.push_back((z1 - z0) == 3 ? cell::type::triangle : cell::type::quadrilateral);
+                    result.cell_types.push_back(face_type);
                 }
             }
         }

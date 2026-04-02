@@ -6,15 +6,19 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <concepts>
+#include <iostream>
 #include <limits>
 #include <numbers>
+#include <set>
 #include <span>
 #include <vector>
 
 #include "bernstein_backend.h"
+#include "cell_topology.h"
 #include "cell_types.h"
 #include "cut_cell.h"
 #include "edge_root.h"
@@ -30,7 +34,16 @@ enum class CurveStatus : uint8_t
     accepted = 0,
     fallback_straight = 1,
     ambiguous = 2,
-    failed = 3
+    failed = 3,
+    accepted_after_clip = 4,
+    failed_left_entity = 5
+};
+
+enum class CurveSearchDirection : uint8_t
+{
+    levelset_gradient_ref = 0,
+    straight_cut_normal = 1,
+    custom_direction = 2
 };
 
 template <std::floating_point T, std::integral I>
@@ -236,7 +249,10 @@ struct LocalMesh
     std::vector<int32_t>  zero_face_edge_offsets;   ///< size = n_zero_entities + 1
 
     // ---- curved zero-entity cache ----
-    // Stores only interior high-order nodes in canonical entity-local ordering.
+    // For zero-edge entities (dim=1), stores the edge-interior nodes.
+    // For zero-face entities (dim=2), stores only the face-interior nodes.
+    // Face edge nodes are reconstructed from the shared dim=1 cache so they
+    // are generated once per interface trace edge and reused by adjacent faces.
     std::vector<T>        curved_zero_ref_nodes;
     std::vector<int32_t>  curved_zero_offsets;      ///< size = n_zero_entities + 1
     std::vector<uint8_t>  curved_zero_converged;
@@ -272,6 +288,7 @@ struct LocalMesh
     int curved_fallback_count = 0;   ///< number of nodes that fell back to straight
     int curved_ambiguous_count = 0;  ///< number of nodes with two-sided valid roots
     int curved_failed_count = 0;     ///< number of nodes where no valid projected root was accepted
+    int curved_left_entity_count = 0; ///< number of accepted/attempted searches that left their carrier entity
     uint32_t zero_entity_version = 0;       ///< incremented whenever zero entities are rebuilt
     uint32_t curved_cache_version = 0;      ///< incremented whenever curved_zero_* cache is rebuilt
     uint32_t curved_cache_zero_version = 0; ///< zero_entity_version captured by latest curved cache
@@ -374,6 +391,278 @@ struct LocalMesh
     T& edge_root_residual_for(int e, int ls)
         { return edge_root_residual[static_cast<std::size_t>(e * n_level_sets + ls)]; }
 };
+
+template <std::floating_point T>
+inline cell::type zero_entity_face_type(
+    const LocalMesh<T>& mesh,
+    int                 zero_entity_id)
+{
+    if (zero_entity_id < 0 || zero_entity_id >= mesh.n_zero_entities())
+        return cell::type::point;
+    const int z0 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id)];
+    const int z1 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id + 1)];
+    const int n_face_verts = z1 - z0;
+    if (n_face_verts == 3)
+        return cell::type::triangle;
+    if (n_face_verts == 4)
+        return cell::type::quadrilateral;
+    return cell::type::point;
+}
+
+/// Find a dim-1 zero entity whose endpoints match the given vertex pair.
+template <std::floating_point T>
+inline bool locate_zero_edge_by_vertices(
+    const LocalMesh<T>& mesh,
+    int32_t             a,
+    int32_t             b,
+    int*                zero_edge_id,
+    bool*               reversed)
+{
+    if (zero_edge_id == nullptr || reversed == nullptr)
+        return false;
+    *zero_edge_id = -1;
+    *reversed = false;
+
+    for (int ze = 0; ze < mesh.n_zero_entities(); ++ze)
+    {
+        if (mesh.zero_entity_dim[static_cast<std::size_t>(ze)] != 1)
+            continue;
+        const int32_t v0 = mesh.zero_entity_endpoint_v0[static_cast<std::size_t>(ze)];
+        const int32_t v1 = mesh.zero_entity_endpoint_v1[static_cast<std::size_t>(ze)];
+        if (v0 == a && v1 == b)
+        {
+            *zero_edge_id = ze;
+            *reversed = false;
+            return true;
+        }
+        if (v0 == b && v1 == a)
+        {
+            *zero_edge_id = ze;
+            *reversed = true;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/// Locate the zero-entity edge corresponding to a template edge of a zero face.
+///
+/// The template edge index (from iso_p1_template / cell::edges) does NOT
+/// necessarily match the face-edge index used in zero_face_edge_vertices
+/// (which stores consecutive vertex pairs).  This function resolves the
+/// correct vertex pair from the template edge definition and then searches
+/// for the matching dim-1 zero entity.
+template <std::floating_point T>
+inline bool locate_zero_face_boundary_edge_entity(
+    const LocalMesh<T>& mesh,
+    int                 zero_face_id,
+    int                 template_edge_id,
+    int*                zero_edge_id,
+    bool*               reversed)
+{
+    if (zero_edge_id == nullptr || reversed == nullptr)
+        return false;
+    *zero_edge_id = -1;
+    *reversed = false;
+
+    if (zero_face_id < 0 || zero_face_id >= mesh.n_zero_entities())
+        return false;
+    if (mesh.zero_entity_dim[static_cast<std::size_t>(zero_face_id)] != 2)
+        return false;
+
+    // Determine the face type from its vertex count.
+    const int z0 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_face_id)];
+    const int z1 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_face_id + 1)];
+    const int n_fv = z1 - z0;
+    const auto face_type = (n_fv == 3) ? cell::type::triangle
+                         : (n_fv == 4) ? cell::type::quadrilateral
+                                       : cell::type::point;
+    if (face_type == cell::type::point)
+        return false;
+
+    // Use the template edge definition to get the correct vertex pair.
+    const auto edge_defs = cell::edges(face_type);
+    if (template_edge_id < 0
+        || template_edge_id >= static_cast<int>(edge_defs.size()))
+        return false;
+
+    const auto& e = edge_defs[static_cast<std::size_t>(template_edge_id)];
+    if (e[0] >= n_fv || e[1] >= n_fv)
+        return false;
+
+    const int32_t a = mesh.zero_entity_vertices[static_cast<std::size_t>(z0 + e[0])];
+    const int32_t b = mesh.zero_entity_vertices[static_cast<std::size_t>(z0 + e[1])];
+
+    return locate_zero_edge_by_vertices(mesh, a, b, zero_edge_id, reversed);
+}
+
+template <std::floating_point T>
+inline int build_zero_face_nodes_ref(
+    const LocalMesh<T>& mesh,
+    int                 zero_face_id,
+    int                 geom_order,
+    std::vector<T>&     face_nodes_ref,
+    int*                fallback_nodes = nullptr)
+{
+    const auto face_type = zero_entity_face_type(mesh, zero_face_id);
+    if (face_type != cell::type::triangle
+        && face_type != cell::type::quadrilateral)
+    {
+        face_nodes_ref.clear();
+        return 1;
+    }
+
+    const int tdim = mesh.tdim;
+    const int z0 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_face_id)];
+    const int z1 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_face_id + 1)];
+    const int n_face_verts = z1 - z0;
+    const bool has_curved =
+        geom_order >= 2
+        && !mesh.curved_zero_offsets.empty()
+        && static_cast<int>(mesh.curved_zero_offsets.size()) == mesh.n_zero_entities() + 1;
+
+    bool use_curved = has_curved;
+    const int node_start = has_curved
+        ? mesh.curved_zero_offsets[static_cast<std::size_t>(zero_face_id)] : 0;
+    const int node_end = has_curved
+        ? mesh.curved_zero_offsets[static_cast<std::size_t>(zero_face_id + 1)] : 0;
+
+    if (use_curved)
+    {
+        const auto& curved_tpl = iso_p1_template(face_type, geom_order);
+        int expected_face_interior = 0;
+        for (int i = 0; i < curved_tpl.n_vertices; ++i)
+        {
+            if (curved_tpl.vertex_parent_dim[static_cast<std::size_t>(i)] == 2)
+                ++expected_face_interior;
+        }
+        use_curved = (node_end - node_start) == expected_face_interior;
+
+        const int n_face_edges = static_cast<int>(cell::edges(face_type).size());
+        for (int edge_local = 0; use_curved && edge_local < n_face_edges; ++edge_local)
+        {
+            int edge_ze = -1;
+            bool reversed = false;
+            use_curved = locate_zero_face_boundary_edge_entity(
+                mesh, zero_face_id, edge_local, &edge_ze, &reversed);
+            if (!use_curved)
+                break;
+
+            const int edge_node_start = mesh.curved_zero_offsets[static_cast<std::size_t>(edge_ze)];
+            const int edge_node_end = mesh.curved_zero_offsets[static_cast<std::size_t>(edge_ze + 1)];
+            use_curved = (edge_node_end - edge_node_start) == (geom_order - 1);
+        }
+    }
+
+    const int degree = use_curved ? geom_order : 1;
+    const auto& tpl = (degree == 1)
+        ? p1_template(face_type)
+        : iso_p1_template(face_type, degree);
+
+    face_nodes_ref.assign(
+        static_cast<std::size_t>(tpl.n_vertices * tdim), T(0));
+
+    std::array<const T*, 4> face_corners = {nullptr, nullptr, nullptr, nullptr};
+    for (int i = 0; i < n_face_verts; ++i)
+    {
+        const int lv = mesh.zero_entity_vertices[static_cast<std::size_t>(z0 + i)];
+        face_corners[static_cast<std::size_t>(i)]
+            = &mesh.vertex_ref_x[static_cast<std::size_t>(lv * tdim)];
+    }
+
+    std::array<int, 4> edge_zero_entities = {-1, -1, -1, -1};
+    std::array<uint8_t, 4> edge_reversed = {0, 0, 0, 0};
+    std::array<int, 4> edge_node_cursor = {0, 0, 0, 0};
+    if (use_curved)
+    {
+        const int n_face_edges = static_cast<int>(cell::edges(face_type).size());
+        for (int edge_local = 0; edge_local < n_face_edges; ++edge_local)
+        {
+            int edge_ze = -1;
+            bool reversed = false;
+            locate_zero_face_boundary_edge_entity(
+                mesh, zero_face_id, edge_local, &edge_ze, &reversed);
+            edge_zero_entities[static_cast<std::size_t>(edge_local)] = edge_ze;
+            edge_reversed[static_cast<std::size_t>(edge_local)] = reversed ? uint8_t(1) : uint8_t(0);
+        }
+    }
+
+    int face_interior_id = 0;
+    for (int i = 0; i < tpl.n_vertices; ++i)
+    {
+        const int parent_dim = tpl.vertex_parent_dim[static_cast<std::size_t>(i)];
+        const int parent_id = tpl.vertex_parent_id[static_cast<std::size_t>(i)];
+        const T* cached = nullptr;
+
+        if (use_curved && parent_dim == 1
+            && parent_id >= 0
+            && parent_id < static_cast<int>(cell::edges(face_type).size()))
+        {
+            const int edge_ze = edge_zero_entities[static_cast<std::size_t>(parent_id)];
+            if (edge_ze >= 0)
+            {
+                const int edge_node_start = mesh.curved_zero_offsets[static_cast<std::size_t>(edge_ze)];
+                const int edge_node_end = mesh.curved_zero_offsets[static_cast<std::size_t>(edge_ze + 1)];
+                const int n_edge_nodes = edge_node_end - edge_node_start;
+                const int local_idx = edge_node_cursor[static_cast<std::size_t>(parent_id)]++;
+                if (local_idx >= 0 && local_idx < n_edge_nodes)
+                {
+                    const int cache_idx = edge_reversed[static_cast<std::size_t>(parent_id)] != 0
+                        ? (edge_node_start + (n_edge_nodes - 1 - local_idx))
+                        : (edge_node_start + local_idx);
+                    if (fallback_nodes != nullptr
+                        && !mesh.curved_zero_converged.empty()
+                        && !mesh.curved_zero_converged[static_cast<std::size_t>(cache_idx)])
+                        ++(*fallback_nodes);
+                    cached = &mesh.curved_zero_ref_nodes[
+                        static_cast<std::size_t>(cache_idx * tdim)];
+                }
+            }
+        }
+        else if (use_curved && parent_dim == 2)
+        {
+            const int cache_idx = node_start + face_interior_id++;
+            if (fallback_nodes != nullptr
+                && !mesh.curved_zero_converged.empty()
+                && !mesh.curved_zero_converged[static_cast<std::size_t>(cache_idx)])
+                ++(*fallback_nodes);
+            cached = &mesh.curved_zero_ref_nodes[
+                static_cast<std::size_t>(cache_idx * tdim)];
+        }
+
+        T* x_node = &face_nodes_ref[static_cast<std::size_t>(i * tdim)];
+        if (cached != nullptr)
+        {
+            for (int d = 0; d < tdim; ++d)
+                x_node[d] = cached[d];
+            continue;
+        }
+
+        const T u = static_cast<T>(
+            tpl.ref_vertex_coords[static_cast<std::size_t>(i * tpl.tdim + 0)]);
+        const T v = static_cast<T>(
+            tpl.ref_vertex_coords[static_cast<std::size_t>(i * tpl.tdim + 1)]);
+
+        if (face_type == cell::type::triangle)
+        {
+            for (int d = 0; d < tdim; ++d)
+                x_node[d] = (T(1) - u - v) * face_corners[0][d]
+                          + u * face_corners[1][d]
+                          + v * face_corners[2][d];
+        }
+        else
+        {
+            for (int d = 0; d < tdim; ++d)
+                x_node[d] = (T(1) - u) * (T(1) - v) * face_corners[0][d]
+                          + u * (T(1) - v) * face_corners[1][d]
+                          + u * v * face_corners[2][d]
+                          + (T(1) - u) * v * face_corners[3][d];
+        }
+    }
+
+    return degree;
+}
 
 // ============================================================================
 // EdgeCache  — optional, cell-local cache of already-computed root vertices
@@ -644,7 +933,35 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
     bool                               triangulate = true,
     int                                max_refine_depth = 6,
     T                                  tol = static_cast<T>(1e-14),
-    bool                               debug = false);
+    bool                               debug = false,
+    bool                               repair_diagonals = false,
+    int                                max_repair_depth = 3);
+
+/// Check and repair triangulation diagonals in a decomposed local mesh.
+///
+/// After decomposition, LUT cutting may produce quadrilaterals (2D) or prisms
+/// (3D) that are triangulated.  The chosen diagonal may cross a curved level-set
+/// interface.  This routine:
+///   1. Identifies all triangulation diagonals in the decomposed mesh.
+///   2. Checks whether each diagonal crosses the interface by multi-point
+///      sampling of the level-set function.
+///   3. Attempts to swap the diagonal (2D: alternative quad diagonal).
+///   4. If the swap also fails, records the edge as unresolved.
+///
+/// @param mesh           the decomposed local mesh (modified in place on swap)
+/// @param pre_cut_edges  set of edge vertex-pairs from the pre-cut mesh
+/// @param eval_phi       level-set evaluator: T(const T* x_phys, int cell_id)
+/// @param level_set_id   which level set to test
+/// @param tol            tolerance for zero classification
+/// @return true if all diagonals are valid or were successfully repaired;
+///         false if any remain unresolved (green refinement needed)
+template <std::floating_point T>
+bool repair_triangulation_diagonals(
+    LocalMesh<T>&                          mesh,
+    const std::set<std::pair<int32_t, int32_t>>& pre_cut_edges,
+    std::function<T(const T*, int)>        eval_phi,
+    int                                    level_set_id = 0,
+    T                                      tol = static_cast<T>(1e-14));
 
 /// Resolve all multi-root edges on the local mesh by recursively applying
 /// green splits before LUT cutting.
@@ -693,7 +1010,10 @@ void curve_zero_entities_with_backend(
     LocalLevelSetBackend               backend,
     int                                level_set_id = 0,
     int                                geom_order = 2,
-    T                                  tol = static_cast<T>(1e-12));
+    T                                  tol = static_cast<T>(1e-12),
+    cell::edge_root::method            line_search_method = cell::edge_root::method::brent,
+    CurveSearchDirection               search_direction = CurveSearchDirection::levelset_gradient_ref,
+    std::span<const T>                 custom_direction_ref = std::span<const T>());
 
 // ============================================================================
 // Detail helpers — Gauss–Lobatto node computation
@@ -1016,6 +1336,11 @@ inline void curve_interface_entities(
                     // Fully degenerate: keep straight
                     for (int k = 0; k < tdim; ++k)
                         out[k] = x_s[static_cast<std::size_t>(k)];
+                    warn_curve_edge_fallback(
+                        mesh, "interface edge", ie, node_idx,
+                        CurveStatus::failed,
+                        {x_s[0], x_s[1], T(0)}, tdim,
+                        "degenerate straight seed");
                     mesh.curved_iface_converged[
                         static_cast<std::size_t>(node_idx)] = 0;
                     mesh.curved_iface_status[
@@ -1191,6 +1516,11 @@ inline void curve_interface_entities(
                     {
                         for (int k = 0; k < tdim; ++k)
                             out[k] = x_s[static_cast<std::size_t>(k)];
+                        warn_curve_edge_fallback(
+                            mesh, "interface edge", ie, node_idx,
+                            CurveStatus::fallback_straight,
+                            {x_s[0], x_s[1], T(0)}, tdim,
+                            "projected edge parameter lost monotonicity");
                         mesh.curved_iface_converged[
                             static_cast<std::size_t>(node_idx)] = 0;
                         mesh.curved_iface_status[
@@ -1214,6 +1544,13 @@ inline void curve_interface_entities(
                     // Fallback to straight position
                     for (int k = 0; k < tdim; ++k)
                         out[k] = x_s[static_cast<std::size_t>(k)];
+                    warn_curve_edge_fallback(
+                        mesh, "interface edge", ie, node_idx,
+                        rr.converged ? CurveStatus::fallback_straight
+                                     : CurveStatus::failed,
+                        {x_s[0], x_s[1], T(0)}, tdim,
+                        rr.converged ? "ray/newton projection rejected"
+                                     : "no projected root accepted");
                     mesh.curved_iface_converged[
                         static_cast<std::size_t>(node_idx)] = 0;
                     mesh.curved_iface_status[
@@ -1242,6 +1579,569 @@ inline void curve_interface_entities(
 // curve_zero_entities_impl — project interior GL nodes for all zero entities
 // ============================================================================
 
+template <std::floating_point T>
+inline T dot3(const std::array<T, 3>& a, const std::array<T, 3>& b)
+{
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+template <std::floating_point T>
+inline bool solve_face_plane_coordinates(
+    const std::array<T, 3>& origin,
+    const std::array<T, 3>& u,
+    const std::array<T, 3>& v,
+    const std::array<T, 3>& x,
+    T&                      alpha,
+    T&                      beta,
+    T                       tol)
+{
+    const std::array<T, 3> w = {
+        x[0] - origin[0],
+        x[1] - origin[1],
+        x[2] - origin[2]};
+    const T uu = dot3(u, u);
+    const T uv = dot3(u, v);
+    const T vv = dot3(v, v);
+    const T uw = dot3(u, w);
+    const T vw = dot3(v, w);
+    const T det = uu * vv - uv * uv;
+    if (std::abs(det) <= tol)
+        return false;
+    alpha = (uw * vv - vw * uv) / det;
+    beta = (vw * uu - uw * uv) / det;
+    return true;
+}
+
+template <std::floating_point T>
+inline void project_point_to_face_plane(
+    const std::array<T, 3>& origin,
+    const std::array<T, 3>& u,
+    const std::array<T, 3>& v,
+    std::array<T, 3>&       x,
+    T                       tol)
+{
+    T alpha = T(0);
+    T beta = T(0);
+    if (!solve_face_plane_coordinates(origin, u, v, x, alpha, beta, tol))
+        return;
+    for (int d = 0; d < 3; ++d)
+        x[d] = origin[d] + alpha * u[d] + beta * v[d];
+}
+
+template <std::floating_point T>
+inline bool point_in_face_plane_polygon(
+    const std::array<std::array<T, 3>, 4>& face_pts,
+    int                                    n_face_verts,
+    const std::array<T, 3>&                x,
+    T                                      tol)
+{
+    auto point_in_triangle = [&](const std::array<T, 3>& a,
+                                 const std::array<T, 3>& b,
+                                 const std::array<T, 3>& c) -> bool
+    {
+        const std::array<T, 3> u = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const std::array<T, 3> v = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        T alpha = T(0);
+        T beta = T(0);
+        if (!solve_face_plane_coordinates(a, u, v, x, alpha, beta, tol))
+            return false;
+        return alpha >= -tol && beta >= -tol && alpha + beta <= T(1) + tol;
+    };
+
+    if (n_face_verts == 3)
+        return point_in_triangle(face_pts[0], face_pts[1], face_pts[2]);
+    if (n_face_verts == 4)
+        return point_in_triangle(face_pts[0], face_pts[1], face_pts[2])
+            || point_in_triangle(face_pts[0], face_pts[2], face_pts[3]);
+    return false;
+}
+
+template <std::floating_point T>
+inline bool build_background_face_tangent_frame(
+    const LocalMesh<T>&               mesh,
+    int                               bg_face_id,
+    std::array<std::array<T, 3>, 4>&  face_pts,
+    int&                              n_face_verts,
+    std::array<T, 3>&                 origin,
+    std::array<T, 3>&                 u,
+    std::array<T, 3>&                 v,
+    T                                 tol)
+{
+    const int n_faces = cell::num_faces(mesh.parent_cell_type);
+    if (bg_face_id < 0 || bg_face_id >= n_faces)
+        return false;
+
+    const auto ref = p1_ref_coords(mesh.parent_cell_type);
+    const auto face = cell::faces(mesh.parent_cell_type)[static_cast<std::size_t>(bg_face_id)];
+    n_face_verts = static_cast<int>(face.size());
+    if (n_face_verts < 3 || n_face_verts > 4)
+        return false;
+
+    for (auto& p : face_pts)
+        p = {T(0), T(0), T(0)};
+
+    for (int i = 0; i < n_face_verts; ++i)
+    {
+        const int pv = face[static_cast<std::size_t>(i)];
+        for (int d = 0; d < mesh.tdim; ++d)
+        {
+            face_pts[static_cast<std::size_t>(i)][static_cast<std::size_t>(d)]
+                = static_cast<T>(ref[static_cast<std::size_t>(pv * mesh.tdim + d)]);
+        }
+    }
+
+    origin = face_pts[0];
+    for (int d = 0; d < 3; ++d)
+    {
+        u[d] = face_pts[1][d] - origin[d];
+        v[d] = face_pts[2][d] - origin[d];
+    }
+
+    const T uu = dot3(u, u);
+    const T vv = dot3(v, v);
+    const T uv = dot3(u, v);
+    return std::abs(uu * vv - uv * uv) > tol;
+}
+
+inline const char* curve_search_direction_name(CurveSearchDirection dir)
+{
+    switch (dir)
+    {
+    case CurveSearchDirection::levelset_gradient_ref:
+        return "levelset_gradient_ref";
+    case CurveSearchDirection::straight_cut_normal:
+        return "straight_cut_normal";
+    case CurveSearchDirection::custom_direction:
+        return "custom_direction";
+    default:
+        return "unknown";
+    }
+}
+
+inline const char* curve_status_name(CurveStatus status)
+{
+    switch (status)
+    {
+    case CurveStatus::accepted:
+        return "accepted";
+    case CurveStatus::fallback_straight:
+        return "fallback_straight";
+    case CurveStatus::ambiguous:
+        return "ambiguous";
+    case CurveStatus::failed:
+        return "failed";
+    case CurveStatus::accepted_after_clip:
+        return "accepted_after_clip";
+    case CurveStatus::failed_left_entity:
+        return "failed_left_entity";
+    default:
+        return "unknown";
+    }
+}
+
+template <std::floating_point T>
+inline T norm_ref_dir(const std::array<T, 3>& x, int n)
+{
+    T out = T(0);
+    for (int i = 0; i < n; ++i)
+        out += x[static_cast<std::size_t>(i)] * x[static_cast<std::size_t>(i)];
+    return std::sqrt(out);
+}
+
+template <std::floating_point T>
+inline bool normalize_ref_dir(std::array<T, 3>& x, int n, T tol)
+{
+    const T nrm = norm_ref_dir(x, n);
+    if (nrm <= tol)
+        return false;
+    for (int i = 0; i < n; ++i)
+        x[static_cast<std::size_t>(i)] /= nrm;
+    return true;
+}
+
+template <std::floating_point T>
+inline std::array<T, 3> cross3(
+    const std::array<T, 3>& a,
+    const std::array<T, 3>& b)
+{
+    return {
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0]};
+}
+
+template <std::floating_point T>
+inline void map_parent_gradient_to_face_ref(
+    const std::array<T, 3>& grad_parent,
+    const std::array<T, 3>& face_u,
+    const std::array<T, 3>& face_v,
+    std::array<T, 3>&       grad_face)
+{
+    grad_face = {
+        dot3(grad_parent, face_u),
+        dot3(grad_parent, face_v),
+        T(0)};
+}
+
+template <std::floating_point T>
+inline bool map_parent_direction_to_face_ref(
+    const std::array<T, 3>& dir_parent,
+    const std::array<T, 3>& face_u,
+    const std::array<T, 3>& face_v,
+    std::array<T, 3>&       dir_face,
+    T                       tol)
+{
+    T alpha = T(0);
+    T beta = T(0);
+    if (!solve_face_plane_coordinates(
+            {T(0), T(0), T(0)}, face_u, face_v, dir_parent, alpha, beta, tol))
+    {
+        dir_face = {T(0), T(0), T(0)};
+        return false;
+    }
+    dir_face = {alpha, beta, T(0)};
+    return true;
+}
+
+template <std::floating_point T>
+inline std::array<T, 3> map_face_direction_to_parent_ref(
+    const std::array<T, 3>& dir_face,
+    const std::array<T, 3>& face_u,
+    const std::array<T, 3>& face_v)
+{
+    return {
+        dir_face[0] * face_u[0] + dir_face[1] * face_v[0],
+        dir_face[0] * face_u[1] + dir_face[1] * face_v[1],
+        dir_face[0] * face_u[2] + dir_face[1] * face_v[2]};
+}
+
+template <std::floating_point T>
+inline bool clip_line_interval_range(
+    T a,
+    T b,
+    T lo,
+    T hi,
+    T tol,
+    T& smin,
+    T& smax)
+{
+    if (std::abs(b) <= tol)
+        return a >= lo - tol && a <= hi + tol;
+
+    T s0 = (lo - a) / b;
+    T s1 = (hi - a) / b;
+    if (s1 < s0)
+        std::swap(s0, s1);
+    smin = std::max(smin, s0);
+    smax = std::min(smax, s1);
+    return smin <= smax + tol;
+}
+
+template <std::floating_point T>
+inline bool intersect_line_with_reference_entity(
+    cell::type          entity_type,
+    const std::array<T, 3>& seed_ref,
+    const std::array<T, 3>& dir_ref,
+    T                   tol,
+    T&                  smin,
+    T&                  smax)
+{
+    smin = -std::numeric_limits<T>::infinity();
+    smax = std::numeric_limits<T>::infinity();
+
+    auto clip01 = [&](T a, T b) -> bool
+    {
+        return clip_line_interval_range(a, b, T(0), T(1), tol, smin, smax);
+    };
+
+    switch (entity_type)
+    {
+    case cell::type::interval:
+        return clip01(seed_ref[0], dir_ref[0]);
+    case cell::type::triangle:
+        return clip01(seed_ref[0], dir_ref[0])
+            && clip01(seed_ref[1], dir_ref[1])
+            && clip_line_interval_range(
+                seed_ref[0] + seed_ref[1],
+                dir_ref[0] + dir_ref[1],
+                T(0), T(1), tol, smin, smax);
+    case cell::type::quadrilateral:
+        return clip01(seed_ref[0], dir_ref[0])
+            && clip01(seed_ref[1], dir_ref[1]);
+    case cell::type::tetrahedron:
+        return clip01(seed_ref[0], dir_ref[0])
+            && clip01(seed_ref[1], dir_ref[1])
+            && clip01(seed_ref[2], dir_ref[2])
+            && clip_line_interval_range(
+                seed_ref[0] + seed_ref[1] + seed_ref[2],
+                dir_ref[0] + dir_ref[1] + dir_ref[2],
+                T(0), T(1), tol, smin, smax);
+    case cell::type::hexahedron:
+        return clip01(seed_ref[0], dir_ref[0])
+            && clip01(seed_ref[1], dir_ref[1])
+            && clip01(seed_ref[2], dir_ref[2]);
+    case cell::type::prism:
+        return clip01(seed_ref[0], dir_ref[0])
+            && clip01(seed_ref[1], dir_ref[1])
+            && clip_line_interval_range(
+                seed_ref[0] + seed_ref[1],
+                dir_ref[0] + dir_ref[1],
+                T(0), T(1), tol, smin, smax)
+            && clip01(seed_ref[2], dir_ref[2]);
+    case cell::type::pyramid:
+        return clip01(seed_ref[2], dir_ref[2])
+            && clip_line_interval_range(
+                seed_ref[0] + seed_ref[2],
+                dir_ref[0] + dir_ref[2],
+                T(0), T(1), tol, smin, smax)
+            && clip_line_interval_range(
+                seed_ref[1] + seed_ref[2],
+                dir_ref[1] + dir_ref[2],
+                T(0), T(1), tol, smin, smax);
+    default:
+        return false;
+    }
+}
+
+template <std::floating_point T>
+inline bool point_in_reference_entity(
+    cell::type             entity_type,
+    const std::array<T, 3>& x_ref,
+    T                      tol)
+{
+    const T lo = -tol;
+    const T hi = T(1) + tol;
+    switch (entity_type)
+    {
+    case cell::type::interval:
+        return x_ref[0] >= lo && x_ref[0] <= hi;
+    case cell::type::triangle:
+        return x_ref[0] >= lo
+            && x_ref[1] >= lo
+            && x_ref[0] + x_ref[1] <= hi;
+    case cell::type::quadrilateral:
+        return x_ref[0] >= lo && x_ref[0] <= hi
+            && x_ref[1] >= lo && x_ref[1] <= hi;
+    case cell::type::tetrahedron:
+        return x_ref[0] >= lo
+            && x_ref[1] >= lo
+            && x_ref[2] >= lo
+            && x_ref[0] + x_ref[1] + x_ref[2] <= hi;
+    case cell::type::hexahedron:
+        return x_ref[0] >= lo && x_ref[0] <= hi
+            && x_ref[1] >= lo && x_ref[1] <= hi
+            && x_ref[2] >= lo && x_ref[2] <= hi;
+    case cell::type::prism:
+        return x_ref[0] >= lo
+            && x_ref[1] >= lo
+            && x_ref[0] + x_ref[1] <= hi
+            && x_ref[2] >= lo && x_ref[2] <= hi;
+    case cell::type::pyramid:
+    {
+        const T z = x_ref[2];
+        return z >= lo && z <= hi
+            && x_ref[0] >= lo && x_ref[0] + z <= hi
+            && x_ref[1] >= lo && x_ref[1] + z <= hi;
+    }
+    default:
+        return false;
+    }
+}
+
+template <std::floating_point T>
+inline void warn_curve_search_left_entity(
+    LocalMesh<T>&          mesh,
+    const char*            carrier,
+    int                    ze,
+    int                    node_idx,
+    CurveSearchDirection   direction,
+    const std::array<T, 3>& x_ref,
+    int                     tdim)
+{
+    ++mesh.curved_left_entity_count;
+    std::cerr
+        << "Warning: curved " << carrier
+        << " search left the parent " << carrier
+        << " on parent cell "
+        << mesh.parent_cell_id
+        << ", zero entity " << ze
+        << ", node " << node_idx
+        << ", direction=" << curve_search_direction_name(direction)
+        << ", x_ref=[";
+    for (int d = 0; d < tdim; ++d)
+    {
+        if (d > 0)
+            std::cerr << ", ";
+        std::cerr << x_ref[static_cast<std::size_t>(d)];
+    }
+    std::cerr << "]\n";
+}
+
+template <std::floating_point T>
+inline void warn_curve_edge_fallback(
+    const LocalMesh<T>&      mesh,
+    const char*              entity_kind,
+    int                      ze,
+    int                      node_idx,
+    CurveStatus              status,
+    const std::array<T, 3>&  x_ref,
+    int                      tdim,
+    const char*              reason)
+{
+    std::cerr
+        << "Warning: curved " << entity_kind
+        << " node kept straight on parent cell "
+        << mesh.parent_cell_id
+        << ", zero entity " << ze
+        << ", node " << node_idx
+        << ", status=" << curve_status_name(status)
+        << ", reason=" << reason
+        << ", x_ref=[";
+    for (int d = 0; d < tdim; ++d)
+    {
+        if (d > 0)
+            std::cerr << ", ";
+        std::cerr << x_ref[static_cast<std::size_t>(d)];
+    }
+    std::cerr << "]\n";
+}
+
+template <std::floating_point T, typename EvalPhi>
+inline bool solve_line_root_on_interval(
+    EvalPhi&&                    eval_phi,
+    const std::array<T, 3>&      seed_ref,
+    const std::array<T, 3>&      dir_ref,
+    int                          tdim,
+    T                            s0,
+    T                            s1,
+    cell::edge_root::method      line_search_method,
+    T                            tol,
+    T&                           s_root,
+    T&                           residual,
+    bool&                        converged)
+{
+    if (!(s1 > s0 + tol))
+        return false;
+
+    int eval_count = 0;
+    std::array<T, 3> x = {T(0), T(0), T(0)};
+    const auto eval_u = [&](T u) -> T
+    {
+        const T s = s0 + u * (s1 - s0);
+        for (int d = 0; d < tdim; ++d)
+            x[static_cast<std::size_t>(d)]
+                = seed_ref[static_cast<std::size_t>(d)]
+                + s * dir_ref[static_cast<std::size_t>(d)];
+        ++eval_count;
+        return eval_phi(x.data(), tdim);
+    };
+
+    const T f0 = eval_u(T(0));
+    if (std::abs(f0) <= tol)
+    {
+        s_root = s0;
+        residual = std::abs(f0);
+        converged = true;
+        return true;
+    }
+
+    const T f1 = eval_u(T(1));
+    if (std::abs(f1) <= tol)
+    {
+        s_root = s1;
+        residual = std::abs(f1);
+        converged = true;
+        return true;
+    }
+
+    if (f0 * f1 > T(0))
+        return false;
+
+    const T u_linear = cell::edge_root::linear_root_parameter<T>(f0, f1, T(0));
+    bool ok = false;
+    int iters = 0;
+    T u_root = u_linear;
+    switch (line_search_method)
+    {
+    case cell::edge_root::method::linear:
+        ok = true;
+        break;
+    case cell::edge_root::method::brent:
+        u_root = cell::edge_root::brent_parameter<T>(
+            eval_u, T(0), T(1), f0, f1, 64, tol, tol, &iters, &ok);
+        break;
+    case cell::edge_root::method::itp:
+        u_root = cell::edge_root::itp_parameter<T>(
+            eval_u, T(0), T(1), f0, f1, u_linear, 64, tol, tol, &iters, &ok);
+        break;
+    case cell::edge_root::method::newton:
+        u_root = cell::edge_root::newton_parameter<T>(
+            eval_u, T(0), T(1), f0, f1, u_linear, 64, tol, tol, &iters, &ok);
+        break;
+    default:
+        break;
+    }
+
+    const T f_root = eval_u(u_root);
+    s_root = s0 + u_root * (s1 - s0);
+    residual = std::abs(f_root);
+    converged = ok || residual <= tol;
+    return converged;
+}
+
+template <std::floating_point T, typename EvalPhi>
+inline bool solve_line_root_nearest(
+    EvalPhi&&                    eval_phi,
+    const std::array<T, 3>&      seed_ref,
+    const std::array<T, 3>&      dir_ref,
+    int                          tdim,
+    T                            smin,
+    T                            smax,
+    cell::edge_root::method      line_search_method,
+    T                            tol,
+    T&                           s_root,
+    std::array<T, 3>&            x_root,
+    T&                           residual,
+    bool&                        ambiguous)
+{
+    T pos_root = T(0);
+    T neg_root = T(0);
+    T pos_res = std::numeric_limits<T>::max();
+    T neg_res = std::numeric_limits<T>::max();
+    bool pos_ok = false;
+    bool neg_ok = false;
+    bool pos_conv = false;
+    bool neg_conv = false;
+
+    if (smax > tol)
+        pos_ok = solve_line_root_on_interval(
+            eval_phi, seed_ref, dir_ref, tdim, T(0), smax,
+            line_search_method, tol, pos_root, pos_res, pos_conv);
+    if (smin < -tol)
+        neg_ok = solve_line_root_on_interval(
+            eval_phi, seed_ref, dir_ref, tdim, smin, T(0),
+            line_search_method, tol, neg_root, neg_res, neg_conv);
+
+    ambiguous = pos_ok && neg_ok;
+    if (!pos_ok && !neg_ok)
+        return false;
+
+    s_root = (!pos_ok) ? neg_root
+        : (!neg_ok) ? pos_root
+        : (std::abs(pos_root) <= std::abs(neg_root) ? pos_root : neg_root);
+    residual = (!pos_ok) ? neg_res
+        : (!neg_ok) ? pos_res
+        : (std::abs(pos_root) <= std::abs(neg_root) ? pos_res : neg_res);
+
+    for (int d = 0; d < tdim; ++d)
+    {
+        x_root[static_cast<std::size_t>(d)]
+            = seed_ref[static_cast<std::size_t>(d)]
+            + s_root * dir_ref[static_cast<std::size_t>(d)];
+    }
+    return true;
+}
+
 /// Project interior GL nodes onto the zero level set for all qualifying zero entities.
 ///
 /// Iterates zero_entity_* directly (no iface_* intermediary).
@@ -1261,7 +2161,10 @@ inline void curve_zero_entities_impl(
     EvalGrad&&           eval_grad,
     int                  level_set_id,
     int                  geom_order,
-    T                    tol = static_cast<T>(1e-12))
+    T                    tol = static_cast<T>(1e-12),
+    cell::edge_root::method line_search_method = cell::edge_root::method::brent,
+    CurveSearchDirection search_direction = CurveSearchDirection::levelset_gradient_ref,
+    std::span<const T>   custom_direction_ref = std::span<const T>())
 {
     const int n_zero   = mesh.n_zero_entities();
     const int tdim     = mesh.tdim;
@@ -1277,6 +2180,7 @@ inline void curve_zero_entities_impl(
     mesh.curved_fallback_count  = 0;
     mesh.curved_ambiguous_count = 0;
     mesh.curved_failed_count    = 0;
+    mesh.curved_left_entity_count = 0;
 
     if (n_zero == 0 || n_interior <= 0)
     {
@@ -1458,6 +2362,11 @@ inline void curve_zero_entities_impl(
                     // Fully degenerate: keep straight
                     for (int k = 0; k < tdim; ++k)
                         out[k] = x_s[static_cast<std::size_t>(k)];
+                    warn_curve_edge_fallback(
+                        mesh, "zero edge", ze, node_idx,
+                        CurveStatus::failed,
+                        {x_s[0], x_s[1], T(0)}, tdim,
+                        "degenerate straight seed");
                     mesh.curved_zero_converged[
                         static_cast<std::size_t>(node_idx)] = 0;
                     mesh.curved_zero_status[
@@ -1636,6 +2545,11 @@ inline void curve_zero_entities_impl(
                     {
                         for (int k = 0; k < tdim; ++k)
                             out[k] = x_s[static_cast<std::size_t>(k)];
+                        warn_curve_edge_fallback(
+                            mesh, "zero edge", ze, node_idx,
+                            CurveStatus::fallback_straight,
+                            {x_s[0], x_s[1], T(0)}, tdim,
+                            "projected edge parameter lost monotonicity");
                         mesh.curved_zero_converged[
                             static_cast<std::size_t>(node_idx)] = 0;
                         mesh.curved_zero_status[
@@ -1660,6 +2574,13 @@ inline void curve_zero_entities_impl(
                     // Fallback to straight position
                     for (int k = 0; k < tdim; ++k)
                         out[k] = x_s[static_cast<std::size_t>(k)];
+                    warn_curve_edge_fallback(
+                        mesh, "zero edge", ze, node_idx,
+                        rr.converged ? CurveStatus::fallback_straight
+                                     : CurveStatus::failed,
+                        {x_s[0], x_s[1], T(0)}, tdim,
+                        rr.converged ? "ray/newton projection rejected"
+                                     : "no projected root accepted");
                     mesh.curved_zero_converged[
                         static_cast<std::size_t>(node_idx)] = 0;
                     mesh.curved_zero_status[
@@ -1677,57 +2598,11 @@ inline void curve_zero_entities_impl(
     }
     else if (tdim == 3)
     {
-        // 3D face curving: project interior face nodes onto the zero level set.
-        //
-        // For a triangular face of order p, the number of interior face nodes
-        // is (p-1)(p-2)/2. For a quad face: (p-1)^2.
-        //
-        // Each interior node starts at its straight (bilinear/barycentric)
-        // position within the face and is projected onto phi=0 via Newton
-        // iteration along the gradient direction.
-
-        // For the node count in the cache, we use:
-        // - n_interior for 1D (edge) entities = geom_order - 1  (already handled by offset calculation above)
-        // - n_interior for 2D (face) entities = depends on face shape
-
-        // Re-do the offset calculation for 3D where dim-2 entities are faces
-        // and may have varying interior node counts.
-        // The initial offset calculation above used n_interior = geom_order - 1
-        // which is correct for edge entities. For face entities we need to recompute.
-
-        // Recompute offsets for qualifying face entities
-        for (int ze = 0; ze < n_zero; ++ze)
-        {
-            const auto ze_dim = mesh.zero_entity_dim[static_cast<std::size_t>(ze)];
-            if (ze_dim != codim1_dim) // codim1_dim = tdim - 1 = 2
-                continue;
-            if (!((mesh.zero_entity_zero_mask[static_cast<std::size_t>(ze)] >> level_set_id)
-                  & uint64_t(1)))
-                continue;
-
-            // Determine face shape from vertex count
-            const int f0 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze)];
-            const int f1 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze + 1)];
-            const int n_face_verts = f1 - f0;
-
-            int n_face_interior = 0;
-            if (n_face_verts == 3) // triangle
-                n_face_interior = (geom_order - 1) * (geom_order - 2) / 2;
-            else if (n_face_verts == 4) // quad
-                n_face_interior = (geom_order - 1) * (geom_order - 1);
-
-            // Override the count set by the initial loop (which assumed n_interior)
-            // We need to adjust: the initial loop set n_interior = geom_order - 1
-            // but for faces we need n_face_interior.
-            // Reconstruct the offset entry for this entity.
-            mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)]
-                = mesh.curved_zero_offsets[static_cast<std::size_t>(ze)]
-                + static_cast<int32_t>(n_face_interior);
-        }
-
-        // Fix up offsets for non-qualifying entities after the face entities
-        // (the prefix sum needs to be re-done since we changed face entries)
-        // Actually, let's redo the full prefix sum from scratch for correctness.
+        // 3D codim-1 curving:
+        // 1. Project interior nodes on zero-edge entities once. These are the
+        //    shared interface trace edges reused by adjacent zero faces.
+        // 2. Project only true face-interior nodes on zero-face entities.
+        //    Face edge nodes are reconstructed later from the shared dim=1 cache.
         mesh.curved_zero_offsets.assign(
             static_cast<std::size_t>(n_zero + 1), 0);
         for (int ze = 0; ze < n_zero; ++ze)
@@ -1750,15 +2625,20 @@ inline void curve_zero_entities_impl(
                 const int f0 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze)];
                 const int f1 = mesh.zero_entity_offsets[static_cast<std::size_t>(ze + 1)];
                 const int n_face_verts = f1 - f0;
-
-                int n_face_interior = 0;
-                if (n_face_verts == 3)
-                    n_face_interior = (geom_order - 1) * (geom_order - 2) / 2;
-                else if (n_face_verts == 4)
-                    n_face_interior = (geom_order - 1) * (geom_order - 1);
-
+                int n_face_nodes = 0;
+                if (n_face_verts == 3 || n_face_verts == 4)
+                {
+                    const auto face_type = (n_face_verts == 3)
+                        ? cell::type::triangle : cell::type::quadrilateral;
+                    const auto& tpl = iso_p1_template(face_type, geom_order);
+                    for (int vi = 0; vi < tpl.n_vertices; ++vi)
+                    {
+                        if (tpl.vertex_parent_dim[static_cast<std::size_t>(vi)] == 2)
+                            ++n_face_nodes;
+                    }
+                }
                 mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)]
-                    = static_cast<int32_t>(n_face_interior);
+                    = static_cast<int32_t>(n_face_nodes);
             }
             else
             {
@@ -1783,10 +2663,410 @@ inline void curve_zero_entities_impl(
             static_cast<std::size_t>(total_nodes_3d),
             static_cast<uint8_t>(CurveStatus::failed));
 
-        // Bounding box type for domain checks
-        const cell::type bbox_type = cell::type::hexahedron;
+        // Project interior nodes on zero-edge entities.
+        const auto gl_pts = detail::gauss_lobatto_interior_points_1d<T>(geom_order);
+        for (int ze = 0; ze < n_zero; ++ze)
+        {
+            if (mesh.zero_entity_dim[static_cast<std::size_t>(ze)] != 1)
+                continue;
+            if (!((mesh.zero_entity_zero_mask[static_cast<std::size_t>(ze)] >> level_set_id)
+                  & uint64_t(1)))
+                continue;
 
-        // Project face interior nodes
+            const int32_t v0_id = mesh.zero_entity_endpoint_v0[static_cast<std::size_t>(ze)];
+            const int32_t v1_id = mesh.zero_entity_endpoint_v1[static_cast<std::size_t>(ze)];
+            if (v0_id < 0 || v1_id < 0)
+                continue;
+
+            const T* r0 = &mesh.vertex_ref_x[static_cast<std::size_t>(v0_id * tdim)];
+            const T* r1 = &mesh.vertex_ref_x[static_cast<std::size_t>(v1_id * tdim)];
+            const int node_start =
+                mesh.curved_zero_offsets[static_cast<std::size_t>(ze)];
+            const int node_end =
+                mesh.curved_zero_offsets[static_cast<std::size_t>(ze + 1)];
+            const int n_edge_nodes = node_end - node_start;
+
+            std::array<std::array<T, 3>, 4> face_pts = {};
+            std::array<T, 3> face_origin = {T(0), T(0), T(0)};
+            std::array<T, 3> face_u = {T(0), T(0), T(0)};
+            std::array<T, 3> face_v = {T(0), T(0), T(0)};
+            int n_face_verts = 0;
+            const bool constrain_to_face
+                = mesh.zero_entity_parent_dim[static_cast<std::size_t>(ze)] == 2
+                && build_background_face_tangent_frame(
+                    mesh,
+                    mesh.zero_entity_parent_id[static_cast<std::size_t>(ze)],
+                    face_pts,
+                    n_face_verts,
+                    face_origin,
+                    face_u,
+                    face_v,
+                    std::max<T>(tol, static_cast<T>(1e-12)));
+
+            std::array<T, 3> r0_arr = {r0[0], r0[1], r0[2]};
+            std::array<T, 3> r1_arr = {r1[0], r1[1], r1[2]};
+            std::array<T, 3> edge_p0_face = {T(0), T(0), T(0)};
+            std::array<T, 3> edge_p1_face = {T(0), T(0), T(0)};
+            bool have_edge_face_coords = false;
+            if (constrain_to_face)
+            {
+                T a0 = T(0);
+                T b0 = T(0);
+                T a1 = T(0);
+                T b1 = T(0);
+                if (solve_face_plane_coordinates(
+                        face_origin, face_u, face_v, r0_arr, a0, b0,
+                        std::max<T>(tol, static_cast<T>(1e-12)))
+                    && solve_face_plane_coordinates(
+                        face_origin, face_u, face_v, r1_arr, a1, b1,
+                        std::max<T>(tol, static_cast<T>(1e-12))))
+                {
+                    edge_p0_face = {a0, b0, T(0)};
+                    edge_p1_face = {a1, b1, T(0)};
+                    have_edge_face_coords = true;
+                }
+            }
+            const T edge_search_span = std::max(
+                norm_ref_dir<T>(
+                    {r1[0] - r0[0], r1[1] - r0[1], r1[2] - r0[2]},
+                    tdim),
+                tol);
+
+            for (int ni = 0; ni < n_edge_nodes; ++ni)
+            {
+                const T t_gl = gl_pts[static_cast<std::size_t>(ni)];
+                const int abs_idx = node_start + ni;
+                T* out = &mesh.curved_zero_ref_nodes[
+                    static_cast<std::size_t>(abs_idx * tdim)];
+
+                std::array<T, 3> x_seed = {
+                    (T(1) - t_gl) * r0[0] + t_gl * r1[0],
+                    (T(1) - t_gl) * r0[1] + t_gl * r1[1],
+                    (T(1) - t_gl) * r0[2] + t_gl * r1[2]};
+                for (int k = 0; k < tdim; ++k)
+                    out[k] = x_seed[static_cast<std::size_t>(k)];
+
+                std::array<T, 3> x_root = x_seed;
+                bool accepted = false;
+                bool clipped = false;
+                bool ambiguous = false;
+
+                if (constrain_to_face)
+                {
+                    T seed_u = T(0);
+                    T seed_v = T(0);
+                    if (solve_face_plane_coordinates(
+                            face_origin, face_u, face_v, x_seed, seed_u, seed_v,
+                            std::max<T>(tol, static_cast<T>(1e-12))))
+                    {
+                        const auto face_type = (n_face_verts == 3)
+                            ? cell::type::triangle
+                            : cell::type::quadrilateral;
+                        const std::array<T, 3> seed_face = {seed_u, seed_v, T(0)};
+
+                        std::array<T, 3> grad_parent = {T(0), T(0), T(0)};
+                        std::array<T, 3> grad_face = {T(0), T(0), T(0)};
+                        eval_grad(x_seed.data(), tdim, grad_parent.data());
+                        map_parent_gradient_to_face_ref(
+                            grad_parent, face_u, face_v, grad_face);
+                        const bool have_grad_face = normalize_ref_dir(
+                            grad_face, 2, std::max<T>(tol, static_cast<T>(1e-12)));
+
+                        std::array<T, 3> dir_face = {T(0), T(0), T(0)};
+                        CurveSearchDirection used_direction = search_direction;
+                        bool have_dir = false;
+                        switch (search_direction)
+                        {
+                        case CurveSearchDirection::levelset_gradient_ref:
+                            // For face-constrained edge nodes, prefer the
+                            // in-face normal of the straight interface edge.
+                            // The mapped level-set gradient can tilt toward a
+                            // direction that leaves the face too early on
+                            // shared-face cases.
+                            if (have_edge_face_coords)
+                            {
+                                const T tx = edge_p1_face[0] - edge_p0_face[0];
+                                const T ty = edge_p1_face[1] - edge_p0_face[1];
+                                dir_face = {-ty, tx, T(0)};
+                                have_dir = normalize_ref_dir(
+                                    dir_face, 2,
+                                    std::max<T>(tol, static_cast<T>(1e-12)));
+                                if (have_dir)
+                                    used_direction = CurveSearchDirection::straight_cut_normal;
+                            }
+                            if (!have_dir)
+                            {
+                                dir_face = grad_face;
+                                have_dir = have_grad_face;
+                                used_direction = CurveSearchDirection::levelset_gradient_ref;
+                            }
+                            break;
+                        case CurveSearchDirection::straight_cut_normal:
+                            if (have_edge_face_coords)
+                            {
+                                const T tx = edge_p1_face[0] - edge_p0_face[0];
+                                const T ty = edge_p1_face[1] - edge_p0_face[1];
+                                dir_face = {-ty, tx, T(0)};
+                                have_dir = normalize_ref_dir(
+                                    dir_face, 2,
+                                    std::max<T>(tol, static_cast<T>(1e-12)));
+                                used_direction = CurveSearchDirection::straight_cut_normal;
+                            }
+                            break;
+                        case CurveSearchDirection::custom_direction:
+                            if (custom_direction_ref.size() == 2)
+                            {
+                                dir_face = {
+                                    custom_direction_ref[0],
+                                    custom_direction_ref[1],
+                                    T(0)};
+                                have_dir = normalize_ref_dir(
+                                    dir_face, 2,
+                                    std::max<T>(tol, static_cast<T>(1e-12)));
+                                used_direction = CurveSearchDirection::custom_direction;
+                            }
+                            else if (custom_direction_ref.size()
+                                     == static_cast<std::size_t>(tdim))
+                            {
+                                std::array<T, 3> custom_parent = {
+                                    custom_direction_ref[0],
+                                    custom_direction_ref[1],
+                                    custom_direction_ref[2]};
+                                have_dir = map_parent_direction_to_face_ref(
+                                    custom_parent, face_u, face_v, dir_face,
+                                    std::max<T>(tol, static_cast<T>(1e-12)))
+                                    && normalize_ref_dir(
+                                        dir_face, 2,
+                                        std::max<T>(tol, static_cast<T>(1e-12)));
+                                used_direction = CurveSearchDirection::custom_direction;
+                            }
+                            break;
+                        }
+
+                        if (!have_dir && have_edge_face_coords)
+                        {
+                            const T tx = edge_p1_face[0] - edge_p0_face[0];
+                            const T ty = edge_p1_face[1] - edge_p0_face[1];
+                            dir_face = {-ty, tx, T(0)};
+                            have_dir = normalize_ref_dir(
+                                dir_face, 2,
+                                std::max<T>(tol, static_cast<T>(1e-12)));
+                            used_direction = CurveSearchDirection::straight_cut_normal;
+                        }
+
+                        if (have_dir && have_grad_face
+                            && (dir_face[0] * grad_face[0] + dir_face[1] * grad_face[1]) < T(0))
+                        {
+                            dir_face[0] = -dir_face[0];
+                            dir_face[1] = -dir_face[1];
+                        }
+
+                        if (have_dir)
+                        {
+                            T smin = T(0);
+                            T smax = T(0);
+                            if (intersect_line_with_reference_entity(
+                                    face_type, seed_face, dir_face,
+                                    std::max<T>(tol, static_cast<T>(1e-12)),
+                                    smin, smax))
+                            {
+                                clipped = (-smin + tol < edge_search_span)
+                                    || (smax + tol < edge_search_span);
+
+                                const auto eval_phi_face = [&](const T* x_face, int /*face_tdim*/) -> T
+                                {
+                                    std::array<T, 3> x_parent = {
+                                        face_origin[0] + x_face[0] * face_u[0] + x_face[1] * face_v[0],
+                                        face_origin[1] + x_face[0] * face_u[1] + x_face[1] * face_v[1],
+                                        face_origin[2] + x_face[0] * face_u[2] + x_face[1] * face_v[2]};
+                                    return eval_phi(x_parent.data(), tdim);
+                                };
+
+                                std::array<T, 3> x_root_face = seed_face;
+                                T s_root = T(0);
+                                T residual = std::numeric_limits<T>::max();
+                                accepted = solve_line_root_nearest(
+                                    eval_phi_face,
+                                    seed_face,
+                                    dir_face,
+                                    2,
+                                    smin,
+                                    smax,
+                                    line_search_method,
+                                    std::max<T>(tol, static_cast<T>(1e-12)),
+                                    s_root,
+                                    x_root_face,
+                                    residual,
+                                    ambiguous);
+                                if (accepted)
+                                {
+                                    if (!point_in_reference_entity(
+                                            face_type,
+                                            x_root_face,
+                                            std::max<T>(tol, static_cast<T>(1e-12))))
+                                    {
+                                        warn_curve_search_left_entity(
+                                            mesh, "face", ze, abs_idx, used_direction,
+                                            x_root_face, 2);
+                                        accepted = false;
+                                    }
+                                }
+                                if (accepted)
+                                {
+                                    x_root = {
+                                        face_origin[0] + x_root_face[0] * face_u[0] + x_root_face[1] * face_v[0],
+                                        face_origin[1] + x_root_face[0] * face_u[1] + x_root_face[1] * face_v[1],
+                                        face_origin[2] + x_root_face[0] * face_u[2] + x_root_face[1] * face_v[2]};
+                                }
+                            }
+                            else
+                            {
+                                ++mesh.curved_left_entity_count;
+                                std::cerr
+                                    << "Warning: curved face search has no admissible interval on parent cell "
+                                    << mesh.parent_cell_id
+                                    << ", zero entity " << ze
+                                    << ", node " << abs_idx
+                                    << ", direction="
+                                    << curve_search_direction_name(used_direction) << '\n';
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    std::array<T, 3> dir_cell = {T(0), T(0), T(0)};
+                    CurveSearchDirection used_direction = search_direction;
+                    bool have_dir = false;
+
+                    switch (search_direction)
+                    {
+                    case CurveSearchDirection::levelset_gradient_ref:
+                        eval_grad(x_seed.data(), tdim, dir_cell.data());
+                        have_dir = normalize_ref_dir(
+                            dir_cell, tdim,
+                            std::max<T>(tol, static_cast<T>(1e-12)));
+                        used_direction = CurveSearchDirection::levelset_gradient_ref;
+                        break;
+                    case CurveSearchDirection::straight_cut_normal:
+                        // For cell-interior interface edges there is no
+                        // carrier-face tangent frame, so fall back to the
+                        // local level-set gradient direction.
+                        eval_grad(x_seed.data(), tdim, dir_cell.data());
+                        have_dir = normalize_ref_dir(
+                            dir_cell, tdim,
+                            std::max<T>(tol, static_cast<T>(1e-12)));
+                        used_direction = CurveSearchDirection::levelset_gradient_ref;
+                        break;
+                    case CurveSearchDirection::custom_direction:
+                        if (custom_direction_ref.size()
+                            == static_cast<std::size_t>(tdim))
+                        {
+                            dir_cell = {
+                                custom_direction_ref[0],
+                                custom_direction_ref[1],
+                                custom_direction_ref[2]};
+                            have_dir = normalize_ref_dir(
+                                dir_cell, tdim,
+                                std::max<T>(tol, static_cast<T>(1e-12)));
+                            used_direction = CurveSearchDirection::custom_direction;
+                        }
+                        break;
+                    }
+
+                    if (have_dir)
+                    {
+                        T smin = T(0);
+                        T smax = T(0);
+                        if (intersect_line_with_reference_entity(
+                                mesh.parent_cell_type,
+                                x_seed,
+                                dir_cell,
+                                std::max<T>(tol, static_cast<T>(1e-12)),
+                                smin,
+                                smax))
+                        {
+                            clipped = (-smin + tol < edge_search_span)
+                                || (smax + tol < edge_search_span);
+
+                            T s_root = T(0);
+                            T residual = std::numeric_limits<T>::max();
+                            accepted = solve_line_root_nearest(
+                                eval_phi,
+                                x_seed,
+                                dir_cell,
+                                tdim,
+                                smin,
+                                smax,
+                                line_search_method,
+                                std::max<T>(tol, static_cast<T>(1e-12)),
+                                s_root,
+                                x_root,
+                                residual,
+                                ambiguous);
+                            if (accepted)
+                            {
+                                if (!point_in_reference_entity(
+                                        mesh.parent_cell_type,
+                                        x_root,
+                                        std::max<T>(tol, static_cast<T>(1e-12))))
+                                {
+                                    warn_curve_search_left_entity(
+                                        mesh, "cell", ze, abs_idx, used_direction,
+                                        x_root, tdim);
+                                    accepted = false;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            ++mesh.curved_left_entity_count;
+                            std::cerr
+                                << "Warning: curved cell-edge search has no admissible interval on parent cell "
+                                << mesh.parent_cell_id
+                                << ", zero entity " << ze
+                                << ", node " << abs_idx
+                                << ", direction="
+                                << curve_search_direction_name(used_direction) << '\n';
+                        }
+                    }
+                }
+
+                if (accepted)
+                {
+                    for (int k = 0; k < tdim; ++k)
+                        out[k] = x_root[static_cast<std::size_t>(k)];
+                    mesh.curved_zero_converged[static_cast<std::size_t>(abs_idx)] = 1;
+                    mesh.curved_zero_status[static_cast<std::size_t>(abs_idx)]
+                        = static_cast<uint8_t>(
+                            clipped ? CurveStatus::accepted_after_clip
+                                    : (ambiguous ? CurveStatus::ambiguous
+                                                 : CurveStatus::accepted));
+                    if (ambiguous)
+                        ++mesh.curved_ambiguous_count;
+                }
+                else
+                {
+                    warn_curve_edge_fallback(
+                        mesh, "zero edge", ze, abs_idx,
+                        constrain_to_face ? CurveStatus::failed_left_entity
+                                          : CurveStatus::failed,
+                        x_seed, tdim,
+                        constrain_to_face
+                            ? "face-constrained edge search did not accept a root"
+                            : "cell-constrained edge search did not accept a root");
+                    mesh.curved_zero_converged[static_cast<std::size_t>(abs_idx)] = 0;
+                    mesh.curved_zero_status[static_cast<std::size_t>(abs_idx)]
+                        = static_cast<uint8_t>(
+                            constrain_to_face ? CurveStatus::failed_left_entity
+                                              : CurveStatus::failed);
+                    ++mesh.curved_fallback_count;
+                    ++mesh.curved_failed_count;
+                }
+            }
+        }
+
+        // Project only true face-interior nodes.
         for (int ze = 0; ze < n_zero; ++ze)
         {
             if (mesh.zero_entity_dim[static_cast<std::size_t>(ze)] != 2)
@@ -1818,132 +3098,189 @@ inline void curve_zero_entities_impl(
                         = mesh.vertex_ref_x[static_cast<std::size_t>(vid * tdim + k)];
             }
 
-            // Generate interior node positions on a regular grid in face param space
-            // For triangles: use barycentric coordinates (L1, L2, L3) with
-            //   L_i = i_k / p for i_k = 1..p-1, sum < p
-            // For quads: tensor product of GL interior points
-
-            int node_idx = 0;
-            if (n_fv == 3) // triangular face
+            const auto face_type = (n_fv == 3)
+                ? cell::type::triangle : cell::type::quadrilateral;
+            const auto& tpl = iso_p1_template(face_type, geom_order);
+            const std::array<T, 3> patch_t0 = {
+                face_ref[static_cast<std::size_t>(1 * tdim + 0)]
+                    - face_ref[static_cast<std::size_t>(0 * tdim + 0)],
+                face_ref[static_cast<std::size_t>(1 * tdim + 1)]
+                    - face_ref[static_cast<std::size_t>(0 * tdim + 1)],
+                face_ref[static_cast<std::size_t>(1 * tdim + 2)]
+                    - face_ref[static_cast<std::size_t>(0 * tdim + 2)]};
+            const std::array<T, 3> patch_t1 = {
+                face_ref[static_cast<std::size_t>(((n_fv == 3 ? 2 : 3) * tdim) + 0)]
+                    - face_ref[static_cast<std::size_t>(0 * tdim + 0)],
+                face_ref[static_cast<std::size_t>(((n_fv == 3 ? 2 : 3) * tdim) + 1)]
+                    - face_ref[static_cast<std::size_t>(0 * tdim + 1)],
+                face_ref[static_cast<std::size_t>(((n_fv == 3 ? 2 : 3) * tdim) + 2)]
+                    - face_ref[static_cast<std::size_t>(0 * tdim + 2)]};
+            std::array<T, 3> patch_normal = cross3(patch_t0, patch_t1);
+            const bool have_patch_normal = normalize_ref_dir(
+                patch_normal, tdim, std::max<T>(tol, static_cast<T>(1e-12)));
+            T patch_diameter = T(0);
+            for (int i = 0; i < n_fv; ++i)
             {
-                // Interior nodes with barycentric coordinates (i/p, j/p, k/p)
-                // where i,j,k >= 1 and i+j+k = p
-                const T dp = static_cast<T>(geom_order);
-                for (int j = 1; j < geom_order; ++j)
+                for (int j = i + 1; j < n_fv; ++j)
                 {
-                    for (int i = 1; i < geom_order - j; ++i)
+                    T d2 = T(0);
+                    for (int k = 0; k < tdim; ++k)
                     {
-                        const T L0 = static_cast<T>(i) / dp;
-                        const T L1 = static_cast<T>(j) / dp;
-                        // L2 = 1 - L0 - L1
-                        // Reference position = L0*v0 + L1*v1 + (1-L0-L1)*v2
-                        // Actually: barycentric -> face coords
-                        // x_ref = (1-L0-L1)*fv0 + L0*fv1 + L1*fv2
-                        T* out = &mesh.curved_zero_ref_nodes[
-                            static_cast<std::size_t>((node_start + node_idx) * tdim)];
-                        for (int k = 0; k < tdim; ++k)
-                        {
-                            out[k] = (T(1) - L0 - L1) * face_ref[static_cast<std::size_t>(0 * tdim + k)]
-                                   + L0 * face_ref[static_cast<std::size_t>(1 * tdim + k)]
-                                   + L1 * face_ref[static_cast<std::size_t>(2 * tdim + k)];
-                        }
-                        ++node_idx;
+                        const T dk
+                            = face_ref[static_cast<std::size_t>(i * tdim + k)]
+                            - face_ref[static_cast<std::size_t>(j * tdim + k)];
+                        d2 += dk * dk;
                     }
-                }
-            }
-            else if (n_fv == 4) // quad face
-            {
-                // Tensor product of equispaced interior points
-                for (int j = 1; j < geom_order; ++j)
-                {
-                    const T v_param = static_cast<T>(j) / static_cast<T>(geom_order);
-                    for (int i = 1; i < geom_order; ++i)
-                    {
-                        const T u_param = static_cast<T>(i) / static_cast<T>(geom_order);
-                        T* out = &mesh.curved_zero_ref_nodes[
-                            static_cast<std::size_t>((node_start + node_idx) * tdim)];
-                        // Bilinear interpolation: (1-u)(1-v)*v0 + u(1-v)*v1 + uv*v2 + (1-u)v*v3
-                        for (int k = 0; k < tdim; ++k)
-                        {
-                            out[k] = (T(1) - u_param) * (T(1) - v_param) * face_ref[static_cast<std::size_t>(0 * tdim + k)]
-                                   + u_param * (T(1) - v_param) * face_ref[static_cast<std::size_t>(1 * tdim + k)]
-                                   + u_param * v_param * face_ref[static_cast<std::size_t>(2 * tdim + k)]
-                                   + (T(1) - u_param) * v_param * face_ref[static_cast<std::size_t>(3 * tdim + k)];
-                        }
-                        ++node_idx;
-                    }
+                    patch_diameter = std::max(patch_diameter, std::sqrt(d2));
                 }
             }
 
-            // Now project each interior node onto phi=0 via Newton iteration
-            for (int ni = 0; ni < n_face_nodes; ++ni)
+            int face_interior_id = 0;
+            for (int vi = 0; vi < tpl.n_vertices; ++vi)
             {
-                const int abs_idx = node_start + ni;
+                if (tpl.vertex_parent_dim[static_cast<std::size_t>(vi)] != 2)
+                    continue;
+
+                const int abs_idx = node_start + face_interior_id++;
                 T* out = &mesh.curved_zero_ref_nodes[
                     static_cast<std::size_t>(abs_idx * tdim)];
 
-                // Newton projection: x_{n+1} = x_n - (phi(x_n) / |grad|^2) * grad
-                std::array<T, 3> x_cur = {T(0), T(0), T(0)};
-                for (int k = 0; k < tdim; ++k)
-                    x_cur[static_cast<std::size_t>(k)] = out[k];
+                const T u = static_cast<T>(
+                    tpl.ref_vertex_coords[static_cast<std::size_t>(vi * tpl.tdim + 0)]);
+                const T v = static_cast<T>(
+                    tpl.ref_vertex_coords[static_cast<std::size_t>(vi * tpl.tdim + 1)]);
 
-                bool converged = false;
-                for (int it = 0; it < 20; ++it)
-                {
-                    const T f = eval_phi(x_cur.data(), tdim);
-                    if (std::abs(f) <= std::max<T>(tol, static_cast<T>(1e-12)))
-                    {
-                        converged = true;
-                        break;
-                    }
-
-                    std::array<T, 3> g = {T(0), T(0), T(0)};
-                    eval_grad(x_cur.data(), tdim, g.data());
-                    T g2 = T(0);
-                    for (int k = 0; k < tdim; ++k)
-                        g2 += g[static_cast<std::size_t>(k)]
-                            * g[static_cast<std::size_t>(k)];
-                    if (g2 <= static_cast<T>(1e-20))
-                        break;
-
-                    T step = f / g2;
-
-                    // Line search with backtracking for domain safety
-                    std::array<T, 3> x_trial = x_cur;
-                    for (int k = 0; k < tdim; ++k)
-                        x_trial[static_cast<std::size_t>(k)] -= step * g[static_cast<std::size_t>(k)];
-
-                    for (int bt = 0; bt < 6; ++bt)
-                    {
-                        if (cell::edge_root::is_inside_reference_domain<T>(
-                                std::span<const T>(x_trial.data(),
-                                                   static_cast<std::size_t>(tdim)),
-                                bbox_type,
-                                std::max<T>(tol, static_cast<T>(1e-10))))
-                            break;
-                        step *= T(0.5);
-                        for (int k = 0; k < tdim; ++k)
-                            x_trial[static_cast<std::size_t>(k)]
-                                = x_cur[static_cast<std::size_t>(k)]
-                                - step * g[static_cast<std::size_t>(k)];
-                    }
-                    x_cur = x_trial;
-                }
-
-                if (converged)
+                if (n_fv == 3)
                 {
                     for (int k = 0; k < tdim; ++k)
-                        out[k] = x_cur[static_cast<std::size_t>(k)];
-                    mesh.curved_zero_converged[static_cast<std::size_t>(abs_idx)] = 1;
-                    mesh.curved_zero_status[static_cast<std::size_t>(abs_idx)]
-                        = static_cast<uint8_t>(CurveStatus::accepted);
+                    {
+                        out[k] = (T(1) - u - v) * face_ref[static_cast<std::size_t>(0 * tdim + k)]
+                               + u * face_ref[static_cast<std::size_t>(1 * tdim + k)]
+                               + v * face_ref[static_cast<std::size_t>(2 * tdim + k)];
+                    }
                 }
                 else
                 {
-                    // Keep straight position (already in out)
+                    for (int k = 0; k < tdim; ++k)
+                    {
+                        out[k] = (T(1) - u) * (T(1) - v) * face_ref[static_cast<std::size_t>(0 * tdim + k)]
+                               + u * (T(1) - v) * face_ref[static_cast<std::size_t>(1 * tdim + k)]
+                               + u * v * face_ref[static_cast<std::size_t>(2 * tdim + k)]
+                               + (T(1) - u) * v * face_ref[static_cast<std::size_t>(3 * tdim + k)];
+                    }
+                }
+                std::array<T, 3> x_seed = {out[0], out[1], out[2]};
+                std::array<T, 3> dir_cell = {T(0), T(0), T(0)};
+                bool have_dir = false;
+                switch (search_direction)
+                {
+                case CurveSearchDirection::levelset_gradient_ref:
+                    eval_grad(x_seed.data(), tdim, dir_cell.data());
+                    have_dir = normalize_ref_dir(
+                        dir_cell, tdim,
+                        std::max<T>(tol, static_cast<T>(1e-12)));
+                    break;
+                case CurveSearchDirection::straight_cut_normal:
+                    dir_cell = patch_normal;
+                    have_dir = have_patch_normal;
+                    break;
+                case CurveSearchDirection::custom_direction:
+                    if (custom_direction_ref.size()
+                        == static_cast<std::size_t>(tdim))
+                    {
+                        dir_cell = {
+                            custom_direction_ref[0],
+                            custom_direction_ref[1],
+                            custom_direction_ref[2]};
+                        have_dir = normalize_ref_dir(
+                            dir_cell, tdim,
+                            std::max<T>(tol, static_cast<T>(1e-12)));
+                    }
+                    break;
+                }
+
+                bool accepted = false;
+                bool ambiguous = false;
+                bool clipped = false;
+                if (have_dir)
+                {
+                    T smin = T(0);
+                    T smax = T(0);
+                    if (intersect_line_with_reference_entity(
+                            mesh.parent_cell_type,
+                            x_seed,
+                            dir_cell,
+                            std::max<T>(tol, static_cast<T>(1e-12)),
+                            smin,
+                            smax))
+                    {
+                        clipped = (-smin + tol < patch_diameter)
+                            || (smax + tol < patch_diameter);
+
+                        std::array<T, 3> x_root = x_seed;
+                        T s_root = T(0);
+                        T residual = std::numeric_limits<T>::max();
+                        accepted = solve_line_root_nearest(
+                            eval_phi,
+                            x_seed,
+                            dir_cell,
+                            tdim,
+                            smin,
+                            smax,
+                            line_search_method,
+                            std::max<T>(tol, static_cast<T>(1e-12)),
+                            s_root,
+                            x_root,
+                            residual,
+                            ambiguous);
+                        if (accepted)
+                        {
+                            if (!point_in_reference_entity(
+                                    mesh.parent_cell_type,
+                                    x_root,
+                                    std::max<T>(tol, static_cast<T>(1e-12))))
+                            {
+                                warn_curve_search_left_entity(
+                                    mesh, "cell", ze, abs_idx, search_direction,
+                                    x_root, tdim);
+                                accepted = false;
+                            }
+                        }
+                        if (accepted)
+                        {
+                            for (int k = 0; k < tdim; ++k)
+                                out[k] = x_root[static_cast<std::size_t>(k)];
+                        }
+                    }
+                    else
+                    {
+                        ++mesh.curved_left_entity_count;
+                        std::cerr
+                            << "Warning: curved cell search has no admissible interval on parent cell "
+                            << mesh.parent_cell_id
+                            << ", zero entity " << ze
+                            << ", node " << abs_idx
+                            << ", direction="
+                            << curve_search_direction_name(search_direction) << '\n';
+                    }
+                }
+
+                if (accepted)
+                {
+                    mesh.curved_zero_converged[static_cast<std::size_t>(abs_idx)] = 1;
+                    mesh.curved_zero_status[static_cast<std::size_t>(abs_idx)]
+                        = static_cast<uint8_t>(
+                            clipped ? CurveStatus::accepted_after_clip
+                                    : (ambiguous ? CurveStatus::ambiguous
+                                                 : CurveStatus::accepted));
+                    if (ambiguous)
+                        ++mesh.curved_ambiguous_count;
+                }
+                else
+                {
                     mesh.curved_zero_converged[static_cast<std::size_t>(abs_idx)] = 0;
                     mesh.curved_zero_status[static_cast<std::size_t>(abs_idx)]
-                        = static_cast<uint8_t>(CurveStatus::failed);
+                        = static_cast<uint8_t>(CurveStatus::failed_left_entity);
                     ++mesh.curved_fallback_count;
                     ++mesh.curved_failed_count;
                 }

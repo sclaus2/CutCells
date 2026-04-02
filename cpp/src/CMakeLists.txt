@@ -49,6 +49,10 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping_curved.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.h
   ${CMAKE_CURRENT_SOURCE_DIR}/green_split.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/ray_split.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/macro_split.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/interface_split.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/triangulation_repair.h
   PARENT_SCOPE)
 
 target_sources(cutcells PRIVATE
@@ -67,6 +71,10 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/local_mesh.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/green_split.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/ray_split.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/macro_split.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/interface_split.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/triangulation_repair.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature_curved.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/curved_mesh.cpp

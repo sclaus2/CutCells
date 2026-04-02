@@ -34,6 +34,11 @@
 #include <cutcells/curved_mesh.h>
 #include <cutcells/mapping_curved.h>
 #include <cutcells/edge_classification.h>
+#include <cutcells/triangulation_repair.h>
+#include <cutcells/green_split.h>
+#include <cutcells/ray_split.h>
+#include <cutcells/macro_split.h>
+#include <cutcells/interface_split.h>
 
 namespace nb = nanobind;
 
@@ -1034,7 +1039,9 @@ void declare_float(nb::module_& m, std::string type)
          cell::edge_root::method root_method,
          bool triangulate,
          T tol,
-         LocalLevelSetBackend backend) {
+         LocalLevelSetBackend backend,
+         bool repair_diagonals,
+         int max_repair_depth) {
         const bool use_backend_path =
           backend == LocalLevelSetBackend::bernstein
           || level_set.has_value();
@@ -1045,8 +1052,16 @@ void declare_float(nb::module_& m, std::string type)
             (backend == LocalLevelSetBackend::nodal_signs && level_set.has_value())
               ? LocalLevelSetBackend::analytical_callbacks
               : backend;
-          cutcells::decompose_local_mesh_with_backend<T, int>(
-            mesh, level_set, resolved_backend, level_set_id, root_method, triangulate, 6, tol, false);
+          const auto result = cutcells::decompose_local_mesh_with_backend<T, int>(
+            mesh, level_set, resolved_backend, level_set_id, root_method, triangulate, 6, tol, false, repair_diagonals, max_repair_depth);
+          if (result.invalid_cells > 0)
+          {
+            nb::module_ warnings = nb::module_::import_("warnings");
+            nb::object runtime_warning = nb::module_::import_("builtins").attr("RuntimeWarning");
+            warnings.attr("warn")(
+              "LocalMesh decomposition still contains intersected subcells after the repair attempt.",
+              runtime_warning);
+          }
         }
         else
         {
@@ -1061,7 +1076,12 @@ void declare_float(nb::module_& m, std::string type)
       nb::arg("triangulate") = true,
       nb::arg("tol") = static_cast<T>(1e-14),
       nb::arg("backend") = LocalLevelSetBackend::nodal_signs,
-      "Decompose a local mesh into phi<0 and phi>0 fragments using cached roots.");
+      nb::arg("repair_diagonals") = false,
+      nb::arg("max_repair_depth") = 3,
+      "Decompose a local mesh into phi<0 and phi>0 fragments using cached roots.\n"
+      "When repair_diagonals=True, triangulation diagonals that cross the curved\n"
+      "interface are detected and the parent cell is green-refined and the children\n"
+      "are re-cut.  This repair is applied recursively up to max_repair_depth times.");
 
     const std::string build_iface_name = "build_interface_entities_" + type;
     const std::string build_zero_name = "build_zero_entities_" + type;
@@ -1084,6 +1104,162 @@ void declare_float(nb::module_& m, std::string type)
       nb::arg("mesh"),
       nb::arg("level_set_id") = 0,
       "Build straight interface entities after decomposition.");
+
+    const std::string green_split_name = "green_split_one_edge_" + type;
+    m.def(
+      green_split_name.c_str(),
+      [](LocalMeshT& mesh, int edge_id, T t_sep) {
+        nb::gil_scoped_release release;
+        return cutcells::green_split_one_edge<T>(mesh, edge_id, t_sep);
+      },
+      nb::arg("mesh"),
+      nb::arg("edge_id"),
+      nb::arg("t_sep") = static_cast<T>(0.5),
+      "Green-split all cells incident on the given edge at parameter t_sep.\n"
+      "Returns True on success.");
+
+    const std::string ray_split_name = "ray_split_one_tet_" + type;
+    m.def(
+      ray_split_name.c_str(),
+      [](LocalMeshT& mesh, int cell_id,
+         const LevelSetT& ls, int level_set_id, T tol) {
+        nb::gil_scoped_release release;
+        return cutcells::ray_split_one_tet<T>(
+            mesh, cell_id, ls, level_set_id, tol);
+      },
+      nb::arg("mesh"),
+      nb::arg("cell_id"),
+      nb::arg("ls"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("tol") = static_cast<T>(1e-13),
+      "Split one intersected tet using a ray from the odd vertex to the\n"
+      "opposite face centroid.  Returns True on success.");
+
+    const std::string ray_refine_name = "ray_refine_local_mesh_" + type;
+    m.def(
+      ray_refine_name.c_str(),
+      [](LocalMeshT& mesh,
+         const LevelSetT& ls, int level_set_id,
+         int max_depth, T tol) {
+        nb::gil_scoped_release release;
+        return cutcells::ray_refine_local_mesh<T>(
+            mesh, ls, level_set_id, max_depth, tol);
+      },
+      nb::arg("mesh"),
+      nb::arg("ls"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("max_depth") = 5,
+      nb::arg("tol") = static_cast<T>(1e-13),
+      "Iteratively ray-split intersected tets up to max_depth levels.\n"
+      "Returns the total number of splits performed.");
+
+    const std::string macro_split_name = "macro_split_topology1_tet_" + type;
+    m.def(
+      macro_split_name.c_str(),
+      [](LocalMeshT& mesh, int cell_id,
+         const LevelSetT& ls, int level_set_id, T tol) {
+        nb::gil_scoped_release release;
+        return cutcells::macro_split_topology1_tet<T>(
+            mesh, cell_id, ls, level_set_id, tol);
+      },
+      nb::arg("mesh"),
+      nb::arg("cell_id"),
+      nb::arg("ls"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("tol") = static_cast<T>(1e-13),
+      "Split one topology-1 (1-vs-3) intersected tet into 6 subtets\n"
+      "using the face midpoint + centroid macro pattern.");
+
+    const std::string macro_refine_name = "macro_refine_topology1_" + type;
+    m.def(
+      macro_refine_name.c_str(),
+      [](LocalMeshT& mesh,
+         const LevelSetT& ls, int level_set_id,
+         int max_depth, T tol) {
+        nb::gil_scoped_release release;
+        return cutcells::macro_refine_topology1<T>(
+            mesh, ls, level_set_id, max_depth, tol);
+      },
+      nb::arg("mesh"),
+      nb::arg("ls"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("max_depth") = 5,
+      nb::arg("tol") = static_cast<T>(1e-13),
+      "Iteratively apply topology-1 macro split to all 1-vs-3 tets.\n"
+      "Returns the total number of splits performed.");
+
+    const std::string iface_split_name = "interface_split_topology1_tet_" + type;
+    m.def(
+      iface_split_name.c_str(),
+      [](LocalMeshT& mesh, int cell_id,
+         const LevelSetT& ls, int level_set_id, T tol) {
+        nb::gil_scoped_release release;
+        return cutcells::interface_split_topology1_tet<T>(
+            mesh, cell_id, ls, level_set_id, tol);
+      },
+      nb::arg("mesh"),
+      nb::arg("cell_id"),
+      nb::arg("ls"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("tol") = static_cast<T>(1e-13),
+      "Split one topology-1 (1-vs-3) intersected tet into 10 subtets\n"
+      "using interface-adapted root vertices on crossing edges and an\n"
+      "interior root on the apex-to-face-centroid ray.");
+
+    const std::string iface_refine_name = "interface_refine_topology1_" + type;
+    m.def(
+      iface_refine_name.c_str(),
+      [](LocalMeshT& mesh,
+         const LevelSetT& ls, int level_set_id,
+         int max_depth, T tol) {
+        nb::gil_scoped_release release;
+        return cutcells::interface_refine_topology1<T>(
+            mesh, ls, level_set_id, max_depth, tol);
+      },
+      nb::arg("mesh"),
+      nb::arg("ls"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("max_depth") = 5,
+      nb::arg("tol") = static_cast<T>(1e-13),
+      "Iteratively apply interface-adapted split to all 1-vs-3 tets.\n"
+      "Returns the total number of splits performed.");
+
+    const std::string iface_split2_name = "interface_split_topology2_tet_" + type;
+    m.def(
+      iface_split2_name.c_str(),
+      [](LocalMeshT& mesh, int cell_id,
+         const LevelSetT& ls, int level_set_id, T tol) {
+        nb::gil_scoped_release release;
+        return cutcells::interface_split_topology2_tet<T>(
+            mesh, cell_id, ls, level_set_id, tol);
+      },
+      nb::arg("mesh"),
+      nb::arg("cell_id"),
+      nb::arg("ls"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("tol") = static_cast<T>(1e-13),
+      "Split one topology-2 (2-vs-2) intersected tet into 12 subtets\n"
+      "using interface-adapted root vertices on all 4 crossing edges\n"
+      "and an interior root vertex.");
+
+    const std::string iface_refine_all_name = "interface_refine_" + type;
+    m.def(
+      iface_refine_all_name.c_str(),
+      [](LocalMeshT& mesh,
+         const LevelSetT& ls, int level_set_id,
+         int max_depth, T tol) {
+        nb::gil_scoped_release release;
+        return cutcells::interface_refine<T>(
+            mesh, ls, level_set_id, max_depth, tol);
+      },
+      nb::arg("mesh"),
+      nb::arg("ls"),
+      nb::arg("level_set_id") = 0,
+      nb::arg("max_depth") = 5,
+      nb::arg("tol") = static_cast<T>(1e-13),
+      "Iteratively apply interface-adapted split to all intersected tets.\n"
+      "Handles both 1-vs-3 (10 children) and 2-vs-2 (12 children).\n"
+      "Returns the total number of splits performed.");
 
     const std::string curve_iface_name = "curve_interface_entities_" + type;
     const std::string curve_zero_name = "curve_zero_entities_" + type;
@@ -1815,6 +1991,13 @@ void declare_float(nb::module_& m, std::string type)
       .def_prop_ro("n_fallback_nodes", [](const CurvedMeshT& self) { return self.n_fallback_nodes; })
       .def("n_vertices", &CurvedMeshT::n_vertices)
       .def("n_cells", &CurvedMeshT::n_cells)
+      .def(
+        "write_vtu",
+        [](const CurvedMeshT& self, const std::string& fname)
+        {
+          io::write_vtu(fname, self);
+        },
+        nb::arg("filename"))
       .def_prop_ro(
         "vertex_coords",
         [](const CurvedMeshT& self) {
@@ -1866,6 +2049,10 @@ void declare_float(nb::module_& m, std::string type)
         [](const CurvedCutResultT& self) -> const mesh::CutMesh<T>& { return self.interface_vis; },
         nb::rv_policy::reference_internal)
       .def_prop_ro(
+        "interface_curved_vis",
+        [](const CurvedCutResultT& self) -> const mesh::CutMesh<T>& { return self.interface_curved_vis; },
+        nb::rv_policy::reference_internal)
+      .def_prop_ro(
         "outside_vis",
         [](const CurvedCutResultT& self) -> const mesh::CutMesh<T>& { return self.outside_vis; },
         nb::rv_policy::reference_internal)
@@ -1897,7 +2084,9 @@ void declare_float(nb::module_& m, std::string type)
          const std::string& backend,
          int geom_order,
          int vis_subdivision,
-         T tol)
+         T tol,
+         bool repair_diagonals,
+         int max_repair_depth)
       {
         LevelSetT level_set;
         level_set.gdim = 3;
@@ -1955,7 +2144,9 @@ void declare_float(nb::module_& m, std::string type)
           geom_order,
           backend,
           vis_subdivision,
-          tol);
+          tol,
+          repair_diagonals,
+          max_repair_depth);
       },
       nb::arg("points"),
       nb::arg("connectivity"),
@@ -1967,7 +2158,53 @@ void declare_float(nb::module_& m, std::string type)
       nb::arg("geom_order") = 4,
       nb::arg("vis_subdivision") = 3,
       nb::arg("tol") = static_cast<T>(1e-12),
-      "Whole-mesh curved cut pipeline using callable f(x) and optional grad(x).");
+      nb::arg("repair_diagonals") = false,
+      nb::arg("max_repair_depth") = 3,
+      "Whole-mesh curved cut pipeline using callable f(x) and optional grad(x).\n"
+      "When repair_diagonals=True, the local tetrahedral decomposition enables\n"
+      "the interface-split repair path for unresolved triangulation diagonals.");
+
+    m.def(
+      ccm_cut_name.c_str(),
+      [](const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& points,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offset,
+         const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& vtk_type,
+         const LevelSetT& level_set,
+         const std::string& backend,
+         int geom_order,
+         int vis_subdivision,
+         T tol,
+         bool repair_diagonals,
+         int max_repair_depth)
+      {
+        nb::gil_scoped_release release;
+        return mesh::cut_vtk_mesh_curved<T>(
+          std::span<const T>(points.data(), points.size()),
+          std::span<const int>(connectivity.data(), connectivity.size()),
+          std::span<const int>(offset.data(), offset.size()),
+          std::span<const int>(vtk_type.data(), vtk_type.size()),
+          level_set,
+          geom_order,
+          backend,
+          vis_subdivision,
+          tol,
+          repair_diagonals,
+          max_repair_depth);
+      },
+      nb::arg("points"),
+      nb::arg("connectivity"),
+      nb::arg("offset"),
+      nb::arg("vtk_type"),
+      nb::arg("level_set"),
+      nb::arg("backend") = "bernstein",
+      nb::arg("geom_order") = 4,
+      nb::arg("vis_subdivision") = 3,
+      nb::arg("tol") = static_cast<T>(1e-12),
+      nb::arg("repair_diagonals") = false,
+      nb::arg("max_repair_depth") = 3,
+      "Whole-mesh curved cut pipeline using a LevelSetFunction carrying either\n"
+      "callable data or FEM nodal values.");
 
     // ---- assemble_curved_interface_mesh (convenience: builds cache if needed) ----
     const std::string aci_name = "assemble_curved_interface_mesh_" + type;
@@ -2064,6 +2301,79 @@ void declare_float(nb::module_& m, std::string type)
       "Assemble curved volume mesh with explicit mapping backend.\n"
       "When gordon_hall, interface-touching cells get GH-mapped geometry nodes.");
 
+    // ---- triangulation repair bindings ----
+    const std::string repair_name = "repair_cut_cell_diagonals_" + type;
+    m.def(
+      repair_name.c_str(),
+      [](cell::CutCell<T>& cut_cell,
+         cell::type parent_cell_type,
+         nb::object eval_phi_py,
+         int expected_sign,
+         T tol,
+         bool debug)
+      {
+        std::function<T(const T*)> eval_phi
+            = [eval_phi_py](const T* x) -> T
+        {
+            nb::object result = eval_phi_py(
+                nb::ndarray<const T, nb::numpy, nb::shape<-1>>(
+                    x, {3}));
+            return nb::cast<T>(result);
+        };
+        // GIL kept held: eval_phi calls back into Python
+        return cell::repair_cut_cell_diagonals<T>(
+            cut_cell, parent_cell_type, eval_phi,
+            expected_sign, tol, debug);
+      },
+      nb::arg("cut_cell"),
+      nb::arg("parent_cell_type"),
+      nb::arg("eval_phi"),
+      nb::arg("expected_sign"),
+      nb::arg("tol") = static_cast<T>(1e-14),
+      nb::arg("debug") = false,
+      "Check and repair triangulation diagonals in a CutCell.\n"
+      "Returns a TriangulationRepairInfo struct.");
+
+    const std::string diag_check_name = "diagonal_crosses_interface_" + type;
+    m.def(
+      diag_check_name.c_str(),
+      [](const cell::CutCell<T>& cut_cell,
+         int va, int vb,
+         nb::object eval_phi_py,
+         int expected_sign,
+         T tol)
+      {
+        std::function<T(const T*)> eval_phi
+            = [eval_phi_py](const T* x) -> T
+        {
+            nb::object result = eval_phi_py(
+                nb::ndarray<const T, nb::numpy, nb::shape<-1>>(
+                    x, {3}));
+            return nb::cast<T>(result);
+        };
+        // GIL kept held: eval_phi calls back into Python
+        return cell::diagonal_crosses_interface<T>(
+            cut_cell, va, vb, eval_phi, expected_sign, tol);
+      },
+      nb::arg("cut_cell"),
+      nb::arg("va"),
+      nb::arg("vb"),
+      nb::arg("eval_phi"),
+      nb::arg("expected_sign"),
+      nb::arg("tol") = static_cast<T>(1e-14),
+      "Check if a CutCell edge midpoint crosses the interface.");
+
+    const std::string swap2d_name = "swap_diagonal_2d_" + type;
+    m.def(
+      swap2d_name.c_str(),
+      [](cell::CutCell<T>& cut_cell, int cell_i, int cell_j) {
+        return cell::swap_diagonal_2d<T>(cut_cell, cell_i, cell_j);
+      },
+      nb::arg("cut_cell"),
+      nb::arg("cell_i"),
+      nb::arg("cell_j"),
+      "Swap the shared diagonal between two triangles in a CutCell.");
+
     if constexpr (std::is_same_v<T, double>)
     {
       m.attr("BernsteinCell") = m.attr(bc_name.c_str());
@@ -2083,6 +2393,15 @@ void declare_float(nb::module_& m, std::string type)
       m.attr("assemble_curved_volume_mesh") = m.attr(acv_name.c_str());
       m.attr("build_zero_entities") = m.attr(build_zero_name.c_str());
       m.attr("build_interface_entities") = m.attr(build_iface_name.c_str());
+      m.attr("green_split_one_edge") = m.attr(green_split_name.c_str());
+      m.attr("ray_split_one_tet") = m.attr(ray_split_name.c_str());
+      m.attr("ray_refine_local_mesh") = m.attr(ray_refine_name.c_str());
+      m.attr("macro_split_topology1_tet") = m.attr(macro_split_name.c_str());
+      m.attr("macro_refine_topology1") = m.attr(macro_refine_name.c_str());
+      m.attr("interface_split_topology1_tet") = m.attr(iface_split_name.c_str());
+      m.attr("interface_refine_topology1") = m.attr(iface_refine_name.c_str());
+      m.attr("interface_split_topology2_tet") = m.attr(iface_split2_name.c_str());
+      m.attr("interface_refine") = m.attr(iface_refine_all_name.c_str());
       m.attr("curve_zero_entities") = m.attr(curve_zero_name.c_str());
       m.attr("curve_interface_entities") = m.attr(curve_iface_name.c_str());
       m.attr("build_zero_chains") = m.attr(build_chain_name.c_str());
@@ -2096,6 +2415,9 @@ void declare_float(nb::module_& m, std::string type)
       m.attr("make_quadrature_curved_physical_points_with_backend")
         = m.attr(mqc_phys_backend_name.c_str());
       m.attr("assemble_curved_volume_mesh_with_backend") = m.attr(acv_backend_name.c_str());
+      m.attr("repair_cut_cell_diagonals") = m.attr(repair_name.c_str());
+      m.attr("diagonal_crosses_interface") = m.attr(diag_check_name.c_str());
+      m.attr("swap_diagonal_2d") = m.attr(swap2d_name.c_str());
     }
 }
 
@@ -2105,6 +2427,13 @@ NB_MODULE(_cutcellscpp, m)
 {
   // Create module for C++ wrappers
   m.doc() = "CutCells Python interface";
+
+  nb::class_<cell::TriangulationRepairInfo>(m, "TriangulationRepairInfo")
+    .def(nb::init<>())
+    .def_ro("checked_diagonals", &cell::TriangulationRepairInfo::checked_diagonals)
+    .def_ro("invalid_diagonals", &cell::TriangulationRepairInfo::invalid_diagonals)
+    .def_ro("swapped_diagonals", &cell::TriangulationRepairInfo::swapped_diagonals)
+    .def_ro("unresolved", &cell::TriangulationRepairInfo::unresolved);
 
   nb::class_<RefinementTemplate>(m, "RefinementTemplate")
     .def_prop_ro("n_vertices", [](const RefinementTemplate& self) { return self.n_vertices; })

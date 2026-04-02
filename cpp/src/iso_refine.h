@@ -101,4 +101,11 @@ std::span<const double> iso_p1_ref_coords(cell::type ct, int order);
 /// Reference coordinates for P1 interpolation points in Basix ordering.
 std::span<const double> p1_ref_coords(cell::type ct);
 
+/// Permutation from VTK Lagrange node order to the internal/Basix node order
+/// used by p1_template/iso_p1_template.
+///
+/// Currently supported for interval, triangle, and quadrilateral cells with
+/// orders 1..4.
+const std::vector<int>& vtk_lagrange_to_basix_permutation(cell::type ct, int order);
+
 } // namespace cutcells

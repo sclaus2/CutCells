@@ -91,84 +91,12 @@ inline void build_zero_face_coordinate_polys(
             "build_zero_face_coordinate_polys: unsupported zero-face type");
 
     const int tdim = mesh.tdim;
-    const int z0 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id)];
-    const int z1 = mesh.zero_entity_offsets[static_cast<std::size_t>(zero_entity_id + 1)];
-    const int n_face_verts = z1 - z0;
-    if ((face_type == cell::type::triangle && n_face_verts != 3)
-        || (face_type == cell::type::quadrilateral && n_face_verts != 4))
-        throw std::invalid_argument(
-            "build_zero_face_coordinate_polys: inconsistent face vertex count");
-
-    const bool has_curved =
-        geom_order >= 2
-        && !mesh.curved_zero_offsets.empty()
-        && static_cast<int>(mesh.curved_zero_offsets.size()) == mesh.n_zero_entities() + 1;
-    const int node_start = has_curved
-        ? mesh.curved_zero_offsets[static_cast<std::size_t>(zero_entity_id)] : 0;
-    const int node_end = has_curved
-        ? mesh.curved_zero_offsets[static_cast<std::size_t>(zero_entity_id + 1)] : 0;
-    const int n_face_interior = node_end - node_start;
-    const int expected_face_interior = (face_type == cell::type::triangle)
-        ? (geom_order - 1) * (geom_order - 2) / 2
-        : (geom_order - 1) * (geom_order - 1);
-    const bool use_curved = has_curved && n_face_interior == expected_face_interior;
-
-    const int degree = use_curved ? geom_order : 1;
+    std::vector<T> face_nodes_ref;
+    const int degree = cutcells::build_zero_face_nodes_ref(
+        mesh, zero_entity_id, geom_order, face_nodes_ref);
     const RefinementTemplate& tpl = (degree == 1)
         ? p1_template(face_type)
         : iso_p1_template(face_type, degree);
-
-    std::vector<T> face_nodes_ref(
-        static_cast<std::size_t>(tpl.n_vertices * tdim), T(0));
-
-    std::array<const T*, 4> face_corners = {nullptr, nullptr, nullptr, nullptr};
-    for (int i = 0; i < n_face_verts; ++i)
-    {
-        const int lv = mesh.zero_entity_vertices[static_cast<std::size_t>(z0 + i)];
-        face_corners[static_cast<std::size_t>(i)]
-            = &mesh.vertex_ref_x[static_cast<std::size_t>(lv * tdim)];
-    }
-
-    int interior_id = 0;
-    for (int i = 0; i < tpl.n_vertices; ++i)
-    {
-        const T* cached = nullptr;
-        if (use_curved && tpl.vertex_parent_dim[static_cast<std::size_t>(i)] == 2)
-        {
-            cached = &mesh.curved_zero_ref_nodes[
-                static_cast<std::size_t>((node_start + interior_id) * tdim)];
-            ++interior_id;
-        }
-
-        T* x_node = &face_nodes_ref[static_cast<std::size_t>(i * tdim)];
-        if (cached != nullptr)
-        {
-            for (int d = 0; d < tdim; ++d)
-                x_node[d] = cached[d];
-            continue;
-        }
-
-        const T u = static_cast<T>(
-            tpl.ref_vertex_coords[static_cast<std::size_t>(i * tpl.tdim + 0)]);
-        const T v = static_cast<T>(
-            tpl.ref_vertex_coords[static_cast<std::size_t>(i * tpl.tdim + 1)]);
-
-        if (face_type == cell::type::triangle)
-        {
-            for (int d = 0; d < tdim; ++d)
-                x_node[d] = (T(1) - u - v) * face_corners[0][d]
-                          + u * face_corners[1][d]
-                          + v * face_corners[2][d];
-        }
-        else
-        {
-            for (int d = 0; d < tdim; ++d)
-                x_node[d] = (T(1) - u) * (T(1) - v) * face_corners[0][d]
-                          + u * (T(1) - v) * face_corners[1][d]
-                          + u * v * face_corners[2][d]
-                          + (T(1) - u) * v * face_corners[3][d];
-        }
-    }
 
     coord_polys.assign(static_cast<std::size_t>(tdim), BernsteinCell<T>{});
     std::vector<T> lagrange_values(static_cast<std::size_t>(tpl.n_vertices), T(0));
@@ -232,11 +160,10 @@ void append_interface_quadrature_curved(
 
     // 3D interface face quadrature.
     //
-    // Phase D currently stores curved interior face nodes in the zero-entity
-    // cache, while the boundary edges remain straight. For triangular zero
-    // faces, build a regular degree-p lattice on the face, overwrite the
-    // interior lattice nodes with the cached curved positions, and integrate
-    // over the resulting piecewise-planar surface patch.
+    // The zero-face reconstruction now uses a shared curved cache on dim-1
+    // zero entities for trace-edge nodes plus a face-interior cache on dim-2
+    // zero entities. The resulting degree-p face lattice is then integrated
+    // as a curved surface patch.
     if (tdim == 3 && (n_ent_verts == 3 || n_ent_verts == 4))
     {
         const cell::type face_type = zero_face_type(mesh, zero_entity_id);

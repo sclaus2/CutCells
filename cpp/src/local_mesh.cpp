@@ -11,14 +11,19 @@
 #include "mapping.h"
 #include "cell_flags.h"
 #include "cut_cell.h"
+#include "triangulation_repair.h"
+#include "interface_split.h"
 
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdlib>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -28,6 +33,15 @@ namespace cutcells
 
 namespace
 {
+inline bool debug_multiroot_enabled()
+{
+    const char* env = std::getenv("CUTCELLS_DEBUG_MULTIROOT");
+    if (env == nullptr)
+        return false;
+    const std::string_view value(env);
+    return value == "1" || value == "true" || value == "TRUE";
+}
+
 struct EdgeKey
 {
     int32_t a = -1;
@@ -76,6 +90,22 @@ struct ZeroOwnerKeyHash
         return h;
     }
 };
+
+template <std::floating_point T>
+int find_local_edge_by_vertices(
+    const LocalMesh<T>& mesh,
+    int32_t             va,
+    int32_t             vb)
+{
+    for (int e = 0; e < mesh.n_edges(); ++e)
+    {
+        const int32_t ev0 = mesh.edge_vertices[static_cast<std::size_t>(2 * e)];
+        const int32_t ev1 = mesh.edge_vertices[static_cast<std::size_t>(2 * e + 1)];
+        if ((ev0 == va && ev1 == vb) || (ev0 == vb && ev1 == va))
+            return e;
+    }
+    return -1;
+}
 
 template <std::floating_point T, typename EvalPhi, typename EvalGrad>
 cell::edge_root::RootSolveInfo<T> solve_edge_root_on_segment(
@@ -289,12 +319,18 @@ inline int background_edge_id_from_corners(cell::type ct, int pv0, int pv1)
     return -1;
 }
 
-inline bool background_edge_on_hexahedron_face(int edge_id, int face_id)
+inline bool background_edge_on_face(cell::type ct, int edge_id, int face_id)
 {
-    if (face_id < 0 || face_id >= static_cast<int>(cell::hexahedron_faces.size()))
+    const auto edges = cell::edges(ct);
+    const auto faces = cell::faces(ct);
+    const int n_faces = cell::num_faces(ct);
+    if (edge_id < 0 || edge_id >= static_cast<int>(edges.size()))
         return false;
-    const auto edge = cell::hexahedron_edges[static_cast<std::size_t>(edge_id)];
-    const auto face = cell::hexahedron_faces[static_cast<std::size_t>(face_id)];
+    if (face_id < 0 || face_id >= n_faces)
+        return false;
+
+    const auto edge = edges[static_cast<std::size_t>(edge_id)];
+    const auto face = faces[static_cast<std::size_t>(face_id)];
     const auto on_face = [&](int v)
     {
         for (const int fv : face)
@@ -310,9 +346,8 @@ inline bool background_edge_on_hexahedron_face(int edge_id, int face_id)
 template <std::floating_point T>
 bool vertex_lies_on_background_face(const LocalMesh<T>& mesh, int lv, int bg_face_id)
 {
-    if (mesh.parent_cell_type != cell::type::hexahedron)
-        return false;
-    if (bg_face_id < 0 || bg_face_id >= static_cast<int>(cell::hexahedron_faces.size()))
+    const int n_bg_faces = cell::num_faces(mesh.parent_cell_type);
+    if (bg_face_id < 0 || bg_face_id >= n_bg_faces)
         return false;
 
     const int pdim = mesh.vertex_parent_dim[static_cast<std::size_t>(lv)];
@@ -320,10 +355,11 @@ bool vertex_lies_on_background_face(const LocalMesh<T>& mesh, int lv, int bg_fac
     if (pdim == 2 && pid == bg_face_id)
         return true;
     if (pdim == 1 && pid >= 0 && pid < cell::num_edges(mesh.parent_cell_type))
-        return background_edge_on_hexahedron_face(pid, bg_face_id);
+        return background_edge_on_face(mesh.parent_cell_type, pid, bg_face_id);
     if (pdim == 0)
     {
-        const auto face = cell::hexahedron_faces[static_cast<std::size_t>(bg_face_id)];
+        const auto bg_faces = cell::faces(mesh.parent_cell_type);
+        const auto face = bg_faces[static_cast<std::size_t>(bg_face_id)];
         for (const int fv : face)
         {
             if (pid == fv)
@@ -338,10 +374,8 @@ std::pair<int32_t, int32_t> infer_background_face_parent(
     const LocalMesh<T>&             mesh,
     std::span<const int32_t>        face_vertices)
 {
-    if (mesh.parent_cell_type != cell::type::hexahedron)
-        return {-1, -1};
-
-    for (int f = 0; f < static_cast<int>(cell::hexahedron_faces.size()); ++f)
+    const int n_bg_faces = cell::num_faces(mesh.parent_cell_type);
+    for (int f = 0; f < n_bg_faces; ++f)
     {
         bool all_on_face = true;
         for (const int32_t lv : face_vertices)
@@ -356,6 +390,23 @@ std::pair<int32_t, int32_t> infer_background_face_parent(
             return {2, f};
     }
     return {-1, -1};
+}
+
+template <std::floating_point T>
+std::pair<int32_t, int32_t> infer_background_edge_or_face_parent(
+    const LocalMesh<T>& mesh,
+    int                 lv0,
+    int                 lv1)
+{
+    const auto edge_parent = infer_background_edge_parent(mesh, lv0, lv1);
+    if (edge_parent.first >= 0)
+        return edge_parent;
+
+    const std::array<int32_t, 2> verts = {
+        static_cast<int32_t>(lv0),
+        static_cast<int32_t>(lv1)};
+    return infer_background_face_parent(
+        mesh, std::span<const int32_t>(verts.data(), verts.size()));
 }
 
 template <std::floating_point T>
@@ -467,7 +518,7 @@ void build_local_edges(LocalMesh<T>& mesh)
     mesh.edge_parent_id.assign(n_edges, -1);
     for (int i = 0; i < n_edges; ++i)
     {
-        const auto [pdim, pid] = infer_background_edge_parent(
+        const auto [pdim, pid] = infer_background_edge_or_face_parent(
             mesh,
             mesh.edge_vertices[static_cast<std::size_t>(2 * i)],
             mesh.edge_vertices[static_cast<std::size_t>(2 * i + 1)]);
@@ -788,7 +839,7 @@ int32_t append_segment_midpoint(
                         + old.vertex_x[static_cast<std::size_t>(vb * old.gdim + d)]);
     }
 
-    const auto [pdim, pid] = infer_background_edge_parent(old, va, vb);
+    const auto [pdim, pid] = infer_background_edge_or_face_parent(old, va, vb);
     return append_generated_vertex<T>(
         vertex_x,
         vertex_ref_x,
@@ -1415,68 +1466,13 @@ void build_local_faces(LocalMesh<T>& mesh)
                 const cell::type ftype = (fsz == 3) ? cell::type::triangle : cell::type::quadrilateral;
                 unique_face_types.push_back(ftype);
 
-                // Infer background face parent (only for hexahedron currently;
-                // tetrahedron, prism, pyramid can be added later)
                 int32_t bg_face_dim = -1;
                 int32_t bg_face_id = -1;
-                if (mesh.parent_cell_type == cell::type::tetrahedron
-                    && mesh.tdim == 3)
-                {
-                    const auto bg_faces = cell::faces(cell::type::tetrahedron);
-                    const auto bg_fsizes = cell::face_vertex_counts(cell::type::tetrahedron);
-                    const int n_bg_f = cell::num_faces(cell::type::tetrahedron);
-                    for (int bg_f = 0; bg_f < n_bg_f; ++bg_f)
-                    {
-                        const int bfsz = bg_fsizes[static_cast<std::size_t>(bg_f)];
-                        const auto& bfdef = bg_faces[static_cast<std::size_t>(bg_f)];
-                        bool all_on = true;
-                        for (int k = 0; k < fsz && all_on; ++k)
-                        {
-                            const int32_t gvk = gv[static_cast<std::size_t>(k)];
-                            bool found_v = false;
-                            for (int bk = 0; bk < bfsz && !found_v; ++bk)
-                            {
-                                const int bg_local_v = bfdef[static_cast<std::size_t>(bk)];
-                                // Check vertex_parent_dim and vertex_parent_id
-                                const int pdim = mesh.vertex_parent_dim[static_cast<std::size_t>(gvk)];
-                                const int pid = mesh.vertex_parent_id[static_cast<std::size_t>(gvk)];
-                                if (pdim == 0 && pid == bg_local_v)
-                                    found_v = true;
-                            }
-                            if (!found_v)
-                                all_on = false;
-                        }
-                        if (all_on)
-                        {
-                            bg_face_dim = 2;
-                            bg_face_id = bg_f;
-                            break;
-                        }
-                    }
-                }
-                else if (mesh.parent_cell_type == cell::type::hexahedron)
-                {
-                    // Use the existing infer_background_face_parent logic for hexahedra
-                    // (simplified: check all face vertices against background face definition)
-                    const auto bg_faces = cell::faces(cell::type::hexahedron);
-                    const int n_bg_f = cell::num_faces(cell::type::hexahedron);
-                    for (int bg_f = 0; bg_f < n_bg_f; ++bg_f)
-                    {
-                        bool all_on = true;
-                        for (int k = 0; k < fsz && all_on; ++k)
-                        {
-                            const int32_t gvk = gv[static_cast<std::size_t>(k)];
-                            if (!vertex_lies_on_background_face(mesh, gvk, bg_f))
-                                all_on = false;
-                        }
-                        if (all_on)
-                        {
-                            bg_face_dim = 2;
-                            bg_face_id = bg_f;
-                            break;
-                        }
-                    }
-                }
+                const auto [pdim, pid] = infer_background_face_parent(
+                    mesh,
+                    std::span<const int32_t>(gv.data(), static_cast<std::size_t>(fsz)));
+                bg_face_dim = pdim;
+                bg_face_id = pid;
 
                 unique_face_parent_dim.push_back(bg_face_dim);
                 unique_face_parent_id.push_back(bg_face_id);
@@ -1807,6 +1803,39 @@ void build_zero_entities(LocalMesh<T>& mesh, int level_set_id)
         std::vector<int32_t> face_adj_cell0(static_cast<std::size_t>(nf), -1);
         std::vector<int32_t> face_adj_cell1(static_cast<std::size_t>(nf), -1);
         std::vector<uint8_t> face_added(static_cast<std::size_t>(nf), uint8_t(0));
+        std::unordered_map<EdgeKey, int32_t, EdgeKeyHash> zero_edge_entity_by_key;
+
+        auto normalize_edge = [](int32_t a, int32_t b) -> EdgeKey
+        {
+            return (a < b) ? EdgeKey{a, b} : EdgeKey{b, a};
+        };
+
+        auto append_zero_edge_if_missing = [&](int32_t a, int32_t b, int32_t owner_cell)
+        {
+            const EdgeKey key = normalize_edge(a, b);
+            if (zero_edge_entity_by_key.find(key) != zero_edge_entity_by_key.end())
+                return;
+
+            int32_t parent_dim = -1;
+            int32_t parent_id = -1;
+            const int edge_id = find_local_edge_by_vertices(mesh, a, b);
+            if (edge_id >= 0)
+            {
+                parent_dim = mesh.edge_parent_dim[static_cast<std::size_t>(edge_id)];
+                parent_id = mesh.edge_parent_id[static_cast<std::size_t>(edge_id)];
+            }
+
+            const std::array<int32_t, 2> verts = {a, b};
+            append_zero_entity(
+                mesh, 1, zero_mask,
+                std::span<const int32_t>(verts.data(), verts.size()),
+                owner_cell,
+                parent_dim,
+                parent_id);
+            zero_edge_entity_by_key.emplace(
+                key,
+                static_cast<int32_t>(mesh.n_zero_entities() - 1));
+        };
 
         for (int c = 0; c < nc; ++c)
         {
@@ -1841,19 +1870,19 @@ void build_zero_entities(LocalMesh<T>& mesh, int level_set_id)
             if (!all_zero)
                 continue;
 
+            const int32_t owner_cell = (face_adj_cell0[static_cast<std::size_t>(f)] >= 0)
+                ? face_adj_cell0[static_cast<std::size_t>(f)]
+                : face_adj_cell1[static_cast<std::size_t>(f)];
             std::vector<int32_t> edge_pairs;
             edge_pairs.reserve(static_cast<std::size_t>(2 * n_face_verts));
             for (int i = 0; i < n_face_verts; ++i)
             {
                 const int32_t a = verts[static_cast<std::size_t>(i)];
                 const int32_t b = verts[static_cast<std::size_t>((i + 1) % n_face_verts)];
+                append_zero_edge_if_missing(a, b, owner_cell);
                 edge_pairs.push_back(a);
                 edge_pairs.push_back(b);
             }
-
-            const int32_t owner_cell = (face_adj_cell0[static_cast<std::size_t>(f)] >= 0)
-                ? face_adj_cell0[static_cast<std::size_t>(f)]
-                : face_adj_cell1[static_cast<std::size_t>(f)];
             append_zero_entity(
                 mesh, 2, zero_mask,
                 std::span<const int32_t>(verts.data(), verts.size()),
@@ -1887,17 +1916,17 @@ void build_zero_entities(LocalMesh<T>& mesh, int level_set_id)
                 verts[static_cast<std::size_t>(i)] =
                     mesh.face_vertices[static_cast<std::size_t>(f0 + i)];
 
+            const int32_t parent_c = (d0 == D_INSIDE) ? c0 : c1;
             std::vector<int32_t> edge_pairs;
             edge_pairs.reserve(static_cast<std::size_t>(2 * n_face_verts));
             for (int i = 0; i < n_face_verts; ++i)
             {
                 const int32_t a = verts[static_cast<std::size_t>(i)];
                 const int32_t b = verts[static_cast<std::size_t>((i + 1) % n_face_verts)];
+                append_zero_edge_if_missing(a, b, parent_c);
                 edge_pairs.push_back(a);
                 edge_pairs.push_back(b);
             }
-
-            const int32_t parent_c = (d0 == D_INSIDE) ? c0 : c1;
             append_zero_entity(
                 mesh, 2, zero_mask,
                 std::span<const int32_t>(verts.data(), verts.size()),
@@ -2329,6 +2358,9 @@ void drop_unreferenced_root_vertices(LocalMesh<T>& mesh)
         return;
 
     for (int32_t& v : mesh.cell_vertices)
+        v = old_to_new[static_cast<std::size_t>(v)];
+
+    for (int32_t& v : mesh.edge_vertices)
         v = old_to_new[static_cast<std::size_t>(v)];
 
     mesh.vertex_x.swap(new_x);
@@ -4097,6 +4129,7 @@ bool resolve_multi_root_edges(
 {
     if (level_set_id < 0 || level_set_id >= mesh.n_level_sets)
         throw std::invalid_argument("resolve_multi_root_edges: invalid level_set_id");
+    const bool debug_multiroot = debug_multiroot_enabled();
 
     // Build Bernstein local level-set function once (for polynomial backend)
     // The segment_restriction closure captures the parent polynomial and
@@ -4142,7 +4175,33 @@ bool resolve_multi_root_edges(
         }
 
         if (target_edge < 0)
+        {
+            if (debug_multiroot)
+            {
+                std::cerr << "Debug: resolve_multi_root_edges parent cell "
+                          << mesh.parent_cell_id
+                          << " resolved after " << iter
+                          << " iteration(s); n_cells=" << mesh.n_cells()
+                          << ", n_edges=" << mesh.n_edges() << "\n";
+            }
             return true; // all edges are at most single_cross
+        }
+
+        if (debug_multiroot)
+        {
+            const auto st = static_cast<EdgeState>(
+                mesh.edge_state_for(target_edge, level_set_id));
+            const int va = mesh.edge_vertices[static_cast<std::size_t>(2 * target_edge)];
+            const int vb = mesh.edge_vertices[static_cast<std::size_t>(2 * target_edge + 1)];
+            std::cerr << "Debug: resolve_multi_root_edges parent cell "
+                      << mesh.parent_cell_id
+                      << " iter " << iter
+                      << " target_edge=" << target_edge
+                      << " state=" << static_cast<int>(st)
+                      << " verts=(" << va << "," << vb << ")"
+                      << " n_cells=" << mesh.n_cells()
+                      << " n_edges=" << mesh.n_edges() << "\n";
+        }
 
         // Find separator parameter for this edge
         T t_sep = T(0.5);
@@ -4169,6 +4228,7 @@ bool resolve_multi_root_edges(
         }
 
         // Attempt green split
+        const int n_cells_before = mesh.n_cells();
         const bool green_ok = green_split_one_edge(mesh, target_edge, t_sep);
         if (!green_ok)
         {
@@ -4185,6 +4245,18 @@ bool resolve_multi_root_edges(
                 mesh, std::span<const uint8_t>(marks.data(), marks.size()));
         }
 
+        if (debug_multiroot)
+        {
+            std::cerr << "Debug: resolve_multi_root_edges parent cell "
+                      << mesh.parent_cell_id
+                      << " iter " << iter
+                      << " separator_t=" << t_sep
+                      << " green_ok=" << (green_ok ? 1 : 0)
+                      << " n_cells_before=" << n_cells_before
+                      << " n_cells_after=" << mesh.n_cells()
+                      << "\n";
+        }
+
         // Evaluate level-set values at new vertices (needed for next
         // classification round). The classify functions populate
         // vertex_phi from the parent polynomial, so this is handled
@@ -4198,7 +4270,16 @@ bool resolve_multi_root_edges(
         const auto st = static_cast<EdgeState>(
             mesh.edge_state_for(e, level_set_id));
         if (st == EdgeState::multi_cross || st == EdgeState::uncertain)
+        {
+            if (debug_multiroot)
+            {
+                std::cerr << "Debug: resolve_multi_root_edges parent cell "
+                          << mesh.parent_cell_id
+                          << " hit max_iterations with unresolved edge "
+                          << e << " state=" << static_cast<int>(st) << "\n";
+            }
             return false;
+        }
     }
     return true;
 }
@@ -4418,6 +4499,405 @@ void decompose_local_mesh(LocalMesh<T>& mesh,
     decompose_local_mesh_linear(mesh, level_set_id, triangulate);
 }
 
+// ============================================================================
+// repair_triangulation_diagonals
+// ============================================================================
+
+namespace
+{
+
+inline void append_interface_split_log_line(
+    int         parent_cell_id,
+    int         local_cell_id,
+    const char* split_name,
+    int         all_zero_child_tets)
+{
+    const char* path = std::getenv("CUTCELLS_INTERFACE_SPLIT_LOG");
+    if (path == nullptr || path[0] == '\0')
+        return;
+
+    std::ofstream out(path, std::ios::app);
+    if (!out)
+        return;
+
+    out << parent_cell_id << " " << local_cell_id << " "
+        << split_name << " " << all_zero_child_tets << "\n";
+}
+
+/// Build the set of edges (as canonically-ordered vertex pairs) from a mesh.
+inline std::set<std::pair<int32_t, int32_t>>
+collect_edge_set(const std::vector<int32_t>& edge_vertices, int n_edges)
+{
+    std::set<std::pair<int32_t, int32_t>> result;
+    for (int e = 0; e < n_edges; ++e)
+    {
+        int32_t a = edge_vertices[static_cast<std::size_t>(2 * e)];
+        int32_t b = edge_vertices[static_cast<std::size_t>(2 * e + 1)];
+        if (a > b) std::swap(a, b);
+        result.insert({a, b});
+    }
+    return result;
+}
+
+/// Test whether a post-cut edge is a triangulation diagonal.
+///
+/// A diagonal is an edge that:
+///   1. was NOT present in the pre-cut mesh (i.e. introduced by LUT cutting), AND
+///   2. is NOT a root-to-root interface edge (both endpoints are root vertices).
+template <std::floating_point T>
+bool is_local_mesh_diagonal(
+    const LocalMesh<T>& mesh, int edge_id,
+    const std::set<std::pair<int32_t, int32_t>>& pre_cut_edges)
+{
+    int32_t va = mesh.edge_vertices[static_cast<std::size_t>(2 * edge_id)];
+    int32_t vb = mesh.edge_vertices[static_cast<std::size_t>(2 * edge_id + 1)];
+    if (va > vb) std::swap(va, vb);
+
+    // Edge existed before the cut — not a diagonal
+    if (pre_cut_edges.count({va, vb}))
+        return false;
+
+    // Both endpoints are root vertices — this is an interface edge, not a diagonal
+    const int32_t root_a = mesh.vertex_root_edge_id[static_cast<std::size_t>(va)];
+    const int32_t root_b = mesh.vertex_root_edge_id[static_cast<std::size_t>(vb)];
+    if (root_a >= 0 && root_b >= 0)
+        return false;
+
+    return true;
+}
+
+/// Check whether a diagonal in the decomposed local mesh crosses the
+/// interface using multi-point sampling.  Accepts vertex ids directly
+/// so that post-swap checks can be done without rebuilding edge arrays.
+template <std::floating_point T>
+bool local_mesh_diagonal_crosses_by_verts(
+    const LocalMesh<T>& mesh,
+    int va, int vb,
+    int expected_sign,
+    std::function<T(const T*, int)> eval_phi,
+    T tol)
+{
+    const int gdim = mesh.gdim;
+    static constexpr std::array<double, 5> samples = {0.2, 0.35, 0.5, 0.65, 0.8};
+
+    for (const double t : samples)
+    {
+        std::array<T, 3> pt = {T(0), T(0), T(0)};
+        for (int d = 0; d < gdim; ++d)
+        {
+            const T xa = mesh.vertex_x[static_cast<std::size_t>(va * gdim + d)];
+            const T xb = mesh.vertex_x[static_cast<std::size_t>(vb * gdim + d)];
+            pt[static_cast<std::size_t>(d)] = xa + static_cast<T>(t) * (xb - xa);
+        }
+
+        const T phi_val = eval_phi(pt.data(), -1);
+
+        if (expected_sign < 0 && phi_val > tol)
+            return true;
+        if (expected_sign > 0 && phi_val < -tol)
+            return true;
+    }
+    return false;
+}
+
+/// Swap a diagonal between two triangles in the local mesh cell arrays.
+/// Returns true if the swap was performed.
+template <std::floating_point T>
+bool swap_local_mesh_diagonal_2d(
+    LocalMesh<T>& mesh,
+    int cell_i, int cell_j,
+    int shared_a, int shared_b)
+{
+    if (mesh.cell_types[static_cast<std::size_t>(cell_i)] != cell::type::triangle
+        || mesh.cell_types[static_cast<std::size_t>(cell_j)] != cell::type::triangle)
+        return false;
+
+    const int off_i = mesh.cell_offsets[static_cast<std::size_t>(cell_i)];
+    const int off_j = mesh.cell_offsets[static_cast<std::size_t>(cell_j)];
+
+    // Find the unshared vertex in each triangle
+    int unshared_i = -1, unshared_j = -1;
+    for (int k = 0; k < 3; ++k)
+    {
+        int v = mesh.cell_vertices[static_cast<std::size_t>(off_i + k)];
+        if (v != shared_a && v != shared_b) { unshared_i = v; break; }
+    }
+    for (int k = 0; k < 3; ++k)
+    {
+        int v = mesh.cell_vertices[static_cast<std::size_t>(off_j + k)];
+        if (v != shared_a && v != shared_b) { unshared_j = v; break; }
+    }
+    if (unshared_i < 0 || unshared_j < 0)
+        return false;
+
+    // Rewrite: T_i -> {shared_a, unshared_i, unshared_j}
+    //          T_j -> {shared_b, unshared_j, unshared_i}
+    mesh.cell_vertices[static_cast<std::size_t>(off_i + 0)] = shared_a;
+    mesh.cell_vertices[static_cast<std::size_t>(off_i + 1)] = unshared_i;
+    mesh.cell_vertices[static_cast<std::size_t>(off_i + 2)] = unshared_j;
+
+    mesh.cell_vertices[static_cast<std::size_t>(off_j + 0)] = shared_b;
+    mesh.cell_vertices[static_cast<std::size_t>(off_j + 1)] = unshared_j;
+    mesh.cell_vertices[static_cast<std::size_t>(off_j + 2)] = unshared_i;
+
+    return true;
+}
+
+/// Find the non-crossing edge of a cell for interface-aware green refinement.
+///
+/// A non-crossing edge has both endpoints on the same side of the interface
+/// (both phi < 0 or both phi > 0).  Splitting such an edge creates a new
+/// edge from the vertex on the opposite side to the midpoint that passes
+/// through the interface in a quasi-normal direction.
+///
+/// This is the correct edge to split because it guarantees the interface
+/// is subdivided quasi-normally, regardless of cell type or cut case.
+///
+/// Among multiple non-crossing candidates, picks the longest.
+///
+/// @param mesh          the local mesh (must have vertex_phi populated)
+/// @param cell_id       which cell to inspect
+/// @param level_set_id  which level set
+/// @param out_v0,out_v1 output: vertex ids of the selected edge
+/// @param tol           zero tolerance for sign classification
+/// @return local-mesh edge id, or -1 if not found
+template <std::floating_point T>
+int find_interface_split_edge(
+    const LocalMesh<T>& mesh, int cell_id, int level_set_id,
+    int& out_v0, int& out_v1, T tol)
+{
+    const int ce0 = mesh.cell_edge_offsets[static_cast<std::size_t>(cell_id)];
+    const int ce1 = mesh.cell_edge_offsets[static_cast<std::size_t>(cell_id + 1)];
+
+    int best_edge = -1;
+    T max_len = T(-1);
+
+    for (int idx = ce0; idx < ce1; ++idx)
+    {
+        const int eid = mesh.cell_edges_flat[static_cast<std::size_t>(idx)];
+        const int va  = mesh.edge_vertices[static_cast<std::size_t>(2 * eid)];
+        const int vb  = mesh.edge_vertices[static_cast<std::size_t>(2 * eid + 1)];
+
+        const T phi_a = mesh.vertex_phi[static_cast<std::size_t>(
+            va * mesh.n_level_sets + level_set_id)];
+        const T phi_b = mesh.vertex_phi[static_cast<std::size_t>(
+            vb * mesh.n_level_sets + level_set_id)];
+
+        // Skip edges that cross the interface (endpoints on different sides)
+        if ((phi_a < -tol && phi_b > tol) || (phi_a > tol && phi_b < -tol))
+            continue;
+
+        // Skip edges where an endpoint is on the interface (phi ≈ 0)
+        if (std::abs(phi_a) <= tol || std::abs(phi_b) <= tol)
+            continue;
+
+        // Both endpoints strictly on the same side: candidate non-crossing edge
+        T len_sq = T(0);
+        for (int d = 0; d < mesh.gdim; ++d)
+        {
+            const T diff = mesh.vertex_x[static_cast<std::size_t>(va * mesh.gdim + d)]
+                         - mesh.vertex_x[static_cast<std::size_t>(vb * mesh.gdim + d)];
+            len_sq += diff * diff;
+        }
+        if (len_sq > max_len)
+        {
+            max_len = len_sq;
+            best_edge = eid;
+            out_v0 = va;
+            out_v1 = vb;
+        }
+    }
+    return best_edge;
+}
+
+/// Find local-mesh edge id given two vertex ids.  Returns -1 if not found.
+template <std::floating_point T>
+int find_edge_by_vertices(const LocalMesh<T>& mesh, int v0, int v1)
+{
+    for (int e = 0; e < mesh.n_edges(); ++e)
+    {
+        const int a = mesh.edge_vertices[static_cast<std::size_t>(2 * e)];
+        const int b = mesh.edge_vertices[static_cast<std::size_t>(2 * e + 1)];
+        if ((a == v0 && b == v1) || (a == v1 && b == v0))
+            return e;
+    }
+    return -1;
+}
+
+/// Map a post-cut cell back to its parent pre-cut cell.
+///
+/// Uses non-root vertices (original mesh vertices) and root-edge incidence
+/// to uniquely identify which pre-cut cell produced the given post-cut cell.
+/// Returns -1 if no parent can be found.
+template <std::floating_point T>
+int find_parent_cell(const LocalMesh<T>& post_cut, int cell_id,
+                     const LocalMesh<T>& pre_cut)
+{
+    const int off = post_cut.cell_offsets[static_cast<std::size_t>(cell_id)];
+    const int nv  = post_cut.cell_offsets[static_cast<std::size_t>(cell_id + 1)] - off;
+
+    // Gather non-root vertices and one root edge id for disambiguation
+    std::vector<int32_t> orig_verts;
+    int any_root_edge = -1;
+    for (int j = 0; j < nv; ++j)
+    {
+        const int v = post_cut.cell_vertices[static_cast<std::size_t>(off + j)];
+        if (post_cut.vertex_root_edge_id[static_cast<std::size_t>(v)] < 0)
+            orig_verts.push_back(static_cast<int32_t>(v));
+        else if (any_root_edge < 0)
+            any_root_edge = post_cut.vertex_root_edge_id[static_cast<std::size_t>(v)];
+    }
+    if (orig_verts.empty())
+        return -1;
+
+    for (int pc = 0; pc < pre_cut.n_cells(); ++pc)
+    {
+        const int poff = pre_cut.cell_offsets[static_cast<std::size_t>(pc)];
+        const int pnv  = pre_cut.cell_offsets[static_cast<std::size_t>(pc + 1)] - poff;
+
+        // Check all non-root vertices are in this pre-cut cell
+        bool all_found = true;
+        for (const int32_t ov : orig_verts)
+        {
+            bool found = false;
+            for (int j = 0; j < pnv; ++j)
+            {
+                if (pre_cut.cell_vertices[static_cast<std::size_t>(poff + j)] == ov)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) { all_found = false; break; }
+        }
+        if (!all_found)
+            continue;
+
+        // If we have a root edge, verify it belongs to this cell for disambiguation
+        if (any_root_edge >= 0)
+        {
+            const int ce0 = pre_cut.cell_edge_offsets[static_cast<std::size_t>(pc)];
+            const int ce1 = pre_cut.cell_edge_offsets[static_cast<std::size_t>(pc + 1)];
+            bool has_edge = false;
+            for (int idx = ce0; idx < ce1; ++idx)
+            {
+                if (pre_cut.cell_edges_flat[static_cast<std::size_t>(idx)] == any_root_edge)
+                {
+                    has_edge = true;
+                    break;
+                }
+            }
+            if (!has_edge)
+                continue;
+        }
+
+        return pc;
+    }
+    return -1;
+}
+
+} // anonymous namespace
+
+template <std::floating_point T>
+bool repair_triangulation_diagonals(
+    LocalMesh<T>&                          mesh,
+    const std::set<std::pair<int32_t, int32_t>>& pre_cut_edges,
+    std::function<T(const T*, int)>        eval_phi,
+    int                                    level_set_id,
+    T                                      tol)
+{
+    // Build edge-to-cell adjacency
+    const int ne = mesh.n_edges();
+    const int nc = mesh.n_cells();
+    std::vector<std::vector<int>> edge_to_cells(static_cast<std::size_t>(ne));
+
+    for (int c = 0; c < nc; ++c)
+    {
+        const int ce0 = mesh.cell_edge_offsets[static_cast<std::size_t>(c)];
+        const int ce1 = mesh.cell_edge_offsets[static_cast<std::size_t>(c + 1)];
+        for (int idx = ce0; idx < ce1; ++idx)
+        {
+            const int eid = mesh.cell_edges_flat[static_cast<std::size_t>(idx)];
+            edge_to_cells[static_cast<std::size_t>(eid)].push_back(c);
+        }
+    }
+
+    bool all_resolved = true;
+
+    for (int e = 0; e < ne; ++e)
+    {
+        const auto& inc_cells = edge_to_cells[static_cast<std::size_t>(e)];
+        if (inc_cells.size() != 2)
+            continue;
+
+        if (!is_local_mesh_diagonal(mesh, e, pre_cut_edges))
+            continue;
+
+        // Determine expected sign from the domain of incident cells
+        const int ci = inc_cells[0];
+        const int cj = inc_cells[1];
+        const auto dom_i = static_cast<cell::domain>(mesh.cell_domain[static_cast<std::size_t>(ci)]);
+        const auto dom_j = static_cast<cell::domain>(mesh.cell_domain[static_cast<std::size_t>(cj)]);
+        if (dom_i != dom_j)
+            continue; // different domains: not a triangulation diagonal
+
+        int expected_sign = 0;
+        if (dom_i == cell::domain::inside)
+            expected_sign = -1;
+        else if (dom_i == cell::domain::outside)
+            expected_sign = +1;
+        else
+            continue;
+
+        const int va = mesh.edge_vertices[static_cast<std::size_t>(2 * e)];
+        const int vb = mesh.edge_vertices[static_cast<std::size_t>(2 * e + 1)];
+
+        if (!local_mesh_diagonal_crosses_by_verts(mesh, va, vb, expected_sign, eval_phi, tol))
+            continue; // diagonal is fine
+
+        // Diagonal crosses interface — try 2D swap
+        if (mesh.tdim == 2
+            && mesh.cell_types[static_cast<std::size_t>(ci)] == cell::type::triangle
+            && mesh.cell_types[static_cast<std::size_t>(cj)] == cell::type::triangle)
+        {
+            if (!swap_local_mesh_diagonal_2d(mesh, ci, cj, va, vb))
+            {
+                all_resolved = false;
+                continue;
+            }
+
+            // After swap: T_i = {shared_a, unshared_i, unshared_j}
+            // The new diagonal connects unshared_i and unshared_j
+            const int off_i = mesh.cell_offsets[static_cast<std::size_t>(ci)];
+            const int new_va = mesh.cell_vertices[static_cast<std::size_t>(off_i + 1)];
+            const int new_vb = mesh.cell_vertices[static_cast<std::size_t>(off_i + 2)];
+
+            if (local_mesh_diagonal_crosses_by_verts(
+                    mesh, new_va, new_vb, expected_sign, eval_phi, tol))
+            {
+                // New diagonal also bad — revert the swap
+                swap_local_mesh_diagonal_2d(mesh, ci, cj, new_va, new_vb);
+                all_resolved = false;
+            }
+        }
+        else
+        {
+            // 3D or non-triangle: mark as unresolved
+            all_resolved = false;
+        }
+    }
+
+    // Rebuild edge/face arrays to reflect any swaps
+    build_local_edges(mesh);
+    build_local_faces(mesh);
+
+    return all_resolved;
+}
+
+// ============================================================================
+// decompose_local_mesh_with_backend
+// ============================================================================
+
 template <std::floating_point T, std::integral I>
 LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
     LocalMesh<T>&                 mesh,
@@ -4428,7 +4908,9 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
     bool                          triangulate,
     int                           max_refine_depth,
     T                             tol,
-    bool                          debug)
+    bool                          debug,
+    bool                          repair_diagonals,
+    int                           max_repair_depth)
 {
     if (level_set_id < 0 || level_set_id >= mesh.n_level_sets)
         throw std::invalid_argument("decompose_local_mesh_with_backend: invalid level_set_id");
@@ -4436,6 +4918,50 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
         throw std::invalid_argument("decompose_local_mesh_with_backend: max_refine_depth must be >= 0");
 
     LUTCertificationResult<T, I> result;
+    const auto count_intersected_subcells = [&](const LocalMesh<T>& local_mesh) -> int
+    {
+        int n_intersected = 0;
+        for (const uint8_t dom : local_mesh.cell_domain)
+        {
+            if (static_cast<cell::domain>(dom) == cell::domain::intersected)
+                ++n_intersected;
+        }
+        return n_intersected;
+    };
+    const auto count_all_zero_tets_in_range = [&](const LocalMesh<T>& local_mesh,
+                                                  int cell_begin,
+                                                  int cell_end) -> int
+    {
+        int count = 0;
+        for (int ci = std::max(0, cell_begin);
+             ci < std::min(cell_end, local_mesh.n_cells());
+             ++ci)
+        {
+            if (local_mesh.cell_types[static_cast<std::size_t>(ci)]
+                != cell::type::tetrahedron)
+                continue;
+            const int c0 = local_mesh.cell_offsets[static_cast<std::size_t>(ci)];
+            const int c1 = local_mesh.cell_offsets[static_cast<std::size_t>(ci + 1)];
+            if (c1 - c0 != 4)
+                continue;
+
+            bool all_zero = true;
+            for (int j = c0; j < c1; ++j)
+            {
+                const int32_t vid = local_mesh.cell_vertices[static_cast<std::size_t>(j)];
+                const T phi = local_mesh.vertex_phi[static_cast<std::size_t>(
+                    vid * local_mesh.n_level_sets + level_set_id)];
+                if (std::abs(phi) > tol)
+                {
+                    all_zero = false;
+                    break;
+                }
+            }
+            if (all_zero)
+                ++count;
+        }
+        return count;
+    };
     if (static_cast<int>(mesh.vertex_root_edge_id.size()) != mesh.n_vertices())
         mesh.vertex_root_edge_id.assign(static_cast<std::size_t>(mesh.n_vertices()), -1);
 
@@ -4503,12 +5029,285 @@ LUTCertificationResult<T, I> decompose_local_mesh_with_backend(
     compute_all_roots_with_backend<T, I>(
         mesh, level_set, backend, level_set_id, root_method, tol);
 
-    // Step 6: Single LUT cutting — no post-LUT certification or rejection
-    decompose_local_mesh_from_cached_roots(mesh, level_set_id, triangulate, false);
+    // Step 6: LUT cutting with optional diagonal repair
+    if (!repair_diagonals || !triangulate)
+    {
+        decompose_local_mesh_from_cached_roots(mesh, level_set_id, triangulate, false);
+        result.invalid_cells = count_intersected_subcells(mesh);
+        result.certified = all_resolved && (result.invalid_cells == 0);
+        result.refine_iterations = 0;
+        return result;
+    }
 
-    result.certified = all_resolved;
-    result.invalid_cells = 0;
+    // Build a physical-space evaluator for diagonal certification.
+    // For FEM/bernstein-backed data this evaluates the local polynomial after
+    // pulling the sample point back to the parent reference cell.
+    std::function<T(const T*, int)> eval_phi;
+    LocalLevelSetFunction<T, I> local_phi;
+    if (backend == LocalLevelSetBackend::bernstein)
+    {
+        local_phi = make_local_level_set_function_bernstein<T, I>(
+            mesh.parent_cell_type, mesh.gdim, level_set,
+            static_cast<I>(mesh.parent_cell_id));
+        eval_phi = [&mesh, &local_phi](const T* x, int /*cell_id*/) -> T
+        {
+            std::array<T, 3> x_phys = {T(0), T(0), T(0)};
+            std::array<T, 3> x_ref = {T(0), T(0), T(0)};
+            for (int d = 0; d < mesh.gdim; ++d)
+                x_phys[static_cast<std::size_t>(d)] = x[d];
+            cell::pull_back_affine<T>(
+                mesh.parent_cell_type,
+                mesh.parent_cell_coords_p1,
+                mesh.gdim,
+                std::span<const T>(x_phys.data(), static_cast<std::size_t>(mesh.gdim)),
+                std::span<T>(x_ref.data(), static_cast<std::size_t>(mesh.tdim)));
+            return local_phi.value(x_ref.data());
+        };
+    }
+    else
+    {
+        const I parent_cell_id = static_cast<I>(mesh.parent_cell_id);
+        eval_phi = [&level_set, parent_cell_id](const T* x, int /*cell_id*/) -> T {
+            return level_set.value(x, parent_cell_id);
+        };
+    }
+
+    // Save pre-decomposition state for potential rollback
+    const LocalMesh<T> pre_cut_mesh = mesh;
+
+    // Collect the pre-cut edge set so we can identify new edges (diagonals)
+    const auto pre_cut_edges = collect_edge_set(
+        mesh.edge_vertices, mesh.n_edges());
+
+    // Trial decomposition with triangulation
+    decompose_local_mesh_from_cached_roots(mesh, level_set_id, true, false);
+
+    // Build edge-to-cell adjacency for the post-cut mesh
+    const int ne_post = mesh.n_edges();
+    std::vector<std::vector<int>> edge_to_cells(
+        static_cast<std::size_t>(ne_post));
+    for (int c = 0; c < mesh.n_cells(); ++c)
+    {
+        const int ce0 = mesh.cell_edge_offsets[static_cast<std::size_t>(c)];
+        const int ce1 = mesh.cell_edge_offsets[static_cast<std::size_t>(c + 1)];
+        for (int idx = ce0; idx < ce1; ++idx)
+        {
+            const int eid = mesh.cell_edges_flat[static_cast<std::size_t>(idx)];
+            edge_to_cells[static_cast<std::size_t>(eid)].push_back(c);
+        }
+    }
+
+    // Reclassify the post-cut mesh and inspect every new edge. This catches
+    // unresolved face-subtriangulation edges in addition to the earlier
+    // diagonal-crossing heuristic, so the stronger face-enriched split can be
+    // triggered when a child-face edge is still intersected after LUT cutting.
+    classify_edges_with_backend<T, I>(
+        mesh, level_set, backend, level_set_id, tol, false);
+
+    // Check all new triangulation diagonals for interface crossing.
+    // For each crossing diagonal, map back to the pre-cut parent cell.
+    std::set<int> bad_parent_cells;
+    for (int e = 0; e < ne_post; ++e)
+    {
+        if (!is_local_mesh_diagonal(mesh, e, pre_cut_edges))
+            continue;
+
+        const auto& inc = edge_to_cells[static_cast<std::size_t>(e)];
+        const auto edge_state = static_cast<EdgeState>(
+            mesh.edge_state_for(e, level_set_id));
+        const bool unresolved_new_edge =
+            edge_state == EdgeState::single_cross
+            || edge_state == EdgeState::multi_cross
+            || edge_state == EdgeState::uncertain;
+
+        if (unresolved_new_edge)
+        {
+            for (const int child_cell : inc)
+            {
+                const int parent = find_parent_cell(mesh, child_cell, pre_cut_mesh);
+                if (parent >= 0)
+                    bad_parent_cells.insert(parent);
+            }
+        }
+
+        if (inc.size() != 2)
+            continue;
+
+        const int ci = inc[0];
+        const int cj = inc[1];
+        const auto dom_i = static_cast<cell::domain>(
+            mesh.cell_domain[static_cast<std::size_t>(ci)]);
+        const auto dom_j = static_cast<cell::domain>(
+            mesh.cell_domain[static_cast<std::size_t>(cj)]);
+        if (dom_i != dom_j)
+            continue;
+
+        int expected_sign = 0;
+        if (dom_i == cell::domain::inside)  expected_sign = -1;
+        else if (dom_i == cell::domain::outside) expected_sign = +1;
+        else continue;
+
+        const int va = mesh.edge_vertices[static_cast<std::size_t>(2 * e)];
+        const int vb = mesh.edge_vertices[static_cast<std::size_t>(2 * e + 1)];
+        if (!local_mesh_diagonal_crosses_by_verts(
+                mesh, va, vb, expected_sign, eval_phi, tol))
+            continue;
+
+        // Diagonal crosses the interface — find the parent pre-cut cell
+        const int parent = find_parent_cell(mesh, ci, pre_cut_mesh);
+        if (parent >= 0)
+            bad_parent_cells.insert(parent);
+    }
+
+    if (bad_parent_cells.empty())
+    {
+        // No crossing diagonals — accept the trial cut
+        result.certified = all_resolved;
+        result.invalid_cells = 0;
+        result.refine_iterations = 0;
+        return result;
+    }
+
+    // Crossing diagonals detected — try the certified interface-split
+    // fallbacks on the affected cells. Start with the cheaper 10/12-child
+    // split and only escalate to the median-based 19/24-child face-enriched
+    // split if the cheaper fallback cannot certify its children.
+    mesh = pre_cut_mesh;
+
+    // Apply interface_split on bad cells in reverse cell-id order so that
+    // replace_cell_with_children does not invalidate lower indices.
+    std::vector<int> bad_cells_vec(bad_parent_cells.rbegin(),
+                                   bad_parent_cells.rend());
+    int n_interface_splits = 0;
+    const char* face_only_env = std::getenv("CUTCELLS_FORCE_FACE_INTERFACE_SPLIT");
+    const bool force_face_split_only = face_only_env != nullptr
+        && (std::string_view(face_only_env) == "1"
+            || std::string_view(face_only_env) == "true"
+            || std::string_view(face_only_env) == "TRUE");
+    for (int pc : bad_cells_vec)
+    {
+        if (mesh.cell_types[static_cast<std::size_t>(pc)]
+            != cell::type::tetrahedron)
+            continue;
+
+        // Try the cheaper certified split first, then the stronger
+        // face-enriched certified split for the matching topology.
+        bool ok = false;
+        if (!force_face_split_only)
+        {
+            ok = interface_split_topology1_tet(
+                mesh, pc, level_set, level_set_id, tol);
+        }
+        if (ok)
+        {
+            const int all_zero_child_tets =
+                count_all_zero_tets_in_range(mesh, pc, pc + 10);
+            std::cerr << "Debug: repair used interface_split_topology1_tet"
+                      << " on parent cell " << mesh.parent_cell_id
+                      << ", local cell " << pc
+                      << ", all_zero_child_tets=" << all_zero_child_tets
+                      << "\n";
+            append_interface_split_log_line(
+                mesh.parent_cell_id, pc, "interface_split_topology1_tet",
+                all_zero_child_tets);
+        }
+        if (!ok && !force_face_split_only)
+        {
+            ok = interface_split_topology2_tet(
+                mesh, pc, level_set, level_set_id, tol);
+            if (ok)
+            {
+                const int all_zero_child_tets =
+                    count_all_zero_tets_in_range(mesh, pc, pc + 12);
+                std::cerr << "Debug: repair used interface_split_topology2_tet"
+                          << " on parent cell " << mesh.parent_cell_id
+                          << ", local cell " << pc
+                          << ", all_zero_child_tets=" << all_zero_child_tets
+                          << "\n";
+                append_interface_split_log_line(
+                    mesh.parent_cell_id, pc, "interface_split_topology2_tet",
+                    all_zero_child_tets);
+            }
+        }
+        if (!ok)
+        {
+            ok = interface_split_topology1_tet_faces(
+                mesh, pc, level_set, level_set_id, tol);
+            if (ok)
+            {
+                const int all_zero_child_tets =
+                    count_all_zero_tets_in_range(mesh, pc, pc + 19);
+                std::cerr << "Debug: repair used interface_split_topology1_tet_faces"
+                          << " on parent cell " << mesh.parent_cell_id
+                          << ", local cell " << pc
+                          << ", all_zero_child_tets=" << all_zero_child_tets
+                          << "\n";
+                append_interface_split_log_line(
+                    mesh.parent_cell_id, pc, "interface_split_topology1_tet_faces",
+                    all_zero_child_tets);
+            }
+        }
+        if (!ok)
+        {
+            ok = interface_split_topology2_tet_faces(
+                mesh, pc, level_set, level_set_id, tol);
+            if (ok)
+            {
+                const int all_zero_child_tets =
+                    count_all_zero_tets_in_range(mesh, pc, pc + 24);
+                std::cerr << "Debug: repair used interface_split_topology2_tet_faces"
+                          << " on parent cell " << mesh.parent_cell_id
+                          << ", local cell " << pc
+                          << ", all_zero_child_tets=" << all_zero_child_tets
+                          << "\n";
+                append_interface_split_log_line(
+                    mesh.parent_cell_id, pc, "interface_split_topology2_tet_faces",
+                    all_zero_child_tets);
+            }
+        }
+        if (ok)
+            ++n_interface_splits;
+    }
+
+    if (n_interface_splits > 0)
+    {
+        // Edge arrays were rebuilt by interface_split. Re-classify edges,
+        // rerun the multi-root green-split resolver on any new child edges,
+        // then recompute roots for the remaining single-cross edges.
+        classify_edges_with_backend<T, I>(
+            mesh, level_set, backend, level_set_id, tol, false);
+
+        const bool repair_resolved = resolve_multi_root_edges<T, I>(
+            mesh, level_set, backend, level_set_id, tol, max_repair_depth * 4);
+        if (!repair_resolved)
+        {
+            std::cerr << "Warning: decompose_local_mesh_with_backend: parent cell "
+                      << mesh.parent_cell_id
+                      << " still has unresolved multi-root edges after post-interface-split green refinement\n";
+        }
+
+        classify_edges_with_backend<T, I>(
+            mesh, level_set, backend, level_set_id, tol, false);
+        compute_all_roots_with_backend<T, I>(
+            mesh, level_set, backend, level_set_id, root_method, tol);
+    }
+
+    // Final LUT cut: interface_split children are automatically classified
+    // as inside/outside (all non-zero vertices share the same sign), so
+    // the decompose step passes them through without cutting.  Remaining
+    // intersected cells get normal LUT cutting.
+    decompose_local_mesh_from_cached_roots(mesh, level_set_id, true, false);
+
+    result.invalid_cells = count_intersected_subcells(mesh);
+    result.certified = all_resolved && (result.invalid_cells == 0);
     result.refine_iterations = 0;
+    if (result.invalid_cells > 0)
+    {
+        std::cerr << "Warning: decompose_local_mesh_with_backend: parent cell "
+                  << mesh.parent_cell_id << " still has "
+                  << result.invalid_cells
+                  << " intersected subcell(s) after repair attempt\n";
+    }
     return result;
 }
 
@@ -4635,7 +5434,10 @@ void curve_zero_entities_with_backend(
     LocalLevelSetBackend               backend,
     int                                level_set_id,
     int                                geom_order,
-    T                                  tol)
+    T                                  tol,
+    cell::edge_root::method            line_search_method,
+    CurveSearchDirection               search_direction,
+    std::span<const T>                 custom_direction_ref)
 {
     mesh.curved_fallback_count = 0;
 
@@ -4664,7 +5466,9 @@ void curve_zero_entities_with_backend(
         };
 
         curve_zero_entities_impl(mesh, eval_phi, eval_grad,
-                                 level_set_id, geom_order, tol);
+                                 level_set_id, geom_order, tol,
+                                 line_search_method, search_direction,
+                                 custom_direction_ref);
     }
     else if ((backend == LocalLevelSetBackend::analytical_callbacks
               || backend == LocalLevelSetBackend::nodal_signs)
@@ -4723,7 +5527,9 @@ void curve_zero_entities_with_backend(
         };
 
         curve_zero_entities_impl(mesh, eval_phi, eval_grad,
-                                 level_set_id, geom_order, tol);
+                                 level_set_id, geom_order, tol,
+                                 line_search_method, search_direction,
+                                 custom_direction_ref);
     }
     else
     {
@@ -4734,8 +5540,12 @@ void curve_zero_entities_with_backend(
 }
 
 // Explicit instantiations for common types
+template void build_local_edges<double>(LocalMesh<double>&);
+template void build_local_edges<float>(LocalMesh<float>&);
 template void build_local_faces<double>(LocalMesh<double>&);
 template void build_local_faces<float>(LocalMesh<float>&);
+template void rebuild_parent_entity_maps<double>(LocalMesh<double>&);
+template void rebuild_parent_entity_maps<float>(LocalMesh<float>&);
 template void build_zero_entities<double>(LocalMesh<double>&, int);
 template void build_zero_entities<float>(LocalMesh<float>&, int);
 template void assign_zero_entity_ownership<double>(std::span<LocalMesh<double>*>, uint64_t);
@@ -4776,13 +5586,15 @@ template void decompose_local_mesh_linear<double>(LocalMesh<double>&, int, bool)
 template void decompose_local_mesh_linear<float>(LocalMesh<float>&, int, bool);
 template void decompose_local_mesh<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, int, cell::edge_root::method, bool);
 template void decompose_local_mesh<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, int, cell::edge_root::method, bool);
-template LUTCertificationResult<double, int> decompose_local_mesh_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, cell::edge_root::method, bool, int, double, bool);
-template LUTCertificationResult<float, int> decompose_local_mesh_with_backend<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, cell::edge_root::method, bool, int, float, bool);
+template LUTCertificationResult<double, int> decompose_local_mesh_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, cell::edge_root::method, bool, int, double, bool, bool, int);
+template LUTCertificationResult<float, int> decompose_local_mesh_with_backend<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, cell::edge_root::method, bool, int, float, bool, bool, int);
+template bool repair_triangulation_diagonals<double>(LocalMesh<double>&, const std::set<std::pair<int32_t, int32_t>>&, std::function<double(const double*, int)>, int, double);
+template bool repair_triangulation_diagonals<float>(LocalMesh<float>&, const std::set<std::pair<int32_t, int32_t>>&, std::function<float(const float*, int)>, int, float);
 template bool resolve_multi_root_edges<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, double, int);
 template bool resolve_multi_root_edges<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, float, int);
 template void curve_interface_entities_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, int, double);
 template void curve_interface_entities_with_backend<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, int, float);
-template void curve_zero_entities_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, int, double);
-template void curve_zero_entities_with_backend<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, int, float);
+template void curve_zero_entities_with_backend<double, int>(LocalMesh<double>&, const LevelSetFunction<double, int>&, LocalLevelSetBackend, int, int, double, cell::edge_root::method, CurveSearchDirection, std::span<const double>);
+template void curve_zero_entities_with_backend<float, int>(LocalMesh<float>&, const LevelSetFunction<float, int>&, LocalLevelSetBackend, int, int, float, cell::edge_root::method, CurveSearchDirection, std::span<const float>);
 
 } // namespace cutcells

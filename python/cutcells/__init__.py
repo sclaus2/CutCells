@@ -146,6 +146,33 @@ try:
         build_interface_entities,
         build_interface_entities_float32,
         build_interface_entities_float64,
+        green_split_one_edge,
+        green_split_one_edge_float32,
+        green_split_one_edge_float64,
+        ray_split_one_tet,
+        ray_split_one_tet_float32,
+        ray_split_one_tet_float64,
+        ray_refine_local_mesh,
+        ray_refine_local_mesh_float32,
+        ray_refine_local_mesh_float64,
+        macro_split_topology1_tet,
+        macro_split_topology1_tet_float32,
+        macro_split_topology1_tet_float64,
+        macro_refine_topology1,
+        macro_refine_topology1_float32,
+        macro_refine_topology1_float64,
+        interface_split_topology1_tet,
+        interface_split_topology1_tet_float32,
+        interface_split_topology1_tet_float64,
+        interface_refine_topology1,
+        interface_refine_topology1_float32,
+        interface_refine_topology1_float64,
+        interface_split_topology2_tet,
+        interface_split_topology2_tet_float32,
+        interface_split_topology2_tet_float64,
+        interface_refine,
+        interface_refine_float32,
+        interface_refine_float64,
         build_zero_chains,
         build_zero_chains_float32,
         build_zero_chains_float64,
@@ -177,6 +204,16 @@ try:
         assemble_curved_volume_mesh_with_backend,
         assemble_curved_volume_mesh_with_backend_float32,
         assemble_curved_volume_mesh_with_backend_float64,
+        TriangulationRepairInfo,
+        repair_cut_cell_diagonals,
+        repair_cut_cell_diagonals_float32,
+        repair_cut_cell_diagonals_float64,
+        diagonal_crosses_interface,
+        diagonal_crosses_interface_float32,
+        diagonal_crosses_interface_float64,
+        swap_diagonal_2d,
+        swap_diagonal_2d_float32,
+        swap_diagonal_2d_float64,
     )
 except ModuleNotFoundError as exc:
     raise ModuleNotFoundError(
@@ -204,6 +241,8 @@ def cut_vtk_mesh_curved(
     geom_order=4,
     vis_subdivision=3,
     tol=1e-12,
+    repair_diagonals=False,
+    max_repair_depth=3,
     connectivity=None,
     offset=None,
     vtk_type=None,
@@ -216,6 +255,26 @@ def cut_vtk_mesh_curved(
         offset = np.asarray(offset, dtype=np.int32).reshape(-1)
         vtk_type = np.asarray(vtk_type, dtype=np.int32).reshape(-1)
 
+    level_set_types = (LevelSetFunction, LevelSetFunction_float32, LevelSetFunction_float64)
+    if isinstance(f, level_set_types):
+        if grad is not None:
+            raise ValueError(
+                "cut_vtk_mesh_curved: grad must be None when passing a LevelSetFunction"
+            )
+        return _cut_vtk_mesh_curved_cpp(
+            points,
+            connectivity,
+            offset,
+            vtk_type,
+            f,
+            backend=backend,
+            geom_order=geom_order,
+            vis_subdivision=vis_subdivision,
+            tol=tol,
+            repair_diagonals=repair_diagonals,
+            max_repair_depth=max_repair_depth,
+        )
+
     return _cut_vtk_mesh_curved_cpp(
         points,
         connectivity,
@@ -227,4 +286,6 @@ def cut_vtk_mesh_curved(
         geom_order=geom_order,
         vis_subdivision=vis_subdivision,
         tol=tol,
+        repair_diagonals=repair_diagonals,
+        max_repair_depth=max_repair_depth,
     )

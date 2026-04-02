@@ -6,6 +6,7 @@
 #pragma once
 
 #include <string>
+#include "curved_mesh.h"
 #include "cut_cell.h"
 
 namespace cutcells::io
@@ -17,4 +18,7 @@ namespace cutcells::io
                     const int gdim);
 
     void write_vtk(std::string filename, cell::CutCell<double>& cut_cell);
+
+    template <std::floating_point T>
+    void write_vtu(std::string filename, const mesh::CurvedGlobalMesh<T>& mesh);
 }

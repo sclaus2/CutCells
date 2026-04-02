@@ -7,6 +7,7 @@
 
 #include "bernstein_backend.h"
 #include "cell_topology.h"
+#include "mapping.h"
 #include "mesh_view.h"
 
 #include <concepts>
@@ -133,6 +134,32 @@ inline std::vector<T> extract_cell_nodal_values(
         local_values[i] = global_nodal_values[static_cast<std::size_t>(node_id)];
     }
     return local_values;
+}
+
+template <std::floating_point T, std::integral I>
+inline std::vector<T> extract_cell_p1_vertex_coords(
+    const MeshView<T, I>& mesh,
+    I                     cell_id)
+{
+    const auto cell_type = cell::map_vtk_type_to_cell_type(
+        static_cast<cell::vtk_types>(mesh.cell_type(cell_id)));
+    const int n_p1 = cell::get_num_vertices(cell_type);
+    if (mesh.cell_num_nodes(cell_id) < n_p1)
+        throw std::invalid_argument(
+            "extract_cell_p1_vertex_coords: cell has too few nodes for its type");
+
+    std::vector<T> coords(static_cast<std::size_t>(n_p1 * mesh.gdim), T(0));
+    for (int i = 0; i < n_p1; ++i)
+    {
+        const I node_id = mesh.cell_node(cell_id, static_cast<I>(i));
+        if (node_id < 0 || node_id >= mesh.num_nodes())
+            throw std::invalid_argument(
+                "extract_cell_p1_vertex_coords: node id out of range");
+        const T* x = mesh.node(node_id);
+        for (int d = 0; d < mesh.gdim; ++d)
+            coords[static_cast<std::size_t>(i * mesh.gdim + d)] = x[d];
+    }
+    return coords;
 }
 
 template <std::floating_point T>
@@ -404,7 +431,8 @@ inline LocalLevelSetFunction<T, I> make_local_level_set_function_bernstein(
     const LevelSetFunction<T, I>& level_set,
     I cell_id)
 {
-    const auto cell_type = static_cast<cell::type>(mesh.cell_type(cell_id));
+    const auto cell_type = cell::map_vtk_type_to_cell_type(
+        static_cast<cell::vtk_types>(mesh.cell_type(cell_id)));
     const auto local_values = extract_cell_nodal_values(mesh, level_set.nodal_values, cell_id);
     return make_local_level_set_function_bernstein<T, I>(
         cell_type,
@@ -466,6 +494,161 @@ inline LocalLevelSetFunction<T, I> LevelSetFunction<T, I>::local(I cell_id) cons
         return make_local_level_set_function_bernstein(*mesh, *this, cell_id);
     }
     return local_level_set_from_callable(*this, cell_id);
+}
+
+template <std::floating_point T, std::integral I>
+inline LevelSetFunction<T, I> make_level_set_function_from_fem(
+    const MeshView<T, I>& mesh,
+    std::span<const T>    nodal_values,
+    int                   degree,
+    std::shared_ptr<void> owner)
+{
+    if (!mesh.has_cell_types())
+        throw std::invalid_argument(
+            "make_level_set_function_from_fem: mesh cell_types are required");
+    if (degree < 1)
+        throw std::invalid_argument(
+            "make_level_set_function_from_fem: degree must be >= 1");
+    if (nodal_values.size() != static_cast<std::size_t>(mesh.num_nodes()))
+        throw std::invalid_argument(
+            "make_level_set_function_from_fem: nodal_values size must match mesh num_nodes");
+
+    struct FemEvalCache
+    {
+        const MeshView<T, I>* mesh = nullptr;
+        std::span<const T> nodal_values;
+        int degree = -1;
+        mutable I cached_cell_id = static_cast<I>(-2);
+        mutable std::vector<T> parent_coords_p1;
+        mutable LocalLevelSetFunction<T, I> local_phi;
+
+        void update(I cell_id) const
+        {
+            if (cell_id == cached_cell_id)
+                return;
+            if (cell_id < 0 || cell_id >= mesh->num_cells())
+                throw std::invalid_argument(
+                    "LevelSetFunction::fem_nodal requires a valid parent cell_id");
+            parent_coords_p1 = extract_cell_p1_vertex_coords(*mesh, cell_id);
+            const auto local_values = extract_cell_nodal_values(*mesh, nodal_values, cell_id);
+            const auto cell_type = cell::map_vtk_type_to_cell_type(
+                static_cast<cell::vtk_types>(mesh->cell_type(cell_id)));
+            local_phi = make_local_level_set_function_bernstein<T, I>(
+                cell_type,
+                mesh->gdim,
+                std::span<const T>(local_values.data(), local_values.size()),
+                degree,
+                cell_id);
+            cached_cell_id = cell_id;
+        }
+    };
+
+    auto cache = std::make_shared<FemEvalCache>();
+    cache->mesh = &mesh;
+    cache->nodal_values = nodal_values;
+    cache->degree = degree;
+
+    LevelSetFunction<T, I> level_set;
+    level_set.nodal_values = nodal_values;
+    level_set.owner = std::move(owner);
+    level_set.mesh = &mesh;
+    level_set.gdim = mesh.gdim;
+    level_set.degree = degree;
+    level_set.kind = LevelSetFunction<T, I>::Kind::fem_nodal;
+    level_set.value_fn = [cache](const T* x_phys, I cell_id) -> T
+    {
+        cache->update(cell_id);
+        std::array<T, 3> x_ref = {T(0), T(0), T(0)};
+        cell::pull_back_affine<T>(
+            cell::map_vtk_type_to_cell_type(
+                static_cast<cell::vtk_types>(cache->mesh->cell_type(cell_id))),
+            cache->parent_coords_p1,
+            cache->mesh->gdim,
+            std::span<const T>(x_phys, static_cast<std::size_t>(cache->mesh->gdim)),
+            std::span<T>(x_ref.data(), static_cast<std::size_t>(cache->mesh->gdim)));
+        return cache->local_phi.value(x_ref.data());
+    };
+    level_set.grad_fn = [cache](const T* x_phys, I cell_id, T* g_phys) -> void
+    {
+        cache->update(cell_id);
+        const auto cell_type = cell::map_vtk_type_to_cell_type(
+            static_cast<cell::vtk_types>(cache->mesh->cell_type(cell_id)));
+        const int tdim = cell::get_tdim(cell_type);
+        std::array<T, 3> x_ref = {T(0), T(0), T(0)};
+        std::array<T, 3> grad_ref = {T(0), T(0), T(0)};
+        std::array<T, 9> J = {T(0), T(0), T(0), T(0), T(0), T(0), T(0), T(0), T(0)};
+        cell::pull_back_affine<T>(
+            cell_type,
+            cache->parent_coords_p1,
+            cache->mesh->gdim,
+            std::span<const T>(x_phys, static_cast<std::size_t>(cache->mesh->gdim)),
+            std::span<T>(x_ref.data(), static_cast<std::size_t>(tdim)));
+        cache->local_phi.grad(x_ref.data(), grad_ref.data());
+        cell::compute_jacobian<T>(
+            cell_type,
+            std::span<const T>(
+                cache->parent_coords_p1.data(),
+                cache->parent_coords_p1.size()),
+            cache->mesh->gdim,
+            tdim,
+            x_ref.data(),
+            J.data());
+
+        for (int d = 0; d < cache->mesh->gdim; ++d)
+            g_phys[d] = T(0);
+
+        if (tdim == 1)
+        {
+            const T det = J[0];
+            if (std::abs(det) <= T(1e-14))
+                throw std::runtime_error("LevelSetFunction::fem_nodal grad: singular affine Jacobian");
+            g_phys[0] = grad_ref[0] / det;
+            return;
+        }
+
+        if (tdim == 2)
+        {
+            const T a = J[0];
+            const T b = J[1];
+            const T c = J[2];
+            const T d = J[3];
+            const T det = a * d - b * c;
+            if (std::abs(det) <= T(1e-14))
+                throw std::runtime_error("LevelSetFunction::fem_nodal grad: singular affine Jacobian");
+            g_phys[0] = ( d * grad_ref[0] - c * grad_ref[1]) / det;
+            g_phys[1] = (-b * grad_ref[0] + a * grad_ref[1]) / det;
+            return;
+        }
+
+        if (tdim == 3)
+        {
+            const T a00 = J[0], a01 = J[3], a02 = J[6];
+            const T a10 = J[1], a11 = J[4], a12 = J[7];
+            const T a20 = J[2], a21 = J[5], a22 = J[8];
+            const T det =
+                a00 * (a11 * a22 - a12 * a21)
+              - a01 * (a10 * a22 - a12 * a20)
+              + a02 * (a10 * a21 - a11 * a20);
+            if (std::abs(det) <= T(1e-14))
+                throw std::runtime_error("LevelSetFunction::fem_nodal grad: singular affine Jacobian");
+            g_phys[0] = (
+                (a11 * a22 - a12 * a21) * grad_ref[0]
+              + (a02 * a21 - a01 * a22) * grad_ref[1]
+              + (a01 * a12 - a02 * a11) * grad_ref[2]) / det;
+            g_phys[1] = (
+                (a12 * a20 - a10 * a22) * grad_ref[0]
+              + (a00 * a22 - a02 * a20) * grad_ref[1]
+              + (a02 * a10 - a00 * a12) * grad_ref[2]) / det;
+            g_phys[2] = (
+                (a10 * a21 - a11 * a20) * grad_ref[0]
+              + (a01 * a20 - a00 * a21) * grad_ref[1]
+              + (a00 * a11 - a01 * a10) * grad_ref[2]) / det;
+            return;
+        }
+
+        throw std::runtime_error("LevelSetFunction::fem_nodal grad: unsupported dimension");
+    };
+    return level_set;
 }
 
 } // namespace cutcells

@@ -29,6 +29,142 @@ inline int key_ijk(int i, int j, int k)
     return i * 10000 + j * 100 + k;
 }
 
+int vtk_interval_point_index(int i, int order)
+{
+    if (i == 0)
+        return 0;
+    if (i == order)
+        return 1;
+    return 1 + i;
+}
+
+int vtk_triangle_point_index(const std::array<int, 3>& bindex, int order)
+{
+    int index = 0;
+    int max = order;
+    int min = 0;
+    const int bmin = std::min({bindex[0], bindex[1], bindex[2]});
+
+    while (bmin > min)
+    {
+        index += 3 * order;
+        max -= 2;
+        min += 1;
+        order -= 3;
+    }
+
+    for (int dim = 0; dim < 3; ++dim)
+    {
+        if (bindex[(dim + 2) % 3] == max)
+            return index;
+        ++index;
+    }
+
+    for (int dim = 0; dim < 3; ++dim)
+    {
+        if (bindex[(dim + 1) % 3] == min)
+            return index + bindex[dim] - (min + 1);
+        index += max - (min + 1);
+    }
+
+    return index;
+}
+
+int vtk_quadrilateral_point_index(int i, int j, int order)
+{
+    const bool ibdy = (i == 0 || i == order);
+    const bool jbdy = (j == 0 || j == order);
+    const int nbdy = (ibdy ? 1 : 0) + (jbdy ? 1 : 0);
+
+    if (nbdy == 2)
+        return (i ? (j ? 2 : 1) : (j ? 3 : 0));
+
+    int offset = 4;
+    if (nbdy == 1)
+    {
+        if (!ibdy)
+            return (i - 1) + (j ? order - 1 + order - 1 : 0) + offset;
+        if (!jbdy)
+            return (j - 1) + (i ? order - 1 : 2 * (order - 1) + order - 1) + offset;
+    }
+
+    offset += 4 * (order - 1);
+    return offset + (i - 1) + (order - 1) * (j - 1);
+}
+
+std::vector<int> build_vtk_lagrange_to_basix_permutation(cell::type ct, int order)
+{
+    if (order < 1 || order > 4)
+        throw std::invalid_argument("vtk_lagrange_to_basix_permutation supports orders 1..4");
+
+    const std::span<const double> ref_coords = (order == 1)
+        ? p1_ref_coords(ct)
+        : iso_p1_ref_coords(ct, order);
+
+    int tdim = 0;
+    switch (ct)
+    {
+        case cell::type::interval:
+            tdim = 1;
+            break;
+        case cell::type::triangle:
+        case cell::type::quadrilateral:
+            tdim = 2;
+            break;
+        default:
+            throw std::invalid_argument(
+                "vtk_lagrange_to_basix_permutation supports only interval/triangle/quadrilateral");
+    }
+
+    const int n_points = static_cast<int>(ref_coords.size()) / tdim;
+    std::vector<int> perm(static_cast<std::size_t>(n_points), -1);
+
+    for (int basix_id = 0; basix_id < n_points; ++basix_id)
+    {
+        const double* x = &ref_coords[static_cast<std::size_t>(basix_id * tdim)];
+        int vtk_id = -1;
+
+        switch (ct)
+        {
+            case cell::type::interval:
+            {
+                const int i = static_cast<int>(std::lround(x[0] * static_cast<double>(order)));
+                vtk_id = vtk_interval_point_index(i, order);
+                break;
+            }
+            case cell::type::triangle:
+            {
+                const int b0 = static_cast<int>(std::lround(x[0] * static_cast<double>(order)));
+                const int b1 = static_cast<int>(std::lround(x[1] * static_cast<double>(order)));
+                const int b2 = order - b0 - b1;
+                vtk_id = vtk_triangle_point_index({b0, b1, b2}, order);
+                break;
+            }
+            case cell::type::quadrilateral:
+            {
+                const int i = static_cast<int>(std::lround(x[0] * static_cast<double>(order)));
+                const int j = static_cast<int>(std::lround(x[1] * static_cast<double>(order)));
+                vtk_id = vtk_quadrilateral_point_index(i, j, order);
+                break;
+            }
+            default:
+                break;
+        }
+
+        if (vtk_id < 0 || vtk_id >= n_points)
+            throw std::runtime_error("vtk_lagrange_to_basix_permutation produced invalid index");
+        perm[static_cast<std::size_t>(vtk_id)] = basix_id;
+    }
+
+    for (int vtk_id = 0; vtk_id < n_points; ++vtk_id)
+    {
+        if (perm[static_cast<std::size_t>(vtk_id)] < 0)
+            throw std::runtime_error("vtk_lagrange_to_basix_permutation is incomplete");
+    }
+
+    return perm;
+}
+
 std::vector<std::array<int, 3>> triangle_lattice_cells(int order)
 {
     std::vector<std::array<int, 3>> tris;
@@ -1027,6 +1163,11 @@ std::span<const double> p1_ref_coords(cell::type ct)
 {
     switch (ct)
     {
+        case cell::type::interval:
+        {
+            static const std::vector<double> x = {0.0, 1.0};
+            return x;
+        }
         case cell::type::triangle:
         {
             static const std::vector<double> x = {0.0, 0.0, 1.0, 0.0, 0.0, 1.0};
@@ -1052,7 +1193,49 @@ std::span<const double> p1_ref_coords(cell::type ct)
         default:
             break;
     }
-    throw std::invalid_argument("p1_ref_coords currently supports triangle, tetrahedron, quadrilateral, hexahedron");
+    throw std::invalid_argument(
+        "p1_ref_coords currently supports interval, triangle, tetrahedron, quadrilateral, hexahedron");
+}
+
+const std::vector<int>& vtk_lagrange_to_basix_permutation(cell::type ct, int order)
+{
+    struct PermutationCache
+    {
+        std::array<std::vector<int>, 5> interval;
+        std::array<std::vector<int>, 5> triangle;
+        std::array<std::vector<int>, 5> quadrilateral;
+    };
+
+    static const PermutationCache cache = []()
+    {
+        PermutationCache out;
+        for (int p = 1; p <= 4; ++p)
+        {
+            out.interval[static_cast<std::size_t>(p)]
+                = build_vtk_lagrange_to_basix_permutation(cell::type::interval, p);
+            out.triangle[static_cast<std::size_t>(p)]
+                = build_vtk_lagrange_to_basix_permutation(cell::type::triangle, p);
+            out.quadrilateral[static_cast<std::size_t>(p)]
+                = build_vtk_lagrange_to_basix_permutation(cell::type::quadrilateral, p);
+        }
+        return out;
+    }();
+
+    if (order < 1 || order > 4)
+        throw std::invalid_argument("vtk_lagrange_to_basix_permutation supports orders 1..4");
+
+    switch (ct)
+    {
+        case cell::type::interval:
+            return cache.interval[static_cast<std::size_t>(order)];
+        case cell::type::triangle:
+            return cache.triangle[static_cast<std::size_t>(order)];
+        case cell::type::quadrilateral:
+            return cache.quadrilateral[static_cast<std::size_t>(order)];
+        default:
+            throw std::invalid_argument(
+                "vtk_lagrange_to_basix_permutation supports only interval/triangle/quadrilateral");
+    }
 }
 
 } // namespace cutcells
