@@ -7,6 +7,7 @@
 
 #include <string>
 #include "cut_cell.h"
+#include "level_set.h"
 
 namespace cutcells::io
 {
@@ -17,4 +18,8 @@ namespace cutcells::io
                     const int gdim);
 
     void write_vtk(std::string filename, cell::CutCell<double>& cut_cell);
+
+    void write_level_set_vtu(std::string filename,
+                             const cutcells::LevelSetFunction<double>& ls,
+                             std::string field_name = "phi");
 }

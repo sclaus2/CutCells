@@ -159,6 +159,7 @@ template <typename T>
 void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
 {
   using MeshViewT = cutcells::MeshView<T, int>;
+  using LevelSetMeshDataT = cutcells::LevelSetMeshData<T, int>;
   using LevelSetT = cutcells::LevelSetFunction<T, int>;
 
   const std::string mesh_name = "MeshView_" + suffix;
@@ -243,6 +244,150 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
                 nb::handle());
           },
           nb::rv_policy::reference_internal);
+
+  const std::string ls_mesh_name = "LevelSetMeshData_" + suffix;
+  nb::class_<LevelSetMeshDataT>(m, ls_mesh_name.c_str(), "Discrete level-set mesh data")
+      .def(nb::init<>())
+      .def_prop_ro("gdim", [](const LevelSetMeshDataT& self) { return self.gdim; })
+      .def_prop_ro("tdim", [](const LevelSetMeshDataT& self) { return self.tdim; })
+      .def_prop_ro("degree", [](const LevelSetMeshDataT& self) { return self.degree; })
+      .def("num_dofs", &LevelSetMeshDataT::num_dofs)
+      .def("num_cells", &LevelSetMeshDataT::num_cells)
+      .def("cell_num_dofs", &LevelSetMeshDataT::cell_num_dofs, nb::arg("cell_id"))
+      .def_prop_ro(
+          "dof_coordinates",
+          [](const LevelSetMeshDataT& self)
+          {
+            const std::size_t gdim = static_cast<std::size_t>(self.gdim);
+            if (gdim == 0)
+              return nb::ndarray<const T, nb::numpy>(nullptr, {0, 0}, nb::handle());
+            const std::size_t n = self.dof_coordinates.size() / gdim;
+            return nb::ndarray<const T, nb::numpy>(
+                self.dof_coordinates.data(),
+                {n, gdim},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "cell_dofs",
+          [](const LevelSetMeshDataT& self)
+          {
+            return nb::ndarray<const int, nb::numpy>(
+                self.cell_dofs.data(),
+                {self.cell_dofs.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "cell_offsets",
+          [](const LevelSetMeshDataT& self)
+          {
+            return nb::ndarray<const int, nb::numpy>(
+                self.cell_offsets.data(),
+                {self.cell_offsets.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "cell_types",
+          [](const LevelSetMeshDataT& self)
+          {
+            return nb::ndarray<const int, nb::numpy>(
+                self.cell_types.data(),
+                {self.cell_types.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "dof_parent_dim",
+          [](const LevelSetMeshDataT& self)
+          {
+            return nb::ndarray<const int8_t, nb::numpy>(
+                self.dof_parent_dim.data(),
+                {self.dof_parent_dim.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "dof_parent_id",
+          [](const LevelSetMeshDataT& self)
+          {
+            return nb::ndarray<const int32_t, nb::numpy>(
+                self.dof_parent_id.data(),
+                {self.dof_parent_id.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "dof_parent_param",
+          [](const LevelSetMeshDataT& self)
+          {
+            return nb::ndarray<const T, nb::numpy>(
+                self.dof_parent_param.data(),
+                {self.dof_parent_param.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "dof_parent_param_offset",
+          [](const LevelSetMeshDataT& self)
+          {
+            return nb::ndarray<const int32_t, nb::numpy>(
+                self.dof_parent_param_offset.data(),
+                {self.dof_parent_param_offset.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal);
+
+  m.def(
+      "create_level_set_mesh_data",
+      [](const MeshViewT& mesh, int degree, T merge_tol)
+      {
+        nb::gil_scoped_release release;
+        return cutcells::create_level_set_mesh_data<T, int>(mesh, degree, merge_tol);
+      },
+      nb::arg("mesh"),
+      nb::arg("degree"),
+      nb::arg("merge_tol") = T(-1));
+
+  m.def(
+      "create_level_set_mesh_data",
+      [](const ndarray2<T>& dof_coordinates,
+         const ndarray1<int>& cell_dofs,
+         const ndarray1<int>& cell_offsets,
+         int degree,
+         int tdim,
+         nb::object cell_types_obj)
+      {
+        std::optional<ndarray1<int>> cell_types;
+        if (!cell_types_obj.is_none())
+          cell_types = nb::cast<ndarray1<int>>(cell_types_obj);
+
+        std::span<const int> cell_types_span;
+        if (cell_types.has_value())
+        {
+          cell_types_span = std::span<const int>(
+              cell_types->data(), static_cast<std::size_t>(cell_types->size()));
+        }
+
+        return cutcells::create_level_set_mesh_data<T, int>(
+            static_cast<int>(dof_coordinates.shape(1)),
+            tdim,
+            degree,
+            std::span<const T>(dof_coordinates.data(),
+                               static_cast<std::size_t>(dof_coordinates.size())),
+            std::span<const int>(cell_dofs.data(),
+                                 static_cast<std::size_t>(cell_dofs.size())),
+            std::span<const int>(cell_offsets.data(),
+                                 static_cast<std::size_t>(cell_offsets.size())),
+            cell_types_span);
+      },
+      nb::arg("dof_coordinates"),
+      nb::arg("cell_dofs"),
+      nb::arg("cell_offsets"),
+      nb::arg("degree"),
+      nb::arg("tdim"),
+      nb::arg("cell_types") = nb::none());
 
   const std::string ls_name = "LevelSetFunction_" + suffix;
   nb::class_<LevelSetT>(m, ls_name.c_str(), "Level-set function")
@@ -335,6 +480,8 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
       .def("has_value", &LevelSetT::has_value)
       .def("has_gradient", &LevelSetT::has_gradient)
       .def("has_nodal_values", &LevelSetT::has_nodal_values)
+      .def("has_mesh_data", &LevelSetT::has_mesh_data)
+      .def("has_dof_values", &LevelSetT::has_dof_values)
       .def(
           "value",
           [](const LevelSetT& self, const ndarray1<T>& x, int cell_id)
@@ -369,7 +516,81 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
                 {self.nodal_values.size()},
                 nb::handle());
           },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "dof_values",
+          [](const LevelSetT& self)
+          {
+            if (self.dof_values.empty())
+              return nb::ndarray<const T, nb::numpy>(nullptr, {0}, nb::handle());
+            return nb::ndarray<const T, nb::numpy>(
+                self.dof_values.data(),
+                {self.dof_values.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "mesh_data",
+          [](const LevelSetT& self) -> nb::object
+          {
+            if (!self.mesh_data)
+              return nb::none();
+            return nb::cast(self.mesh_data);
+          },
           nb::rv_policy::reference_internal);
+
+  m.def(
+      "create_level_set_function",
+      [](const LevelSetMeshDataT& mesh_data, const ndarray1<T>& dof_values)
+      {
+        auto mesh_data_ptr = std::make_shared<LevelSetMeshDataT>(mesh_data);
+        return cutcells::create_level_set_function<T, int>(
+            std::move(mesh_data_ptr),
+            std::span<const T>(
+                dof_values.data(),
+                static_cast<std::size_t>(dof_values.size())));
+      },
+      nb::arg("mesh_data"),
+      nb::arg("dof_values"),
+      "Create a polynomial LevelSetFunction from mesh_data and global dof values.");
+
+  m.def(
+      "interpolate_level_set",
+      [](const MeshViewT& mesh, nb::callable phi, int degree)
+      {
+        LevelSetMeshDataT mesh_data;
+        {
+          nb::gil_scoped_release release;
+          mesh_data = cutcells::create_level_set_mesh_data<T, int>(mesh, degree, T(-1));
+        }
+
+        const std::size_t num_dofs = static_cast<std::size_t>(mesh_data.num_dofs());
+        const std::size_t gdim = static_cast<std::size_t>(mesh_data.gdim);
+        nb::ndarray<const T, nb::numpy> x(
+            mesh_data.dof_coordinates.data(),
+            {num_dofs, gdim},
+            nb::handle());
+
+        // Intentional single batched callback invocation.
+        nb::object values_obj = phi(x);
+        auto values = nb::cast<ndarray1<T>>(values_obj);
+        if (static_cast<std::size_t>(values.size()) != num_dofs)
+        {
+          throw std::runtime_error(
+              "interpolate_level_set: callback must return a 1D array with length num_dofs");
+        }
+
+        auto mesh_data_ptr = std::make_shared<LevelSetMeshDataT>(std::move(mesh_data));
+        return cutcells::create_level_set_function<T, int>(
+            std::move(mesh_data_ptr),
+            std::span<const T>(
+                values.data(),
+                static_cast<std::size_t>(values.size())));
+      },
+      nb::arg("mesh"),
+      nb::arg("phi"),
+      nb::arg("degree"),
+      "Interpolate a batched callable phi(X) at higher-order level-set dof coordinates.");
 
   // ---- cut_mesh_view ----
   // Cuts a MeshView using a LevelSetFunction, returning a CutMesh.
@@ -428,7 +649,19 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
   // Simple aliases for Python
   if constexpr (std::is_same_v<T, double>)
   {
+    m.def(
+        "write_level_set_vtu",
+        [](const std::string& filename, const LevelSetT& ls, const std::string& field_name)
+        {
+          nb::gil_scoped_release release;
+          io::write_level_set_vtu(filename, ls, field_name);
+        },
+        nb::arg("filename"),
+        nb::arg("level_set"),
+        nb::arg("field_name") = "phi");
+
     m.attr("MeshView") = m.attr(mesh_name.c_str());
+    m.attr("LevelSetMeshData") = m.attr(ls_mesh_name.c_str());
     m.attr("LevelSetFunction") = m.attr(ls_name.c_str());
   }
 }

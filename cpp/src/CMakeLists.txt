@@ -1,12 +1,8 @@
-# ------------------------------------------------------------------------------
 include(GNUInstallDirs)
 
-# ------------------------------------------------------------------------------
-# Declare the library (target)
 add_library(cutcells)
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/version.h.in version.h)
-include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 # Make headers in this directory discoverable for generated table headers
 # (e.g. generated/*_tables.h includes "cell_types.h").
@@ -51,13 +47,10 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/level_set.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.cpp
-
 )
 
 target_compile_options(cutcells PRIVATE
   $<$<CONFIG:Release>:-O3>)
-
-
-
