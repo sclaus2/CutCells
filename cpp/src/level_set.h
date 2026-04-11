@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "cell_types.h"
 #include "mesh_view.h"
 
 namespace cutcells
@@ -41,7 +42,7 @@ struct LevelSetMeshData
   std::vector<I> cell_offsets;
 
   // cell types, one per cell when available.
-  std::vector<I> cell_types;
+  std::vector<cell::type> cell_types;
 
   // Provenance aligned with AdaptCell:
   // 0 = parent vertex, 1 = parent edge, 2 = parent face, 3 = parent cell interior.
@@ -100,6 +101,8 @@ struct LevelSetFunction
 {
 
   std::string name = "phi";
+  LevelSetType type = LevelSetType::Analytical;
+  int gdim = 0;
   
   // cell_id == -1 means "unknown / not provided"
   // The value and gradient of the level set function in physical coordinates (x)
@@ -116,9 +119,6 @@ struct LevelSetFunction
 
   // Optional keep-alive anchor for Python / external memory.
   std::shared_ptr<void> owner;
-
-  LevelSetType type = LevelSetType::Analytical;
-  int gdim = 0;
 
   bool has_value() const
   {
@@ -179,11 +179,12 @@ LevelSetMeshData<T, I> create_level_set_mesh_data(
     std::span<const T> dof_coordinates,
     std::span<const I> cell_dofs,
     std::span<const I> cell_offsets,
-    std::span<const I> cell_types = {});
+    std::span<const cell::type> cell_types = {});
 
 template <std::floating_point T, std::integral I = int>
 LevelSetFunction<T, I> create_level_set_function(
     std::shared_ptr<LevelSetMeshData<T, I>> mesh_data,
-    std::span<const T> dof_values);
+    std::span<const T> dof_values,
+    std::string name = "phi");
 
 } // namespace cutcells

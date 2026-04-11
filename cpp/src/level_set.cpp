@@ -14,7 +14,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "cell_topology.h"
 #include "cell_types.h"
+#include "reference_cell.h"
 
 namespace cutcells
 {
@@ -123,8 +125,7 @@ cell::type infer_cell_type(const MeshView<T, I>& mesh, I cell_id)
 {
   if (mesh.has_cell_types())
   {
-    return cell::map_vtk_type_to_cell_type(
-        static_cast<cell::vtk_types>(mesh.cell_type(cell_id)));
+    return mesh.cell_type(cell_id);
   }
 
   const I n = mesh.cell_num_nodes(cell_id);
@@ -155,32 +156,6 @@ cell::type infer_cell_type(const MeshView<T, I>& mesh, I cell_id)
   throw std::runtime_error("create_level_set_mesh_data: unsupported cell type inference from MeshView");
 }
 
-inline std::vector<int> vtk_to_basix_vertex_permutation(cell::type ctype, bool has_vtk_order)
-{
-  if (!has_vtk_order)
-    return {};
-
-  switch (ctype)
-  {
-    case cell::type::interval:
-      return {0, 1};
-    case cell::type::triangle:
-      return {0, 1, 2};
-    case cell::type::quadrilateral:
-      return {0, 1, 3, 2};
-    case cell::type::tetrahedron:
-      return {0, 1, 2, 3};
-    case cell::type::hexahedron:
-      return {0, 1, 3, 2, 4, 5, 7, 6};
-    case cell::type::prism:
-      return {0, 1, 2, 3, 4, 5};
-    case cell::type::pyramid:
-      return {0, 1, 2, 3, 4};
-    default:
-      throw std::runtime_error("create_level_set_mesh_data: unsupported cell type");
-  }
-}
-
 template <std::floating_point T, std::integral I>
 std::vector<I> cell_vertices_in_basix_order(const MeshView<T, I>& mesh, I cell_id,
                                             cell::type ctype)
@@ -193,15 +168,15 @@ std::vector<I> cell_vertices_in_basix_order(const MeshView<T, I>& mesh, I cell_i
         "create_level_set_mesh_data: MeshView cell connectivity must contain only corner vertices");
   }
 
-  const std::vector<int> perm = vtk_to_basix_vertex_permutation(ctype, mesh.has_cell_types());
   std::vector<I> verts;
   verts.reserve(static_cast<std::size_t>(nverts));
-  if (perm.empty())
+  if (!mesh.vtk_vertex_order)
   {
     verts.insert(verts.end(), nodes.begin(), nodes.end());
   }
   else
   {
+    const auto perm = cell::vtk_to_basix_vertex_permutation(ctype);
     for (int i = 0; i < nverts; ++i)
       verts.push_back(nodes[static_cast<std::size_t>(perm[static_cast<std::size_t>(i)])]);
   }
@@ -229,40 +204,6 @@ struct FaceDef
   int nverts = 0;
   std::array<int, 4> verts = {-1, -1, -1, -1};
 };
-
-inline std::span<const std::array<int, 2>> basix_edges(cell::type ctype)
-{
-  static constexpr std::array<std::array<int, 2>, 1> interval = {{{0, 1}}};
-  static constexpr std::array<std::array<int, 2>, 3> triangle = {{{1, 2}, {0, 2}, {0, 1}}};
-  static constexpr std::array<std::array<int, 2>, 4> quadrilateral = {{{0, 1}, {0, 2}, {1, 3}, {2, 3}}};
-  static constexpr std::array<std::array<int, 2>, 6> tetrahedron = {{{2, 3}, {1, 3}, {1, 2}, {0, 3}, {0, 2}, {0, 1}}};
-  static constexpr std::array<std::array<int, 2>, 12> hexahedron = {{
-      {0, 1}, {2, 3}, {0, 2}, {1, 3},
-      {4, 5}, {6, 7}, {4, 6}, {5, 7},
-      {0, 4}, {1, 5}, {2, 6}, {3, 7}
-  }};
-  static constexpr std::array<std::array<int, 2>, 9> prism = {{
-      {0, 1}, {0, 2}, {1, 2},
-      {0, 3}, {1, 4}, {2, 5},
-      {3, 4}, {3, 5}, {4, 5}
-  }};
-  static constexpr std::array<std::array<int, 2>, 8> pyramid = {{
-      {0, 1}, {0, 3}, {1, 2}, {2, 3},
-      {0, 4}, {1, 4}, {2, 4}, {3, 4}
-  }};
-
-  switch (ctype)
-  {
-    case cell::type::interval: return std::span(interval);
-    case cell::type::triangle: return std::span(triangle);
-    case cell::type::quadrilateral: return std::span(quadrilateral);
-    case cell::type::tetrahedron: return std::span(tetrahedron);
-    case cell::type::hexahedron: return std::span(hexahedron);
-    case cell::type::prism: return std::span(prism);
-    case cell::type::pyramid: return std::span(pyramid);
-    default: return {};
-  }
-}
 
 inline std::span<const FaceDef<int>> basix_faces(cell::type ctype)
 {
@@ -847,7 +788,7 @@ void append_cell_dofs(const MeshView<T, I>& mesh, LevelSetMeshData<T, I>& out,
     return;
   }
 
-  const auto edges = basix_edges(ctype);
+  const auto edges = cell::edges(ctype);
   for (std::size_t e = 0; e < edges.size(); ++e)
   {
     const I a = verts[static_cast<std::size_t>(edges[e][0])];
@@ -953,7 +894,7 @@ void validate_mesh_data_args(int gdim, int tdim, int degree,
                              std::span<const T> dof_coordinates,
                              std::span<const I> cell_dofs,
                              std::span<const I> cell_offsets,
-                             std::span<const I> cell_types)
+                             std::span<const cell::type> cell_types)
 {
   if (gdim <= 0)
     throw std::runtime_error("create_level_set_mesh_data: gdim must be positive");
@@ -1007,10 +948,7 @@ LevelSetMeshData<T, I> create_level_set_mesh_data(
     append_cell_dofs(mesh, out, cell_id, ctype, verts, degree,
                      edge_ids, edge_first_dof, face_ids, faces);
 
-    if (mesh.has_cell_types())
-      out.cell_types.push_back(mesh.cell_type(cell_id));
-    else
-      out.cell_types.push_back(static_cast<I>(cell::map_cell_type_to_vtk(ctype)));
+    out.cell_types.push_back(ctype);
     out.cell_offsets.push_back(static_cast<I>(out.cell_dofs.size()));
   }
 
@@ -1025,7 +963,7 @@ LevelSetMeshData<T, I> create_level_set_mesh_data(
     std::span<const T> dof_coordinates,
     std::span<const I> cell_dofs,
     std::span<const I> cell_offsets,
-    std::span<const I> cell_types)
+    std::span<const cell::type> cell_types)
 {
   validate_mesh_data_args(gdim, tdim, degree,
                           dof_coordinates, cell_dofs, cell_offsets, cell_types);
@@ -1044,7 +982,8 @@ LevelSetMeshData<T, I> create_level_set_mesh_data(
 template <std::floating_point T, std::integral I>
 LevelSetFunction<T, I> create_level_set_function(
     std::shared_ptr<LevelSetMeshData<T, I>> mesh_data,
-    std::span<const T> dof_values)
+    std::span<const T> dof_values,
+    std::string name)
 {
   if (!mesh_data)
     throw std::runtime_error("create_level_set_function: mesh_data must not be null");
@@ -1061,6 +1000,7 @@ LevelSetFunction<T, I> create_level_set_function(
   auto owned_values = std::make_shared<std::vector<T>>(dof_values.begin(), dof_values.end());
 
   LevelSetFunction<T, I> ls;
+  ls.name = std::move(name);
   ls.type = LevelSetType::Polynomial;
   ls.gdim = mesh_data->gdim;
   ls.mesh_data = std::move(mesh_data);
@@ -1079,19 +1019,21 @@ template LevelSetMeshData<float, int> create_level_set_mesh_data(
     std::span<const float> dof_coordinates,
     std::span<const int> cell_dofs,
     std::span<const int> cell_offsets,
-    std::span<const int> cell_types);
+    std::span<const cell::type> cell_types);
 template LevelSetMeshData<double, int> create_level_set_mesh_data(
     int gdim, int tdim, int degree,
     std::span<const double> dof_coordinates,
     std::span<const int> cell_dofs,
     std::span<const int> cell_offsets,
-    std::span<const int> cell_types);
+    std::span<const cell::type> cell_types);
 
 template LevelSetFunction<float, int> create_level_set_function(
     std::shared_ptr<LevelSetMeshData<float, int>> mesh_data,
-    std::span<const float> dof_values);
+    std::span<const float> dof_values,
+    std::string name);
 template LevelSetFunction<double, int> create_level_set_function(
     std::shared_ptr<LevelSetMeshData<double, int>> mesh_data,
-    std::span<const double> dof_values);
+    std::span<const double> dof_values,
+    std::string name);
 
 } // namespace cutcells

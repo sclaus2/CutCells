@@ -248,13 +248,13 @@ namespace cutcells::cell{
         for(std::size_t i=0;i<num_sub_cells;i++)
         {
           const std::size_t num_vertices = cutcells::cell::get_num_vertices(cell_type);
-          std::span<int> sub_tet;
+          std::span<const int> sub_tet;
 
           switch(cell_type)
           {
-            case cutcells::cell::type::triangle: {sub_tet = cutcells::cell::triangle_subdivision_table[i];
+            case cutcells::cell::type::triangle: {sub_tet = std::span<const int>(cutcells::cell::triangle_subdivision_table[i]);
                                           break;}
-            case cutcells::cell::type::tetrahedron: {sub_tet = cutcells::cell::tetrahedron_subdivision_table[i];
+            case cutcells::cell::type::tetrahedron: {sub_tet = std::span<const int>(cutcells::cell::tetrahedron_subdivision_table[i]);
                                           break;}
           }
 

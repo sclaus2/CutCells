@@ -75,23 +75,6 @@ namespace cutcells::cell
         }
     };
 
-    /// @brief Canonical reference vertices for a cell type (VTK ordering, flat).
-    ///
-    /// Returns a flat vector of nv * tdim values representing the reference-element
-    /// vertex coordinates for the given cell type.  Coordinates are in the
-    /// topological-dimension space (i.e. tdim values per vertex, NOT padded to gdim).
-    ///
-    /// VTK canonical positions used (these make the affine Jacobian = I for the
-    /// unit reference cell):
-    ///   interval      v0=(0)   v1=(1)
-    ///   triangle      v0=(0,0) v1=(1,0) v2=(0,1)
-    ///   quadrilateral v0=(0,0) v1=(1,0) v2=(1,1) v3=(0,1)
-    ///   tetrahedron   v0=(0,0,0) v1=(1,0,0) v2=(0,1,0) v3=(0,0,1)
-    ///   hexahedron    v0=(0,0,0) v1=(1,0,0) v2=(1,1,0) v3=(0,1,0)
-    ///                 v4=(0,0,1) v5=(1,0,1) v6=(1,1,1) v7=(0,1,1)
-    ///   prism         v0=(0,0,0) v1=(1,0,0) v2=(0,1,0)
-    ///                 v3=(0,0,1) v4=(1,0,1) v5=(0,1,1)
-    ///   pyramid       v0=(0,0,0) v1=(1,0,0) v2=(1,1,0) v3=(0,1,0) v4=(0,0,1)
     template <std::floating_point T>
     inline std::vector<T> canonical_vertices(type cell_type)
     {

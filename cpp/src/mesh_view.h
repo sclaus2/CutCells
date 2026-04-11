@@ -12,6 +12,8 @@
 #include <span>
 #include <stdexcept>
 
+#include "cell_types.h"
+
 namespace cutcells
 {
 
@@ -28,8 +30,13 @@ struct MeshView
   std::span<const I> connectivity;
   std::span<const I> offsets;
 
-  // Cell types, one per cell
-  std::span<const I> cell_types;
+  // Cell types, one per cell in cutcells cell::type enum numbering (not VTK codes).
+  std::span<const cell::type> cell_types;
+
+  // True when the vertex connectivity of this mesh uses VTK vertex ordering.
+  // Set by the Python boundary when constructing from VTK data.
+  // Used internally to apply the VTK→Basix vertex permutation.
+  bool vtk_vertex_order = false;
 
   // Optional keep-alive anchor for Python / external memory
   std::shared_ptr<void> owner;
@@ -77,7 +84,7 @@ struct MeshView
     return connectivity[pos];
   }
 
-  I cell_type(I cell_id) const
+  cell::type cell_type(I cell_id) const
   {
     if (cell_types.empty())
       throw std::runtime_error("MeshView::cell_type not available");

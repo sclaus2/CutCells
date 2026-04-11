@@ -22,10 +22,17 @@
 #include "../../cpp/src/cut_cell.h"
 #include "../../cpp/src/cut_mesh.h"
 #include "../../cpp/src/write_vtk.h"
+#include "../../cpp/src/bernstein.h"
 #include "../../cpp/src/mapping.h"
 #include "../../cpp/src/quadrature.h"
 #include "../../cpp/src/mesh_view.h"
 #include "../../cpp/src/level_set.h"
+#include "../../cpp/src/adapt_cell.h"
+#include "../../cpp/src/level_set_cell.h"
+#include "../../cpp/src/edge_certification.h"
+#include "../../cpp/src/cell_certification.h"
+#include "../../cpp/src/refine_cell.h"
+#include "../../cpp/src/ho_cut_mesh.h"
 
 namespace nb = nanobind;
 
@@ -139,19 +146,35 @@ cutcells::MeshView<T, int> make_mesh_view_from_numpy(
   mesh.offsets = std::span<const int>(offsets.data(),
                                       static_cast<std::size_t>(offsets.size()));
 
-  nb::object coords_obj = nb::cast(coordinates);
-  nb::object conn_obj = nb::cast(connectivity);
-  nb::object offs_obj = nb::cast(offsets);
-  nb::object types_obj;
+  // Keep-alive bundle: holds numpy arrays and the converted cell-type vector.
+  struct MeshViewOwner
+  {
+    nb::object coords, conn, offs, types_numpy;
+    std::vector<cutcells::cell::type> cell_types_converted;
+  };
+  auto owner_data = std::make_shared<MeshViewOwner>();
+  owner_data->coords = nb::cast(coordinates);
+  owner_data->conn   = nb::cast(connectivity);
+  owner_data->offs   = nb::cast(offsets);
 
   if (cell_types.has_value())
   {
-    mesh.cell_types = std::span<const int>(cell_types->data(),
-                                           static_cast<std::size_t>(cell_types->size()));
-    types_obj = nb::cast(*cell_types);
+    // Convert VTK integer codes to cutcells cell::type enum at the Python boundary.
+    const int*        raw    = cell_types->data();
+    const std::size_t ncells = static_cast<std::size_t>(cell_types->size());
+    owner_data->types_numpy  = nb::cast(*cell_types);
+    owner_data->cell_types_converted.reserve(ncells);
+    for (std::size_t i = 0; i < ncells; ++i)
+      owner_data->cell_types_converted.push_back(
+          cutcells::cell::map_vtk_type_to_cell_type(
+              static_cast<cutcells::cell::vtk_types>(raw[i])));
+    mesh.cell_types = std::span<const cutcells::cell::type>(
+        owner_data->cell_types_converted.data(), ncells);
+    // Connectivity from Python/VTK uses VTK vertex ordering.
+    mesh.vtk_vertex_order = true;
   }
 
-  mesh.owner = make_owner_from_objects(coords_obj, conn_obj, offs_obj, types_obj);
+  mesh.owner = owner_data;
   return mesh;
 }
 
@@ -238,8 +261,10 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
           {
             if (self.cell_types.empty())
               return nb::ndarray<const int, nb::numpy>(nullptr, {0}, nb::handle());
+            // cell::type has explicit underlying type int; safe to expose as int array.
+            const int* data = reinterpret_cast<const int*>(self.cell_types.data());
             return nb::ndarray<const int, nb::numpy>(
-                self.cell_types.data(),
+                data,
                 {self.cell_types.size()},
                 nb::handle());
           },
@@ -292,10 +317,17 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
           "cell_types",
           [](const LevelSetMeshDataT& self)
           {
-            return nb::ndarray<const int, nb::numpy>(
-                self.cell_types.data(),
-                {self.cell_types.size()},
-                nb::cast(self, nb::rv_policy::reference));
+            // Convert cell::type enum values to int for Python
+            auto* owner = new std::vector<int>();
+            owner->reserve(self.cell_types.size());
+            for (auto ct : self.cell_types)
+              owner->push_back(static_cast<int>(ct));
+            return nb::ndarray<int, nb::numpy>(
+                owner->data(),
+                {owner->size()},
+                nb::capsule(owner, [](void* p) noexcept {
+                  delete static_cast<std::vector<int>*>(p);
+                }));
           },
           nb::rv_policy::reference_internal)
       .def_prop_ro(
@@ -359,16 +391,23 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
          int tdim,
          nb::object cell_types_obj)
       {
-        std::optional<ndarray1<int>> cell_types;
+        // Convert int cell types to cell::type enum
+        // Python passes VTK type integers; convert to cell::type.
+        std::vector<cutcells::cell::type> cell_types_vec;
         if (!cell_types_obj.is_none())
-          cell_types = nb::cast<ndarray1<int>>(cell_types_obj);
-
-        std::span<const int> cell_types_span;
-        if (cell_types.has_value())
         {
-          cell_types_span = std::span<const int>(
-              cell_types->data(), static_cast<std::size_t>(cell_types->size()));
+          auto arr = nb::cast<ndarray1<int>>(cell_types_obj);
+          cell_types_vec.reserve(static_cast<std::size_t>(arr.size()));
+          for (std::size_t i = 0; i < static_cast<std::size_t>(arr.size()); ++i)
+            cell_types_vec.push_back(
+                cutcells::cell::map_vtk_type_to_cell_type(
+                    static_cast<cutcells::cell::vtk_types>(arr.data()[i])));
         }
+
+        std::span<const cutcells::cell::type> cell_types_span;
+        if (!cell_types_vec.empty())
+          cell_types_span = std::span<const cutcells::cell::type>(
+              cell_types_vec.data(), cell_types_vec.size());
 
         return cutcells::create_level_set_mesh_data<T, int>(
             static_cast<int>(dof_coordinates.shape(1)),
@@ -541,22 +580,26 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
 
   m.def(
       "create_level_set_function",
-      [](const LevelSetMeshDataT& mesh_data, const ndarray1<T>& dof_values)
+      [](const LevelSetMeshDataT& mesh_data, const ndarray1<T>& dof_values,
+         const std::string& name)
       {
         auto mesh_data_ptr = std::make_shared<LevelSetMeshDataT>(mesh_data);
         return cutcells::create_level_set_function<T, int>(
             std::move(mesh_data_ptr),
             std::span<const T>(
                 dof_values.data(),
-                static_cast<std::size_t>(dof_values.size())));
+                static_cast<std::size_t>(dof_values.size())),
+            name);
       },
       nb::arg("mesh_data"),
       nb::arg("dof_values"),
+      nb::arg("name") = "phi",
       "Create a polynomial LevelSetFunction from mesh_data and global dof values.");
 
   m.def(
-      "interpolate_level_set",
-      [](const MeshViewT& mesh, nb::callable phi, int degree)
+      "create_level_set",
+      [](const MeshViewT& mesh, nb::callable phi, int degree,
+         const std::string& name)
       {
         LevelSetMeshDataT mesh_data;
         {
@@ -566,10 +609,17 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
 
         const std::size_t num_dofs = static_cast<std::size_t>(mesh_data.num_dofs());
         const std::size_t gdim = static_cast<std::size_t>(mesh_data.gdim);
+        // Expose as (ndim, npoints) so x[0] gives all x-coords, etc.
+        // Underlying storage is row-major (npoints, gdim), so use transposed strides.
+        const std::size_t shape[2] = {gdim, num_dofs};
+        // Strides are in element counts (nanobind/DLPack convention).
+        // data layout is (num_dofs, gdim) row-major, so to view as (gdim, num_dofs):
+        //   stride[0] = 1  (adjacent coords of the same point)
+        //   stride[1] = gdim  (first coord of the next point)
+        const int64_t strides[2] = {1LL, static_cast<int64_t>(gdim)};
         nb::ndarray<const T, nb::numpy> x(
             mesh_data.dof_coordinates.data(),
-            {num_dofs, gdim},
-            nb::handle());
+            2, shape, nb::handle(), strides);
 
         // Intentional single batched callback invocation.
         nb::object values_obj = phi(x);
@@ -577,7 +627,7 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
         if (static_cast<std::size_t>(values.size()) != num_dofs)
         {
           throw std::runtime_error(
-              "interpolate_level_set: callback must return a 1D array with length num_dofs");
+              "create_level_set: callback must return a 1D array with length num_dofs");
         }
 
         auto mesh_data_ptr = std::make_shared<LevelSetMeshDataT>(std::move(mesh_data));
@@ -585,11 +635,13 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
             std::move(mesh_data_ptr),
             std::span<const T>(
                 values.data(),
-                static_cast<std::size_t>(values.size())));
+                static_cast<std::size_t>(values.size())),
+            name);
       },
       nb::arg("mesh"),
       nb::arg("phi"),
       nb::arg("degree"),
+      nb::arg("name") = "phi",
       "Interpolate a batched callable phi(X) at higher-order level-set dof coordinates.");
 
   // ---- cut_mesh_view ----
@@ -628,13 +680,20 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
         }
 
         // Cut mesh with GIL released
+        // Convert cell::type back to VTK int codes for the legacy cut_vtk_mesh API.
+        std::vector<int> vtk_types_vec;
+        vtk_types_vec.reserve(mesh.cell_types.size());
+        for (auto ct : mesh.cell_types)
+            vtk_types_vec.push_back(
+                static_cast<int>(cutcells::cell::map_cell_type_to_vtk(ct)));
+
         nb::gil_scoped_release release;
         return mesh::cut_vtk_mesh<T>(
             std::span<const T>(ls_vals.data(), ls_vals.size()),
             mesh.coordinates,
             mesh.connectivity,
             mesh.offsets,
-            mesh.cell_types,
+            std::span<const int>(vtk_types_vec.data(), vtk_types_vec.size()),
             cut_type_str,
             triangulate);
       },
@@ -1108,6 +1167,521 @@ void declare_float(nb::module_& m, std::string type)
       "Returns a flat numpy array of shape (total_num_points * 3,).");
 }
 
+// ---- HO cut types (BackgroundMeshData, HOCutCells, HOMeshPart) ----
+
+template <typename T>
+void declare_ho_cut(nb::module_& m, const std::string& type)
+{
+    using MeshViewT = cutcells::MeshView<T, int>;
+    using LevelSetT = cutcells::LevelSetFunction<T, int>;
+    using BGDataT = cutcells::BackgroundMeshData<T, int>;
+    using HOCutT = cutcells::HOCutCells<T, int>;
+    using PartT = cutcells::HOMeshPart<T, int>;
+
+    // --- Wrapper that owns both HOCutCells + BackgroundMeshData ---
+    struct HOCutResult
+    {
+        HOCutT cut_cells;
+        BGDataT bg;
+    };
+
+    std::string result_name = "HOCutResult_" + type;
+    auto py_result = nb::class_<HOCutResult>(m, result_name.c_str(),
+        "Result of ho cut(): holds HOCutCells and BackgroundMeshData.");
+
+    py_result
+        .def_prop_ro("num_cut_cells",
+            [](const HOCutResult& self) { return self.cut_cells.num_cut_cells(); })
+        .def_prop_ro("num_cells",
+            [](const HOCutResult& self) { return self.bg.num_cells; })
+        .def_prop_ro("num_level_sets",
+            [](const HOCutResult& self) { return self.bg.num_level_sets; })
+        .def_prop_ro("level_set_names",
+            [](const HOCutResult& self) { return self.bg.level_set_names; })
+        .def_prop_ro("parent_cell_ids",
+            [](const HOCutResult& self) {
+                return nb::ndarray<const int, nb::numpy>(
+                    self.cut_cells.parent_cell_ids.data(),
+                    {self.cut_cells.parent_cell_ids.size()},
+                    nb::handle());
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro("cell_domains",
+            [](const HOCutResult& self) {
+                const int* data = reinterpret_cast<const int*>(
+                    self.bg.cell_domains.data());
+                return nb::ndarray<const int, nb::numpy>(
+                    data,
+                    {static_cast<std::size_t>(self.bg.num_level_sets),
+                     static_cast<std::size_t>(self.bg.num_cells)},
+                    nb::handle());
+            },
+            nb::rv_policy::reference_internal,
+            "Per-level-set domain classification, shape (num_level_sets, num_cells).")
+        .def("__getitem__",
+            [](const HOCutResult& self, std::string_view expr_str) {
+                return cutcells::select_part(self.cut_cells, self.bg, expr_str);
+            },
+            nb::arg("expr"),
+            "Select a mesh part via expression, e.g. result[\"phi < 0\"].");
+
+    // --- HOMeshPart ---
+    std::string part_name = "HOMeshPart_" + type;
+    nb::class_<PartT>(m, part_name.c_str(), "Mesh part selected by expression")
+        .def_prop_ro("dim",
+            [](const PartT& self) { return self.dim; })
+        .def_prop_ro("cut_only",
+            [](const PartT& self) { return self.cut_only; })
+        .def_prop_ro("num_cut_cells",
+            [](const PartT& self) {
+                return static_cast<int>(self.cut_cell_ids.size());
+            })
+        .def_prop_ro("num_uncut_cells",
+            [](const PartT& self) {
+                return static_cast<int>(self.uncut_cell_ids.size());
+            })
+        .def_prop_ro("cut_cell_ids",
+            [](const PartT& self) {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.cut_cell_ids.data(),
+                    {self.cut_cell_ids.size()},
+                    nb::handle());
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro("uncut_cell_ids",
+            [](const PartT& self) {
+                return nb::ndarray<const int, nb::numpy>(
+                    self.uncut_cell_ids.data(),
+                    {self.uncut_cell_ids.size()},
+                    nb::handle());
+            },
+            nb::rv_policy::reference_internal);
+
+    // --- ho_cut() factory ---
+    m.def("ho_cut",
+        [](const MeshViewT& mesh, const LevelSetT& ls) {
+            nb::gil_scoped_release release;
+            auto [hc, bg] = cutcells::cut(mesh, ls);
+            return HOCutResult{std::move(hc), std::move(bg)};
+        },
+        nb::arg("mesh"), nb::arg("level_set"),
+        "Cut a MeshView with a single LevelSetFunction (HO pipeline).\n"
+        "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
+
+    m.def("ho_cut",
+        [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets) {
+            nb::gil_scoped_release release;
+            auto [hc, bg] = cutcells::cut(mesh, level_sets);
+            return HOCutResult{std::move(hc), std::move(bg)};
+        },
+        nb::arg("mesh"), nb::arg("level_sets"),
+        "Cut a MeshView with multiple LevelSetFunctions (HO pipeline).\n"
+        "Returns an HOCutResult; use result[\"phi1 < 0 and phi2 = 0\"] to select parts.");
+
+    // Simple aliases for Python
+    if constexpr (std::is_same_v<T, double>)
+    {
+        m.attr("HOCutResult") = m.attr(result_name.c_str());
+        m.attr("HOMeshPart") = m.attr(part_name.c_str());
+    }
+}
+
+template <typename T>
+void declare_certification(nb::module_& m, const std::string& suffix)
+{
+    using MeshViewT = cutcells::MeshView<T, int>;
+    using LevelSetT = cutcells::LevelSetFunction<T, int>;
+    using AdaptCellT = cutcells::AdaptCell<T>;
+    using LevelSetCellT = cutcells::LevelSetCell<T, int>;
+
+    const std::string adapt_name = "AdaptCell_" + suffix;
+    nb::class_<AdaptCellT>(m, adapt_name.c_str(), "Adaptive local cell topology")
+        .def(nb::init<>())
+        .def_prop_ro("tdim", [](const AdaptCellT& self) { return self.tdim; })
+        .def("num_vertices", &AdaptCellT::n_vertices)
+        .def("num_edges", [](const AdaptCellT& self) { return self.n_entities(1); })
+        .def("num_cells", [](const AdaptCellT& self) { return self.n_entities(self.tdim); })
+        .def_prop_ro(
+            "vertex_coords",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const T, nb::numpy>(
+                    self.vertex_coords.data(),
+                    {static_cast<std::size_t>(self.n_vertices()),
+                     static_cast<std::size_t>(self.tdim)},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "vertex_source_edge_id",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.vertex_source_edge_id.data(),
+                    {self.vertex_source_edge_id.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "edge_connectivity",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.entity_to_vertex[1].indices.data(),
+                    {self.entity_to_vertex[1].indices.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "edge_offsets",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.entity_to_vertex[1].offsets.data(),
+                    {self.entity_to_vertex[1].offsets.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "cell_types",
+            [](const AdaptCellT& self)
+            {
+                std::vector<int> types;
+                const int n_cells = self.n_entities(self.tdim);
+                types.reserve(static_cast<std::size_t>(n_cells));
+                for (int c = 0; c < n_cells; ++c)
+                    types.push_back(static_cast<int>(self.entity_types[self.tdim][static_cast<std::size_t>(c)]));
+                return as_nbarray(std::move(types));
+            },
+            nb::rv_policy::move)
+        .def_prop_ro(
+            "cell_connectivity",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.entity_to_vertex[self.tdim].indices.data(),
+                    {self.entity_to_vertex[self.tdim].indices.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "cell_offsets",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.entity_to_vertex[self.tdim].offsets.data(),
+                    {self.entity_to_vertex[self.tdim].offsets.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def(
+            "edge_root_tags",
+            [](const AdaptCellT& self, int level_set_id)
+            {
+                std::vector<int> tags;
+                const int n_edges = self.n_entities(1);
+                tags.reserve(static_cast<std::size_t>(n_edges));
+                for (int e = 0; e < n_edges; ++e)
+                    tags.push_back(static_cast<int>(self.get_edge_root_tag(level_set_id, e)));
+                return as_nbarray(std::move(tags));
+            },
+            nb::arg("level_set_id"))
+        .def(
+            "cell_cert_tags",
+            [](const AdaptCellT& self, int level_set_id)
+            {
+                std::vector<int> tags;
+                const int n_cells = self.n_entities(self.tdim);
+                tags.reserve(static_cast<std::size_t>(n_cells));
+                for (int c = 0; c < n_cells; ++c)
+                    tags.push_back(static_cast<int>(self.get_cell_cert_tag(level_set_id, c)));
+                return as_nbarray(std::move(tags));
+            },
+            nb::arg("level_set_id"))
+        .def(
+            "edge_green_split_params",
+            [](const AdaptCellT& self, int level_set_id)
+            {
+                const int n_edges = self.n_entities(1);
+                std::vector<T> params(static_cast<std::size_t>(n_edges), T(0));
+                for (int e = 0; e < n_edges; ++e)
+                {
+                    const auto idx = static_cast<std::size_t>(level_set_id * n_edges + e);
+                    if (idx < self.edge_green_split_param.size())
+                        params[static_cast<std::size_t>(e)] = self.edge_green_split_param[idx];
+                }
+                return as_nbarray(std::move(params));
+            },
+            nb::arg("level_set_id"))
+        .def(
+            "edge_green_split_mask",
+            [](const AdaptCellT& self, int level_set_id)
+            {
+                const int n_edges = self.n_entities(1);
+                std::vector<std::uint8_t> mask(static_cast<std::size_t>(n_edges), 0);
+                for (int e = 0; e < n_edges; ++e)
+                {
+                    const auto idx = static_cast<std::size_t>(level_set_id * n_edges + e);
+                    if (idx < self.edge_green_split_has_value.size())
+                        mask[static_cast<std::size_t>(e)] = self.edge_green_split_has_value[idx];
+                }
+                return as_nbarray(std::move(mask));
+            },
+            nb::arg("level_set_id"));
+
+    const std::string lsc_name = "LevelSetCell_" + suffix;
+    nb::class_<LevelSetCellT>(m, lsc_name.c_str(), "Cell-local Bernstein level set")
+        .def(nb::init<>())
+        .def_prop_ro("cell_id", [](const LevelSetCellT& self) { return self.cell_id; })
+        .def_prop_ro("bernstein_order", [](const LevelSetCellT& self) { return self.bernstein_order; })
+        .def_prop_ro("cell_type", [](const LevelSetCellT& self) { return self.cell_type; })
+        .def_prop_ro(
+            "bernstein_coeffs",
+            [](const LevelSetCellT& self)
+            {
+                return nb::ndarray<const T, nb::numpy>(
+                    self.bernstein_coeffs.data(),
+                    {self.bernstein_coeffs.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal);
+
+    m.def(
+        "make_adapt_cell",
+        [](const MeshViewT& mesh, int cell_id)
+        {
+            nb::gil_scoped_release release;
+            return cutcells::make_adapt_cell(mesh, cell_id);
+        },
+        nb::arg("mesh"),
+        nb::arg("cell_id"));
+
+    m.def(
+        "build_edges",
+        [](AdaptCellT& adapt_cell)
+        {
+            nb::gil_scoped_release release;
+            cutcells::build_edges(adapt_cell);
+        },
+        nb::arg("adapt_cell"));
+
+    m.def(
+        "make_cell_level_set",
+        [](const LevelSetT& ls, int cell_id)
+        {
+            nb::gil_scoped_release release;
+            return cutcells::make_cell_level_set(ls, cell_id);
+        },
+        nb::arg("level_set"),
+        nb::arg("cell_id"));
+
+    m.def(
+        "evaluate_bernstein",
+        [](cell::type cell_type, int degree, const ndarray1<T>& coeffs, const ndarray1<T>& xi)
+        {
+            return cutcells::bernstein::evaluate<T>(
+                cell_type,
+                degree,
+                std::span<const T>(coeffs.data(), static_cast<std::size_t>(coeffs.size())),
+                std::span<const T>(xi.data(), static_cast<std::size_t>(xi.size())));
+        },
+        nb::arg("cell_type"),
+        nb::arg("degree"),
+        nb::arg("coeffs"),
+        nb::arg("xi"));
+
+    m.def(
+        "extract_parent_edge_bernstein",
+        [](cell::type parent_cell_type, int degree,
+           const ndarray1<T>& parent_coeffs, int parent_local_edge_id)
+        {
+            std::vector<T> out;
+            nb::gil_scoped_release release;
+            cutcells::extract_parent_edge_bernstein<T>(
+                parent_cell_type,
+                degree,
+                std::span<const T>(parent_coeffs.data(), static_cast<std::size_t>(parent_coeffs.size())),
+                parent_local_edge_id,
+                out);
+            return out;
+        },
+        nb::arg("parent_cell_type"),
+        nb::arg("degree"),
+        nb::arg("parent_coeffs"),
+        nb::arg("parent_local_edge_id"));
+
+    m.def(
+        "restrict_edge_bernstein_exact",
+        [](cell::type parent_cell_type, int degree,
+           const ndarray1<T>& parent_coeffs,
+           const ndarray1<T>& xi_a,
+           const ndarray1<T>& xi_b)
+        {
+            std::vector<T> out;
+            nb::gil_scoped_release release;
+            cutcells::restrict_edge_bernstein_exact<T>(
+                parent_cell_type,
+                degree,
+                std::span<const T>(parent_coeffs.data(), static_cast<std::size_t>(parent_coeffs.size())),
+                std::span<const T>(xi_a.data(), static_cast<std::size_t>(xi_a.size())),
+                std::span<const T>(xi_b.data(), static_cast<std::size_t>(xi_b.size())),
+                out);
+            return out;
+        },
+        nb::arg("parent_cell_type"),
+        nb::arg("degree"),
+        nb::arg("parent_coeffs"),
+        nb::arg("xi_a"),
+        nb::arg("xi_b"));
+
+    m.def(
+        "classify_edge_roots",
+        [](const ndarray1<T>& edge_coeffs,
+           T zero_tol,
+           T sign_tol,
+           int max_depth)
+        {
+            T split_t = T(0);
+            bool has_split = false;
+            EdgeRootTag tag = cutcells::classify_edge_roots<T>(
+                std::span<const T>(edge_coeffs.data(), static_cast<std::size_t>(edge_coeffs.size())),
+                zero_tol,
+                sign_tol,
+                max_depth,
+                split_t,
+                has_split);
+            return nb::make_tuple(tag, has_split ? nb::cast(split_t) : nb::none());
+        },
+        nb::arg("edge_coeffs"),
+        nb::arg("zero_tol") = T(1e-12),
+        nb::arg("sign_tol") = T(1e-12),
+        nb::arg("max_depth") = 20);
+
+    m.def(
+        "classify_new_edges",
+        [](AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell, int level_set_id,
+           T zero_tol, T sign_tol, int max_depth)
+        {
+            nb::gil_scoped_release release;
+            cutcells::classify_new_edges(adapt_cell, ls_cell, level_set_id,
+                                         zero_tol, sign_tol, max_depth);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_cell"),
+        nb::arg("level_set_id"),
+        nb::arg("zero_tol") = T(1e-12),
+        nb::arg("sign_tol") = T(1e-12),
+        nb::arg("max_depth") = 20);
+
+    m.def(
+        "fill_all_vertex_signs_from_level_set",
+        [](AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell, int level_set_id,
+           T zero_tol)
+        {
+            nb::gil_scoped_release release;
+            cutcells::fill_all_vertex_signs_from_level_set(
+                adapt_cell, ls_cell, level_set_id, zero_tol);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_cell"),
+        nb::arg("level_set_id"),
+        nb::arg("zero_tol") = T(1e-12));
+
+    m.def(
+        "classify_leaf_cells",
+        [](AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell, int level_set_id,
+           T zero_tol, T sign_tol)
+        {
+            nb::gil_scoped_release release;
+            cutcells::classify_leaf_cells(adapt_cell, ls_cell, level_set_id,
+                                          zero_tol, sign_tol);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_cell"),
+        nb::arg("level_set_id"),
+        nb::arg("zero_tol") = T(1e-12),
+        nb::arg("sign_tol") = T(1e-12));
+
+    m.def(
+        "process_ready_to_cut_cells",
+        [](AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell, int level_set_id,
+           T zero_tol, T sign_tol, int edge_max_depth)
+        {
+            nb::gil_scoped_release release;
+            cutcells::process_ready_to_cut_cells(
+                adapt_cell, ls_cell, level_set_id,
+                zero_tol, sign_tol, edge_max_depth);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_cell"),
+        nb::arg("level_set_id"),
+        nb::arg("zero_tol") = T(1e-12),
+        nb::arg("sign_tol") = T(1e-12),
+        nb::arg("edge_max_depth") = 20);
+
+    m.def(
+        "refine_green_on_multiple_root_edges",
+        [](AdaptCellT& adapt_cell, int level_set_id)
+        {
+            nb::gil_scoped_release release;
+            return cutcells::refine_green_on_multiple_root_edges(adapt_cell, level_set_id);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_id"));
+
+    m.def(
+        "refine_red_on_ambiguous_cells",
+        [](AdaptCellT& adapt_cell, int level_set_id)
+        {
+            nb::gil_scoped_release release;
+            return cutcells::refine_red_on_ambiguous_cells(adapt_cell, level_set_id);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_id"));
+
+    m.def(
+        "certify_refine_and_process_ready_cells",
+        [](AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell, int level_set_id,
+           int max_iterations, T zero_tol, T sign_tol, int edge_max_depth)
+        {
+            nb::gil_scoped_release release;
+            cutcells::certify_refine_and_process_ready_cells(
+                adapt_cell, ls_cell, level_set_id,
+                max_iterations, zero_tol, sign_tol, edge_max_depth);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_cell"),
+        nb::arg("level_set_id"),
+        nb::arg("max_iterations") = 8,
+        nb::arg("zero_tol") = T(1e-12),
+        nb::arg("sign_tol") = T(1e-12),
+        nb::arg("edge_max_depth") = 20);
+
+    m.def(
+        "certify_and_refine",
+        [](AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell, int level_set_id,
+           int max_iterations, T zero_tol, T sign_tol, int edge_max_depth)
+        {
+            nb::gil_scoped_release release;
+            cutcells::certify_and_refine(adapt_cell, ls_cell, level_set_id,
+                                         max_iterations, zero_tol, sign_tol,
+                                         edge_max_depth);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_cell"),
+        nb::arg("level_set_id"),
+        nb::arg("max_iterations") = 8,
+        nb::arg("zero_tol") = T(1e-12),
+        nb::arg("sign_tol") = T(1e-12),
+        nb::arg("edge_max_depth") = 20);
+
+    if constexpr (std::is_same_v<T, double>)
+    {
+        m.attr("AdaptCell") = m.attr(adapt_name.c_str());
+        m.attr("LevelSetCell") = m.attr(lsc_name.c_str());
+    }
+}
+
 } // namespace
 
 NB_MODULE(_cutcellscpp, m)
@@ -1125,11 +1699,40 @@ NB_MODULE(_cutcellscpp, m)
     .value("prism", cell::type::prism)
     .value("pyramid", cell::type::pyramid);
 
+  nb::enum_<cutcells::EdgeRootTag>(m, "EdgeRootTag")
+    .value("not_classified", cutcells::EdgeRootTag::not_classified)
+    .value("no_root", cutcells::EdgeRootTag::no_root)
+    .value("one_root", cutcells::EdgeRootTag::one_root)
+    .value("multiple_roots", cutcells::EdgeRootTag::multiple_roots)
+    .value("zero", cutcells::EdgeRootTag::zero);
+
+  nb::enum_<cutcells::CellCertTag>(m, "CellCertTag")
+    .value("not_classified", cutcells::CellCertTag::not_classified)
+    .value("positive", cutcells::CellCertTag::positive)
+    .value("negative", cutcells::CellCertTag::negative)
+    .value("cut", cutcells::CellCertTag::cut)
+    .value("zero", cutcells::CellCertTag::zero)
+    .value("ambiguous", cutcells::CellCertTag::ambiguous)
+    .value("ready_to_cut", cutcells::CellCertTag::ready_to_cut);
+
+  nb::enum_<cutcells::FaceCertTag>(m, "FaceCertTag")
+    .value("not_classified", cutcells::FaceCertTag::not_classified)
+    .value("positive", cutcells::FaceCertTag::positive)
+    .value("negative", cutcells::FaceCertTag::negative)
+    .value("cut", cutcells::FaceCertTag::cut)
+    .value("zero", cutcells::FaceCertTag::zero)
+    .value("ambiguous", cutcells::FaceCertTag::ambiguous);
+
   declare_float<float>(m, "float32");
   declare_float<double>(m, "float64");
 
   declare_meshview_and_levelset<float>(m, "float32");
   declare_meshview_and_levelset<double>(m, "float64");
+  declare_certification<float>(m, "float32");
+  declare_certification<double>(m, "float64");
+
+  declare_ho_cut<float>(m, "float32");
+  declare_ho_cut<double>(m, "float64");
 
   m.def("csr_to_vtk_cells",
         [](const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,

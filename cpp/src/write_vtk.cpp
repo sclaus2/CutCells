@@ -366,21 +366,19 @@ HOCellFamily infer_cell_family(const cutcells::LevelSetMeshData<double, int>& me
 {
   if (!mesh_data.cell_types.empty())
   {
-    const int vtk_type = mesh_data.cell_types[static_cast<std::size_t>(cell_id)];
-    if (vtk_type == static_cast<int>(cutcells::cell::vtk_types::VTK_TRIANGLE)
-        || vtk_type == VTK_LAGRANGE_TRIANGLE)
+    const cutcells::cell::type ct = mesh_data.cell_types[static_cast<std::size_t>(cell_id)];
+    if (ct == cutcells::cell::type::triangle)
     {
       return HOCellFamily::triangle;
     }
-    if (vtk_type == static_cast<int>(cutcells::cell::vtk_types::VTK_TETRA)
-        || vtk_type == VTK_LAGRANGE_TETRAHEDRON)
+    if (ct == cutcells::cell::type::tetrahedron)
     {
       return HOCellFamily::tetrahedron;
     }
 
     throw std::runtime_error(
-        "write_level_set_vtu: unsupported VTK cell type " + std::to_string(vtk_type)
-        + " (supported: triangle, tetrahedron)");
+        "write_level_set_vtu: unsupported cell type "
+        + cutcells::cell::cell_type_to_str(ct));
   }
 
   if (mesh_data.tdim == 2)

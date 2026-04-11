@@ -375,6 +375,8 @@ namespace triangle{
         {
             create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str[i], cut_cell[i], 
                             triangulate, intersection_points, vertex_case_map);
+            cutcells::utils::create_vertex_parent_entity_map<T>(
+                vertex_case_map, cut_cell[i]._vertex_parent_entity, 3, 3);
         }
     };
 
@@ -402,6 +404,12 @@ namespace triangle{
     template void cut(const std::span<const float> vertex_coordinates, const int gdim,
               const std::span<const float> ls_values, const std::string& cut_type_str,
               CutCell<float>& cut_cell, bool triangulate);
+    template void cut(const std::span<const double> vertex_coordinates, const int gdim,
+            const std::span<const double> ls_values, const std::vector<std::string>& cut_type_str,
+            std::vector<CutCell<double>>& cut_cell, bool triangulate);
+    template void cut(const std::span<const float> vertex_coordinates, const int gdim,
+              const std::span<const float> ls_values, const std::vector<std::string>& cut_type_str,
+              std::vector<CutCell<float>>& cut_cell, bool triangulate);
 
     template double volume(const std::span<const double> vertex_coordinates, const int gdim);
     template float volume(const std::span<const float> vertex_coordinates, const int gdim);

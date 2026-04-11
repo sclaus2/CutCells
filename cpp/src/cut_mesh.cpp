@@ -11,6 +11,7 @@
 
 #include "utils.h"
 #include "cell_topology.h"
+#include "reference_cell.h"
 #include <map>
 #include <algorithm>
 #include <cstdint>
@@ -294,10 +295,15 @@ namespace cutcells::mesh
               }
               else
               {
-                const int v0 = parent_edges[edge_id][0];
-                const int v1 = parent_edges[edge_id][1];
-                const int32_t gv0 = static_cast<int32_t>(cut_cell._parent_vertex_ids[v0]);
-                const int32_t gv1 = static_cast<int32_t>(cut_cell._parent_vertex_ids[v1]);
+                // token is a VTK edge index; cell_topology.h uses Basix ordering.
+                const int basix_eid = cell::vtk_to_basix_edge(cut_cell._parent_cell_type, edge_id);
+                const int bv0 = parent_edges[basix_eid][0];
+                const int bv1 = parent_edges[basix_eid][1];
+                // _parent_vertex_ids is indexed by VTK vertex; convert.
+                const int vtk_v0 = cell::basix_to_vtk_vertex(cut_cell._parent_cell_type, bv0);
+                const int vtk_v1 = cell::basix_to_vtk_vertex(cut_cell._parent_cell_type, bv1);
+                const int32_t gv0 = static_cast<int32_t>(cut_cell._parent_vertex_ids[vtk_v0]);
+                const int32_t gv1 = static_cast<int32_t>(cut_cell._parent_vertex_ids[vtk_v1]);
                 key.kind = 1;
                 key.a = std::min(gv0, gv1);
                 key.b = std::max(gv0, gv1);
@@ -588,10 +594,16 @@ namespace cutcells::mesh
               const int eid = static_cast<int>(token);
               if (eid >= 0 && eid < static_cast<int>(parent_edges.size()))
               {
+                // token is a VTK edge index; cell_topology.h uses Basix ordering.
+                const int basix_eid = cell::vtk_to_basix_edge(ctype, eid);
+                const int bv0 = parent_edges[basix_eid][0];
+                const int bv1 = parent_edges[basix_eid][1];
+                const int vtk_v0 = cell::basix_to_vtk_vertex(ctype, bv0);
+                const int vtk_v1 = cell::basix_to_vtk_vertex(ctype, bv1);
                 const int32_t gv0 = static_cast<int32_t>(
-                    tl_scratch._parent_vertex_ids[parent_edges[eid][0]]);
+                    tl_scratch._parent_vertex_ids[vtk_v0]);
                 const int32_t gv1 = static_cast<int32_t>(
-                    tl_scratch._parent_vertex_ids[parent_edges[eid][1]]);
+                    tl_scratch._parent_vertex_ids[vtk_v1]);
                 key.kind = 1;
                 key.a    = std::min(gv0, gv1);
                 key.b    = std::max(gv0, gv1);
