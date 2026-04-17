@@ -15,6 +15,7 @@
 
 #include "write_vtk.h"
 #include "cell_types.h"
+#include "reference_cell.h"
 
 namespace
 {

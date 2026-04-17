@@ -546,12 +546,6 @@ void append_cut_entities(mesh::CutMesh<T>& out,
                 mesh.gdim,
                 std::span<const T>(ref_coords.data(), ref_coords.size()));
 
-            // Volume entities (from adapt_cell) are in basix vertex ordering;
-            // face entities (from cell_topology.h face_vertices) are already
-            // in VTK cyclic ordering and must NOT be permuted again.
-            const bool entity_is_basix =
-                (cell::get_tdim(entity.type) == adapt_cell.tdim);
-
             append_mesh_entity(
                 out,
                 std::span<const T>(phys_coords.data(), phys_coords.size()),
@@ -559,7 +553,7 @@ void append_cut_entities(mesh::CutMesh<T>& out,
                 entity.type,
                 static_cast<int>(parent_cell_id),
                 triangulate,
-                entity_is_basix);
+                /*input_is_basix=*/true);
 
             if (rules != nullptr)
             {
@@ -573,7 +567,7 @@ void append_cut_entities(mesh::CutMesh<T>& out,
                     static_cast<int>(parent_cell_id),
                     quadrature_order,
                     triangulate || !is_simplex(entity.type),
-                    entity_is_basix);
+                    /*input_is_basix=*/true);
             }
         }
     }

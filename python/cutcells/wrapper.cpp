@@ -1829,15 +1829,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                bool triangulate) {
                 nb::gil_scoped_release release;
                 auto vis = part_visualization_mesh(self, mode, triangulate);
-                std::vector<double> coords(
-                    vis._vertex_coords.begin(), vis._vertex_coords.end());
-                io::write_vtk(
-                    filename,
-                    std::span<const double>(coords.data(), coords.size()),
-                    std::span<const int>(vis._connectivity.data(), vis._connectivity.size()),
-                    std::span<const int>(vis._offset.data(), vis._offset.size()),
-                    std::span<cell::type>(vis._types.data(), vis._types.size()),
-                    vis._gdim);
+                io::write_vtk(filename, vis);
             },
             nb::arg("filename"),
             nb::arg("mode") = "full",

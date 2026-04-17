@@ -183,28 +183,35 @@ inline std::span<const std::array<int, 2>> edges(type cell_type)
 
 /// Hexahedron: 6 faces (quads)
 /// Face order: -X, +X, -Y, +Y, -Z, +Z (left, right, front, back, bottom, top)
+/// Vertex ordering follows basix tensor-product convention for quadrilateral:
+///   basix quad: 0=(0,0), 1=(1,0), 2=(0,1), 3=(1,1)  (NOT cyclic).
+/// Conversion from VTK cyclic {a,b,c,d} -> basix {a,b,d,c}.
 inline constexpr std::array<std::array<int, 4>, 6> hexahedron_faces = {{
-    {0, 3, 7, 4},  // -X (left)
-    {1, 2, 6, 5},  // +X (right)
-    {0, 1, 5, 4},  // -Y (front)
-    {3, 2, 6, 7},  // +Y (back)
-    {0, 1, 2, 3},  // -Z (bottom)
-    {4, 5, 6, 7}   // +Z (top)
+    {0, 3, 4, 7},  // -X (left)    was VTK {0,3,7,4}
+    {1, 2, 5, 6},  // +X (right)   was VTK {1,2,6,5}
+    {0, 1, 4, 5},  // -Y (front)   was VTK {0,1,5,4}
+    {3, 2, 7, 6},  // +Y (back)    was VTK {3,2,6,7}
+    {0, 1, 2, 3},  // -Z (bottom)  was VTK {0,1,3,2} -> basix {0,1,2,3}
+    {4, 5, 6, 7}   // +Z (top)     was VTK {4,5,7,6} -> basix {4,5,6,7}
 }};
 
 /// Prism: 5 faces (2 triangles + 3 quads)
-/// Represented as max 4 vertices per face, with -1 padding for triangles
+/// Represented as max 4 vertices per face, with -1 padding for triangles.
+/// Quad faces use basix tensor-product ordering: 0=(0,0),1=(1,0),2=(0,1),3=(1,1).
+/// Conversion from VTK cyclic {a,b,c,d} -> basix {a,b,d,c}.
 inline constexpr std::array<std::array<int, 4>, 5> prism_faces = {{
     {0, 1, 2, -1},  // bottom triangle
     {3, 4, 5, -1},  // top triangle
-    {0, 1, 4, 3},   // quad face
-    {1, 2, 5, 4},   // quad face
-    {2, 0, 3, 5}    // quad face
+    {0, 1, 3, 4},   // quad (y=0 plane)   was VTK {0,1,4,3}
+    {1, 2, 4, 5},   // quad (x+y=1 plane) was VTK {1,2,5,4}
+    {2, 0, 5, 3}    // quad (x=0 plane)   was VTK {2,0,3,5}
 }};
 
 /// Pyramid: 5 faces (1 quad base + 4 triangles)
+/// Base quad uses basix tensor-product ordering: 0=(0,0),1=(1,0),2=(0,1),3=(1,1).
+/// Conversion from VTK cyclic {0,1,2,3} -> basix {0,1,3,2}.
 inline constexpr std::array<std::array<int, 4>, 5> pyramid_faces = {{
-    {0, 1, 2, 3},   // base quad
+    {0, 1, 3, 2},   // base quad: basix ordering, was VTK {0,1,2,3}
     {0, 1, 4, -1},  // triangle
     {1, 2, 4, -1},  // triangle
     {2, 3, 4, -1},  // triangle
