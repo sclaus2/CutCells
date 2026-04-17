@@ -355,12 +355,16 @@ void append_mesh_entity(mesh::CutMesh<T>& out,
     if (out._tdim == 0)
         out._tdim = cell::get_tdim(cell_type);
 
-    std::vector<T> vtk_coords;
+    // CutMesh stores vertex coordinates in basix ordering internally.
+    // Basix-ordered inputs are stored as-is; VTK-ordered inputs are
+    // permuted to basix ordering before storage.
+    std::vector<T> reordered_coords;
     std::span<const T> output_coords = physical_coords;
-    if (input_is_basix && !is_simplex(cell_type))
+    if (!input_is_basix && !is_simplex(cell_type))
     {
-        vtk_coords = reorder_vertex_coords_to_vtk(cell_type, physical_coords, gdim);
-        output_coords = std::span<const T>(vtk_coords.data(), vtk_coords.size());
+        const auto perm = cell::vtk_to_basix_vertex_permutation(cell_type);
+        reordered_coords = cell::permute_vertex_data(physical_coords, gdim, perm);
+        output_coords = std::span<const T>(reordered_coords.data(), reordered_coords.size());
     }
 
     const int nv = static_cast<int>(output_coords.size()) / gdim;

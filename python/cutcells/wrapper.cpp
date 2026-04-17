@@ -134,6 +134,44 @@ static std::vector<int> csr_to_vtk_cells_impl(std::span<const int> connectivity,
   return out;
 }
 
+/// Variant of csr_to_vtk_cells_impl for CutMesh data stored in basix ordering.
+/// Non-simplex cells are permuted from basix to VTK vertex ordering.
+static std::vector<int> csr_to_vtk_cells_basix_impl(
+    std::span<const int> connectivity,
+    std::span<const int> offsets,
+    std::span<const cutcells::cell::type> types)
+{
+  std::vector<int> out;
+  if (offsets.size() == 0)
+    return out;
+  const std::size_t ncells = offsets.size() - 1;
+  out.reserve(connectivity.size() + ncells);
+  for (std::size_t i = 0; i < ncells; ++i)
+  {
+    const int start = offsets[i];
+    const int end   = offsets[i + 1];
+    const int n     = end - start;
+    out.push_back(n);
+    const cutcells::cell::type ctype = types[i];
+    if (ctype == cutcells::cell::type::point
+        || ctype == cutcells::cell::type::interval
+        || ctype == cutcells::cell::type::triangle
+        || ctype == cutcells::cell::type::tetrahedron)
+    {
+      for (int j = start; j < end; ++j)
+        out.push_back(connectivity[static_cast<std::size_t>(j)]);
+    }
+    else
+    {
+      const auto perm = cutcells::cell::basix_to_vtk_vertex_permutation(ctype);
+      for (int j = 0; j < n; ++j)
+        out.push_back(connectivity[static_cast<std::size_t>(
+            start + perm[static_cast<std::size_t>(j)])]);
+    }
+  }
+  return out;
+}
+
 template <typename T>
 cutcells::MeshView<T, int> make_mesh_view_from_numpy(
     const ndarray2<T>& coordinates,
@@ -1473,13 +1511,14 @@ void declare_float(nb::module_& m, std::string type)
         .def_prop_ro(
           "cells",
           [](const mesh::CutMesh<T>& self) {
-            return as_nbarray(csr_to_vtk_cells_impl(
+            return as_nbarray(csr_to_vtk_cells_basix_impl(
               std::span<const int>(self._connectivity.data(), self._connectivity.size()),
-              std::span<const int>(self._offset.data(), self._offset.size())));
+              std::span<const int>(self._offset.data(), self._offset.size()),
+              std::span<const cell::type>(self._types.data(), self._types.size())));
           },
           nb::rv_policy::move,
-          "Convenience packed cells view [n, v0, ...] for VTK-style consumers (allocates)."
-          " For high-performance workflows, prefer zero-copy 'connectivity' + 'offset'.")
+          "Packed cells view [n, v0, ...] with basix-to-VTK vertex permutation applied."
+          " Suitable for pv.UnstructuredGrid. Allocates on each call.")
         .def_prop_ro(
           "parent_map",
           [](const mesh::CutMesh<T>& self) {
