@@ -258,4 +258,50 @@ inline std::span<const int, 3> tet_face(int face_id)
     return std::span<const int, 3>(tetrahedron_faces[static_cast<std::size_t>(face_id)]);
 }
 
+/// Get the cell type of a specific face of a cell.
+inline type face_type(type cell_type, int face_id)
+{
+    switch (cell_type)
+    {
+    case type::tetrahedron:
+        return type::triangle;
+    case type::hexahedron:
+        return type::quadrilateral;
+    case type::prism:
+        return (face_id < 2) ? type::triangle : type::quadrilateral;
+    case type::pyramid:
+        return (face_id == 0) ? type::quadrilateral : type::triangle;
+    default:
+        throw std::invalid_argument("Unknown cell type in face_type");
+    }
+}
+
+/// Get the vertex indices for face `face_id` of a 3D cell.
+/// The returned span has `face_sizes(cell_type)[face_id]` entries.
+inline std::span<const int> face_vertices(type cell_type, int face_id)
+{
+    const int fsize = face_sizes(cell_type)[static_cast<std::size_t>(face_id)];
+    switch (cell_type)
+    {
+    case type::tetrahedron:
+        return std::span<const int>(
+            tetrahedron_faces[static_cast<std::size_t>(face_id)].data(),
+            static_cast<std::size_t>(fsize));
+    case type::hexahedron:
+        return std::span<const int>(
+            hexahedron_faces[static_cast<std::size_t>(face_id)].data(),
+            static_cast<std::size_t>(fsize));
+    case type::prism:
+        return std::span<const int>(
+            prism_faces[static_cast<std::size_t>(face_id)].data(),
+            static_cast<std::size_t>(fsize));
+    case type::pyramid:
+        return std::span<const int>(
+            pyramid_faces[static_cast<std::size_t>(face_id)].data(),
+            static_cast<std::size_t>(fsize));
+    default:
+        throw std::invalid_argument("Unknown cell type in face_vertices");
+    }
+}
+
 } // namespace cutcells::cell

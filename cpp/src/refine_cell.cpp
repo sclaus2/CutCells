@@ -616,7 +616,16 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
         {
             const int a = verts[0];
             const int b = verts[1];
-            const int e = edge_lookup.at({std::min(a, b), std::max(a, b)});
+            const std::pair<int, int> key = {std::min(a, b), std::max(a, b)};
+            auto it = edge_lookup.find(key);
+            if (it == edge_lookup.end())
+            {
+                throw std::runtime_error(
+                    "refine_red_on_ambiguous_cells: missing interval edge key=("
+                    + std::to_string(key.first) + "," + std::to_string(key.second)
+                    + ") for cell " + std::to_string(c));
+            }
+            const int e = it->second;
             const int m = get_midpoint_vertex(e);
             const std::array<std::array<int, 2>, 2> children = {{{a, m}, {m, b}}};
             for (const auto& child : children)
@@ -636,8 +645,18 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
             {
                 const int a = verts[static_cast<std::size_t>(ledges[static_cast<std::size_t>(le)][0])];
                 const int b = verts[static_cast<std::size_t>(ledges[static_cast<std::size_t>(le)][1])];
+                const std::pair<int, int> key = {std::min(a, b), std::max(a, b)};
+                auto it = edge_lookup.find(key);
+                if (it == edge_lookup.end())
+                {
+                    throw std::runtime_error(
+                        "refine_red_on_ambiguous_cells: missing triangle edge key=("
+                        + std::to_string(key.first) + "," + std::to_string(key.second)
+                        + ") for cell " + std::to_string(c) + " local_edge="
+                        + std::to_string(le));
+                }
                 local_to_global[static_cast<std::size_t>(3 + le)] =
-                    get_midpoint_vertex(edge_lookup.at({std::min(a, b), std::max(a, b)}));
+                    get_midpoint_vertex(it->second);
             }
 
             for (const auto& child : cell::triangle_subdivision_table)
@@ -662,8 +681,18 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
             {
                 const int a = verts[static_cast<std::size_t>(ledges[static_cast<std::size_t>(le)][0])];
                 const int b = verts[static_cast<std::size_t>(ledges[static_cast<std::size_t>(le)][1])];
+                const std::pair<int, int> key = {std::min(a, b), std::max(a, b)};
+                auto it = edge_lookup.find(key);
+                if (it == edge_lookup.end())
+                {
+                    throw std::runtime_error(
+                        "refine_red_on_ambiguous_cells: missing quadrilateral edge key=("
+                        + std::to_string(key.first) + "," + std::to_string(key.second)
+                        + ") for cell " + std::to_string(c) + " local_edge="
+                        + std::to_string(le));
+                }
                 local_to_global[static_cast<std::size_t>(4 + le)] =
-                    get_midpoint_vertex(edge_lookup.at({std::min(a, b), std::max(a, b)}));
+                    get_midpoint_vertex(it->second);
             }
             local_to_global[8] = append_cell_center_vertex(adapt_cell, verts);
 
@@ -690,8 +719,18 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
             {
                 const int a = verts[static_cast<std::size_t>(ledges[static_cast<std::size_t>(le)][0])];
                 const int b = verts[static_cast<std::size_t>(ledges[static_cast<std::size_t>(le)][1])];
+                const std::pair<int, int> key = {std::min(a, b), std::max(a, b)};
+                auto it = edge_lookup.find(key);
+                if (it == edge_lookup.end())
+                {
+                    throw std::runtime_error(
+                        "refine_red_on_ambiguous_cells: missing tetrahedron edge key=("
+                        + std::to_string(key.first) + "," + std::to_string(key.second)
+                        + ") for cell " + std::to_string(c) + " local_edge="
+                        + std::to_string(le));
+                }
                 local_to_global[static_cast<std::size_t>(4 + le)] =
-                    get_midpoint_vertex(edge_lookup.at({std::min(a, b), std::max(a, b)}));
+                    get_midpoint_vertex(it->second);
             }
 
             for (const auto& child : cell::tetrahedron_subdivision_table)

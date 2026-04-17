@@ -8,12 +8,19 @@ from importlib import util as _importlib_util
 from pathlib import Path as _Path
 import ctypes as _ctypes
 import sys as _sys
+import sysconfig as _sysconfig
 
 
 def _load_cpp_module():
     build_dir = _Path(__file__).resolve().parents[1] / "build"
     candidates = sorted(build_dir.glob("_cutcellscpp*.so"))
     if candidates:
+        ext_suffix = _sysconfig.get_config_var("EXT_SUFFIX")
+        if ext_suffix:
+            matching = [candidate for candidate in candidates if candidate.name.endswith(ext_suffix)]
+            if matching:
+                candidates = matching
+
         lib_candidates = [
             build_dir / "cutcells_cpp" / "src" / "libcutcells.dylib",
             _Path(__file__).resolve().parents[2]
@@ -105,6 +112,7 @@ complete_from_physical = _cutcellscpp.complete_from_physical
 make_quadrature = _cutcellscpp.make_quadrature
 runtime_quadrature = _cutcellscpp.runtime_quadrature
 physical_points = _cutcellscpp.physical_points
+write_vtk = _cutcellscpp.write_vtk
 write_level_set_vtu = _cutcellscpp.write_level_set_vtu
 ho_cut = _cutcellscpp.ho_cut
 HOCutResult = _cutcellscpp.HOCutResult

@@ -20,10 +20,8 @@ def _parse_degrees(arg: str) -> list[int]:
 
 
 def _phi(X: np.ndarray) -> np.ndarray:
-    x = X[:, 0]
-    y = X[:, 1]
-    z = X[:, 2] if X.shape[1] > 2 else 0.0
-    return np.sqrt((x - 0.15) ** 2 + (y + 0.1) ** 2 + (z - 0.05) ** 2) - 0.55
+    z = X[2] if X.shape[1] > 2 else 0.0
+    return np.sqrt((X[0] - 0.15) ** 2 + (X[1] + 0.1) ** 2 + (z - 0.05) ** 2) - 0.55
 
 
 def _run_case(mesh, family: str, degree: int, output_dir: Path) -> None:
@@ -33,7 +31,7 @@ def _run_case(mesh, family: str, degree: int, output_dir: Path) -> None:
         callback_info["shape"] = tuple(X.shape)
         return _phi(X)
 
-    ls = cutcells.interpolate_level_set(mesh, phi, degree=degree)
+    ls = cutcells.create_level_set(mesh, phi, degree=degree)
     output_path = output_dir / f"{family}_p{degree}.vtu"
     cutcells.write_level_set_vtu(str(output_path), ls, field_name="phi")
 

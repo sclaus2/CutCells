@@ -147,6 +147,27 @@ def test_write_level_set_vtu_xml_matches_vtk_expectations(tmp_path):
     assert types.attrib["type"] == "UInt8"
 
 
+def test_write_vtk_generic_writer_triangle(tmp_path):
+    output = tmp_path / "triangle_linear.vtu"
+    points = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float64)
+    connectivity = np.array([0, 1, 2], dtype=np.int32)
+    offsets = np.array([0, 3], dtype=np.int32)
+    element_types = np.array([cutcells.CellType.triangle.value], dtype=np.int32)
+
+    cutcells.write_vtk(
+        str(output),
+        points.reshape(-1),
+        connectivity,
+        offsets,
+        element_types,
+        gdim=2,
+    )
+
+    assert [int(x) for x in _read_dataarray(output, "connectivity").split()] == [0, 1, 2]
+    assert [int(x) for x in _read_dataarray(output, "offsets").split()] == [3]
+    assert [int(x) for x in _read_dataarray(output, "types").split()] == [5]
+
+
 @pytest.mark.parametrize(
     ("cell_family", "degree", "expected_type", "expected_local_dofs"),
     [

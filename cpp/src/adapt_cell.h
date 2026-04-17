@@ -515,4 +515,16 @@ void fill_vertex_signs(AdaptCell<T>& ac,
 template <std::floating_point T>
 void build_edges(AdaptCell<T>& ac);
 
+/// Build (or rebuild) entity_to_vertex[2] from all top-dimensional leaf cells.
+///
+/// Only meaningful for 3D cells (tdim == 3). Clears any existing 2D entity
+/// pool, then re-derives faces by iterating every cell in entity_to_vertex[3]
+/// and adding vertex-tuples from the cell type's face table
+/// (cell_topology.h ordering). Duplicate faces are suppressed; each unique
+/// sorted vertex set appears once.
+///
+/// @param ac  AdaptCell to update in place.
+template <std::floating_point T>
+void build_faces(AdaptCell<T>& ac);
+
 } // namespace cutcells

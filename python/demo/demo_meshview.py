@@ -57,25 +57,6 @@ def circle_phi(x: np.ndarray) -> float:
     return float(np.sqrt(np.sum((x - CENTER) ** 2)) - RADIUS)
 
 
-# ---------------------------------------------------------------------------
-# Helper: build MeshView from a pyvista UnstructuredGrid
-# ---------------------------------------------------------------------------
-#
-# NOTE: Using mesh_from_pyvista from cutcells.mesh_utils module
-
-
-# ---------------------------------------------------------------------------
-# Mesh generation
-# ---------------------------------------------------------------------------
-#
-# NOTE: Using rectangle_triangle_mesh from cutcells.mesh_utils module
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Demo: cut_mesh_view with MeshView and LevelSetFunction"

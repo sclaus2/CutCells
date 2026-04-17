@@ -40,16 +40,16 @@ namespace cutcells::mesh
     struct CutMesh
     {
       /// Geometric Dimension of Cell
-      int _gdim;
+      int _gdim = 0;
 
       /// Topological Dimension of Cell
-      int _tdim;
+      int _tdim = 0;
 
       /// Number of cells
-      int _num_cells;
+      int _num_cells = 0;
 
       /// Number of vertices
-      int _num_vertices;
+      int _num_vertices = 0;
 
       /// Coordinates of vertices of cut cell
       std::vector<T> _vertex_coords;

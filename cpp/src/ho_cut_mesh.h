@@ -132,8 +132,9 @@ struct HOMeshPart
 
 /// Build HOCutCells and BackgroundMeshData from a mesh and a single level set.
 ///
-/// Iterates all background cells, classifies each by vertex-sign pattern,
-/// and for intersected cells creates LevelSetCell + AdaptCell pairs.
+/// Iterates all background cells, classifies each by a cheap Bernstein-cell
+/// sign test when available (falling back to vertex signs otherwise), and
+/// for intersected cells creates LevelSetCell + AdaptCell pairs.
 ///
 /// @param mesh  Background mesh. Must have cell types.
 /// @param ls    Level-set function.

@@ -17,6 +17,8 @@
 #include <stdexcept>
 #include <memory>
 #include <optional>
+#include <numeric>
+#include <unordered_set>
 
 #include "../../cpp/src/cell_types.h"
 #include "../../cpp/src/cut_cell.h"
@@ -25,14 +27,19 @@
 #include "../../cpp/src/bernstein.h"
 #include "../../cpp/src/mapping.h"
 #include "../../cpp/src/quadrature.h"
+#include "../../cpp/src/quadrature_tables.h"
 #include "../../cpp/src/mesh_view.h"
 #include "../../cpp/src/level_set.h"
 #include "../../cpp/src/adapt_cell.h"
+#include "../../cpp/src/cell_topology.h"
 #include "../../cpp/src/level_set_cell.h"
+#include "../../cpp/src/reference_cell.h"
+#include "../../cpp/src/triangulation.h"
 #include "../../cpp/src/edge_certification.h"
 #include "../../cpp/src/cell_certification.h"
 #include "../../cpp/src/refine_cell.h"
 #include "../../cpp/src/ho_cut_mesh.h"
+#include "../../cpp/src/ho_mesh_part_output.h"
 
 namespace nb = nanobind;
 
@@ -176,6 +183,524 @@ cutcells::MeshView<T, int> make_mesh_view_from_numpy(
 
   mesh.owner = owner_data;
   return mesh;
+}
+
+template <typename T>
+std::vector<T> parent_cell_vertex_coords_vtk(
+    const cutcells::MeshView<T, int>& mesh, int cell_id)
+{
+  const auto ctype = mesh.cell_type(cell_id);
+  const int nv = cutcells::cell::get_num_vertices(ctype);
+  std::vector<T> coords(static_cast<std::size_t>(nv * mesh.gdim), T(0));
+
+  for (int vtk_v = 0; vtk_v < nv; ++vtk_v)
+  {
+    const int local_v = mesh.vtk_vertex_order
+                            ? vtk_v
+                            : cutcells::cell::vtk_to_basix_vertex(ctype, vtk_v);
+    const int node_id = mesh.cell_node(cell_id, local_v);
+    const T* x = mesh.node(node_id);
+    for (int d = 0; d < mesh.gdim; ++d)
+      coords[static_cast<std::size_t>(vtk_v * mesh.gdim + d)] = x[d];
+  }
+  return coords;
+}
+
+template <typename T>
+bool vertex_is_zero_for_level_set(const cutcells::AdaptCell<T>& adapt_cell,
+                                  int vertex_id,
+                                  int level_set_id)
+{
+  const std::uint64_t bit = std::uint64_t(1) << level_set_id;
+  return (adapt_cell.zero_mask_per_vertex[static_cast<std::size_t>(vertex_id)] & bit) != 0;
+}
+
+struct SelectedEntity
+{
+  cutcells::cell::type type = cutcells::cell::type::point;
+  std::vector<int> vertices;
+};
+
+template <typename T>
+std::vector<SelectedEntity> part_selected_entities(
+    const cutcells::HOMeshPart<T, int>& part,
+    const cutcells::AdaptCell<T>& adapt_cell)
+{
+  if (part.expr.clauses.size() != 1 || part.expr.clauses.front().level_set_index != 0)
+  {
+    throw std::runtime_error(
+        "HOMeshPart direct straight output currently supports only "
+        "one-clause single-level-set selections");
+  }
+
+  const auto relation = part.expr.clauses.front().relation;
+  std::vector<SelectedEntity> entities;
+
+  if (part.dim == adapt_cell.tdim)
+  {
+    if (relation == cutcells::Relation::EqualTo)
+      throw std::runtime_error("HOMeshPart: phi = 0 is not a volume selection");
+
+    if (adapt_cell.cell_cert_tag_num_level_sets <= 0)
+      throw std::runtime_error("HOMeshPart: missing cell certification tags");
+
+    const auto target =
+        (relation == cutcells::Relation::LessThan)
+            ? cutcells::CellCertTag::negative
+            : cutcells::CellCertTag::positive;
+
+    const int n_cells = adapt_cell.n_entities(adapt_cell.tdim);
+    entities.reserve(static_cast<std::size_t>(n_cells));
+    for (int c = 0; c < n_cells; ++c)
+    {
+      if (adapt_cell.get_cell_cert_tag(/*level_set_id=*/0, c) == target)
+      {
+        auto verts = adapt_cell.entity_to_vertex[adapt_cell.tdim][static_cast<std::int32_t>(c)];
+        SelectedEntity entity;
+        entity.type = adapt_cell.entity_types[adapt_cell.tdim][static_cast<std::size_t>(c)];
+        entity.vertices.assign(verts.begin(), verts.end());
+        entities.push_back(std::move(entity));
+      }
+    }
+    return entities;
+  }
+
+  if (relation != cutcells::Relation::EqualTo)
+  {
+    throw std::runtime_error(
+        "HOMeshPart: lower-dimensional direct export currently supports only phi = 0");
+  }
+
+  if (part.dim < 1 || part.dim >= adapt_cell.tdim)
+  {
+    throw std::runtime_error("HOMeshPart: unsupported selection dimension");
+  }
+
+  if (part.dim != adapt_cell.tdim - 1)
+  {
+    throw std::runtime_error(
+        "HOMeshPart direct straight output currently supports only codim-1 phi = 0 selections");
+  }
+
+  std::map<std::vector<int>, SelectedEntity> unique_entities;
+  const int n_cells = adapt_cell.n_entities(adapt_cell.tdim);
+  for (int c = 0; c < n_cells; ++c)
+  {
+    const auto cell_type = adapt_cell.entity_types[adapt_cell.tdim][static_cast<std::size_t>(c)];
+    auto cell_verts = adapt_cell.entity_to_vertex[adapt_cell.tdim][static_cast<std::int32_t>(c)];
+
+    if (adapt_cell.tdim == 2)
+    {
+      for (const auto& edge : cutcells::cell::edges(cell_type))
+      {
+        SelectedEntity entity;
+        entity.type = cutcells::cell::type::interval;
+        entity.vertices = {
+            static_cast<int>(cell_verts[static_cast<std::size_t>(edge[0])]),
+            static_cast<int>(cell_verts[static_cast<std::size_t>(edge[1])])};
+
+        bool all_zero = true;
+        for (int gv : entity.vertices)
+        {
+          if (!vertex_is_zero_for_level_set(adapt_cell, gv, /*level_set_id=*/0))
+          {
+            all_zero = false;
+            break;
+          }
+        }
+        if (!all_zero)
+          continue;
+
+        auto key = entity.vertices;
+        std::sort(key.begin(), key.end());
+        unique_entities.try_emplace(std::move(key), std::move(entity));
+      }
+      continue;
+    }
+
+    const int n_faces = cutcells::cell::num_faces(cell_type);
+    for (int fi = 0; fi < n_faces; ++fi)
+    {
+      auto local_face = cutcells::cell::face_vertices(cell_type, fi);
+      SelectedEntity entity;
+      entity.type = cutcells::cell::face_type(cell_type, fi);
+      entity.vertices.reserve(local_face.size());
+      for (auto lv : local_face)
+      {
+        entity.vertices.push_back(
+            static_cast<int>(cell_verts[static_cast<std::size_t>(lv)]));
+      }
+
+      bool all_zero = true;
+      for (int gv : entity.vertices)
+      {
+        if (!vertex_is_zero_for_level_set(adapt_cell, gv, /*level_set_id=*/0))
+        {
+          all_zero = false;
+          break;
+        }
+      }
+      if (!all_zero)
+        continue;
+
+      auto key = entity.vertices;
+      std::sort(key.begin(), key.end());
+      unique_entities.try_emplace(std::move(key), std::move(entity));
+    }
+  }
+
+  entities.reserve(unique_entities.size());
+  for (auto& [key, entity] : unique_entities)
+    entities.push_back(std::move(entity));
+  return entities;
+}
+
+inline bool cell_type_is_simplex(cutcells::cell::type cell_type)
+{
+  using cutcells::cell::type;
+  return cell_type == type::interval
+      || cell_type == type::triangle
+      || cell_type == type::tetrahedron;
+}
+
+inline cutcells::cell::type simplex_type_for_dim(int dim)
+{
+  using cutcells::cell::type;
+  switch (dim)
+  {
+    case 1:
+      return type::interval;
+    case 2:
+      return type::triangle;
+    case 3:
+      return type::tetrahedron;
+    default:
+      throw std::runtime_error("Unsupported simplex dimension");
+  }
+}
+
+template <typename T>
+std::vector<T> entity_reference_coords(const cutcells::AdaptCell<T>& adapt_cell,
+                                       std::span<const int> entity_vertices)
+{
+  std::vector<T> coords(
+      static_cast<std::size_t>(entity_vertices.size() * adapt_cell.tdim), T(0));
+
+  for (std::size_t j = 0; j < entity_vertices.size(); ++j)
+  {
+    const int gv = entity_vertices[j];
+    for (int d = 0; d < adapt_cell.tdim; ++d)
+    {
+      coords[static_cast<std::size_t>(j * adapt_cell.tdim + d)] =
+          adapt_cell.vertex_coords[static_cast<std::size_t>(gv * adapt_cell.tdim + d)];
+    }
+  }
+
+  return coords;
+}
+
+template <typename T>
+std::vector<T> push_forward_parent_reference_coords(
+    cutcells::cell::type parent_cell_type,
+    const std::vector<T>& parent_vertex_coords_vtk,
+    int parent_tdim,
+    std::span<const T> reference_coords)
+{
+  std::vector<T> physical_coords(reference_coords.size(), T(0));
+  cutcells::cell::push_forward_affine(
+      parent_cell_type,
+      parent_vertex_coords_vtk,
+      parent_tdim,
+      reference_coords,
+      std::span<T>(physical_coords.data(), physical_coords.size()));
+  return physical_coords;
+}
+
+template <typename T>
+void gather_subcell_vertices(std::span<const T> coords,
+                             int coord_dim,
+                             std::span<const int> vertex_ids,
+                             std::vector<T>& out)
+{
+  out.resize(static_cast<std::size_t>(vertex_ids.size() * coord_dim));
+  for (std::size_t j = 0; j < vertex_ids.size(); ++j)
+  {
+    const int local_v = vertex_ids[j];
+    for (int d = 0; d < coord_dim; ++d)
+    {
+      out[static_cast<std::size_t>(j * coord_dim + d)] =
+          coords[static_cast<std::size_t>(local_v * coord_dim + d)];
+    }
+  }
+}
+
+template <typename T>
+void map_canonical_to_subcell_points(const T* canonical_points,
+                                     int num_points,
+                                     int simplex_dim,
+                                     const T* subcell_vertices,
+                                     int parent_tdim,
+                                     T* out_points)
+{
+  const T* v0 = subcell_vertices;
+
+  for (int q = 0; q < num_points; ++q)
+  {
+    const T* X = canonical_points + q * simplex_dim;
+    T* x = out_points + q * parent_tdim;
+
+    for (int d = 0; d < parent_tdim; ++d)
+      x[d] = v0[d];
+
+    for (int i = 1; i <= simplex_dim; ++i)
+    {
+      const T* vi = subcell_vertices + i * parent_tdim;
+      for (int d = 0; d < parent_tdim; ++d)
+        x[d] += X[i - 1] * (vi[d] - v0[d]);
+    }
+  }
+}
+
+template <typename T>
+T simplex_physical_measure(const T* vertices,
+                           int simplex_dim,
+                           int gdim)
+{
+  T J[9] = {};
+  const T* v0 = vertices;
+
+  for (int col = 0; col < simplex_dim; ++col)
+  {
+    const T* vi = vertices + (col + 1) * gdim;
+    for (int row = 0; row < gdim; ++row)
+      J[col * gdim + row] = vi[row] - v0[row];
+  }
+
+  if (simplex_dim == gdim)
+  {
+    if (simplex_dim == 1)
+      return std::abs(J[0]);
+    if (simplex_dim == 2)
+      return std::abs(J[0] * J[3] - J[2] * J[1]);
+
+    const T det =
+        J[0] * (J[4] * J[8] - J[7] * J[5])
+      - J[3] * (J[1] * J[8] - J[7] * J[2])
+      + J[6] * (J[1] * J[5] - J[4] * J[2]);
+    return std::abs(det);
+  }
+
+  T G[9] = {};
+  for (int i = 0; i < simplex_dim; ++i)
+  {
+    for (int j = 0; j < simplex_dim; ++j)
+    {
+      T sum = 0;
+      for (int k = 0; k < gdim; ++k)
+        sum += J[i * gdim + k] * J[j * gdim + k];
+      G[i * simplex_dim + j] = sum;
+    }
+  }
+
+  if (simplex_dim == 1)
+    return std::sqrt(G[0]);
+  if (simplex_dim == 2)
+    return std::sqrt(G[0] * G[3] - G[1] * G[2]);
+
+  const T det =
+      G[0] * (G[4] * G[8] - G[7] * G[5])
+    - G[3] * (G[1] * G[8] - G[7] * G[2])
+    + G[6] * (G[1] * G[5] - G[4] * G[2]);
+  return std::sqrt(det);
+}
+
+template <typename T>
+void append_mesh_entity(cutcells::mesh::CutMesh<T>& out,
+                        std::span<const T> physical_coords,
+                        int gdim,
+                        cutcells::cell::type cell_type,
+                        int parent_cell_id,
+                        bool triangulate)
+{
+  if (out._gdim == 0)
+    out._gdim = gdim;
+  if (out._tdim == 0)
+    out._tdim = cutcells::cell::get_tdim(cell_type);
+
+  const int nv = static_cast<int>(physical_coords.size()) / gdim;
+  const int vertex_base = out._num_vertices;
+  out._vertex_coords.insert(
+      out._vertex_coords.end(), physical_coords.begin(), physical_coords.end());
+  out._num_vertices += nv;
+
+  if (triangulate && !cell_type_is_simplex(cell_type))
+  {
+    std::vector<int> local_ids(static_cast<std::size_t>(nv));
+    std::iota(local_ids.begin(), local_ids.end(), 0);
+
+    std::vector<std::vector<int>> simplices;
+    cutcells::cell::triangulation(cell_type, local_ids.data(), simplices);
+    const auto simplex_type =
+        simplex_type_for_dim(cutcells::cell::get_tdim(cell_type));
+
+    for (const auto& simplex : simplices)
+    {
+      for (int lv : simplex)
+        out._connectivity.push_back(vertex_base + lv);
+      out._offset.push_back(static_cast<int>(out._connectivity.size()));
+      out._types.push_back(simplex_type);
+      out._parent_map.push_back(parent_cell_id);
+      out._num_cells += 1;
+    }
+    return;
+  }
+
+  for (int lv = 0; lv < nv; ++lv)
+    out._connectivity.push_back(vertex_base + lv);
+  out._offset.push_back(static_cast<int>(out._connectivity.size()));
+  out._types.push_back(cell_type);
+  out._parent_map.push_back(parent_cell_id);
+  out._num_cells += 1;
+}
+
+template <typename T>
+void append_simplex_quadrature(cutcells::quadrature::QuadratureRules<T>& rules,
+                               cutcells::cell::type simplex_type,
+                               std::span<const T> ref_vertices,
+                               std::span<const T> physical_vertices,
+                               int parent_tdim,
+                               int gdim,
+                               int order)
+{
+  const auto ref_rule = cutcells::quadrature::get_reference_rule<T>(simplex_type, order);
+  const int num_points = ref_rule._num_points;
+  const int simplex_dim = ref_rule._tdim;
+
+  std::vector<T> mapped_ref_points(static_cast<std::size_t>(num_points * parent_tdim), T(0));
+  map_canonical_to_subcell_points(
+      ref_rule._points.data(),
+      num_points,
+      simplex_dim,
+      ref_vertices.data(),
+      parent_tdim,
+      mapped_ref_points.data());
+
+  rules._points.insert(
+      rules._points.end(), mapped_ref_points.begin(), mapped_ref_points.end());
+
+  const T measure = simplex_physical_measure(
+      physical_vertices.data(), simplex_dim, gdim);
+  for (int q = 0; q < num_points; ++q)
+    rules._weights.push_back(ref_rule._weights[q] * measure);
+}
+
+template <typename T>
+void append_entity_quadrature(cutcells::quadrature::QuadratureRules<T>& rules,
+                              cutcells::cell::type cell_type,
+                              std::span<const T> ref_vertices,
+                              std::span<const T> physical_vertices,
+                              int parent_tdim,
+                              int gdim,
+                              int parent_cell_id,
+                              int order,
+                              bool triangulate)
+{
+  if (rules._tdim == 0)
+    rules._tdim = parent_tdim;
+  if (rules._offset.empty())
+    rules._offset.push_back(0);
+
+  const int cell_dim = cutcells::cell::get_tdim(cell_type);
+  if (triangulate && !cell_type_is_simplex(cell_type))
+  {
+    const int nv = static_cast<int>(ref_vertices.size()) / parent_tdim;
+    std::vector<int> local_ids(static_cast<std::size_t>(nv));
+    std::iota(local_ids.begin(), local_ids.end(), 0);
+
+    std::vector<std::vector<int>> simplices;
+    cutcells::cell::triangulation(cell_type, local_ids.data(), simplices);
+    const auto simplex_type = simplex_type_for_dim(cell_dim);
+
+    std::vector<T> ref_simplex;
+    std::vector<T> phys_simplex;
+    for (const auto& simplex : simplices)
+    {
+      gather_subcell_vertices(
+          ref_vertices,
+          parent_tdim,
+          std::span<const int>(simplex.data(), simplex.size()),
+          ref_simplex);
+      gather_subcell_vertices(
+          physical_vertices,
+          gdim,
+          std::span<const int>(simplex.data(), simplex.size()),
+          phys_simplex);
+      append_simplex_quadrature(
+          rules,
+          simplex_type,
+          std::span<const T>(ref_simplex.data(), ref_simplex.size()),
+          std::span<const T>(phys_simplex.data(), phys_simplex.size()),
+          parent_tdim,
+          gdim,
+          order);
+    }
+  }
+  else if (cell_type_is_simplex(cell_type))
+  {
+    append_simplex_quadrature(
+        rules,
+        cell_type,
+        ref_vertices,
+        physical_vertices,
+        parent_tdim,
+        gdim,
+        order);
+  }
+  else
+  {
+    const auto ref_rule = cutcells::quadrature::get_reference_rule<T>(cell_type, order);
+    const T measure = cutcells::cell::affine_volume_factor<T>(
+        cell_type, physical_vertices.data(), gdim);
+    rules._points.insert(
+        rules._points.end(), ref_rule._points.begin(), ref_rule._points.end());
+    for (int q = 0; q < ref_rule._num_points; ++q)
+      rules._weights.push_back(ref_rule._weights[q] * measure);
+  }
+
+  rules._parent_map.push_back(parent_cell_id);
+  rules._offset.push_back(static_cast<int32_t>(rules._weights.size()));
+}
+
+inline bool part_mode_is_cut_only(std::string_view mode)
+{
+  if (mode == "cut_only")
+    return true;
+  if (mode == "full")
+    return false;
+  throw std::runtime_error("HOMeshPart mode must be 'cut_only' or 'full'");
+}
+
+template <typename T>
+cutcells::mesh::CutMesh<T> part_visualization_mesh(
+    const cutcells::HOMeshPart<T, int>& part,
+    std::string_view mode,
+    bool triangulate)
+{
+  const bool cut_only = part_mode_is_cut_only(mode);
+  return cutcells::output::visualization_mesh(
+      part, /*include_uncut_cells=*/!cut_only, triangulate);
+}
+
+template <typename T>
+cutcells::quadrature::QuadratureRules<T> part_quadrature(
+    const cutcells::HOMeshPart<T, int>& part,
+    int order,
+    std::string_view mode,
+    bool triangulate)
+{
+  const bool cut_only = part_mode_is_cut_only(mode);
+  return cutcells::output::quadrature_rules(
+      part, order, /*include_uncut_cells=*/!cut_only, triangulate);
 }
 
 template <typename T>
@@ -1183,6 +1708,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
     {
         HOCutT cut_cells;
         BGDataT bg;
+        std::shared_ptr<void> level_set_owner;
     };
 
     std::string result_name = "HOCutResult_" + type;
@@ -1219,11 +1745,29 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             nb::rv_policy::reference_internal,
             "Per-level-set domain classification, shape (num_level_sets, num_cells).")
         .def("__getitem__",
-            [](const HOCutResult& self, std::string_view expr_str) {
-                return cutcells::select_part(self.cut_cells, self.bg, expr_str);
+            [](const HOCutResult& self, const std::string& expr_str) {
+                return cutcells::select_part(
+                    self.cut_cells,
+                    self.bg,
+                    std::string_view(expr_str));
             },
             nb::arg("expr"),
-            "Select a mesh part via expression, e.g. result[\"phi < 0\"].");
+            nb::keep_alive<0, 1>(),
+            "Select a mesh part via expression, e.g. result[\"phi < 0\"].")
+        .def(
+            "adapt_cell",
+            [](const HOCutResult& self, int cut_cell_id) -> const cutcells::AdaptCell<T>&
+            {
+                if (cut_cell_id < 0
+                    || cut_cell_id >= static_cast<int>(self.cut_cells.adapt_cells.size()))
+                {
+                    throw std::out_of_range("adapt_cell: cut_cell_id out of range");
+                }
+                return self.cut_cells.adapt_cells[static_cast<std::size_t>(cut_cell_id)];
+            },
+            nb::arg("cut_cell_id"),
+            nb::rv_policy::reference_internal,
+            "Return the AdaptCell for a cut-cell index.");
 
     // --- HOMeshPart ---
     std::string part_name = "HOMeshPart_" + type;
@@ -1255,14 +1799,58 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                     {self.uncut_cell_ids.size()},
                     nb::handle());
             },
-            nb::rv_policy::reference_internal);
+            nb::rv_policy::reference_internal)
+        .def(
+            "visualization_mesh",
+            [](const PartT& self, const std::string& mode, bool triangulate) {
+                nb::gil_scoped_release release;
+                return part_visualization_mesh(self, mode, triangulate);
+            },
+            nb::arg("mode") = "full",
+            nb::arg("triangulate") = false,
+            "Return a straight visualization mesh for a one-level-set HOMeshPart.\n"
+            "This bridge currently supports only single-level-set selections.")
+        .def(
+            "quadrature",
+            [](const PartT& self, int order, const std::string& mode, bool triangulate) {
+                nb::gil_scoped_release release;
+                return part_quadrature(self, order, mode, triangulate);
+            },
+            nb::arg("order") = 3,
+            nb::arg("mode") = "full",
+            nb::arg("triangulate") = false,
+            "Return straight quadrature rules for a one-level-set HOMeshPart.\n"
+            "This bridge currently supports only single-level-set selections.")
+        .def(
+            "write_vtu",
+            [](const PartT& self,
+               const std::string& filename,
+               const std::string& mode,
+               bool triangulate) {
+                nb::gil_scoped_release release;
+                auto vis = part_visualization_mesh(self, mode, triangulate);
+                std::vector<double> coords(
+                    vis._vertex_coords.begin(), vis._vertex_coords.end());
+                io::write_vtk(
+                    filename,
+                    std::span<const double>(coords.data(), coords.size()),
+                    std::span<const int>(vis._connectivity.data(), vis._connectivity.size()),
+                    std::span<const int>(vis._offset.data(), vis._offset.size()),
+                    std::span<cell::type>(vis._types.data(), vis._types.size()),
+                    vis._gdim);
+            },
+            nb::arg("filename"),
+            nb::arg("mode") = "full",
+            nb::arg("triangulate") = false,
+            "Write a straight visualization VTU file for a one-level-set HOMeshPart.");
 
     // --- ho_cut() factory ---
     m.def("ho_cut",
         [](const MeshViewT& mesh, const LevelSetT& ls) {
             nb::gil_scoped_release release;
-            auto [hc, bg] = cutcells::cut(mesh, ls);
-            return HOCutResult{std::move(hc), std::move(bg)};
+            auto owned_ls = std::make_shared<LevelSetT>(ls);
+            auto [hc, bg] = cutcells::cut(mesh, *owned_ls);
+            return HOCutResult{std::move(hc), std::move(bg), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_set"),
         "Cut a MeshView with a single LevelSetFunction (HO pipeline).\n"
@@ -1271,8 +1859,31 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
     m.def("ho_cut",
         [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets) {
             nb::gil_scoped_release release;
-            auto [hc, bg] = cutcells::cut(mesh, level_sets);
-            return HOCutResult{std::move(hc), std::move(bg)};
+            auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
+            auto [hc, bg] = cutcells::cut(mesh, *owned_ls);
+            return HOCutResult{std::move(hc), std::move(bg), owned_ls};
+        },
+        nb::arg("mesh"), nb::arg("level_sets"),
+        "Cut a MeshView with multiple LevelSetFunctions (HO pipeline).\n"
+        "Returns an HOCutResult; use result[\"phi1 < 0 and phi2 = 0\"] to select parts.");
+
+    m.def("cut",
+        [](const MeshViewT& mesh, const LevelSetT& ls) {
+            nb::gil_scoped_release release;
+            auto owned_ls = std::make_shared<LevelSetT>(ls);
+            auto [hc, bg] = cutcells::cut(mesh, *owned_ls);
+            return HOCutResult{std::move(hc), std::move(bg), owned_ls};
+        },
+        nb::arg("mesh"), nb::arg("level_set"),
+        "Cut a MeshView with a single LevelSetFunction (HO pipeline).\n"
+        "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
+
+    m.def("cut",
+        [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets) {
+            nb::gil_scoped_release release;
+            auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
+            auto [hc, bg] = cutcells::cut(mesh, *owned_ls);
+            return HOCutResult{std::move(hc), std::move(bg), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_sets"),
         "Cut a MeshView with multiple LevelSetFunctions (HO pipeline).\n"
@@ -1466,6 +2077,15 @@ void declare_certification(nb::module_& m, const std::string& suffix)
         nb::arg("adapt_cell"));
 
     m.def(
+        "build_faces",
+        [](AdaptCellT& adapt_cell)
+        {
+            nb::gil_scoped_release release;
+            cutcells::build_faces(adapt_cell);
+        },
+        nb::arg("adapt_cell"));
+
+    m.def(
         "make_cell_level_set",
         [](const LevelSetT& ls, int cell_id)
         {
@@ -1594,6 +2214,21 @@ void declare_certification(nb::module_& m, const std::string& suffix)
         {
             nb::gil_scoped_release release;
             cutcells::classify_leaf_cells(adapt_cell, ls_cell, level_set_id,
+                                          zero_tol, sign_tol);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_cell"),
+        nb::arg("level_set_id"),
+        nb::arg("zero_tol") = T(1e-12),
+        nb::arg("sign_tol") = T(1e-12));
+
+    m.def(
+        "classify_leaf_faces",
+        [](AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell, int level_set_id,
+           T zero_tol, T sign_tol)
+        {
+            nb::gil_scoped_release release;
+            cutcells::classify_leaf_faces(adapt_cell, ls_cell, level_set_id,
                                           zero_tol, sign_tol);
         },
         nb::arg("adapt_cell"),
@@ -1745,4 +2380,35 @@ NB_MODULE(_cutcellscpp, m)
         nb::arg("connectivity"),
         nb::arg("offsets"),
         "Pack CSR connectivity/offsets to VTK cells layout [n0, v0..., n1, v1..., ...].");
+
+  m.def("write_vtk",
+        [](std::string filename,
+           const nb::ndarray<const double, nb::shape<-1>, nb::c_contig>& vertex_coordinates,
+           const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,
+           const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offsets,
+           const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& element_types,
+           int gdim)
+        {
+          std::vector<cell::type> types;
+          types.reserve(element_types.size());
+          for (std::size_t i = 0; i < element_types.size(); ++i)
+            types.push_back(static_cast<cell::type>(element_types.data()[i]));
+
+          nb::gil_scoped_release release;
+          io::write_vtk(
+            std::move(filename),
+            std::span<const double>(vertex_coordinates.data(), vertex_coordinates.size()),
+            std::span<const int>(connectivity.data(), connectivity.size()),
+            std::span<const int>(offsets.data(), offsets.size()),
+            std::span<cell::type>(types.data(), types.size()),
+            gdim);
+        },
+        nb::arg("filename"),
+        nb::arg("vertex_coordinates"),
+        nb::arg("connectivity"),
+        nb::arg("offsets"),
+        nb::arg("element_types"),
+        nb::arg("gdim"),
+        "Write an unstructured VTK XML file using the existing C++ writer.\n"
+        "vertex_coordinates is a flat array of length num_points * gdim.");
 }

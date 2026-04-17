@@ -14,6 +14,107 @@
 
 namespace cutcells
 {
+
+    template <std::floating_point T>
+void build_faces(AdaptCell<T>& ac)
+{
+    if (ac.tdim < 3)
+        return;
+
+    // Clear existing 2D entity pool.
+    ac.entity_types[2].clear();
+    ac.entity_to_vertex[2].offsets.clear();
+    ac.entity_to_vertex[2].indices.clear();
+    ac.entity_to_vertex[2].offsets.push_back(std::int32_t(0));
+
+    // Invalidate face cert tag storage: face count is about to change and
+    // faces may be reordered, so all old tags are stale.
+    ac.face_cert_tag.clear();
+    ac.face_cert_tag_num_level_sets = 0;
+
+    // Track unique faces by sorted vertex set → face_id.
+    std::map<std::vector<std::int32_t>, int> face_map;
+
+    const int n_cells = ac.n_entities(ac.tdim);
+    for (int c = 0; c < n_cells; ++c)
+    {
+        const cell::type ctype = ac.entity_types[ac.tdim][static_cast<std::size_t>(c)];
+        auto cell_verts = ac.entity_to_vertex[ac.tdim][static_cast<std::int32_t>(c)];
+        const int nf = cell::num_faces(ctype);
+
+        for (int fi = 0; fi < nf; ++fi)
+        {
+            auto local_fv = cell::face_vertices(ctype, fi);
+            const int fsize = static_cast<int>(local_fv.size());
+
+            // Build global-vertex face and sorted key
+            std::vector<std::int32_t> global_fv(static_cast<std::size_t>(fsize));
+            std::vector<std::int32_t> sorted_fv(static_cast<std::size_t>(fsize));
+            for (int j = 0; j < fsize; ++j)
+            {
+                global_fv[static_cast<std::size_t>(j)] =
+                    cell_verts[static_cast<std::size_t>(local_fv[static_cast<std::size_t>(j)])];
+                sorted_fv[static_cast<std::size_t>(j)] = global_fv[static_cast<std::size_t>(j)];
+            }
+            std::sort(sorted_fv.begin(), sorted_fv.end());
+
+            if (face_map.find(sorted_fv) == face_map.end())
+            {
+                face_map[sorted_fv] = ac.n_entities(2);
+                ac.entity_types[2].push_back(cell::face_type(ctype, fi));
+                for (int j = 0; j < fsize; ++j)
+                    ac.entity_to_vertex[2].indices.push_back(global_fv[static_cast<std::size_t>(j)]);
+                ac.entity_to_vertex[2].offsets.push_back(
+                    static_cast<std::int32_t>(ac.entity_to_vertex[2].indices.size()));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// build_edges
+// ---------------------------------------------------------------------------
+
+template <std::floating_point T>
+void build_edges(AdaptCell<T>& ac)
+{
+    const int tdim = ac.tdim;
+
+    // Clear existing 1D entity pool.
+    ac.entity_types[1].clear();
+    ac.entity_to_vertex[1].offsets.clear();
+    ac.entity_to_vertex[1].indices.clear();
+    ac.entity_to_vertex[1].offsets.push_back(std::int32_t(0));
+
+    // Track unique edges as (min_v, max_v) → edge_id.
+    std::map<std::pair<std::int32_t, std::int32_t>, int> edge_map;
+
+    const int n_cells = ac.n_entities(tdim);
+    for (int c = 0; c < n_cells; ++c)
+    {
+        const cell::type ctype = ac.entity_types[tdim][static_cast<std::size_t>(c)];
+        auto cell_verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
+        auto cell_edges = cell::edges(ctype);
+
+        for (const auto& ce : cell_edges)
+        {
+            const std::int32_t lv0 = cell_verts[static_cast<std::size_t>(ce[0])];
+            const std::int32_t lv1 = cell_verts[static_cast<std::size_t>(ce[1])];
+            const auto key = std::make_pair(std::min(lv0, lv1), std::max(lv0, lv1));
+
+            if (edge_map.find(key) == edge_map.end())
+            {
+                edge_map[key] = ac.n_entities(1);
+                ac.entity_types[1].push_back(cell::type::interval);
+                ac.entity_to_vertex[1].indices.push_back(lv0);
+                ac.entity_to_vertex[1].indices.push_back(lv1);
+                ac.entity_to_vertex[1].offsets.push_back(
+                    static_cast<std::int32_t>(ac.entity_to_vertex[1].indices.size()));
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // make_adapt_cell
 // ---------------------------------------------------------------------------
@@ -67,6 +168,12 @@ AdaptCell<T> make_adapt_cell(const MeshView<T, I>& mesh, I cell_id)
     for (int v = 0; v < nv; ++v)
         ac.entity_to_vertex[tdim].indices[static_cast<std::size_t>(v)] =
             std::int32_t(v);
+            
+    // Create edges and faces (if tdim=3) in the entity pools 
+    build_edges(ac);
+
+    if (tdim == 3)
+        build_faces(ac);
 
     return ac;
 }
@@ -102,6 +209,12 @@ void fill_vertex_signs(AdaptCell<T>& ac,
 // Explicit template instantiations
 // ---------------------------------------------------------------------------
 
+template void build_edges(AdaptCell<double>&);
+template void build_edges(AdaptCell<float>&);
+
+template void build_faces(AdaptCell<double>&);
+template void build_faces(AdaptCell<float>&);
+
 template AdaptCell<double> make_adapt_cell(const MeshView<double, int>&,  int);
 template AdaptCell<float>  make_adapt_cell(const MeshView<float,  int>&,  int);
 template AdaptCell<double> make_adapt_cell(const MeshView<double, long>&, long);
@@ -109,52 +222,5 @@ template AdaptCell<float>  make_adapt_cell(const MeshView<float,  long>&, long);
 
 template void fill_vertex_signs(AdaptCell<double>&, std::span<const double>, int, double);
 template void fill_vertex_signs(AdaptCell<float>&,  std::span<const float>,  int, float);
-
-// ---------------------------------------------------------------------------
-// build_edges
-// ---------------------------------------------------------------------------
-
-template <std::floating_point T>
-void build_edges(AdaptCell<T>& ac)
-{
-    const int tdim = ac.tdim;
-
-    // Clear existing 1D entity pool.
-    ac.entity_types[1].clear();
-    ac.entity_to_vertex[1].offsets.clear();
-    ac.entity_to_vertex[1].indices.clear();
-    ac.entity_to_vertex[1].offsets.push_back(std::int32_t(0));
-
-    // Track unique edges as (min_v, max_v) → edge_id.
-    std::map<std::pair<std::int32_t, std::int32_t>, int> edge_map;
-
-    const int n_cells = ac.n_entities(tdim);
-    for (int c = 0; c < n_cells; ++c)
-    {
-        const cell::type ctype = ac.entity_types[tdim][static_cast<std::size_t>(c)];
-        auto cell_verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
-        auto cell_edges = cell::edges(ctype);
-
-        for (const auto& ce : cell_edges)
-        {
-            const std::int32_t lv0 = cell_verts[static_cast<std::size_t>(ce[0])];
-            const std::int32_t lv1 = cell_verts[static_cast<std::size_t>(ce[1])];
-            const auto key = std::make_pair(std::min(lv0, lv1), std::max(lv0, lv1));
-
-            if (edge_map.find(key) == edge_map.end())
-            {
-                edge_map[key] = ac.n_entities(1);
-                ac.entity_types[1].push_back(cell::type::interval);
-                ac.entity_to_vertex[1].indices.push_back(lv0);
-                ac.entity_to_vertex[1].indices.push_back(lv1);
-                ac.entity_to_vertex[1].offsets.push_back(
-                    static_cast<std::int32_t>(ac.entity_to_vertex[1].indices.size()));
-            }
-        }
-    }
-}
-
-template void build_edges(AdaptCell<double>&);
-template void build_edges(AdaptCell<float>&);
 
 } // namespace cutcells

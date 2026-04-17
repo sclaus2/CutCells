@@ -91,3 +91,48 @@ def test_create_level_set_mesh_data_from_arrays():
     np.testing.assert_array_equal(np.asarray(data.cell_offsets), cell_offsets)
     np.testing.assert_allclose(np.asarray(data.dof_coordinates), dof_coordinates)
     assert np.asarray(data.dof_parent_dim).size == 0
+
+
+def test_make_cell_level_set_matches_generated_mesh_data_without_provenance():
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    connectivity = np.array([0, 1, 2, 3], dtype=np.int32)
+    offsets = np.array([0, 4], dtype=np.int32)
+    cell_types = np.array([10], dtype=np.int32)  # VTK_TETRA
+    mesh = cutcells.MeshView(coords, connectivity, offsets, cell_types, 3)
+
+    ls = cutcells.create_level_set(
+        mesh,
+        lambda X: X[0] * X[0] + 0.5 * X[1] * X[2] - 0.25 * X[2] + 0.1,
+        degree=2,
+        name="phi",
+    )
+    ls_cell_generated = cutcells.make_cell_level_set(ls, 0)
+
+    mesh_data = ls.mesh_data
+    mesh_data_from_arrays = cutcells.create_level_set_mesh_data(
+        np.array(mesh_data.dof_coordinates),
+        np.array(mesh_data.cell_dofs),
+        np.array(mesh_data.cell_offsets),
+        degree=mesh_data.degree,
+        tdim=mesh_data.tdim,
+        cell_types=np.array([10], dtype=np.int32),
+    )
+    ls_from_arrays = cutcells.create_level_set_function(
+        mesh_data_from_arrays,
+        np.array(ls.dof_values),
+        name="phi",
+    )
+    ls_cell_from_arrays = cutcells.make_cell_level_set(ls_from_arrays, 0)
+
+    np.testing.assert_allclose(
+        np.asarray(ls_cell_from_arrays.bernstein_coeffs),
+        np.asarray(ls_cell_generated.bernstein_coeffs),
+    )

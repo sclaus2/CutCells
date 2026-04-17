@@ -70,6 +70,159 @@ void append_top_cell_local(std::vector<cell::type>& types,
     adj.offsets.push_back(static_cast<std::int32_t>(adj.indices.size()));
 }
 
+int basix_edge_id_for_vertices(cell::type cell_type, int a, int b)
+{
+    const auto ledges = cell::edges(cell_type);
+    for (std::size_t e = 0; e < ledges.size(); ++e)
+    {
+        const auto edge = ledges[e];
+        if ((edge[0] == a && edge[1] == b) || (edge[0] == b && edge[1] == a))
+            return static_cast<int>(e);
+    }
+
+    throw std::runtime_error("basix_edge_id_for_vertices: edge not found");
+}
+
+template <std::floating_point T>
+std::vector<int> canonicalize_cut_part_cell_vertices(
+    const cell::CutCell<T>& part,
+    int part_cell_id,
+    cell::type leaf_cell_type)
+{
+    auto part_vertices = cell::cell_vertices(part, part_cell_id);
+    std::vector<int> canonical(part_vertices.begin(), part_vertices.end());
+
+    const cell::type part_cell_type =
+        part._types[static_cast<std::size_t>(part_cell_id)];
+
+    if (leaf_cell_type == cell::type::triangle
+        && part_cell_type == cell::type::quadrilateral)
+    {
+        std::map<int, int> token_to_part_vertex;
+        std::array<bool, 3> present = {false, false, false};
+
+        for (int part_lv : part_vertices)
+        {
+            const int token = cell::vtk_parent_entity_token_to_basix(
+                leaf_cell_type,
+                part._vertex_parent_entity[static_cast<std::size_t>(part_lv)]);
+            token_to_part_vertex[token] = part_lv;
+            if (token >= 100 && token < 103)
+                present[static_cast<std::size_t>(token - 100)] = true;
+        }
+
+        int omitted = -1;
+        for (int v = 0; v < 3; ++v)
+        {
+            if (!present[static_cast<std::size_t>(v)])
+            {
+                omitted = v;
+                break;
+            }
+        }
+        if (omitted < 0)
+            throw std::runtime_error("canonicalize_cut_part_cell_vertices: invalid triangle quad");
+
+        const auto kept_edge = cell::edges(cell::type::triangle)[static_cast<std::size_t>(omitted)];
+        const int a = kept_edge[0];
+        const int b = kept_edge[1];
+        const int e_a = basix_edge_id_for_vertices(cell::type::triangle, a, omitted);
+        const int e_b = basix_edge_id_for_vertices(cell::type::triangle, b, omitted);
+
+        canonical = {
+            token_to_part_vertex.contains(100 + a) ? token_to_part_vertex.at(100 + a)
+                                                   : throw std::runtime_error("canonicalize_cut_part_cell_vertices: missing triangle vertex token a"),
+            token_to_part_vertex.contains(100 + b) ? token_to_part_vertex.at(100 + b)
+                                                   : throw std::runtime_error("canonicalize_cut_part_cell_vertices: missing triangle vertex token b"),
+            token_to_part_vertex.contains(e_a) ? token_to_part_vertex.at(e_a)
+                                               : throw std::runtime_error("canonicalize_cut_part_cell_vertices: missing triangle edge token ea"),
+            token_to_part_vertex.contains(e_b) ? token_to_part_vertex.at(e_b)
+                                               : throw std::runtime_error("canonicalize_cut_part_cell_vertices: missing triangle edge token eb")};
+    }
+    else if (leaf_cell_type == cell::type::tetrahedron
+             && part_cell_type == cell::type::prism)
+    {
+        std::map<int, int> token_to_part_vertex;
+        std::array<bool, 4> present = {false, false, false, false};
+
+        for (int part_lv : part_vertices)
+        {
+            const int token = cell::vtk_parent_entity_token_to_basix(
+                leaf_cell_type,
+                part._vertex_parent_entity[static_cast<std::size_t>(part_lv)]);
+            token_to_part_vertex[token] = part_lv;
+            if (token >= 100 && token < 104)
+                present[static_cast<std::size_t>(token - 100)] = true;
+        }
+
+        std::vector<int> present_vertices;
+        std::vector<int> missing_vertices;
+        for (int v = 0; v < 4; ++v)
+        {
+            if (present[static_cast<std::size_t>(v)])
+                present_vertices.push_back(v);
+            else
+                missing_vertices.push_back(v);
+        }
+
+        if (present_vertices.size() == 3)
+        {
+            const int omitted = missing_vertices.front();
+            const auto face = cell::tet_face(omitted);
+            canonical.resize(6);
+            for (int i = 0; i < 3; ++i)
+            {
+                const int fv = face[static_cast<std::size_t>(i)];
+                const int edge_id = basix_edge_id_for_vertices(
+                    cell::type::tetrahedron, fv, omitted);
+                auto v_it = token_to_part_vertex.find(100 + fv);
+                auto e_it = token_to_part_vertex.find(edge_id);
+                if (v_it == token_to_part_vertex.end() || e_it == token_to_part_vertex.end())
+                {
+                    throw std::runtime_error(
+                        "canonicalize_cut_part_cell_vertices: invalid 3-vertex prism token set");
+                }
+                canonical[static_cast<std::size_t>(i)] = v_it->second;
+                canonical[static_cast<std::size_t>(3 + i)] = e_it->second;
+            }
+        }
+        else if (present_vertices.size() == 2)
+        {
+            const int p = present_vertices[0];
+            const int q = present_vertices[1];
+            const int r = missing_vertices[0];
+            const int s = missing_vertices[1];
+
+            const int e_pr = basix_edge_id_for_vertices(cell::type::tetrahedron, p, r);
+            const int e_ps = basix_edge_id_for_vertices(cell::type::tetrahedron, p, s);
+            const int e_qr = basix_edge_id_for_vertices(cell::type::tetrahedron, q, r);
+            const int e_qs = basix_edge_id_for_vertices(cell::type::tetrahedron, q, s);
+
+            const std::array<int, 6> prism_tokens = {
+                100 + p, e_pr, e_ps,
+                100 + q, e_qr, e_qs};
+            canonical.resize(6);
+            for (int i = 0; i < 6; ++i)
+            {
+                auto it = token_to_part_vertex.find(prism_tokens[static_cast<std::size_t>(i)]);
+                if (it == token_to_part_vertex.end())
+                {
+                    throw std::runtime_error(
+                        "canonicalize_cut_part_cell_vertices: invalid 2-vertex prism token set");
+                }
+                canonical[static_cast<std::size_t>(i)] = it->second;
+            }
+        }
+        else
+        {
+            throw std::runtime_error(
+                "canonicalize_cut_part_cell_vertices: unsupported tetra prism token pattern");
+        }
+    }
+
+    return canonical;
+}
+
 template <std::floating_point T, std::integral I>
 std::vector<T> gather_leaf_cell_vertex_level_set_values(
     const AdaptCell<T>& adapt_cell,
@@ -391,9 +544,20 @@ void append_ready_cut_part_cells(
                 adapt_cell, x, parent_dim, parent_id,
                 std::span<const T>(), /*source_edge_id=*/-1);
 
-            const T value = ls_cell.value(x);
-            set_vertex_sign_for_level_set(
-                adapt_cell, vertex_id, level_set_id, value, zero_tol);
+            if (token >= 0 && token < 100)
+            {
+                // Straight cut vertices lie on the straight interface by construction.
+                // They should therefore participate in phi=0 face extraction even when
+                // the curved level set evaluated at this affine point is not exactly zero.
+                set_vertex_sign_for_level_set(
+                    adapt_cell, vertex_id, level_set_id, T(0), zero_tol);
+            }
+            else
+            {
+                const T value = ls_cell.value(x);
+                set_vertex_sign_for_level_set(
+                    adapt_cell, vertex_id, level_set_id, value, zero_tol);
+            }
         }
 
         token_to_vertex[token] = vertex_id;
@@ -402,14 +566,25 @@ void append_ready_cut_part_cells(
     const int n_part_cells = cell::num_cells(part);
     for (int pc = 0; pc < n_part_cells; ++pc)
     {
-        auto part_vertices = cell::cell_vertices(part, pc);
+        const std::vector<int> part_vertices =
+            canonicalize_cut_part_cell_vertices(part, pc, leaf_cell_type);
         std::vector<int> mapped(part_vertices.size(), -1);
         for (std::size_t j = 0; j < part_vertices.size(); ++j)
         {
             const int part_lv = part_vertices[j];
             const int raw_token = part._vertex_parent_entity[static_cast<std::size_t>(part_lv)];
             const int token = cell::vtk_parent_entity_token_to_basix(leaf_cell_type, raw_token);
-            mapped[j] = token_to_vertex.at(token);
+            auto token_it = token_to_vertex.find(token);
+            if (token_it == token_to_vertex.end())
+            {
+                throw std::runtime_error(
+                    "append_ready_cut_part_cells: missing mapped token "
+                    + std::to_string(token) + " raw_token=" + std::to_string(raw_token)
+                    + " leaf_type=" + cell_type_to_str(leaf_cell_type)
+                    + " part_cell_type="
+                    + cell_type_to_str(part._types[static_cast<std::size_t>(pc)]));
+            }
+            mapped[j] = token_it->second;
         }
 
         append_top_cell_local(new_types, new_cells,
@@ -472,6 +647,37 @@ CellCertTag classify_ready_to_cut_topology(const AdaptCell<T>& adapt_cell,
         return CellCertTag::cut;
 
     return CellCertTag::not_classified;
+}
+
+/// Check whether any edge incident to face_id has a root (one_root, multiple_roots, or zero).
+template <std::floating_point T>
+bool face_has_any_edge_root(const AdaptCell<T>& adapt_cell,
+                            int level_set_id, int face_id)
+{
+    auto face_verts = adapt_cell.entity_to_vertex[2][static_cast<std::int32_t>(face_id)];
+    const int n_edges = adapt_cell.n_entities(1);
+
+    for (int e = 0; e < n_edges; ++e)
+    {
+        auto ev = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(e)];
+        bool v0_in = false, v1_in = false;
+        for (auto fv : face_verts)
+        {
+            if (fv == ev[0]) v0_in = true;
+            if (fv == ev[1]) v1_in = true;
+        }
+        if (!v0_in || !v1_in)
+            continue;
+
+        const EdgeRootTag etag = adapt_cell.get_edge_root_tag(level_set_id, e);
+        if (etag == EdgeRootTag::one_root
+            || etag == EdgeRootTag::multiple_roots
+            || etag == EdgeRootTag::zero)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 } // anonymous namespace
@@ -722,7 +928,30 @@ CellCertTag classify_leaf_cell(const AdaptCell<T>& adapt_cell,
     std::span<const T> sc(subcell_coeffs);
 
     if (bernstein_all_zero(sc, zero_tol))
-        return CellCertTag::zero;
+    {
+        // All Bernstein coefficients are zero within tolerance.
+        // Evaluate the level set at the cell centroid to disambiguate
+        // between a truly zero cell and a cell that is inside/outside
+        // but whose vertices all happen to lie on the zero set.
+        std::vector<T> xi_centroid(static_cast<std::size_t>(parent_tdim), T(0));
+        for (int v = 0; v < n_cell_verts; ++v)
+        {
+            int gv = cell_verts[static_cast<std::size_t>(v)];
+            for (int d = 0; d < parent_tdim; ++d)
+                xi_centroid[static_cast<std::size_t>(d)] +=
+                    adapt_cell.vertex_coords[static_cast<std::size_t>(gv * parent_tdim + d)];
+        }
+        for (int d = 0; d < parent_tdim; ++d)
+            xi_centroid[static_cast<std::size_t>(d)] /= T(n_cell_verts);
+
+        const T centroid_val = ls_cell.value(
+            std::span<const T>(xi_centroid.data(),
+                               static_cast<std::size_t>(parent_tdim)));
+
+        if (std::fabs(centroid_val) <= zero_tol)
+            return CellCertTag::zero;
+        return (centroid_val > T(0)) ? CellCertTag::positive : CellCertTag::negative;
+    }
     if (bernstein_all_positive(sc, sign_tol))
         return CellCertTag::positive;
     if (bernstein_all_negative(sc, sign_tol))
@@ -842,6 +1071,131 @@ void classify_leaf_cells(AdaptCell<T>& adapt_cell,
 }
 
 // =====================================================================
+// classify_leaf_face
+// =====================================================================
+
+template <std::floating_point T, std::integral I>
+FaceCertTag classify_leaf_face(const AdaptCell<T>& adapt_cell,
+                               const LevelSetCell<T, I>& ls_cell,
+                               int level_set_id,
+                               int face_id,
+                               T zero_tol, T sign_tol)
+{
+    // Only meaningful for 3D cells.
+    if (adapt_cell.tdim != 3)
+        return FaceCertTag::not_classified;
+
+    // A. Check incident-edge root topology.
+    const bool has_root = face_has_any_edge_root(adapt_cell, level_set_id, face_id);
+    if (has_root)
+        return FaceCertTag::cut;
+
+    // B. Restrict the parent Bernstein to the face.
+    auto face_verts = adapt_cell.entity_to_vertex[2][static_cast<std::int32_t>(face_id)];
+    const int parent_tdim = adapt_cell.tdim;
+    const int n_face_verts = static_cast<int>(face_verts.size());
+    std::vector<T> face_vertex_coords(
+        static_cast<std::size_t>(n_face_verts * parent_tdim));
+
+    for (int v = 0; v < n_face_verts; ++v)
+    {
+        int gv = face_verts[static_cast<std::size_t>(v)];
+        for (int d = 0; d < parent_tdim; ++d)
+            face_vertex_coords[static_cast<std::size_t>(v * parent_tdim + d)] =
+                adapt_cell.vertex_coords[static_cast<std::size_t>(gv * parent_tdim + d)];
+    }
+
+    cell::type face_type = adapt_cell.entity_types[2][static_cast<std::size_t>(face_id)];
+
+    std::vector<T> face_coeffs;
+    restrict_subcell_bernstein_exact(
+        ls_cell.cell_type, ls_cell.bernstein_order,
+        std::span<const T>(ls_cell.bernstein_coeffs),
+        face_type,
+        std::span<const T>(face_vertex_coords),
+        face_coeffs);
+
+    // Sign-hull classification.
+    std::span<const T> fc(face_coeffs);
+
+    if (bernstein_all_zero(fc, zero_tol))
+    {
+        // All Bernstein coefficients are zero — evaluate centroid.
+        std::vector<T> xi_centroid(static_cast<std::size_t>(parent_tdim), T(0));
+        for (int v = 0; v < n_face_verts; ++v)
+        {
+            int gv = face_verts[static_cast<std::size_t>(v)];
+            for (int d = 0; d < parent_tdim; ++d)
+                xi_centroid[static_cast<std::size_t>(d)] +=
+                    adapt_cell.vertex_coords[static_cast<std::size_t>(gv * parent_tdim + d)];
+        }
+        for (int d = 0; d < parent_tdim; ++d)
+            xi_centroid[static_cast<std::size_t>(d)] /= T(n_face_verts);
+
+        const T centroid_val = ls_cell.value(
+            std::span<const T>(xi_centroid.data(),
+                               static_cast<std::size_t>(parent_tdim)));
+
+        if (std::fabs(centroid_val) <= zero_tol)
+            return FaceCertTag::zero;
+        return (centroid_val > T(0)) ? FaceCertTag::positive : FaceCertTag::negative;
+    }
+    if (bernstein_all_positive(fc, sign_tol))
+        return FaceCertTag::positive;
+    if (bernstein_all_negative(fc, sign_tol))
+        return FaceCertTag::negative;
+
+    // Mixed Bernstein signs — apply monotonicity filter.
+    if (has_monotone_direction(face_type, ls_cell.bernstein_order, fc, sign_tol))
+    {
+        // Evaluate phi at the first vertex of the face.
+        std::span<const T> xi_v0(
+            adapt_cell.vertex_coords.data()
+                + static_cast<std::size_t>(face_verts[0]) * static_cast<std::size_t>(parent_tdim),
+            static_cast<std::size_t>(parent_tdim));
+        const T val = bernstein::evaluate(
+            ls_cell.cell_type, ls_cell.bernstein_order,
+            std::span<const T>(ls_cell.bernstein_coeffs), xi_v0);
+        return (val >= T(0)) ? FaceCertTag::positive : FaceCertTag::negative;
+    }
+
+    return FaceCertTag::ambiguous;
+}
+
+// =====================================================================
+// classify_leaf_faces
+// =====================================================================
+
+template <std::floating_point T, std::integral I>
+void classify_leaf_faces(AdaptCell<T>& adapt_cell,
+                         const LevelSetCell<T, I>& ls_cell,
+                         int level_set_id,
+                         T zero_tol, T sign_tol)
+{
+    if (adapt_cell.tdim != 3)
+        return;
+
+    const int n_faces = adapt_cell.n_entities(2);
+    if (n_faces == 0)
+        return;
+
+    // Ensure tag storage.
+    if (adapt_cell.face_cert_tag_num_level_sets <= level_set_id)
+        adapt_cell.resize_face_cert_tags(level_set_id + 1);
+
+    for (int f = 0; f < n_faces; ++f)
+    {
+        if (adapt_cell.get_face_cert_tag(level_set_id, f)
+            != FaceCertTag::not_classified)
+            continue;
+
+        FaceCertTag tag = classify_leaf_face(
+            adapt_cell, ls_cell, level_set_id, f, zero_tol, sign_tol);
+        adapt_cell.set_face_cert_tag(level_set_id, f, tag);
+    }
+}
+
+// =====================================================================
 // fill_all_vertex_signs_from_level_set
 // =====================================================================
 
@@ -943,8 +1297,19 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
         {
             const int a = old_cell_vertices[static_cast<std::size_t>(ledges[le][0])];
             const int b = old_cell_vertices[static_cast<std::size_t>(ledges[le][1])];
-            old_edge_ids_by_local_edge[le] =
-                edge_lookup.at({std::min(a, b), std::max(a, b)});
+            const std::pair<int, int> key = {std::min(a, b), std::max(a, b)};
+            auto edge_it = edge_lookup.find(key);
+            if (edge_it == edge_lookup.end())
+            {
+                throw std::runtime_error(
+                    "process_ready_to_cut_cells: missing leaf edge for ready-to-cut cell "
+                    + std::to_string(c) + " type="
+                    + cell_type_to_str(leaf_cell_type) + " local_edge="
+                    + std::to_string(le) + " key=("
+                    + std::to_string(key.first) + ","
+                    + std::to_string(key.second) + ")");
+            }
+            old_edge_ids_by_local_edge[le] = edge_it->second;
         }
 
         std::map<int, int> token_to_vertex;
@@ -1057,6 +1422,14 @@ void certify_and_refine(AdaptCell<T>& adapt_cell,
         classify_new_edges(adapt_cell, ls_cell, level_set_id,
                            zero_tol, sign_tol, edge_max_depth);
 
+        // 1b. Build faces and classify them (3D only).
+        if (adapt_cell.tdim == 3)
+        {
+            build_faces(adapt_cell);
+            classify_leaf_faces(adapt_cell, ls_cell, level_set_id,
+                                zero_tol, sign_tol);
+        }
+
         // 2. Classify cells.
         classify_leaf_cells(adapt_cell, ls_cell, level_set_id,
                             zero_tol, sign_tol);
@@ -1119,7 +1492,6 @@ void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
     fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
     process_ready_to_cut_cells(adapt_cell, ls_cell, level_set_id,
                                zero_tol, sign_tol, edge_max_depth);
-    fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
 }
 
 // =====================================================================
@@ -1154,6 +1526,26 @@ template void classify_leaf_cells(AdaptCell<float>&,
                                   const LevelSetCell<float, int>&,
                                   int, float, float);
 template void classify_leaf_cells(AdaptCell<double>&,
+                                  const LevelSetCell<double, long>&,
+                                  int, double, double);
+
+template FaceCertTag classify_leaf_face(const AdaptCell<double>&,
+                                        const LevelSetCell<double, int>&,
+                                        int, int, double, double);
+template FaceCertTag classify_leaf_face(const AdaptCell<float>&,
+                                        const LevelSetCell<float, int>&,
+                                        int, int, float, float);
+template FaceCertTag classify_leaf_face(const AdaptCell<double>&,
+                                        const LevelSetCell<double, long>&,
+                                        int, int, double, double);
+
+template void classify_leaf_faces(AdaptCell<double>&,
+                                  const LevelSetCell<double, int>&,
+                                  int, double, double);
+template void classify_leaf_faces(AdaptCell<float>&,
+                                  const LevelSetCell<float, int>&,
+                                  int, float, float);
+template void classify_leaf_faces(AdaptCell<double>&,
                                   const LevelSetCell<double, long>&,
                                   int, double, double);
 

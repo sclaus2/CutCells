@@ -26,8 +26,17 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/bernstein.h
   ${CMAKE_CURRENT_SOURCE_DIR}/level_set.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/level_set_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mesh_view.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/adapt_cell.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/ho_cut_mesh.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/ho_mesh_part_output.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/selection_expr.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/edge_certification.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/cell_certification.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/refine_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature_tables.h
   ${CMAKE_CURRENT_SOURCE_DIR}/span_math.h
@@ -47,7 +56,16 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_cell.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_mesh.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mapping.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/bernstein.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/level_set.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/level_set_cell.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/adapt_cell.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/ho_cut_mesh.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/ho_mesh_part_output.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/selection_expr.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/edge_certification.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/cell_certification.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/refine_cell.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.cpp
 )

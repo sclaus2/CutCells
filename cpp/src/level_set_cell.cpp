@@ -7,14 +7,371 @@
 
 #include <cassert>
 #include <stdexcept>
+#include <unordered_map>
 
 #include "bernstein.h"
+#include "cell_topology.h"
 #include "mapping.h"
+#include "reference_cell.h"
 
 namespace cutcells
 {
 namespace
 {
+
+template <std::floating_point T>
+struct RefPointKey
+{
+    cell::type ctype = cell::type::point;
+    int degree = 0;
+
+    bool operator==(const RefPointKey&) const = default;
+};
+
+template <std::floating_point T>
+struct RefPointKeyHash
+{
+    std::size_t operator()(const RefPointKey<T>& key) const noexcept
+    {
+        std::size_t seed = std::hash<int>{}(static_cast<int>(key.ctype));
+        seed ^= std::hash<int>{}(key.degree) + 0x9e3779b97f4a7c15ULL
+              + (seed << 6) + (seed >> 2);
+        return seed;
+    }
+};
+
+template <typename T>
+struct FaceDef
+{
+    cell::type face_type = cell::type::point;
+    int nverts = 0;
+    std::array<int, 4> verts = {-1, -1, -1, -1};
+};
+
+inline std::span<const FaceDef<int>> basix_faces(cell::type ctype)
+{
+    static constexpr std::array<FaceDef<int>, 4> tetrahedron = {{
+        {cell::type::triangle, 3, {1, 2, 3, -1}},
+        {cell::type::triangle, 3, {0, 2, 3, -1}},
+        {cell::type::triangle, 3, {0, 1, 3, -1}},
+        {cell::type::triangle, 3, {0, 1, 2, -1}},
+    }};
+    static constexpr std::array<FaceDef<int>, 6> hexahedron = {{
+        {cell::type::quadrilateral, 4, {0, 1, 2, 3}},
+        {cell::type::quadrilateral, 4, {4, 5, 6, 7}},
+        {cell::type::quadrilateral, 4, {0, 1, 4, 5}},
+        {cell::type::quadrilateral, 4, {0, 2, 4, 6}},
+        {cell::type::quadrilateral, 4, {1, 3, 5, 7}},
+        {cell::type::quadrilateral, 4, {2, 3, 6, 7}},
+    }};
+    static constexpr std::array<FaceDef<int>, 5> prism = {{
+        {cell::type::triangle, 3, {0, 1, 2, -1}},
+        {cell::type::triangle, 3, {3, 4, 5, -1}},
+        {cell::type::quadrilateral, 4, {0, 1, 3, 4}},
+        {cell::type::quadrilateral, 4, {0, 2, 3, 5}},
+        {cell::type::quadrilateral, 4, {1, 2, 4, 5}},
+    }};
+    static constexpr std::array<FaceDef<int>, 5> pyramid = {{
+        {cell::type::quadrilateral, 4, {0, 1, 2, 3}},
+        {cell::type::triangle, 3, {0, 1, 4, -1}},
+        {cell::type::triangle, 3, {1, 2, 4, -1}},
+        {cell::type::triangle, 3, {2, 3, 4, -1}},
+        {cell::type::triangle, 3, {0, 3, 4, -1}},
+    }};
+
+    switch (ctype)
+    {
+        case cell::type::tetrahedron: return std::span(tetrahedron);
+        case cell::type::hexahedron: return std::span(hexahedron);
+        case cell::type::prism: return std::span(prism);
+        case cell::type::pyramid: return std::span(pyramid);
+        default: return {};
+    }
+}
+
+template <std::floating_point T>
+void append_point(std::vector<T>& out, std::span<const T> x)
+{
+    out.insert(out.end(), x.begin(), x.end());
+}
+
+template <std::floating_point T>
+void append_affine_edge_point(std::vector<T>& out,
+                              std::span<const T> x0,
+                              std::span<const T> x1,
+                              T t)
+{
+    for (std::size_t d = 0; d < x0.size(); ++d)
+        out.push_back((T(1) - t) * x0[d] + t * x1[d]);
+}
+
+template <std::floating_point T>
+void append_triangle_face_point(std::vector<T>& out,
+                                std::span<const T> x0,
+                                std::span<const T> x1,
+                                std::span<const T> x2,
+                                T u, T v)
+{
+    const T w0 = T(1) - u - v;
+    for (std::size_t d = 0; d < x0.size(); ++d)
+        out.push_back(w0 * x0[d] + u * x1[d] + v * x2[d]);
+}
+
+template <std::floating_point T>
+void append_quad_face_point(std::vector<T>& out,
+                            std::span<const T> x0,
+                            std::span<const T> x1,
+                            std::span<const T> x2,
+                            std::span<const T> x3,
+                            T u, T v)
+{
+    const T w0 = (T(1) - u) * (T(1) - v);
+    const T w1 = u * (T(1) - v);
+    const T w2 = (T(1) - u) * v;
+    const T w3 = u * v;
+    for (std::size_t d = 0; d < x0.size(); ++d)
+        out.push_back(w0 * x0[d] + w1 * x1[d] + w2 * x2[d] + w3 * x3[d]);
+}
+
+template <std::floating_point T>
+void append_tetra_cell_point(std::vector<T>& out,
+                             std::span<const T> x0,
+                             std::span<const T> x1,
+                             std::span<const T> x2,
+                             std::span<const T> x3,
+                             T u, T v, T w)
+{
+    const T w0 = T(1) - u - v - w;
+    for (std::size_t d = 0; d < x0.size(); ++d)
+        out.push_back(w0 * x0[d] + u * x1[d] + v * x2[d] + w * x3[d]);
+}
+
+template <std::floating_point T>
+void append_hex_cell_point(std::vector<T>& out,
+                           const std::vector<T>& verts, int tdim,
+                           T u, T v, T w)
+{
+    for (int d = 0; d < tdim; ++d)
+    {
+        out.push_back(
+            (T(1) - u) * (T(1) - v) * (T(1) - w) * verts[static_cast<std::size_t>(d)] +
+            u * (T(1) - v) * (T(1) - w) * verts[static_cast<std::size_t>(tdim + d)] +
+            (T(1) - u) * v * (T(1) - w) * verts[static_cast<std::size_t>(2 * tdim + d)] +
+            u * v * (T(1) - w) * verts[static_cast<std::size_t>(3 * tdim + d)] +
+            (T(1) - u) * (T(1) - v) * w * verts[static_cast<std::size_t>(4 * tdim + d)] +
+            u * (T(1) - v) * w * verts[static_cast<std::size_t>(5 * tdim + d)] +
+            (T(1) - u) * v * w * verts[static_cast<std::size_t>(6 * tdim + d)] +
+            u * v * w * verts[static_cast<std::size_t>(7 * tdim + d)]);
+    }
+}
+
+template <std::floating_point T>
+std::vector<T> build_reference_lagrange_points(cell::type ctype, int degree)
+{
+    const int tdim = cell::get_tdim(ctype);
+    const int nv = cell::get_num_vertices(ctype);
+    const std::vector<T> vertices = cell::reference_vertices<T>(ctype);
+    std::vector<T> ref_points;
+    ref_points.reserve(static_cast<std::size_t>(
+        bernstein::num_polynomials(ctype, degree) * tdim));
+
+    for (int v = 0; v < nv; ++v)
+    {
+        append_point(
+            ref_points,
+            std::span<const T>(
+                vertices.data() + static_cast<std::size_t>(v * tdim),
+                static_cast<std::size_t>(tdim)));
+    }
+
+    if (degree == 1)
+        return ref_points;
+
+    const auto edges = cell::edges(ctype);
+    for (const auto& edge : edges)
+    {
+        const T* x0 = vertices.data() + static_cast<std::size_t>(edge[0] * tdim);
+        const T* x1 = vertices.data() + static_cast<std::size_t>(edge[1] * tdim);
+        for (int k = 1; k < degree; ++k)
+        {
+            const T t = static_cast<T>(k) / static_cast<T>(degree);
+            append_affine_edge_point(
+                ref_points,
+                std::span<const T>(x0, static_cast<std::size_t>(tdim)),
+                std::span<const T>(x1, static_cast<std::size_t>(tdim)),
+                t);
+        }
+    }
+
+    if (tdim == 3)
+    {
+        const auto faces = basix_faces(ctype);
+        for (const auto& face : faces)
+        {
+            if (face.face_type == cell::type::triangle)
+            {
+                if (degree <= 2)
+                    continue;
+
+                const T* x0 = vertices.data() + static_cast<std::size_t>(face.verts[0] * tdim);
+                const T* x1 = vertices.data() + static_cast<std::size_t>(face.verts[1] * tdim);
+                const T* x2 = vertices.data() + static_cast<std::size_t>(face.verts[2] * tdim);
+                for (int j = 1; j <= degree - 2; ++j)
+                {
+                    for (int i = 1; i <= degree - j - 1; ++i)
+                    {
+                        const T u = static_cast<T>(i) / static_cast<T>(degree);
+                        const T v = static_cast<T>(j) / static_cast<T>(degree);
+                        append_triangle_face_point(
+                            ref_points,
+                            std::span<const T>(x0, static_cast<std::size_t>(tdim)),
+                            std::span<const T>(x1, static_cast<std::size_t>(tdim)),
+                            std::span<const T>(x2, static_cast<std::size_t>(tdim)),
+                            u, v);
+                    }
+                }
+            }
+            else if (face.face_type == cell::type::quadrilateral)
+            {
+                const T* x0 = vertices.data() + static_cast<std::size_t>(face.verts[0] * tdim);
+                const T* x1 = vertices.data() + static_cast<std::size_t>(face.verts[1] * tdim);
+                const T* x2 = vertices.data() + static_cast<std::size_t>(face.verts[2] * tdim);
+                const T* x3 = vertices.data() + static_cast<std::size_t>(face.verts[3] * tdim);
+                for (int j = 1; j < degree; ++j)
+                {
+                    for (int i = 1; i < degree; ++i)
+                    {
+                        const T u = static_cast<T>(i) / static_cast<T>(degree);
+                        const T v = static_cast<T>(j) / static_cast<T>(degree);
+                        append_quad_face_point(
+                            ref_points,
+                            std::span<const T>(x0, static_cast<std::size_t>(tdim)),
+                            std::span<const T>(x1, static_cast<std::size_t>(tdim)),
+                            std::span<const T>(x2, static_cast<std::size_t>(tdim)),
+                            std::span<const T>(x3, static_cast<std::size_t>(tdim)),
+                            u, v);
+                    }
+                }
+            }
+        }
+    }
+
+    switch (ctype)
+    {
+        case cell::type::triangle:
+            if (degree > 2)
+            {
+                const T* x0 = vertices.data();
+                const T* x1 = vertices.data() + tdim;
+                const T* x2 = vertices.data() + 2 * tdim;
+                for (int j = 1; j <= degree - 2; ++j)
+                {
+                    for (int i = 1; i <= degree - j - 1; ++i)
+                    {
+                        const T u = static_cast<T>(i) / static_cast<T>(degree);
+                        const T v = static_cast<T>(j) / static_cast<T>(degree);
+                        append_triangle_face_point(
+                            ref_points,
+                            std::span<const T>(x0, static_cast<std::size_t>(tdim)),
+                            std::span<const T>(x1, static_cast<std::size_t>(tdim)),
+                            std::span<const T>(x2, static_cast<std::size_t>(tdim)),
+                            u, v);
+                    }
+                }
+            }
+            break;
+        case cell::type::quadrilateral:
+            {
+                const T* x0 = vertices.data();
+                const T* x1 = vertices.data() + tdim;
+                const T* x2 = vertices.data() + 2 * tdim;
+                const T* x3 = vertices.data() + 3 * tdim;
+                for (int j = 1; j < degree; ++j)
+                {
+                    for (int i = 1; i < degree; ++i)
+                    {
+                        const T u = static_cast<T>(i) / static_cast<T>(degree);
+                        const T v = static_cast<T>(j) / static_cast<T>(degree);
+                        append_quad_face_point(
+                            ref_points,
+                            std::span<const T>(x0, static_cast<std::size_t>(tdim)),
+                            std::span<const T>(x1, static_cast<std::size_t>(tdim)),
+                            std::span<const T>(x2, static_cast<std::size_t>(tdim)),
+                            std::span<const T>(x3, static_cast<std::size_t>(tdim)),
+                            u, v);
+                    }
+                }
+            }
+            break;
+        case cell::type::tetrahedron:
+            if (degree > 3)
+            {
+                const T* x0 = vertices.data();
+                const T* x1 = vertices.data() + tdim;
+                const T* x2 = vertices.data() + 2 * tdim;
+                const T* x3 = vertices.data() + 3 * tdim;
+                for (int k = 1; k <= degree - 3; ++k)
+                {
+                    for (int j = 1; j <= degree - k - 2; ++j)
+                    {
+                        for (int i = 1; i <= degree - j - k - 1; ++i)
+                        {
+                            const T u = static_cast<T>(i) / static_cast<T>(degree);
+                            const T v = static_cast<T>(j) / static_cast<T>(degree);
+                            const T w = static_cast<T>(k) / static_cast<T>(degree);
+                            append_tetra_cell_point(
+                                ref_points,
+                                std::span<const T>(x0, static_cast<std::size_t>(tdim)),
+                                std::span<const T>(x1, static_cast<std::size_t>(tdim)),
+                                std::span<const T>(x2, static_cast<std::size_t>(tdim)),
+                                std::span<const T>(x3, static_cast<std::size_t>(tdim)),
+                                u, v, w);
+                        }
+                    }
+                }
+            }
+            break;
+        case cell::type::hexahedron:
+            for (int k = 1; k < degree; ++k)
+            {
+                for (int j = 1; j < degree; ++j)
+                {
+                    for (int i = 1; i < degree; ++i)
+                    {
+                        append_hex_cell_point(
+                            ref_points, vertices, tdim,
+                            static_cast<T>(i) / static_cast<T>(degree),
+                            static_cast<T>(j) / static_cast<T>(degree),
+                            static_cast<T>(k) / static_cast<T>(degree));
+                    }
+                }
+            }
+            break;
+        default:
+            break;
+    }
+
+    return ref_points;
+}
+
+template <std::floating_point T>
+const std::vector<T>& cached_reference_lagrange_points(cell::type ctype, int degree)
+{
+    thread_local std::unordered_map<RefPointKey<T>, std::vector<T>, RefPointKeyHash<T>> cache;
+
+    RefPointKey<T> key;
+    key.ctype = ctype;
+    key.degree = degree;
+
+    auto it = cache.find(key);
+    if (it != cache.end())
+        return it->second;
+
+    auto points = build_reference_lagrange_points<T>(ctype, degree);
+    auto [inserted_it, inserted] = cache.emplace(key, std::move(points));
+    (void)inserted;
+    return inserted_it->second;
+}
 
 /// Determine the cell::type for a cell in the level-set mesh data.
 /// Uses cell_types array if available, otherwise infers from tdim and
@@ -108,37 +465,18 @@ make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
             cell_ls.nodal_values[static_cast<std::size_t>(i)]
                 = global_ls.dof_values[static_cast<std::size_t>(cell_dofs[static_cast<std::size_t>(i)])];
         cell_ls.nodal_order = degree;
-
-        // Extract physical coordinates of all DOFs on this cell
-        std::vector<T> dof_phys(static_cast<std::size_t>(ndofs * gdim));
-        for (int i = 0; i < ndofs; ++i)
+        const auto& dof_ref = cached_reference_lagrange_points<T>(ctype, degree);
+        if (static_cast<int>(dof_ref.size()) != ndofs * cell_ls.tdim)
         {
-            const T* x = md.dof_coordinate(cell_dofs[static_cast<std::size_t>(i)]);
-            for (int d = 0; d < gdim; ++d)
-                dof_phys[static_cast<std::size_t>(i * gdim + d)] = x[d];
+            throw std::runtime_error(
+                "make_cell_level_set: cached reference lattice size mismatch");
         }
-
-        // Extract physical vertex coordinates (first n_vertices DOFs in Basix ordering)
-        const int nv = cell::get_num_vertices(ctype);
-        std::vector<T> vertex_coords(static_cast<std::size_t>(nv * gdim));
-        for (int v = 0; v < nv; ++v)
-            for (int d = 0; d < gdim; ++d)
-                vertex_coords[static_cast<std::size_t>(v * gdim + d)]
-                    = dof_phys[static_cast<std::size_t>(v * gdim + d)];
-
-        // Pull back all DOF coordinates from physical to reference space.
-        // Note: pull_back_affine is supported for volume cells (gdim == tdim).
-        assert(gdim == md.tdim && "pull_back_affine requires gdim == tdim");
-        std::vector<T> dof_ref(static_cast<std::size_t>(ndofs * gdim));
-        cell::pull_back_affine(ctype, vertex_coords, gdim,
-                               std::span<const T>(dof_phys),
-                               std::span<T>(dof_ref));
 
         // Convert Lagrange nodal values to Bernstein coefficients
         cell_ls.bernstein_order = degree;
         bernstein::lagrange_to_bernstein(
             ctype, degree,
-            std::span<const T>(dof_ref),
+            std::span<const T>(dof_ref.data(), dof_ref.size()),
             std::span<const T>(cell_ls.nodal_values),
             cell_ls.bernstein_coeffs);
     }

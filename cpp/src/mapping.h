@@ -120,6 +120,23 @@ void push_forward_affine(type parent_type,
                          std::span<const T> X_ref,
                          std::span<T> x_phys);
 
+/// @brief Affine push-forward for parent-reference points when tdim <= gdim.
+///
+/// Maps points in the parent reference space (dimension = get_tdim(parent_type))
+/// to physical space (dimension = gdim). This supports embedded cells, e.g.
+/// triangles in 3D or intervals in 2D/3D.
+///
+/// @param parent_type          cell type of the parent element
+/// @param parent_vertex_coords flat physical vertex coords in VTK ordering
+/// @param gdim                 physical embedding dimension
+/// @param X_ref                flat input: n * tdim reference coordinates
+/// @returns                    flat output: n * gdim physical coordinates
+template <std::floating_point T>
+std::vector<T> push_forward_affine_map(type parent_type,
+                                       const std::vector<T>& parent_vertex_coords,
+                                       int gdim,
+                                       std::span<const T> X_ref);
+
 /// @brief Affine pullback for a batch of n physical points.
 ///
 /// Maps x_phys (flat, n*gdim) from physical space to parent reference space

@@ -196,6 +196,45 @@ void push_forward_affine(type parent_type,
 }
 
 template <std::floating_point T>
+std::vector<T> push_forward_affine_map(type parent_type,
+                                       const std::vector<T>& parent_vertex_coords,
+                                       int gdim,
+                                       std::span<const T> X_ref)
+{
+  const int tdim = get_tdim(parent_type);
+  if (tdim <= 0 || tdim > gdim)
+    throw std::invalid_argument("push_forward_affine_map: invalid tdim/gdim combination");
+  if (X_ref.size() % static_cast<std::size_t>(tdim) != 0)
+  {
+    throw std::invalid_argument(
+        "push_forward_affine_map: X_ref size must be a multiple of the parent tdim");
+  }
+
+  const int n = static_cast<int>(X_ref.size()) / tdim;
+  std::vector<T> x_phys(static_cast<std::size_t>(n * gdim), T(0));
+  const T* x0 = parent_vertex_coords.data();
+  const auto cols = jacobian_col_indices(parent_type);
+
+  for (int i = 0; i < n; ++i)
+  {
+    const T* X = X_ref.data() + i * tdim;
+    T* x = x_phys.data() + i * gdim;
+
+    for (int d = 0; d < gdim; ++d)
+      x[d] = x0[d];
+
+    for (int col = 0; col < tdim; ++col)
+    {
+      const T* vi = parent_vertex_coords.data() + cols[col] * gdim;
+      for (int d = 0; d < gdim; ++d)
+        x[d] += X[col] * (vi[d] - x0[d]);
+    }
+  }
+
+  return x_phys;
+}
+
+template <std::floating_point T>
 void pull_back_affine(type parent_type,
                       const std::vector<T>& parent_vertex_coords,
                       int gdim,
@@ -349,6 +388,10 @@ template void push_forward_affine(type, const std::vector<double>&, int,
                                   std::span<const double>, std::span<double>);
 template void push_forward_affine(type, const std::vector<float>&,  int,
                                   std::span<const float>,  std::span<float>);
+template std::vector<double> push_forward_affine_map(
+    type, const std::vector<double>&, int, std::span<const double>);
+template std::vector<float> push_forward_affine_map(
+    type, const std::vector<float>&, int, std::span<const float>);
 
 template void pull_back_affine(type, const std::vector<double>&, int,
                                std::span<const double>, std::span<double>);

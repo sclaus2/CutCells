@@ -88,6 +88,50 @@ void classify_leaf_cells(AdaptCell<T>& adapt_cell,
                          int level_set_id,
                          T zero_tol, T sign_tol);
 
+// =====================================================================
+// Face (facet) classifier (3D only)
+// =====================================================================
+
+/// Classify a single leaf face for one level set.
+///
+/// Logic mirrors classify_leaf_cell but operates on a 2D face entity
+/// (dimension 2) of a 3D AdaptCell:
+///   1. Check incident-edge root topology for a valid 2D cut pattern.
+///   2. Restrict the parent Bernstein to the face and test the sign hull.
+///   3. Apply monotonicity filter.
+///   4. If the centroid is needed (all-zero case), evaluate there.
+///   5. Otherwise → ambiguous.
+///
+/// @param adapt_cell     The AdaptCell.
+/// @param ls_cell        LevelSetCell providing Bernstein coefficients.
+/// @param level_set_id   Which level set.
+/// @param face_id        Index of the leaf face in entity_to_vertex[2].
+/// @param zero_tol       Tolerance for all-zero.
+/// @param sign_tol       Tolerance for all-positive / all-negative.
+/// @return FaceCertTag.
+template <std::floating_point T, std::integral I>
+FaceCertTag classify_leaf_face(const AdaptCell<T>& adapt_cell,
+                               const LevelSetCell<T, I>& ls_cell,
+                               int level_set_id,
+                               int face_id,
+                               T zero_tol, T sign_tol);
+
+/// Classify all not-yet-classified leaf faces for one level set.
+///
+/// Face entities (entity_to_vertex[2]) must already be populated via
+/// build_faces(). Only operates when tdim == 3.
+///
+/// @param adapt_cell     The AdaptCell (modified in place).
+/// @param ls_cell        LevelSetCell providing Bernstein coefficients.
+/// @param level_set_id   Which level set.
+/// @param zero_tol       Tolerance for all-zero.
+/// @param sign_tol       Tolerance for all-positive / all-negative.
+template <std::floating_point T, std::integral I>
+void classify_leaf_faces(AdaptCell<T>& adapt_cell,
+                         const LevelSetCell<T, I>& ls_cell,
+                         int level_set_id,
+                         T zero_tol, T sign_tol);
+
 /// Evaluate the level set on every current AdaptCell vertex and update the
 /// sign/zero masks for that level set id.
 template <std::floating_point T, std::integral I>

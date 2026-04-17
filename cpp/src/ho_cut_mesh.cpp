@@ -5,8 +5,11 @@
 
 #include "ho_cut_mesh.h"
 #include "cell_certification.h"
+#include "edge_certification.h"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -49,6 +52,63 @@ void gather_vertex_ls_values(const MeshView<T, I>& mesh,
     }
 }
 
+template <std::floating_point T>
+T bernstein_cell_sign_tol(std::span<const T> coeffs)
+{
+    T max_abs = 0;
+    for (const T c : coeffs)
+        max_abs = std::max(max_abs, std::fabs(c));
+
+    return std::max(T(64) * std::numeric_limits<T>::epsilon()
+                        * std::max(T(1), max_abs),
+                    T(1e-14));
+}
+
+template <std::floating_point T>
+cell::domain classify_cell_domain_from_bernstein(std::span<const T> coeffs)
+{
+    if (coeffs.empty())
+        return cell::domain::unset;
+
+    const T sign_tol = bernstein_cell_sign_tol(coeffs);
+    if (bernstein_all_positive(coeffs, sign_tol))
+        return cell::domain::outside;
+    if (bernstein_all_negative(coeffs, sign_tol))
+        return cell::domain::inside;
+    return cell::domain::intersected;
+}
+
+template <std::floating_point T, std::integral I>
+cell::domain classify_cell_domain_fast(const MeshView<T, I>& mesh,
+                                       const LevelSetFunction<T, I>& ls,
+                                       I cell_id, int nv,
+                                       bool use_bernstein_classification,
+                                       std::vector<T>& vertex_ls_values,
+                                       LevelSetCell<T, I>* intersected_ls_cell)
+{
+    if (use_bernstein_classification)
+    {
+        LevelSetCell<T, I> ls_cell = make_cell_level_set(ls, cell_id);
+        const cell::domain dom = classify_cell_domain_from_bernstein<T>(
+            std::span<const T>(ls_cell.bernstein_coeffs.data(),
+                               ls_cell.bernstein_coeffs.size()));
+        if (dom != cell::domain::unset)
+        {
+            if (dom == cell::domain::intersected
+                && intersected_ls_cell != nullptr)
+            {
+                *intersected_ls_cell = std::move(ls_cell);
+            }
+            return dom;
+        }
+    }
+
+    gather_vertex_ls_values(mesh, ls, cell_id, nv, vertex_ls_values);
+    return cell::classify_cell_domain<T>(
+        std::span<const T>(vertex_ls_values.data(),
+                           static_cast<std::size_t>(nv)));
+}
+
 } // anonymous namespace
 
 // =====================================================================
@@ -80,18 +140,20 @@ cut(const MeshView<T, I>& mesh, const LevelSetFunction<T, I>& ls)
     hc.tdim = cell::get_tdim(mesh.cell_type(I(0)));
     hc.ls_offsets.push_back(0);
 
+    const bool use_bernstein_classification =
+        ls.type == LevelSetType::Polynomial
+        && ls.has_mesh_data()
+        && ls.has_dof_values();
     std::vector<T> ls_vertex_vals;
 
     for (I ci = 0; ci < ncells; ++ci)
     {
         const cell::type ctype = mesh.cell_type(ci);
         const int nv = cell::get_num_vertices(ctype);
-
-        gather_vertex_ls_values(mesh, ls, ci, nv, ls_vertex_vals);
-
-        const cell::domain dom = cell::classify_cell_domain<T>(
-            std::span<const T>(ls_vertex_vals.data(),
-                               static_cast<std::size_t>(nv)));
+        LevelSetCell<T, I> ls_cell;
+        const cell::domain dom = classify_cell_domain_fast(
+            mesh, ls, ci, nv, use_bernstein_classification, ls_vertex_vals,
+            &ls_cell);
         bg.cell_domains[static_cast<std::size_t>(ci)] = dom;
 
         if (dom != cell::domain::intersected)
@@ -101,13 +163,13 @@ cut(const MeshView<T, I>& mesh, const LevelSetFunction<T, I>& ls)
         bg.cell_to_cut_index[static_cast<std::size_t>(ci)] = cut_idx;
 
         // LevelSetCell
-        hc.level_set_cells.push_back(make_cell_level_set(ls, ci));
+        hc.level_set_cells.push_back(std::move(ls_cell));
         hc.ls_offsets.push_back(
             static_cast<int>(hc.level_set_cells.size()));
 
         // AdaptCell
         AdaptCell<T> ac = make_adapt_cell(mesh, ci);
-        build_edges(ac);
+
         certify_refine_and_process_ready_cells(
             ac, hc.level_set_cells.back(), /*level_set_id=*/0,
             /*max_iterations=*/8, T(1e-12), T(1e-12), /*edge_max_depth=*/20);
@@ -159,6 +221,16 @@ cut(const MeshView<T, I>& mesh,
     hc.tdim = cell::get_tdim(mesh.cell_type(I(0)));
     hc.ls_offsets.push_back(0);
 
+    std::vector<bool> use_bernstein_classification(
+        static_cast<std::size_t>(nls), false);
+    for (int li = 0; li < nls; ++li)
+    {
+        const auto& ls = level_sets[static_cast<std::size_t>(li)];
+        use_bernstein_classification[static_cast<std::size_t>(li)] =
+            ls.type == LevelSetType::Polynomial
+            && ls.has_mesh_data()
+            && ls.has_dof_values();
+    }
     std::vector<T> ls_vertex_vals;
 
     for (I ci = 0; ci < ncells; ++ci)
@@ -169,18 +241,16 @@ cut(const MeshView<T, I>& mesh,
         // Classify each level set individually; track if any intersects.
         bool any_intersected = false;
         std::vector<int> intersected_ls_indices;
-        std::vector<T> intersected_vertex_vals;
+        std::vector<LevelSetCell<T, I>> intersected_ls_cells;
         intersected_ls_indices.reserve(static_cast<std::size_t>(nls));
-        intersected_vertex_vals.reserve(
-            static_cast<std::size_t>(nls) * static_cast<std::size_t>(nv));
+        intersected_ls_cells.reserve(static_cast<std::size_t>(nls));
         for (int li = 0; li < nls; ++li)
         {
-            gather_vertex_ls_values(mesh, level_sets[static_cast<std::size_t>(li)],
-                                    ci, nv, ls_vertex_vals);
-
-            const cell::domain dom = cell::classify_cell_domain<T>(
-                std::span<const T>(ls_vertex_vals.data(),
-                                   static_cast<std::size_t>(nv)));
+            LevelSetCell<T, I> ls_cell;
+            const cell::domain dom = classify_cell_domain_fast(
+                mesh, level_sets[static_cast<std::size_t>(li)], ci, nv,
+                use_bernstein_classification[static_cast<std::size_t>(li)],
+                ls_vertex_vals, &ls_cell);
 
             bg.cell_domains[static_cast<std::size_t>(
                 li * static_cast<int>(ncells) + static_cast<int>(ci))] = dom;
@@ -189,9 +259,7 @@ cut(const MeshView<T, I>& mesh,
             {
                 any_intersected = true;
                 intersected_ls_indices.push_back(li);
-                intersected_vertex_vals.insert(intersected_vertex_vals.end(),
-                                               ls_vertex_vals.begin(),
-                                               ls_vertex_vals.end());
+                intersected_ls_cells.push_back(std::move(ls_cell));
             }
         }
 
@@ -203,18 +271,13 @@ cut(const MeshView<T, I>& mesh,
 
         // Build AdaptCell once per cell.
         AdaptCell<T> ac = make_adapt_cell(mesh, ci);
-        build_edges(ac);
 
         // Build LevelSetCell and fill vertex signs for each intersecting LS.
         std::uint64_t cell_active_mask = 0;
         for (std::size_t k = 0; k < intersected_ls_indices.size(); ++k)
         {
             const int li = intersected_ls_indices[k];
-            const auto& ls_i = level_sets[static_cast<std::size_t>(li)];
-            const T* vals = intersected_vertex_vals.data()
-                          + k * static_cast<std::size_t>(nv);
-
-            hc.level_set_cells.push_back(make_cell_level_set(ls_i, ci));
+            hc.level_set_cells.push_back(std::move(intersected_ls_cells[k]));
             certify_refine_and_process_ready_cells(
                 ac, hc.level_set_cells.back(), li,
                 /*max_iterations=*/8, T(1e-12), T(1e-12), /*edge_max_depth=*/20);

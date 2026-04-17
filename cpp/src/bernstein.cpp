@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cmath>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 namespace cutcells::bernstein
@@ -205,6 +206,103 @@ void solve_dense(int n, std::vector<T>& A, std::vector<T>& b)
             /= A[static_cast<std::size_t>(row) * static_cast<std::size_t>(n)
                  + static_cast<std::size_t>(row)];
     }
+}
+
+template <std::floating_point T>
+struct TransformKey
+{
+    cell::type ctype = cell::type::point;
+    int degree = 0;
+    std::vector<T> ref_points;
+
+    bool operator==(const TransformKey&) const = default;
+};
+
+template <std::floating_point T>
+struct TransformKeyHash
+{
+    std::size_t operator()(const TransformKey<T>& key) const noexcept
+    {
+        std::size_t seed = std::hash<int>{}(static_cast<int>(key.ctype));
+        seed ^= std::hash<int>{}(key.degree) + 0x9e3779b97f4a7c15ULL
+              + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<std::size_t>{}(key.ref_points.size()) + 0x9e3779b97f4a7c15ULL
+              + (seed << 6) + (seed >> 2);
+        for (const T value : key.ref_points)
+        {
+            seed ^= std::hash<T>{}(value) + 0x9e3779b97f4a7c15ULL
+                  + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
+};
+
+template <std::floating_point T>
+std::vector<T> build_lagrange_to_bernstein_transform(cell::type ctype, int degree,
+                                                     std::span<const T> ref_points)
+{
+    const int N = num_polynomials(ctype, degree);
+    const int tdim = cell::get_tdim(ctype);
+
+    std::vector<T> V(static_cast<std::size_t>(N) * static_cast<std::size_t>(N));
+    std::vector<T> basis_row(static_cast<std::size_t>(N));
+
+    for (int i = 0; i < N; ++i)
+    {
+        const T* pt = ref_points.data()
+                    + static_cast<std::size_t>(i) * static_cast<std::size_t>(tdim);
+        evaluate_basis(
+            ctype, degree,
+            std::span<const T>(pt, static_cast<std::size_t>(tdim)),
+            std::span<T>(basis_row));
+
+        for (int j = 0; j < N; ++j)
+        {
+            V[static_cast<std::size_t>(i) * static_cast<std::size_t>(N)
+              + static_cast<std::size_t>(j)] = basis_row[static_cast<std::size_t>(j)];
+        }
+    }
+
+    // Build the inverse transform once so repeated conversions only need a
+    // dense matrix-vector multiply.
+    std::vector<T> transform(static_cast<std::size_t>(N) * static_cast<std::size_t>(N), T(0));
+    std::vector<T> rhs(static_cast<std::size_t>(N), T(0));
+    for (int col = 0; col < N; ++col)
+    {
+        std::vector<T> A = V;
+        std::fill(rhs.begin(), rhs.end(), T(0));
+        rhs[static_cast<std::size_t>(col)] = T(1);
+        solve_dense(N, A, rhs);
+        for (int row = 0; row < N; ++row)
+        {
+            transform[static_cast<std::size_t>(row) * static_cast<std::size_t>(N)
+                      + static_cast<std::size_t>(col)] = rhs[static_cast<std::size_t>(row)];
+        }
+    }
+
+    return transform;
+}
+
+template <std::floating_point T>
+const std::vector<T>& cached_lagrange_to_bernstein_transform(
+    cell::type ctype, int degree, std::span<const T> ref_points)
+{
+    thread_local std::unordered_map<TransformKey<T>, std::vector<T>, TransformKeyHash<T>>
+        cache;
+
+    TransformKey<T> key;
+    key.ctype = ctype;
+    key.degree = degree;
+    key.ref_points.assign(ref_points.begin(), ref_points.end());
+
+    auto it = cache.find(key);
+    if (it != cache.end())
+        return it->second;
+
+    auto transform = build_lagrange_to_bernstein_transform(ctype, degree, ref_points);
+    auto [inserted_it, inserted] = cache.emplace(std::move(key), std::move(transform));
+    (void)inserted;
+    return inserted_it->second;
 }
 
 // ---------------------------------------------------------------------------
@@ -756,27 +854,21 @@ void lagrange_to_bernstein(cell::type ctype, int degree,
     if (static_cast<int>(ref_points.size()) != ndofs * tdim)
         throw std::invalid_argument(
             "bernstein::lagrange_to_bernstein: ref_points size mismatch");
+    const auto& transform = cached_lagrange_to_bernstein_transform(
+        ctype, degree, ref_points);
 
-    // Build the Bernstein evaluation matrix V:  V[i][j] = B_j(ref_point_i)
-    std::vector<T> V(static_cast<std::size_t>(N) * static_cast<std::size_t>(N));
-    std::vector<T> basis_row(static_cast<std::size_t>(N));
-
-    for (int i = 0; i < N; ++i)
+    coeffs.assign(static_cast<std::size_t>(N), T(0));
+    for (int row = 0; row < N; ++row)
     {
-        const T* pt = ref_points.data() + static_cast<std::size_t>(i) * static_cast<std::size_t>(tdim);
-        std::span<const T> pt_span(pt, static_cast<std::size_t>(tdim));
-        std::span<T> row_span(basis_row);
-
-        evaluate_basis(ctype, degree, pt_span, row_span);
-
-        for (int j = 0; j < N; ++j)
-            V[static_cast<std::size_t>(i) * static_cast<std::size_t>(N)
-              + static_cast<std::size_t>(j)] = basis_row[static_cast<std::size_t>(j)];
+        T value = T(0);
+        for (int col = 0; col < N; ++col)
+        {
+            value += transform[static_cast<std::size_t>(row) * static_cast<std::size_t>(N)
+                               + static_cast<std::size_t>(col)]
+                   * nodal_values[static_cast<std::size_t>(col)];
+        }
+        coeffs[static_cast<std::size_t>(row)] = value;
     }
-
-    // Solve V * coeffs = nodal_values
-    coeffs.assign(nodal_values.begin(), nodal_values.end());
-    solve_dense(N, V, coeffs);
 }
 
 template void lagrange_to_bernstein(cell::type, int,
