@@ -7,6 +7,8 @@
 #include "cut_tetrahedron.h"
 #include "cut_interval.h"
 #include "cell_flags.h"
+#include "reference_cell.h"
+#include "prism_midpoint_split.h"
 #include "triangulation.h"
 #include "span_math.h"
 #include "utils.h"
@@ -159,7 +161,16 @@ namespace tetrahedron{
 
         if(cell_type == type::prism && triangulate == true)
         {
-            num_sub_elements = 3;
+            int num_roots = 0;
+            for (int i = 0; i < 6; ++i)
+                num_roots += tetrahedron_sub_element[flag][i] < 100 ? 1 : 0;
+
+            if (num_roots == 3)
+                num_sub_elements = 7;
+            else if (num_roots == 4)
+                num_sub_elements = 4;
+            else
+                throw std::runtime_error("tetrahedron::get_num_sub_elements invalid prism family");
         }
         return num_sub_elements;
     }
@@ -278,6 +289,60 @@ namespace tetrahedron{
         cutcells::cell::clear_cell_topology(cut_cell);
         const cut_type cut_kind = string_to_cut_type(cut_type_str);
 
+        auto append_midpoint_split_prism = [&](int flag)
+        {
+            std::array<int, 6> prism_tokens = {};
+            for (int j = 0; j < 6; ++j)
+                prism_tokens[j] = tetrahedron_sub_element[flag][j];
+
+            std::vector<T> prism_vertex_coords(static_cast<std::size_t>(6 * gdim));
+            for (int local_id = 0; local_id < 6; ++local_id)
+            {
+                const int token = prism_tokens[static_cast<std::size_t>(local_id)];
+                const int vertex_id = vertex_case_map[token];
+                if (vertex_id < 0)
+                    throw std::runtime_error("tetrahedron::create_cut_cell missing prism vertex token");
+
+                for (int d = 0; d < gdim; ++d)
+                {
+                    prism_vertex_coords[static_cast<std::size_t>(local_id * gdim + d)]
+                        = cut_cell._vertex_coords[static_cast<std::size_t>(vertex_id * gdim + d)];
+                }
+            }
+
+            int next_token_base = 200;
+            auto split = cutcells::cell::prism_midpoint::split_tetra_derived_prism<T>(
+                std::span<const T>(prism_vertex_coords.data(), prism_vertex_coords.size()),
+                gdim,
+                std::span<const int>(prism_tokens.data(), prism_tokens.size()),
+                next_token_base);
+
+            const int old_num_vertices = static_cast<int>(cut_cell._vertex_coords.size() / gdim);
+            cut_cell._vertex_coords.insert(
+                cut_cell._vertex_coords.end(),
+                split.added_vertex_coords.begin(),
+                split.added_vertex_coords.end());
+
+            for (std::size_t i = 0; i < split.added_vertex_tokens.size(); ++i)
+            {
+                const int token = split.added_vertex_tokens[i];
+                if (token < 0 || token >= static_cast<int>(vertex_case_map.size()))
+                    throw std::runtime_error("tetrahedron::create_cut_cell midpoint token out of bounds");
+                vertex_case_map[token] = old_num_vertices + static_cast<int>(i);
+            }
+
+            for (const auto& tet_tokens : split.tets)
+            {
+                std::array<int, 4> t = {
+                    vertex_case_map[tet_tokens[0]],
+                    vertex_case_map[tet_tokens[1]],
+                    vertex_case_map[tet_tokens[2]],
+                    vertex_case_map[tet_tokens[3]],
+                };
+                cutcells::cell::append_cell(cut_cell, type::tetrahedron, t, 4);
+            }
+        };
+
         if(cut_kind == cut_type::phieq0)
         {
             cut_cell._tdim = 2;
@@ -293,8 +358,13 @@ namespace tetrahedron{
             type iface_type = interface_sub_element_cell_types[flag_interior];
             if(iface_type == type::quadrilateral && triangulate)
             {
+                std::array<int, 4> iface_tokens;
+                for (int i = 0; i < 4; ++i)
+                    iface_tokens[i] = tetrahedron_intersected_edges[flag_interior][i];
+                cell::reorder_subcell_vertices_from_vtk_to_basix(
+                    iface_type, iface_tokens, 4);
                 std::vector<std::vector<int>> triangles;
-                triangulation(iface_type, tetrahedron_intersected_edges[flag_interior], triangles);
+                triangulation(iface_type, iface_tokens.data(), triangles);
                 for(int i = 0; i < static_cast<int>(triangles.size()); ++i)
                 {
                     std::array<int, 3> t;
@@ -323,17 +393,7 @@ namespace tetrahedron{
             type sub_cell_type = tetrahedron_sub_element_cell_types[flag_interior];
             if(sub_cell_type == type::prism && triangulate)
             {
-                std::vector<std::vector<int>> tets;
-                triangulation(sub_cell_type, tetrahedron_sub_element[flag_interior], tets);
-                for(int i = 0; i < static_cast<int>(tets.size()); ++i)
-                {
-                    std::array<int, 4> t;
-                    t[0] = vertex_case_map[tets[i][0]];
-                    t[1] = vertex_case_map[tets[i][1]];
-                    t[2] = vertex_case_map[tets[i][2]];
-                    t[3] = vertex_case_map[tets[i][3]];
-                    cutcells::cell::append_cell(cut_cell, type::tetrahedron, t, 4);
-                }
+                append_midpoint_split_prism(flag_interior);
             }
             else
             {
@@ -354,17 +414,7 @@ namespace tetrahedron{
             type sub_cell_type = tetrahedron_sub_element_cell_types[flag_exterior];
             if(sub_cell_type == type::prism && triangulate)
             {
-                std::vector<std::vector<int>> tets;
-                triangulation(sub_cell_type, tetrahedron_sub_element[flag_exterior], tets);
-                for(int i = 0; i < static_cast<int>(tets.size()); ++i)
-                {
-                    std::array<int, 4> t;
-                    t[0] = vertex_case_map[tets[i][0]];
-                    t[1] = vertex_case_map[tets[i][1]];
-                    t[2] = vertex_case_map[tets[i][2]];
-                    t[3] = vertex_case_map[tets[i][3]];
-                    cutcells::cell::append_cell(cut_cell, type::tetrahedron, t, 4);
-                }
+                append_midpoint_split_prism(flag_exterior);
             }
             else
             {

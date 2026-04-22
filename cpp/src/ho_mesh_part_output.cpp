@@ -9,6 +9,8 @@
 #include "quadrature_tables.h"
 #include "reference_cell.h"
 #include "cell_topology.h"
+#include "quad_midpoint_split.h"
+#include "prism_midpoint_split.h"
 #include "triangulation.h"
 
 #include <algorithm>
@@ -348,7 +350,9 @@ void append_mesh_entity(mesh::CutMesh<T>& out,
                         cell::type cell_type,
                         int parent_cell_id,
                         bool triangulate,
-                        bool input_is_basix)
+                        bool input_is_basix,
+                        cell::type source_parent_type,
+                        std::span<const int> root_vertex_flags)
 {
     if (out._gdim == 0)
         out._gdim = gdim;
@@ -369,6 +373,105 @@ void append_mesh_entity(mesh::CutMesh<T>& out,
 
     const int nv = static_cast<int>(output_coords.size()) / gdim;
     const int vertex_base = out._num_vertices;
+
+    if (triangulate
+        && cell_type == cell::type::quadrilateral
+        && source_parent_type == cell::type::triangle
+        && root_vertex_flags.size() == static_cast<std::size_t>(nv))
+    {
+        std::array<int, 4> quad_tokens = {};
+        for (int i = 0; i < nv; ++i)
+        {
+            quad_tokens[static_cast<std::size_t>(i)]
+                = root_vertex_flags[static_cast<std::size_t>(i)] ? i : 100 + i;
+        }
+
+        int next_token_base = 200;
+        auto split = cell::quad_midpoint::split_triangle_derived_quadrilateral<T>(
+            output_coords,
+            gdim,
+            std::span<const int>(quad_tokens.data(), quad_tokens.size()),
+            next_token_base);
+
+        out._vertex_coords.insert(
+            out._vertex_coords.end(), output_coords.begin(), output_coords.end());
+        out._num_vertices += nv;
+
+        const int midpoint_vertex_base = out._num_vertices;
+        out._vertex_coords.insert(
+            out._vertex_coords.end(),
+            split.added_vertex_coords.begin(),
+            split.added_vertex_coords.end());
+        out._num_vertices += static_cast<int>(split.added_vertex_tokens.size());
+
+        std::array<int, 256> token_to_vertex;
+        token_to_vertex.fill(-1);
+        for (int i = 0; i < nv; ++i)
+            token_to_vertex[quad_tokens[static_cast<std::size_t>(i)]] = vertex_base + i;
+        for (std::size_t i = 0; i < split.added_vertex_tokens.size(); ++i)
+        {
+            token_to_vertex[split.added_vertex_tokens[i]]
+                = midpoint_vertex_base + static_cast<int>(i);
+        }
+
+        for (const auto& tri_tokens : split.triangles)
+        {
+            for (int k = 0; k < 3; ++k)
+                out._connectivity.push_back(token_to_vertex[tri_tokens[static_cast<std::size_t>(k)]]);
+            out._offset.push_back(static_cast<int>(out._connectivity.size()));
+            out._types.push_back(cell::type::triangle);
+            out._parent_map.push_back(parent_cell_id);
+            out._num_cells += 1;
+        }
+        return;
+    }
+
+    if (triangulate
+        && cell_type == cell::type::prism
+        && source_parent_type == cell::type::tetrahedron
+        && root_vertex_flags.size() == static_cast<std::size_t>(nv))
+    {
+        std::array<int, 6> prism_tokens = {};
+        for (int i = 0; i < nv; ++i)
+            prism_tokens[static_cast<std::size_t>(i)] = root_vertex_flags[static_cast<std::size_t>(i)] ? i : 100 + i;
+
+        int next_token_base = 200;
+        auto split = cell::prism_midpoint::split_tetra_derived_prism<T>(
+            output_coords,
+            gdim,
+            std::span<const int>(prism_tokens.data(), prism_tokens.size()),
+            next_token_base);
+
+        out._vertex_coords.insert(
+            out._vertex_coords.end(), output_coords.begin(), output_coords.end());
+        out._num_vertices += nv;
+
+        const int midpoint_vertex_base = out._num_vertices;
+        out._vertex_coords.insert(
+            out._vertex_coords.end(),
+            split.added_vertex_coords.begin(),
+            split.added_vertex_coords.end());
+        out._num_vertices += static_cast<int>(split.added_vertex_tokens.size());
+
+        std::array<int, 256> token_to_vertex;
+        token_to_vertex.fill(-1);
+        for (int i = 0; i < nv; ++i)
+            token_to_vertex[prism_tokens[static_cast<std::size_t>(i)]] = vertex_base + i;
+        for (std::size_t i = 0; i < split.added_vertex_tokens.size(); ++i)
+            token_to_vertex[split.added_vertex_tokens[i]] = midpoint_vertex_base + static_cast<int>(i);
+
+        for (const auto& tet_tokens : split.tets)
+        {
+            for (int k = 0; k < 4; ++k)
+                out._connectivity.push_back(token_to_vertex[tet_tokens[static_cast<std::size_t>(k)]]);
+            out._offset.push_back(static_cast<int>(out._connectivity.size()));
+            out._types.push_back(cell::type::tetrahedron);
+            out._parent_map.push_back(parent_cell_id);
+            out._num_cells += 1;
+        }
+        return;
+    }
+
     out._vertex_coords.insert(
         out._vertex_coords.end(), output_coords.begin(), output_coords.end());
     out._num_vertices += nv;
@@ -444,29 +547,192 @@ void append_entity_quadrature(quadrature::QuadratureRules<T>& rules,
                               int parent_cell_id,
                               int order,
                               bool triangulate,
-                              bool input_is_basix)
+                              bool input_is_basix,
+                              cell::type source_parent_type,
+                              std::span<const int> root_vertex_flags)
 {
     if (rules._tdim == 0)
         rules._tdim = parent_tdim;
     if (rules._offset.empty())
         rules._offset.push_back(0);
 
-    std::vector<T> ref_vertices_vtk;
-    std::vector<T> phys_vertices_vtk;
     std::span<const T> ref_use = ref_vertices;
     std::span<const T> phys_use = physical_vertices;
-    if (input_is_basix && !is_simplex(cell_type))
+    std::vector<T> ref_vertices_basix;
+    std::vector<T> phys_vertices_basix;
+    if (triangulate && !input_is_basix && !is_simplex(cell_type))
     {
-        ref_vertices_vtk = reorder_vertex_coords_to_vtk(cell_type, ref_vertices, parent_tdim);
-        phys_vertices_vtk = reorder_vertex_coords_to_vtk(cell_type, physical_vertices, gdim);
-        ref_use = std::span<const T>(ref_vertices_vtk.data(), ref_vertices_vtk.size());
-        phys_use = std::span<const T>(phys_vertices_vtk.data(), phys_vertices_vtk.size());
+        const auto perm = cell::vtk_to_basix_vertex_permutation(cell_type);
+        ref_vertices_basix = cell::permute_vertex_data(ref_vertices, parent_tdim, perm);
+        phys_vertices_basix = cell::permute_vertex_data(physical_vertices, gdim, perm);
+        ref_use = std::span<const T>(ref_vertices_basix.data(), ref_vertices_basix.size());
+        phys_use = std::span<const T>(phys_vertices_basix.data(), phys_vertices_basix.size());
     }
 
     const int entity_dim = cell::get_tdim(cell_type);
+    const int nv = static_cast<int>(ref_use.size()) / parent_tdim;
+
+    if (triangulate
+        && cell_type == cell::type::quadrilateral
+        && source_parent_type == cell::type::triangle
+        && root_vertex_flags.size() == static_cast<std::size_t>(nv))
+    {
+        std::array<int, 4> quad_tokens = {};
+        for (int i = 0; i < nv; ++i)
+        {
+            quad_tokens[static_cast<std::size_t>(i)]
+                = root_vertex_flags[static_cast<std::size_t>(i)] ? i : 100 + i;
+        }
+
+        int next_ref_token = 200;
+        auto ref_split = cell::quad_midpoint::split_triangle_derived_quadrilateral<T>(
+            ref_use,
+            parent_tdim,
+            std::span<const int>(quad_tokens.data(), quad_tokens.size()),
+            next_ref_token);
+
+        int next_phys_token = 200;
+        auto phys_split = cell::quad_midpoint::split_triangle_derived_quadrilateral<T>(
+            phys_use,
+            gdim,
+            std::span<const int>(quad_tokens.data(), quad_tokens.size()),
+            next_phys_token);
+
+        std::array<int, 256> token_to_local;
+        token_to_local.fill(-1);
+        for (int i = 0; i < nv; ++i)
+            token_to_local[quad_tokens[static_cast<std::size_t>(i)]] = i;
+        for (std::size_t i = 0; i < ref_split.added_vertex_tokens.size(); ++i)
+            token_to_local[ref_split.added_vertex_tokens[i]] = nv + static_cast<int>(i);
+
+        std::vector<T> ref_all(ref_use.begin(), ref_use.end());
+        ref_all.insert(
+            ref_all.end(),
+            ref_split.added_vertex_coords.begin(),
+            ref_split.added_vertex_coords.end());
+
+        std::vector<T> phys_all(phys_use.begin(), phys_use.end());
+        phys_all.insert(
+            phys_all.end(),
+            phys_split.added_vertex_coords.begin(),
+            phys_split.added_vertex_coords.end());
+
+        std::vector<T> ref_simplex;
+        std::vector<T> phys_simplex;
+        for (const auto& tri_tokens : ref_split.triangles)
+        {
+            const std::array<int, 3> local_ids = {
+                token_to_local[tri_tokens[0]],
+                token_to_local[tri_tokens[1]],
+                token_to_local[tri_tokens[2]],
+            };
+            gather_subcell_vertices(
+                std::span<const T>(ref_all.data(), ref_all.size()),
+                parent_tdim,
+                std::span<const int>(local_ids.data(), local_ids.size()),
+                ref_simplex);
+            gather_subcell_vertices(
+                std::span<const T>(phys_all.data(), phys_all.size()),
+                gdim,
+                std::span<const int>(local_ids.data(), local_ids.size()),
+                phys_simplex);
+            append_simplex_quadrature(
+                rules,
+                cell::type::triangle,
+                std::span<const T>(ref_simplex.data(), ref_simplex.size()),
+                std::span<const T>(phys_simplex.data(), phys_simplex.size()),
+                parent_tdim,
+                gdim,
+                order);
+        }
+
+        rules._parent_map.push_back(parent_cell_id);
+        rules._offset.push_back(static_cast<int32_t>(rules._weights.size()));
+        return;
+    }
+
+    if (triangulate
+        && cell_type == cell::type::prism
+        && source_parent_type == cell::type::tetrahedron
+        && root_vertex_flags.size() == static_cast<std::size_t>(nv))
+    {
+        std::array<int, 6> prism_tokens = {};
+        for (int i = 0; i < nv; ++i)
+        {
+            prism_tokens[static_cast<std::size_t>(i)]
+                = root_vertex_flags[static_cast<std::size_t>(i)] ? i : 100 + i;
+        }
+
+        int next_ref_token = 200;
+        auto ref_split = cell::prism_midpoint::split_tetra_derived_prism<T>(
+            ref_use,
+            parent_tdim,
+            std::span<const int>(prism_tokens.data(), prism_tokens.size()),
+            next_ref_token);
+
+        int next_phys_token = 200;
+        auto phys_split = cell::prism_midpoint::split_tetra_derived_prism<T>(
+            phys_use,
+            gdim,
+            std::span<const int>(prism_tokens.data(), prism_tokens.size()),
+            next_phys_token);
+
+        std::array<int, 256> token_to_local;
+        token_to_local.fill(-1);
+        for (int i = 0; i < nv; ++i)
+            token_to_local[prism_tokens[static_cast<std::size_t>(i)]] = i;
+        for (std::size_t i = 0; i < ref_split.added_vertex_tokens.size(); ++i)
+            token_to_local[ref_split.added_vertex_tokens[i]] = nv + static_cast<int>(i);
+
+        std::vector<T> ref_all(ref_use.begin(), ref_use.end());
+        ref_all.insert(
+            ref_all.end(),
+            ref_split.added_vertex_coords.begin(),
+            ref_split.added_vertex_coords.end());
+
+        std::vector<T> phys_all(phys_use.begin(), phys_use.end());
+        phys_all.insert(
+            phys_all.end(),
+            phys_split.added_vertex_coords.begin(),
+            phys_split.added_vertex_coords.end());
+
+        std::vector<T> ref_simplex;
+        std::vector<T> phys_simplex;
+        for (const auto& tet_tokens : ref_split.tets)
+        {
+            const std::array<int, 4> local_ids = {
+                token_to_local[tet_tokens[0]],
+                token_to_local[tet_tokens[1]],
+                token_to_local[tet_tokens[2]],
+                token_to_local[tet_tokens[3]],
+            };
+            gather_subcell_vertices(
+                std::span<const T>(ref_all.data(), ref_all.size()),
+                parent_tdim,
+                std::span<const int>(local_ids.data(), local_ids.size()),
+                ref_simplex);
+            gather_subcell_vertices(
+                std::span<const T>(phys_all.data(), phys_all.size()),
+                gdim,
+                std::span<const int>(local_ids.data(), local_ids.size()),
+                phys_simplex);
+            append_simplex_quadrature(
+                rules,
+                cell::type::tetrahedron,
+                std::span<const T>(ref_simplex.data(), ref_simplex.size()),
+                std::span<const T>(phys_simplex.data(), phys_simplex.size()),
+                parent_tdim,
+                gdim,
+                order);
+        }
+
+        rules._parent_map.push_back(parent_cell_id);
+        rules._offset.push_back(static_cast<int32_t>(rules._weights.size()));
+        return;
+    }
+
     if (triangulate && !is_simplex(cell_type))
     {
-        const int nv = static_cast<int>(ref_use.size()) / parent_tdim;
         std::vector<int> local_ids(static_cast<std::size_t>(nv));
         std::iota(local_ids.begin(), local_ids.end(), 0);
 
@@ -542,6 +808,24 @@ void append_cut_entities(mesh::CutMesh<T>& out,
 
         for (const auto& entity : entities)
         {
+            std::vector<int> root_vertex_flags;
+            if ((entity.type == cell::type::prism
+                 && adapt_cell.parent_cell_type == cell::type::tetrahedron)
+                || (entity.type == cell::type::quadrilateral
+                    && adapt_cell.parent_cell_type == cell::type::triangle))
+            {
+                root_vertex_flags.resize(entity.vertices.size(), 0);
+                for (std::size_t j = 0; j < entity.vertices.size(); ++j)
+                {
+                    root_vertex_flags[j] = vertex_is_zero_for_level_set(
+                        adapt_cell,
+                        entity.vertices[j],
+                        /*level_set_id=*/0)
+                                               ? 1
+                                               : 0;
+                }
+            }
+
             const auto ref_coords = entity_reference_coords(
                 adapt_cell, std::span<const int>(entity.vertices.data(), entity.vertices.size()));
             const auto phys_coords = cell::push_forward_affine_map<T>(
@@ -557,7 +841,9 @@ void append_cut_entities(mesh::CutMesh<T>& out,
                 entity.type,
                 static_cast<int>(parent_cell_id),
                 triangulate,
-                /*input_is_basix=*/true);
+                /*input_is_basix=*/true,
+                adapt_cell.parent_cell_type,
+                std::span<const int>(root_vertex_flags.data(), root_vertex_flags.size()));
 
             if (rules != nullptr)
             {
@@ -571,7 +857,9 @@ void append_cut_entities(mesh::CutMesh<T>& out,
                     static_cast<int>(parent_cell_id),
                     quadrature_order,
                     triangulate || !is_simplex(entity.type),
-                    /*input_is_basix=*/true);
+                    /*input_is_basix=*/true,
+                    adapt_cell.parent_cell_type,
+                    std::span<const int>(root_vertex_flags.data(), root_vertex_flags.size()));
             }
         }
     }
@@ -599,7 +887,9 @@ void append_uncut_volume_cells(mesh::CutMesh<T>& out,
             ctype,
             static_cast<int>(cell_id),
             triangulate,
-            /*input_is_basix=*/false);
+            /*input_is_basix=*/false,
+            cell::type::point,
+            std::span<const int>());
 
         if (rules != nullptr)
         {
@@ -614,7 +904,9 @@ void append_uncut_volume_cells(mesh::CutMesh<T>& out,
                 static_cast<int>(cell_id),
                 quadrature_order,
                 triangulate,
-                /*input_is_basix=*/false);
+                /*input_is_basix=*/false,
+                cell::type::point,
+                std::span<const int>());
         }
     }
 }

@@ -7,6 +7,8 @@
 #include "cut_triangle.h"
 #include "cut_interval.h"
 #include "cell_flags.h"
+#include "quad_midpoint_split.h"
+#include "reference_cell.h"
 #include "triangulation.h"
 #include "span_math.h"
 #include "utils.h"
@@ -93,7 +95,7 @@ namespace triangle{
 
         if(cell_type == type::quadrilateral && triangulate == true)
         {
-            num_sub_elements = 2;
+            num_sub_elements = 3;
         }
         return num_sub_elements;
     }
@@ -195,6 +197,59 @@ namespace triangle{
         cutcells::cell::clear_cell_topology(cut_cell);
         const cut_type cut_kind = string_to_cut_type(cut_type_str);
 
+        auto append_midpoint_split_quad = [&](int flag)
+        {
+            std::array<int, 4> quad_tokens = {};
+            for (int j = 0; j < 4; ++j)
+                quad_tokens[j] = triangle_sub_element[flag][j];
+
+            std::vector<T> quad_vertex_coords(static_cast<std::size_t>(4 * gdim));
+            for (int local_id = 0; local_id < 4; ++local_id)
+            {
+                const int token = quad_tokens[static_cast<std::size_t>(local_id)];
+                const int vertex_id = vertex_case_map[token];
+                if (vertex_id < 0)
+                    throw std::runtime_error("triangle::create_cut_cell missing quadrilateral vertex token");
+
+                for (int d = 0; d < gdim; ++d)
+                {
+                    quad_vertex_coords[static_cast<std::size_t>(local_id * gdim + d)]
+                        = cut_cell._vertex_coords[static_cast<std::size_t>(vertex_id * gdim + d)];
+                }
+            }
+
+            int next_token_base = 200;
+            auto split = cutcells::cell::quad_midpoint::split_triangle_derived_quadrilateral<T>(
+                std::span<const T>(quad_vertex_coords.data(), quad_vertex_coords.size()),
+                gdim,
+                std::span<const int>(quad_tokens.data(), quad_tokens.size()),
+                next_token_base);
+
+            const int old_num_vertices = static_cast<int>(cut_cell._vertex_coords.size() / gdim);
+            cut_cell._vertex_coords.insert(
+                cut_cell._vertex_coords.end(),
+                split.added_vertex_coords.begin(),
+                split.added_vertex_coords.end());
+
+            for (std::size_t i = 0; i < split.added_vertex_tokens.size(); ++i)
+            {
+                const int token = split.added_vertex_tokens[i];
+                if (token < 0 || token >= static_cast<int>(vertex_case_map.size()))
+                    throw std::runtime_error("triangle::create_cut_cell midpoint token out of bounds");
+                vertex_case_map[token] = old_num_vertices + static_cast<int>(i);
+            }
+
+            for (const auto& tri_tokens : split.triangles)
+            {
+                std::array<int, 3> t = {
+                    vertex_case_map[tri_tokens[0]],
+                    vertex_case_map[tri_tokens[1]],
+                    vertex_case_map[tri_tokens[2]],
+                };
+                cutcells::cell::append_cell(cut_cell, type::triangle, t, 3);
+            }
+        };
+
         if(cut_kind == cut_type::phieq0)
         {
             cut_cell._tdim = 1;
@@ -220,17 +275,7 @@ namespace triangle{
             type sub_cell_type = triangle_sub_element_cell_types[flag_interior];
             if(sub_cell_type == type::quadrilateral && triangulate)
             {
-                // Triangulate the quad: produce two triangles via triangulation helper
-                std::vector<std::vector<int>> triangles;
-                triangulation(sub_cell_type, triangle_sub_element[flag_interior], triangles);
-                for(int i = 0; i < static_cast<int>(triangles.size()); ++i)
-                {
-                    std::array<int, 3> t;
-                    t[0] = vertex_case_map[triangles[i][0]];
-                    t[1] = vertex_case_map[triangles[i][1]];
-                    t[2] = vertex_case_map[triangles[i][2]];
-                    cutcells::cell::append_cell(cut_cell, type::triangle, t, 3);
-                }
+                append_midpoint_split_quad(flag_interior);
             }
             else
             {
@@ -251,16 +296,7 @@ namespace triangle{
             type sub_cell_type = triangle_sub_element_cell_types[flag_exterior];
             if(sub_cell_type == type::quadrilateral && triangulate)
             {
-                std::vector<std::vector<int>> triangles;
-                triangulation(sub_cell_type, triangle_sub_element[flag_exterior], triangles);
-                for(int i = 0; i < static_cast<int>(triangles.size()); ++i)
-                {
-                    std::array<int, 3> t;
-                    t[0] = vertex_case_map[triangles[i][0]];
-                    t[1] = vertex_case_map[triangles[i][1]];
-                    t[2] = vertex_case_map[triangles[i][2]];
-                    cutcells::cell::append_cell(cut_cell, type::triangle, t, 3);
-                }
+                append_midpoint_split_quad(flag_exterior);
             }
             else
             {
