@@ -986,35 +986,26 @@ void classify_new_edges(AdaptCell<T>& adapt_cell,
             != EdgeRootTag::not_classified)
             continue;
 
-        // Extract edge Bernstein coefficients.
-        int parent_edge_id = -1;
-        if (edge_is_on_single_parent_edge(adapt_cell, e, parent_edge_id))
-        {
-            extract_parent_edge_bernstein(
-                ls_cell.cell_type, ls_cell.bernstein_order,
-                std::span<const T>(ls_cell.bernstein_coeffs),
-                parent_edge_id, edge_coeffs);
-        }
-        else
-        {
-            // Arbitrary adaptive edge: get endpoint reference coordinates.
-            auto verts = adapt_cell.entity_to_vertex[1][
-                static_cast<std::int32_t>(e)];
-            const int tdim = adapt_cell.tdim;
-            std::span<const T> xi_a(
-                adapt_cell.vertex_coords.data()
-                    + static_cast<std::size_t>(verts[0]) * static_cast<std::size_t>(tdim),
-                static_cast<std::size_t>(tdim));
-            std::span<const T> xi_b(
-                adapt_cell.vertex_coords.data()
-                    + static_cast<std::size_t>(verts[1]) * static_cast<std::size_t>(tdim),
-                static_cast<std::size_t>(tdim));
+        // Extract edge Bernstein coefficients on the actual adaptive edge segment.
+        //
+        // Even if an adaptive edge lies on a parent edge, using the parent-edge
+        // fast-path can be incorrect for subsegments (root localization would be
+        // in the wrong parameterization). Restrict by endpoints for robustness.
+        auto verts = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(e)];
+        const int tdim = adapt_cell.tdim;
+        std::span<const T> xi_a(
+            adapt_cell.vertex_coords.data()
+                + static_cast<std::size_t>(verts[0]) * static_cast<std::size_t>(tdim),
+            static_cast<std::size_t>(tdim));
+        std::span<const T> xi_b(
+            adapt_cell.vertex_coords.data()
+                + static_cast<std::size_t>(verts[1]) * static_cast<std::size_t>(tdim),
+            static_cast<std::size_t>(tdim));
 
-            restrict_edge_bernstein_exact(
-                ls_cell.cell_type, ls_cell.bernstein_order,
-                std::span<const T>(ls_cell.bernstein_coeffs),
-                xi_a, xi_b, edge_coeffs);
-        }
+        restrict_edge_bernstein_exact(
+            ls_cell.cell_type, ls_cell.bernstein_order,
+            std::span<const T>(ls_cell.bernstein_coeffs),
+            xi_a, xi_b, edge_coeffs);
 
         // Classify.
         T green_split_t = T(0);

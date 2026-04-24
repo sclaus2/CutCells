@@ -14,7 +14,6 @@
 #include "triangulation.h"
 
 #include <algorithm>
-#include <map>
 #include <numeric>
 #include <stdexcept>
 #include <vector>
@@ -82,39 +81,173 @@ bool vertex_is_zero_for_level_set(const AdaptCell<T>& adapt_cell,
     return (adapt_cell.zero_mask_per_vertex[static_cast<std::size_t>(vertex_id)] & bit) != 0;
 }
 
-template <std::floating_point T, std::integral I>
-std::vector<SelectedEntity> selected_entities(const HOMeshPart<T, I>& part,
-                                              const AdaptCell<T>& adapt_cell)
+template <std::floating_point T>
+bool cell_contains_all_vertices(std::span<const std::int32_t> cell_verts,
+                                std::span<const int> entity_verts)
 {
-    if (part.expr.clauses.size() != 1 || part.expr.clauses.front().level_set_index != 0)
+    for (const int v : entity_verts)
     {
-        throw std::runtime_error(
-            "HOMeshPart output currently supports only one-clause single-level-set selections");
+        bool found = false;
+        for (const auto cv : cell_verts)
+        {
+            if (cv == v)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return false;
+    }
+    return true;
+}
+
+template <std::floating_point T>
+void vertex_state_for_level_set(const AdaptCell<T>& ac,
+                                int vertex_id,
+                                int level_set_id,
+                                bool& is_negative,
+                                bool& is_positive,
+                                bool& is_zero)
+{
+    const std::uint64_t bit = std::uint64_t(1) << level_set_id;
+    const auto zm = ac.zero_mask_per_vertex[static_cast<std::size_t>(vertex_id)];
+    const auto nm = ac.negative_mask_per_vertex[static_cast<std::size_t>(vertex_id)];
+    is_zero = (zm & bit) != 0;
+    is_negative = !is_zero && ((nm & bit) != 0);
+    is_positive = !is_zero && !is_negative;
+}
+
+template <std::floating_point T, std::integral I>
+bool leaf_cell_matches_sign_requirements(
+    const AdaptCell<T>& ac,
+    std::span<const std::int32_t> cell_verts,
+    const SelectionExpr& expr,
+    std::uint64_t cut_cell_active_mask,
+    const BackgroundMeshData<T, I>& bg,
+    I parent_cell_id)
+{
+    const int nls = std::min(bg.num_level_sets, 64);
+    for (int li = 0; li < nls; ++li)
+    {
+        const std::uint64_t bit = std::uint64_t(1) << li;
+        const bool require_neg = (expr.negative_required & bit) != 0;
+        const bool require_pos = (expr.positive_required & bit) != 0;
+        if (!require_neg && !require_pos)
+            continue;
+
+        const bool ls_is_active = (cut_cell_active_mask & bit) != 0;
+        if (!ls_is_active)
+        {
+            const auto dom = bg.domain(li, parent_cell_id);
+            if (require_neg && dom != cell::domain::inside)
+                return false;
+            if (require_pos && dom != cell::domain::outside)
+                return false;
+            continue;
+        }
+
+        bool has_neg = false;
+        bool has_pos = false;
+        for (const auto cv : cell_verts)
+        {
+            bool is_neg = false;
+            bool is_pos = false;
+            bool is_zero = false;
+            vertex_state_for_level_set(ac, static_cast<int>(cv), li, is_neg, is_pos, is_zero);
+            has_neg = has_neg || is_neg;
+            has_pos = has_pos || is_pos;
+        }
+
+        if (require_neg)
+        {
+            if (has_pos || !has_neg)
+                return false;
+        }
+        if (require_pos)
+        {
+            if (has_neg || !has_pos)
+                return false;
+        }
     }
 
-    const auto relation = part.expr.clauses.front().relation;
+    return true;
+}
+
+template <std::floating_point T, std::integral I>
+bool zero_entity_matches(const HOMeshPart<T, I>& part,
+                         const AdaptCell<T>& ac,
+                         int zero_entity_index,
+                         std::uint64_t cut_cell_active_mask,
+                         I parent_cell_id)
+{
+    if (ac.zero_entity_dim[static_cast<std::size_t>(zero_entity_index)] != part.dim)
+        return false;
+
+    const auto zero_mask = ac.zero_entity_zero_mask[static_cast<std::size_t>(zero_entity_index)];
+    if ((zero_mask & part.expr.zero_required) != part.expr.zero_required)
+        return false;
+
+    if (part.expr.negative_required == 0 && part.expr.positive_required == 0)
+        return true;
+
+    std::vector<int> zero_verts;
+    const int zdim = ac.zero_entity_dim[static_cast<std::size_t>(zero_entity_index)];
+    const int zid = ac.zero_entity_id[static_cast<std::size_t>(zero_entity_index)];
+    if (zdim == 0)
+    {
+        zero_verts.push_back(zid);
+    }
+    else
+    {
+        auto verts = ac.entity_to_vertex[zdim][static_cast<std::int32_t>(zid)];
+        zero_verts.reserve(verts.size());
+        for (const auto v : verts)
+            zero_verts.push_back(static_cast<int>(v));
+    }
+
+    const int tdim = ac.tdim;
+    const int n_cells = ac.n_entities(tdim);
+    for (int c = 0; c < n_cells; ++c)
+    {
+        auto cell_verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
+        if (!cell_contains_all_vertices<T>(cell_verts, std::span<const int>(zero_verts)))
+            continue;
+
+        if (leaf_cell_matches_sign_requirements(
+                ac, cell_verts, part.expr, cut_cell_active_mask, *part.bg, parent_cell_id))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+template <std::floating_point T, std::integral I>
+std::vector<SelectedEntity> selected_entities(const HOMeshPart<T, I>& part,
+                                              const AdaptCell<T>& adapt_cell,
+                                              int cut_cell_id)
+{
     std::vector<SelectedEntity> entities;
+    const I parent_cell_id =
+        part.cut_cells->parent_cell_ids[static_cast<std::size_t>(cut_cell_id)];
+    const std::uint64_t cut_active_mask =
+        part.cut_cells->active_level_set_mask[static_cast<std::size_t>(cut_cell_id)];
 
     if (part.dim == adapt_cell.tdim)
     {
-        if (relation == Relation::EqualTo)
-            throw std::runtime_error("HOMeshPart output: phi = 0 is not a volume selection");
-
-        if (adapt_cell.cell_cert_tag_num_level_sets <= 0)
-            throw std::runtime_error("HOMeshPart output: missing cell certification tags");
-
-        const auto target = (relation == Relation::LessThan)
-                                ? CellCertTag::negative
-                                : CellCertTag::positive;
-
         const int n_cells = adapt_cell.n_entities(adapt_cell.tdim);
         entities.reserve(static_cast<std::size_t>(n_cells));
         for (int c = 0; c < n_cells; ++c)
         {
-            if (adapt_cell.get_cell_cert_tag(/*level_set_id=*/0, c) != target)
-                continue;
-
             auto verts = adapt_cell.entity_to_vertex[adapt_cell.tdim][static_cast<std::int32_t>(c)];
+            if (!leaf_cell_matches_sign_requirements(
+                    adapt_cell, verts, part.expr, cut_active_mask, *part.bg, parent_cell_id))
+            {
+                continue;
+            }
+
             SelectedEntity entity;
             entity.type = adapt_cell.entity_types[adapt_cell.tdim][static_cast<std::size_t>(c)];
             entity.vertices.assign(verts.begin(), verts.end());
@@ -123,90 +256,35 @@ std::vector<SelectedEntity> selected_entities(const HOMeshPart<T, I>& part,
         return entities;
     }
 
-    if (relation != Relation::EqualTo)
+    if ((cut_active_mask & part.expr.zero_required) != part.expr.zero_required)
+        return entities;
+
+    const int n_zero = adapt_cell.n_zero_entities();
+    entities.reserve(static_cast<std::size_t>(n_zero));
+    for (int z = 0; z < n_zero; ++z)
     {
-        throw std::runtime_error(
-            "HOMeshPart output: lower-dimensional direct export currently supports only phi = 0");
-    }
-
-    if (part.dim < 1 || part.dim >= adapt_cell.tdim)
-        throw std::runtime_error("HOMeshPart output: unsupported selection dimension");
-    if (part.dim != adapt_cell.tdim - 1)
-    {
-        throw std::runtime_error(
-            "HOMeshPart output currently supports only codim-1 phi = 0 selections");
-    }
-
-    std::map<std::vector<int>, SelectedEntity> unique_entities;
-    const int n_cells = adapt_cell.n_entities(adapt_cell.tdim);
-    for (int c = 0; c < n_cells; ++c)
-    {
-        const auto cell_type = adapt_cell.entity_types[adapt_cell.tdim][static_cast<std::size_t>(c)];
-        auto cell_verts = adapt_cell.entity_to_vertex[adapt_cell.tdim][static_cast<std::int32_t>(c)];
-
-        if (adapt_cell.tdim == 2)
-        {
-            for (const auto& edge : cell::edges(cell_type))
-            {
-                SelectedEntity entity;
-                entity.type = cell::type::interval;
-                entity.vertices = {
-                    static_cast<int>(cell_verts[static_cast<std::size_t>(edge[0])]),
-                    static_cast<int>(cell_verts[static_cast<std::size_t>(edge[1])])};
-
-                bool all_zero = true;
-                for (int gv : entity.vertices)
-                {
-                    if (!vertex_is_zero_for_level_set(adapt_cell, gv, /*level_set_id=*/0))
-                    {
-                        all_zero = false;
-                        break;
-                    }
-                }
-                if (!all_zero)
-                    continue;
-
-                auto key = entity.vertices;
-                std::sort(key.begin(), key.end());
-                unique_entities.try_emplace(std::move(key), std::move(entity));
-            }
+        if (!zero_entity_matches(part, adapt_cell, z, cut_active_mask, parent_cell_id))
             continue;
-        }
 
-        const int n_faces = cell::num_faces(cell_type);
-        for (int fi = 0; fi < n_faces; ++fi)
+        const int zdim = adapt_cell.zero_entity_dim[static_cast<std::size_t>(z)];
+        const int zid = adapt_cell.zero_entity_id[static_cast<std::size_t>(z)];
+        SelectedEntity entity;
+        entity.type = (zdim == 0)
+                          ? cell::type::point
+                          : adapt_cell.entity_types[zdim][static_cast<std::size_t>(zid)];
+        if (zdim == 0)
         {
-            auto local_face = cell::face_vertices(cell_type, fi);
-            SelectedEntity entity;
-            entity.type = cell::face_type(cell_type, fi);
-            entity.vertices.reserve(local_face.size());
-            for (auto lv : local_face)
-            {
-                entity.vertices.push_back(
-                    static_cast<int>(cell_verts[static_cast<std::size_t>(lv)]));
-            }
-
-            bool all_zero = true;
-            for (int gv : entity.vertices)
-            {
-                if (!vertex_is_zero_for_level_set(adapt_cell, gv, /*level_set_id=*/0))
-                {
-                    all_zero = false;
-                    break;
-                }
-            }
-            if (!all_zero)
-                continue;
-
-            auto key = entity.vertices;
-            std::sort(key.begin(), key.end());
-            unique_entities.try_emplace(std::move(key), std::move(entity));
+            entity.vertices.push_back(zid);
         }
+        else
+        {
+            auto verts = adapt_cell.entity_to_vertex[zdim][static_cast<std::int32_t>(zid)];
+            entity.vertices.assign(verts.begin(), verts.end());
+        }
+
+        entities.push_back(std::move(entity));
     }
 
-    entities.reserve(unique_entities.size());
-    for (auto& [key, entity] : unique_entities)
-        entities.push_back(std::move(entity));
     return entities;
 }
 
@@ -476,7 +554,7 @@ void append_mesh_entity(mesh::CutMesh<T>& out,
         out._vertex_coords.end(), output_coords.begin(), output_coords.end());
     out._num_vertices += nv;
 
-    if (triangulate && !is_simplex(cell_type))
+    if (triangulate && !is_simplex(cell_type) && cell::get_tdim(cell_type) >= 2)
     {
         std::vector<int> local_ids(static_cast<std::size_t>(nv));
         std::iota(local_ids.begin(), local_ids.end(), 0);
@@ -731,7 +809,7 @@ void append_entity_quadrature(quadrature::QuadratureRules<T>& rules,
         return;
     }
 
-    if (triangulate && !is_simplex(cell_type))
+    if (triangulate && !is_simplex(cell_type) && entity_dim >= 2)
     {
         std::vector<int> local_ids(static_cast<std::size_t>(nv));
         std::iota(local_ids.begin(), local_ids.end(), 0);
@@ -799,7 +877,7 @@ void append_cut_entities(mesh::CutMesh<T>& out,
     for (std::int32_t cut_id : part.cut_cell_ids)
     {
         const auto& adapt_cell = part.cut_cells->adapt_cells[static_cast<std::size_t>(cut_id)];
-        const auto entities = selected_entities(part, adapt_cell);
+        const auto entities = selected_entities(part, adapt_cell, cut_id);
         if (entities.empty())
             continue;
 
@@ -817,12 +895,18 @@ void append_cut_entities(mesh::CutMesh<T>& out,
                 root_vertex_flags.resize(entity.vertices.size(), 0);
                 for (std::size_t j = 0; j < entity.vertices.size(); ++j)
                 {
-                    root_vertex_flags[j] = vertex_is_zero_for_level_set(
-                        adapt_cell,
-                        entity.vertices[j],
-                        /*level_set_id=*/0)
-                                               ? 1
-                                               : 0;
+                    const auto zm = adapt_cell.zero_mask_per_vertex[
+                        static_cast<std::size_t>(entity.vertices[j])];
+                    bool is_root = false;
+                    if (part.expr.zero_required != 0)
+                    {
+                        is_root = (zm & part.expr.zero_required) == part.expr.zero_required;
+                    }
+                    else
+                    {
+                        is_root = zm != 0;
+                    }
+                    root_vertex_flags[j] = is_root ? 1 : 0;
                 }
             }
 
@@ -920,11 +1004,6 @@ mesh::CutMesh<T> visualization_mesh(const HOMeshPart<T, I>& part,
 {
     if (!part.cut_cells || !part.bg || !part.bg->mesh)
         throw std::runtime_error("HOMeshPart is not attached to cut-cell storage");
-    if (part.bg->num_level_sets != 1)
-    {
-        throw std::runtime_error(
-            "HOMeshPart output currently supports exactly one level set");
-    }
 
     mesh::CutMesh<T> out;
     out._gdim = part.bg->mesh->gdim;

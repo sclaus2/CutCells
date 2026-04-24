@@ -21,6 +21,28 @@ def _load_cpp_module():
             if matching:
                 candidates = matching
 
+        # If we're running from a source tree, prefer an up-to-date in-tree build.
+        # The repo keeps `cutcells/wrapper.cpp` next to this file; if the extension
+        # is older than the wrapper source, it's almost certainly stale (and tends
+        # to miss newer bindings like HOMeshPart.visualization_mesh, etc.).
+        wrapper_cpp = _Path(__file__).with_name("wrapper.cpp")
+        if wrapper_cpp.exists():
+            try:
+                wrapper_ts = wrapper_cpp.stat().st_mtime
+                candidates = [
+                    c for c in candidates
+                    if c.exists() and c.stat().st_mtime >= wrapper_ts
+                ]
+            except OSError:
+                pass
+
+        # Choose the newest candidate (by mtime) to avoid picking an old leftover.
+        if candidates:
+            try:
+                candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+            except OSError:
+                pass
+
         lib_candidates = [
             build_dir / "cutcells_cpp" / "src" / "libcutcells.dylib",
             _Path(__file__).resolve().parents[2]
@@ -34,20 +56,116 @@ def _load_cpp_module():
                 _ctypes.CDLL(str(lib), mode=_ctypes.RTLD_GLOBAL)
                 break
 
-        spec = _importlib_util.spec_from_file_location(
-            "cutcells._cutcellscpp", candidates[0]
-        )
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Could not load extension from {candidates[0]}")
+        if candidates:
+            try:
+                spec = _importlib_util.spec_from_file_location(
+                    "cutcells._cutcellscpp", candidates[0]
+                )
+                if spec is None or spec.loader is None:
+                    raise ImportError(f"Could not load extension from {candidates[0]}")
 
+                module = _importlib_util.module_from_spec(spec)
+                _sys.modules["cutcells._cutcellscpp"] = module
+                spec.loader.exec_module(module)
+
+                # Basic API sanity check for common dev/test usage. If this fails,
+                # fall back to the installed extension module.
+                if not (
+                    hasattr(module, "HOMeshPart_float64")
+                    and hasattr(module.HOMeshPart_float64, "visualization_mesh")
+                ):
+                    raise ImportError(f"Stale in-tree extension loaded from {candidates[0]}")
+
+                return module
+            except Exception:
+                _sys.modules.pop("cutcells._cutcellscpp", None)
+
+    # If the extension was installed into the package directory (normal wheel
+    # install), prefer loading it from right next to this __init__.py.
+    # The sys.path scan below intentionally skips this package dir to avoid
+    # re-import loops in a source-tree checkout, so without this branch an
+    # installed package cannot load its own extension.
+    this_pkg_dir = _Path(__file__).resolve().parent
+    ext_suffix = _sysconfig.get_config_var("EXT_SUFFIX")
+    local_sos = []
+    try:
+        for so in this_pkg_dir.glob("_cutcellscpp*.so"):
+            if ext_suffix and not so.name.endswith(ext_suffix):
+                continue
+            local_sos.append(so)
+    except Exception:
+        local_sos = []
+
+    if local_sos:
+        local_sos = sorted(local_sos, key=lambda p: p.stat().st_mtime, reverse=True)
+        so_path = local_sos[0]
+
+        lib_candidates = [
+            this_pkg_dir / "libcutcells.dylib",
+            this_pkg_dir.parent / "libcutcells.dylib",
+            this_pkg_dir.parent / "lib" / "libcutcells.dylib",
+        ]
+        for lib in lib_candidates:
+            try:
+                if lib.exists():
+                    _ctypes.CDLL(str(lib), mode=_ctypes.RTLD_GLOBAL)
+                    break
+            except Exception:
+                pass
+
+        spec = _importlib_util.spec_from_file_location("cutcells._cutcellscpp", so_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load installed extension from {so_path}")
         module = _importlib_util.module_from_spec(spec)
         _sys.modules["cutcells._cutcellscpp"] = module
         spec.loader.exec_module(module)
         return module
 
-    from . import _cutcellscpp as module
+    # Fall back to an installed extension (e.g. site-packages) when running from
+    # a source tree without an up-to-date in-tree build.
+    installed = []
+    for entry in list(_sys.path):
+        try:
+            pkg_dir = _Path(entry) / "cutcells"
+            if not pkg_dir.exists() or pkg_dir.resolve() == this_pkg_dir:
+                continue
+            for so in pkg_dir.glob("_cutcellscpp*.so"):
+                if ext_suffix and not so.name.endswith(ext_suffix):
+                    continue
+                installed.append(so)
+        except Exception:
+            continue
 
-    return module
+    if installed:
+        installed = sorted(installed, key=lambda p: p.stat().st_mtime, reverse=True)
+        so_path = installed[0]
+
+        # Try to preload the companion dylib if it was packaged separately.
+        lib_candidates = [
+            so_path.parent / "libcutcells.dylib",
+            so_path.parent.parent / "libcutcells.dylib",
+            so_path.parent.parent / "lib" / "libcutcells.dylib",
+        ]
+        for lib in lib_candidates:
+            try:
+                if lib.exists():
+                    _ctypes.CDLL(str(lib), mode=_ctypes.RTLD_GLOBAL)
+                    break
+            except Exception:
+                pass
+
+        spec = _importlib_util.spec_from_file_location("cutcells._cutcellscpp", so_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load installed extension from {so_path}")
+        module = _importlib_util.module_from_spec(spec)
+        _sys.modules["cutcells._cutcellscpp"] = module
+        spec.loader.exec_module(module)
+        return module
+
+    raise ImportError(
+        "Could not load cutcells extension: no in-tree build found and no installed "
+        "cutcells/_cutcellscpp*.so found on sys.path."
+    )
 
 
 _cutcellscpp = _load_cpp_module()
@@ -83,6 +201,7 @@ LevelSetFunction_float64 = _cutcellscpp.LevelSetFunction_float64
 create_level_set_mesh_data = _cutcellscpp.create_level_set_mesh_data
 create_level_set_function = _cutcellscpp.create_level_set_function
 create_level_set = _cutcellscpp.create_level_set
+interpolate_level_set = _cutcellscpp.interpolate_level_set
 make_adapt_cell = _cutcellscpp.make_adapt_cell
 build_edges = _cutcellscpp.build_edges
 make_cell_level_set = _cutcellscpp.make_cell_level_set
@@ -119,9 +238,12 @@ HOCutResult = _cutcellscpp.HOCutResult
 HOMeshPart = _cutcellscpp.HOMeshPart
 
 from .mesh_utils import (
+    cutmesh_to_pyvista,
     mesh_from_pyvista,
     rectangle_triangle_mesh,
     rectangle_quad_mesh,
+    safe_part_name,
+    structured_triangle_mesh_view,
     box_tetrahedron_mesh,
     box_hex_mesh,
 )

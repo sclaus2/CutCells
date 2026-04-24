@@ -140,15 +140,16 @@ void fill_all_vertex_signs_from_level_set(AdaptCell<T>& adapt_cell,
                                           int level_set_id,
                                           T zero_tol);
 
-/// Replace leaf cells marked ready_to_cut by the non-triangulated LUT cut
-/// decomposition on the positive and negative side.
+/// Replace leaf cells marked ready_to_cut by the LUT cut decomposition on the
+/// positive and negative side.
 template <std::floating_point T, std::integral I>
 void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
                                 const LevelSetCell<T, I>& ls_cell,
                                 int level_set_id,
                                 T zero_tol,
                                 T sign_tol,
-                                int edge_max_depth);
+                                int edge_max_depth,
+                                bool triangulate_cut_parts = false);
 
 // =====================================================================
 // Top-level certification + refinement driver
@@ -189,6 +190,7 @@ void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
                                             int level_set_id,
                                             int max_iterations,
                                             T zero_tol, T sign_tol,
-                                            int edge_max_depth);
+                                            int edge_max_depth,
+                                            bool triangulate_cut_parts = false);
 
 } // namespace cutcells

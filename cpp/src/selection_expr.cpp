@@ -190,7 +190,7 @@ int infer_selection_dim(const SelectionExpr& expr, int tdim)
     for (const auto& clause : expr.clauses)
         if (clause.relation == Relation::EqualTo)
             ++n_eq;
-    return tdim - n_eq;
+    return std::max(0, tdim - n_eq);
 }
 
 } // namespace cutcells

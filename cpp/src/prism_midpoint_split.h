@@ -65,6 +65,35 @@ family classify_family(std::span<const int> prism_tokens);
 /// suggested by the tetra-prism analysis.
 PrismRoleAnalysis analyze_tetra_derived_prism(std::span<const int> prism_tokens);
 
+inline int parent_tetrahedron_edge_token(int token_a, int token_b)
+{
+    if (is_root_token(token_a) || is_root_token(token_b))
+    {
+        throw std::runtime_error(
+            "parent_tetrahedron_edge_token: midpoint endpoints must be original vertices");
+    }
+
+    const int a = token_a - 100;
+    const int b = token_b - 100;
+    if (a < 0 || a >= 4 || b < 0 || b >= 4)
+    {
+        throw std::runtime_error(
+            "parent_tetrahedron_edge_token: invalid original-vertex token");
+    }
+
+    constexpr std::array<LocalEdge, 6> parent_edges = {{
+        {0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 3}, {2, 3},
+    }};
+    for (std::size_t e = 0; e < parent_edges.size(); ++e)
+    {
+        const LocalEdge edge = parent_edges[e];
+        if ((edge.a == a && edge.b == b) || (edge.a == b && edge.b == a))
+            return static_cast<int>(e);
+    }
+
+    throw std::runtime_error("parent_tetrahedron_edge_token: parent edge not found");
+}
+
 template <std::floating_point T>
 struct MidpointInsertionResult
 {
@@ -112,7 +141,9 @@ MidpointInsertionResult<T> create_default_midpoints(
 
     for (const LocalEdge edge : result.analysis.midpoint_edges)
     {
-        result.added_vertex_tokens.push_back(next_token_base++);
+        result.added_vertex_tokens.push_back(parent_tetrahedron_edge_token(
+            prism_tokens[static_cast<std::size_t>(edge.a)],
+            prism_tokens[static_cast<std::size_t>(edge.b)]));
         result.added_vertex_edges.push_back(edge);
         for (int d = 0; d < coord_dim; ++d)
         {
@@ -121,6 +152,7 @@ MidpointInsertionResult<T> create_default_midpoints(
             result.added_vertex_coords.push_back(T(0.5) * (xa + xb));
         }
     }
+    (void) next_token_base;
 
     return result;
 }
@@ -327,19 +359,30 @@ MidpointInsertionResult<T> split_tetra_derived_prism(
     std::vector<std::array<int, 4>> canonical_tets;
     if (result.analysis.split_family == family::roots3)
     {
-        // Build the three original-vertex corner tetrahedra first. The
-        // remaining central cell has vertices {3,4,5,6,7,8} and is an
-        // octahedron, not a prism. Split it into four tetrahedra around the
-        // root-midpoint diagonal (5,6), which yields one central tet of the
-        // preferred midpoint-root-root-root form.
+        // Build the three original-vertex corner tetrahedra first.
+        //
+        // The remaining central cell has vertices {3,4,5,6,7,8}:
+        // - {3,4,5} are the root vertices (one on each tetra edge)
+        // - {6,7,8} are midpoints on the non-root triangle edges
+        //
+        // This remaining polyhedron is a triangular antiprism with boundary
+        // triangles:
+        // - top:    {3,4,5}
+        // - bottom: {6,7,8}
+        // - sides:  {3,4,6}, {4,5,7}, {5,3,8}, {3,6,8}, {4,7,6}, {5,8,7}
+        //
+        // A 4-tet decomposition (total 7 tets incl. corners) is required here:
+        // a 3-tet "prism" split does not cover the antiprism volume.
         canonical_tets = {
             std::array<int, 4>{0, 6, 8, 3},
             std::array<int, 4>{1, 7, 6, 4},
             std::array<int, 4>{2, 8, 7, 5},
-            std::array<int, 4>{5, 6, 3, 4},
-            std::array<int, 4>{5, 6, 4, 7},
-            std::array<int, 4>{5, 6, 7, 8},
-            std::array<int, 4>{5, 6, 8, 3},
+            // Central triangular antiprism {3,4,5,6,7,8} split into 4 tets.
+            // This corresponds to inserting the internal diagonal (3,7).
+            std::array<int, 4>{3, 4, 6, 7},
+            std::array<int, 4>{3, 5, 8, 7},
+            std::array<int, 4>{3, 4, 5, 7},
+            std::array<int, 4>{3, 6, 8, 7},
         };
     }
     else

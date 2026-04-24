@@ -14,7 +14,7 @@ def test_tetra_parent_summary_excludes_zero_only_edges_from_interior_root_count(
     assert summary["new_edges_with_interior_roots"] == 0
     assert summary["new_edges_with_zero_tag"] == 18
     assert summary["new_edges_with_zero_endpoint"] == 122
-    assert summary["total_new_simplices"] == 108
+    assert summary["total_new_simplices"] == 116
     assert summary["negative_new_simplices"] == 0
     assert summary["degenerate_new_simplices"] == 0
 
@@ -40,7 +40,7 @@ def test_tetra_parent_prism_volume_cases_have_only_endpoint_roots_and_positive_t
 
     for summary in (negative_summary, positive_summary):
         assert summary["cases"] == 14
-        assert summary["source_type_counts"] == {"prism": 48}
+        assert summary["source_type_counts"] == {"prism": 52}
         assert summary["new_edges_with_interior_roots"] == 0
         assert summary["new_edges_with_zero_tag"] == 6
         assert summary["new_edges_with_zero_endpoint"] == 58

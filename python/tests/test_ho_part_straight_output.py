@@ -71,6 +71,40 @@ def _edge_counts(cut_mesh):
     return counts
 
 
+def test_triangle_lut_triangulated_quad_connects_uncut_edge_vertices_to_adjacent_roots():
+    vertex_coordinates = np.array(
+        [
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+        dtype=np.float64,
+    )
+    level_set_values = np.array([-0.7, 0.3, 0.3], dtype=np.float64)
+
+    cut = cutcells.cut(
+        cutcells.CellType.triangle,
+        vertex_coordinates,
+        2,
+        level_set_values,
+        "phi>0",
+        True,
+    )
+
+    parent_tokens = np.asarray(cut.vertex_parent_entity, dtype=np.int32)
+    connectivity = np.asarray(cut.connectivity, dtype=np.int32).reshape(-1, 3)
+    token_tris = {tuple(sorted(int(parent_tokens[v]) for v in tri)) for tri in connectivity}
+
+    assert token_tris == {
+        tuple(sorted((101, 0, 1))),
+        tuple(sorted((1, 0, 2))),
+        tuple(sorted((102, 1, 2))),
+    }
+
+
 def test_homeshpart_straight_output_bridge(tmp_path: Path):
     mesh = _single_tetra_mesh()
     ls = cutcells.create_level_set(
@@ -87,30 +121,20 @@ def test_homeshpart_straight_output_bridge(tmp_path: Path):
     vis_cut = negative.visualization_mesh(mode="cut_only")
     vis_full = negative.visualization_mesh(mode="full")
     vis_interface = interface.visualization_mesh(mode="cut_only")
-    vis_cut_triangulated = negative.visualization_mesh(mode="cut_only", triangulate=True)
-    vis_interface_triangulated = interface.visualization_mesh(
-        mode="cut_only", triangulate=True
-    )
 
     assert len(np.asarray(vis_cut.types)) > 0
     assert len(np.asarray(vis_full.types)) >= len(np.asarray(vis_cut.types))
     assert len(np.asarray(vis_interface.types)) > 0
     assert np.unique(np.asarray(vis_cut.vtk_types)).tolist() == [13]
     assert np.unique(np.asarray(vis_interface.vtk_types)).tolist() == [9]
-    assert np.unique(np.asarray(vis_cut_triangulated.vtk_types)).tolist() == [10]
-    assert np.unique(np.asarray(vis_interface_triangulated.vtk_types)).tolist() == [5]
 
     q_cut = negative.quadrature(order=3, mode="cut_only")
     q_full = negative.quadrature(order=3, mode="full")
     q_interface = interface.quadrature(order=3, mode="cut_only")
-    q_cut_triangulated = negative.quadrature(
-        order=3, mode="cut_only", triangulate=True
-    )
 
     assert q_cut.weights.sum() > 0.0
     assert q_full.weights.sum() >= q_cut.weights.sum()
     assert q_interface.weights.sum() > 0.0
-    assert np.isclose(q_cut_triangulated.weights.sum(), q_cut.weights.sum())
 
     negative_path = tmp_path / "negative_full.vtu"
     interface_path = tmp_path / "interface.vtu"
@@ -123,7 +147,7 @@ def test_homeshpart_straight_output_bridge(tmp_path: Path):
     assert "Name=\"types\" format=\"ascii\">9 " in interface_path.read_text()
 
 
-def test_triangulated_interface_preserves_quad_boundary_without_bowtie():
+def test_interface_output_reflects_adaptcell_quad_leaf():
     mesh = _single_tetra_mesh()
     ls = cutcells.create_level_set(
         mesh,
@@ -135,25 +159,17 @@ def test_triangulated_interface_preserves_quad_boundary_without_bowtie():
     result = cutcells.cut(mesh, ls)
     interface = result["phi = 0"]
 
-    vis_interface = interface.visualization_mesh(mode="cut_only", triangulate=False)
-    vis_interface_triangulated = interface.visualization_mesh(
-        mode="cut_only", triangulate=True
-    )
+    vis_interface = interface.visualization_mesh(mode="cut_only")
 
     quad_edges = _edge_counts(vis_interface)
-    tri_edges = _edge_counts(vis_interface_triangulated)
 
     quad_boundary = {edge for edge, count in quad_edges.items() if count == 1}
-    tri_boundary = {edge for edge, count in tri_edges.items() if count == 1}
-    tri_interior = {edge for edge, count in tri_edges.items() if count == 2}
 
     assert np.asarray(vis_interface.vtk_types).tolist() == [9]
-    assert np.asarray(vis_interface_triangulated.vtk_types).tolist() == [5, 5]
-    assert tri_boundary == quad_boundary
-    assert len(tri_interior) == 1
+    assert len(quad_boundary) == 4
 
 
-def test_triangle_volume_output_uses_quad_midpoint_split():
+def test_triangle_volume_output_reflects_adaptcell_quad_leaf():
     mesh = _single_triangle_mesh()
     ls = cutcells.create_level_set(
         mesh,
@@ -165,16 +181,9 @@ def test_triangle_volume_output_uses_quad_midpoint_split():
     result = cutcells.cut(mesh, ls)
     negative = result["phi < 0"]
 
-    vis_base = negative.visualization_mesh(mode="cut_only", triangulate=False)
-    vis_triangulated = negative.visualization_mesh(mode="cut_only", triangulate=True)
-    q_base = negative.quadrature(order=3, mode="cut_only", triangulate=False)
-    q_triangulated = negative.quadrature(order=3, mode="cut_only", triangulate=True)
-
-    tri_points = np.asarray(vis_triangulated.vertex_coords, dtype=np.float64)
+    vis_base = negative.visualization_mesh(mode="cut_only")
+    q_base = negative.quadrature(order=3, mode="cut_only")
 
     assert np.asarray(vis_base.vtk_types).tolist() == [9]
-    assert np.asarray(vis_triangulated.vtk_types).tolist() == [5, 5, 5]
     assert np.asarray(vis_base.vertex_coords).shape[0] == 4
-    assert tri_points.shape[0] == 5
-    assert np.any(np.all(np.isclose(tri_points, np.array([1.0, 0.5])), axis=1))
-    assert np.isclose(q_triangulated.weights.sum(), q_base.weights.sum())
+    assert q_base.weights.sum() > 0.0

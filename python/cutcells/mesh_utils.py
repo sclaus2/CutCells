@@ -70,6 +70,65 @@ def mesh_from_pyvista(grid, *, tdim=None):
     )
 
 
+def safe_part_name(expr):
+    """Return a filesystem-safe compact name for a level-set selection."""
+    return (
+        str(expr)
+        .replace(" ", "")
+        .replace("<", "lt")
+        .replace(">", "gt")
+        .replace("=", "eq")
+    )
+
+
+def cutmesh_to_pyvista(cut_mesh):
+    """Convert a cutcells CutMesh to a pyvista.UnstructuredGrid."""
+    if pv is None:
+        raise ImportError("pyvista is required for cutmesh_to_pyvista")
+
+    points = np.asarray(cut_mesh.vertex_coords, dtype=np.float64)
+    if points.ndim == 2 and points.shape[1] == 2:
+        points = np.column_stack([points, np.zeros(points.shape[0])])
+
+    return pv.UnstructuredGrid(
+        np.asarray(cut_mesh.cells, dtype=np.int64),
+        np.asarray(cut_mesh.vtk_types, dtype=np.uint8),
+        points,
+    )
+
+
+def structured_triangle_mesh_view(x0, y0, x1, y1, nx, ny):
+    """Pure NumPy structured triangular MeshView on [x0,x1] x [y0,y1].
+
+    Each quadrilateral grid cell is split along the bottom-left to top-right
+    diagonal. This helper does not require pyvista.
+    """
+    from . import MeshView
+
+    x = np.linspace(x0, x1, num=nx)
+    y = np.linspace(y0, y1, num=ny)
+    xx, yy = np.meshgrid(x, y)
+    coordinates = np.column_stack([xx.ravel(), yy.ravel()]).astype(np.float64)
+
+    connectivity = []
+    cell_types = []
+    for j in range(ny - 1):
+        for i in range(nx - 1):
+            v0 = j * nx + i
+            v1 = v0 + 1
+            v3 = v0 + nx
+            v2 = v3 + 1
+            connectivity.extend([v0, v1, v2])
+            connectivity.extend([v0, v2, v3])
+            cell_types.extend([5, 5])  # VTK_TRIANGLE
+
+    connectivity = np.asarray(connectivity, dtype=np.int32)
+    offsets = np.arange(0, connectivity.size + 1, 3, dtype=np.int32)
+    cell_types = np.asarray(cell_types, dtype=np.int32)
+
+    return MeshView(coordinates, connectivity, offsets, cell_types, tdim=2)
+
+
 # ---------------------------------------------------------------------------
 # 2D structured meshes
 # ---------------------------------------------------------------------------

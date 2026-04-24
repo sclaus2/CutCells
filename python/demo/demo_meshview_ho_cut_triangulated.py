@@ -419,12 +419,12 @@ def main() -> None:
     print(f"  phi = 0  : cut={interface.num_cut_cells}, uncut={interface.num_uncut_cells}")
     print(f"  phi > 0  : cut={positive.num_cut_cells}, uncut={positive.num_uncut_cells}")
 
-    print("Building triangulated straight visualization meshes from HOMeshPart ...")
-    inside_full = negative.visualization_mesh(mode="full", triangulate=True)
-    inside_cut = negative.visualization_mesh(mode="cut_only", triangulate=True)
-    outside_full = positive.visualization_mesh(mode="full", triangulate=True)
-    outside_cut = positive.visualization_mesh(mode="cut_only", triangulate=True)
-    interface_mesh = interface.visualization_mesh(mode="cut_only", triangulate=True)
+    print("Building straight visualization meshes from HOMeshPart ...")
+    inside_full = negative.visualization_mesh(mode="full")
+    inside_cut = negative.visualization_mesh(mode="cut_only")
+    outside_full = positive.visualization_mesh(mode="full")
+    outside_cut = positive.visualization_mesh(mode="cut_only")
+    interface_mesh = interface.visualization_mesh(mode="cut_only")
 
     print(f"  inside full cells={len(np.asarray(inside_full.types))}")
     print(f"  inside cut-only cells={len(np.asarray(inside_cut.types))}")
@@ -432,12 +432,12 @@ def main() -> None:
     print(f"  outside full cells={len(np.asarray(outside_full.types))}")
     print(f"  outside cut-only cells={len(np.asarray(outside_cut.types))}")
 
-    print("Building non-triangulated reference meshes for the new-edge check ...")
-    inside_full_base = negative.visualization_mesh(mode="full", triangulate=False)
-    inside_cut_base = negative.visualization_mesh(mode="cut_only", triangulate=False)
-    outside_full_base = positive.visualization_mesh(mode="full", triangulate=False)
-    outside_cut_base = positive.visualization_mesh(mode="cut_only", triangulate=False)
-    interface_base = interface.visualization_mesh(mode="cut_only", triangulate=False)
+    print("Building reference meshes for the new-edge check ...")
+    inside_full_base = negative.visualization_mesh(mode="full")
+    inside_cut_base = negative.visualization_mesh(mode="cut_only")
+    outside_full_base = positive.visualization_mesh(mode="full")
+    outside_cut_base = positive.visualization_mesh(mode="cut_only")
+    interface_base = interface.visualization_mesh(mode="cut_only")
 
     print("Checking whether triangulation-created edges carry level-set roots ...")
     edge_checks = {
@@ -482,7 +482,7 @@ def main() -> None:
     ]
 
     for part, path, mode in mesh_outputs:
-        part.write_vtu(str(path), mode=mode, triangulate=True)
+        part.write_vtu(str(path), mode=mode)
         print(f"  wrote {path}")
 
     if args.no_plot:

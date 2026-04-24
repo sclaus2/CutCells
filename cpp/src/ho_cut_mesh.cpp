@@ -8,8 +8,10 @@
 #include "edge_certification.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <vector>
 
@@ -109,6 +111,176 @@ cell::domain classify_cell_domain_fast(const MeshView<T, I>& mesh,
                            static_cast<std::size_t>(nv)));
 }
 
+template <std::floating_point T>
+bool cell_contains_all_vertices(std::span<const std::int32_t> cell_verts,
+                                std::span<const int> entity_verts)
+{
+    for (const int v : entity_verts)
+    {
+        bool found = false;
+        for (const auto cv : cell_verts)
+        {
+            if (cv == v)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return false;
+    }
+    return true;
+}
+
+template <std::floating_point T>
+bool vertex_state_for_level_set(const AdaptCell<T>& ac,
+                                int vertex_id,
+                                int level_set_id,
+                                bool& is_negative,
+                                bool& is_positive,
+                                bool& is_zero)
+{
+    if (level_set_id < 0 || level_set_id >= 64)
+        return false;
+
+    const std::uint64_t bit = std::uint64_t(1) << level_set_id;
+    const auto zm = ac.zero_mask_per_vertex[static_cast<std::size_t>(vertex_id)];
+    const auto nm = ac.negative_mask_per_vertex[static_cast<std::size_t>(vertex_id)];
+    is_zero = (zm & bit) != 0;
+    is_negative = !is_zero && ((nm & bit) != 0);
+    is_positive = !is_zero && !is_negative;
+    return true;
+}
+
+template <std::floating_point T, std::integral I>
+bool leaf_cell_matches_sign_requirements(
+    const AdaptCell<T>& ac,
+    std::span<const std::int32_t> cell_verts,
+    const SelectionExpr& expr,
+    std::uint64_t cut_cell_active_mask,
+    const BackgroundMeshData<T, I>& bg,
+    I parent_cell_id)
+{
+    const int nls = std::min(bg.num_level_sets, 64);
+    for (int li = 0; li < nls; ++li)
+    {
+        const std::uint64_t bit = std::uint64_t(1) << li;
+        const bool require_neg = (expr.negative_required & bit) != 0;
+        const bool require_pos = (expr.positive_required & bit) != 0;
+        if (!require_neg && !require_pos)
+            continue;
+
+        const bool ls_is_active = (cut_cell_active_mask & bit) != 0;
+        if (!ls_is_active)
+        {
+            const auto dom = bg.domain(li, parent_cell_id);
+            if (require_neg && dom != cell::domain::inside)
+                return false;
+            if (require_pos && dom != cell::domain::outside)
+                return false;
+            continue;
+        }
+
+        bool has_neg = false;
+        bool has_pos = false;
+        for (const auto cv : cell_verts)
+        {
+            bool is_neg = false;
+            bool is_pos = false;
+            bool is_zero = false;
+            vertex_state_for_level_set(ac, static_cast<int>(cv), li, is_neg, is_pos, is_zero);
+            has_neg = has_neg || is_neg;
+            has_pos = has_pos || is_pos;
+        }
+
+        if (require_neg)
+        {
+            if (has_pos || !has_neg)
+                return false;
+        }
+        if (require_pos)
+        {
+            if (has_neg || !has_pos)
+                return false;
+        }
+    }
+
+    return true;
+}
+
+template <std::floating_point T, std::integral I>
+bool zero_entity_matches(
+    const AdaptCell<T>& ac,
+    int zero_entity_index,
+    int target_dim,
+    const SelectionExpr& expr,
+    std::uint64_t cut_cell_active_mask,
+    const BackgroundMeshData<T, I>& bg,
+    I parent_cell_id)
+{
+    if (ac.zero_entity_dim[static_cast<std::size_t>(zero_entity_index)] != target_dim)
+        return false;
+
+    const auto zero_mask = ac.zero_entity_zero_mask[static_cast<std::size_t>(zero_entity_index)];
+    if ((zero_mask & expr.zero_required) != expr.zero_required)
+        return false;
+
+    if (expr.negative_required == 0 && expr.positive_required == 0)
+        return true;
+
+    std::vector<int> zero_verts;
+    const int zdim = ac.zero_entity_dim[static_cast<std::size_t>(zero_entity_index)];
+    const int zid = ac.zero_entity_id[static_cast<std::size_t>(zero_entity_index)];
+    if (zdim == 0)
+    {
+        zero_verts.push_back(zid);
+    }
+    else
+    {
+        auto verts = ac.entity_to_vertex[zdim][static_cast<std::int32_t>(zid)];
+        zero_verts.reserve(verts.size());
+        for (const auto v : verts)
+            zero_verts.push_back(static_cast<int>(v));
+    }
+
+    const int tdim = ac.tdim;
+    const int n_cells = ac.n_entities(tdim);
+    for (int c = 0; c < n_cells; ++c)
+    {
+        auto cell_verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
+        if (!cell_contains_all_vertices<T>(cell_verts, std::span<const int>(zero_verts)))
+            continue;
+
+        if (leaf_cell_matches_sign_requirements(
+                ac, cell_verts, expr, cut_cell_active_mask, bg, parent_cell_id))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+template <std::floating_point T, std::integral I>
+void refresh_adapt_cell_semantics(
+    AdaptCell<T>& ac,
+    std::span<const int> processed_level_set_indices,
+    std::span<const LevelSetCell<T, I>> processed_level_set_cells,
+    int total_num_level_sets,
+    T zero_tol)
+{
+    for (std::size_t i = 0; i < processed_level_set_indices.size(); ++i)
+    {
+        fill_all_vertex_signs_from_level_set(
+            ac,
+            processed_level_set_cells[i],
+            processed_level_set_indices[i],
+            zero_tol);
+    }
+
+    recompute_active_level_set_masks(ac, total_num_level_sets);
+}
+
 } // anonymous namespace
 
 // =====================================================================
@@ -172,7 +344,24 @@ cut(const MeshView<T, I>& mesh, const LevelSetFunction<T, I>& ls)
 
         certify_refine_and_process_ready_cells(
             ac, hc.level_set_cells.back(), /*level_set_id=*/0,
-            /*max_iterations=*/8, T(1e-12), T(1e-12), /*edge_max_depth=*/20);
+            /*max_iterations=*/8, T(1e-12), T(1e-12), /*edge_max_depth=*/20,
+            /*triangulate_cut_parts=*/false);
+        {
+            const std::array<int, 1> processed_ids = {0};
+            const auto* processed_cell = &hc.level_set_cells.back();
+            refresh_adapt_cell_semantics(
+                ac,
+                std::span<const int>(processed_ids.data(), processed_ids.size()),
+                std::span<const LevelSetCell<T, I>>(processed_cell, std::size_t(1)),
+                /*total_num_level_sets=*/1,
+                T(1e-12));
+        }
+
+        // Finalize derived topology/semantic layers used by selection + output.
+        build_edges(ac);
+        if (ac.tdim == 3)
+            build_faces(ac);
+        rebuild_zero_entity_inventory(ac);
         hc.adapt_cells.push_back(std::move(ac));
 
         // Single LS: bit 0 is always set.
@@ -266,24 +455,65 @@ cut(const MeshView<T, I>& mesh,
         if (!any_intersected)
             continue;
 
+        std::vector<int> all_level_set_indices(static_cast<std::size_t>(nls));
+        std::iota(all_level_set_indices.begin(), all_level_set_indices.end(), 0);
+        std::vector<LevelSetCell<T, I>> all_level_set_cells;
+        all_level_set_cells.reserve(static_cast<std::size_t>(nls));
+        for (int li = 0; li < nls; ++li)
+        {
+            all_level_set_cells.push_back(
+                make_cell_level_set(level_sets[static_cast<std::size_t>(li)], ci));
+        }
+
         const int cut_idx = hc.num_cut_cells();
         bg.cell_to_cut_index[static_cast<std::size_t>(ci)] = cut_idx;
 
         // Build AdaptCell once per cell.
         AdaptCell<T> ac = make_adapt_cell(mesh, ci);
 
-        // Build LevelSetCell and fill vertex signs for each intersecting LS.
+        // Process intersecting level sets recursively (input order).
+        //
+        // Multi-level-set cutting must leave the AdaptCell leaf mesh as
+        // simplexes after each cut; otherwise a later level set may be asked to
+        // cut quad/prism leaves, which the ready-to-cut certification path does
+        // not support.
         std::uint64_t cell_active_mask = 0;
         for (std::size_t k = 0; k < intersected_ls_indices.size(); ++k)
         {
             const int li = intersected_ls_indices[k];
-            hc.level_set_cells.push_back(std::move(intersected_ls_cells[k]));
             certify_refine_and_process_ready_cells(
-                ac, hc.level_set_cells.back(), li,
-                /*max_iterations=*/8, T(1e-12), T(1e-12), /*edge_max_depth=*/20);
+                ac, intersected_ls_cells[k], li,
+                /*max_iterations=*/8, T(1e-12), T(1e-12),
+                /*edge_max_depth=*/20, /*triangulate_cut_parts=*/true);
+
+            // New vertices created while processing level set li must be
+            // reclassified for all already-processed level sets.
+            refresh_adapt_cell_semantics(
+                ac,
+                std::span<const int>(intersected_ls_indices.data(), k + 1),
+                std::span<const LevelSetCell<T, I>>(intersected_ls_cells.data(), k + 1),
+                nls,
+                T(1e-12));
 
             cell_active_mask |= std::uint64_t(1) << li;
         }
+
+        // Finalize derived topology/semantic layers used by selection + output.
+        build_edges(ac);
+        if (ac.tdim == 3)
+            build_faces(ac);
+        recompute_active_level_set_masks(ac, nls);
+        refresh_adapt_cell_semantics(
+            ac,
+            std::span<const int>(all_level_set_indices.data(), all_level_set_indices.size()),
+            std::span<const LevelSetCell<T, I>>(all_level_set_cells.data(), all_level_set_cells.size()),
+            nls,
+            T(1e-12));
+        rebuild_zero_entity_inventory(ac);
+
+        // Persist per-cell LevelSetCell blocks in HOCutCells CSR storage.
+        for (auto& ls_cell : intersected_ls_cells)
+            hc.level_set_cells.push_back(std::move(ls_cell));
         hc.ls_offsets.push_back(
             static_cast<int>(hc.level_set_cells.size()));
         hc.active_level_set_mask.push_back(cell_active_mask);
@@ -350,84 +580,52 @@ HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
             part.uncut_cell_ids.push_back(ci);
     }
 
-    // --- Cut cells: check vertex bitmasks for volume selections,
-    //     or entity inventory for interface selections ---
+    // --- Cut cells ---
     const int ncut = cut_cells.num_cut_cells();
     for (int k = 0; k < ncut; ++k)
     {
         const auto& ac = cut_cells.adapt_cells[static_cast<std::size_t>(k)];
-        const int nv = ac.n_vertices();
+        const I bg_cell = cut_cells.parent_cell_ids[static_cast<std::size_t>(k)];
+        const std::uint64_t cut_active_mask =
+            cut_cells.active_level_set_mask[static_cast<std::size_t>(k)];
 
         if (is_volume)
         {
-            // Volume selection: a cut cell contributes if at least one vertex
-            // satisfies all sign constraints.
-            // Actually, a cut cell always contributes to a volume part
-            // (it has sub-entities on the requested side), so we include it.
-            // More refined: check if the required bitmask pattern is present.
-            bool has_matching_vertex = false;
-            for (int v = 0; v < nv; ++v)
+            bool has_matching_leaf = false;
+            const int tdim = ac.tdim;
+            const int n_leaf = ac.n_entities(tdim);
+            for (int c = 0; c < n_leaf; ++c)
             {
-                const auto zm = ac.zero_mask_per_vertex[static_cast<std::size_t>(v)];
-                const auto nm = ac.negative_mask_per_vertex[static_cast<std::size_t>(v)];
-
-                // Positive bit: not zero, not negative.
-                const auto pm = ~zm & ~nm;
-
-                bool vertex_ok = true;
-
-                // Check if zero requirements are met (for EqualTo clauses).
-                if ((zm & part.expr.zero_required) != part.expr.zero_required)
-                    vertex_ok = false;
-
-                // Check if negative requirements are met.
-                if ((nm & part.expr.negative_required) != part.expr.negative_required)
-                    vertex_ok = false;
-
-                // Check if positive requirements are met.
-                if ((pm & part.expr.positive_required) != part.expr.positive_required)
-                    vertex_ok = false;
-
-                if (vertex_ok)
+                auto cell_verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
+                if (leaf_cell_matches_sign_requirements(
+                        ac, cell_verts, part.expr, cut_active_mask, bg, bg_cell))
                 {
-                    has_matching_vertex = true;
+                    has_matching_leaf = true;
                     break;
                 }
             }
 
-            if (has_matching_vertex)
+            if (has_matching_leaf)
                 part.cut_cell_ids.push_back(static_cast<std::int32_t>(k));
         }
         else
         {
-            // Interface selection: for now include any cut cell that has
-            // the required zero level set(s) intersecting it.
-            // A cell is included if:
-            //  - the zero_required LSs actually cut the cell
-            //  - the sign constraints on the non-zero LSs are satisfiable
-            //    (at least one vertex per non-zero constraint).
-            bool has_zero_ls = true;
-            for (int v = 0; v < nv && has_zero_ls; ++v)
-            {
-                // Check eventually; for now, if the LS is marked as
-                // intersected in cell_domains, the zero surface exists.
-            }
+            if ((cut_active_mask & part.expr.zero_required) != part.expr.zero_required)
+                continue;
 
-            // Check that the intersecting LS indices match zero_required.
-            bool zero_ok = true;
-            for (const auto& clause : part.expr.clauses)
+            bool has_matching_zero_entity = false;
+            const int n_zero = ac.n_zero_entities();
+            for (int z = 0; z < n_zero; ++z)
             {
-                if (clause.relation != Relation::EqualTo) continue;
-                const int li = clause.level_set_index;
-                const I bg_cell = cut_cells.parent_cell_ids[static_cast<std::size_t>(k)];
-                if (bg.domain(li, bg_cell) != cell::domain::intersected)
+                if (zero_entity_matches(
+                        ac, z, part.dim, part.expr, cut_active_mask, bg, bg_cell))
                 {
-                    zero_ok = false;
+                    has_matching_zero_entity = true;
                     break;
                 }
             }
 
-            if (zero_ok)
+            if (has_matching_zero_entity)
                 part.cut_cell_ids.push_back(static_cast<std::int32_t>(k));
         }
     }

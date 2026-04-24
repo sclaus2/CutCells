@@ -7,6 +7,7 @@
 #include "cell_topology.h"
 #include "reference_cell.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <map>
@@ -175,6 +176,8 @@ AdaptCell<T> make_adapt_cell(const MeshView<T, I>& mesh, I cell_id)
     if (tdim == 3)
         build_faces(ac);
 
+    recompute_active_level_set_masks(ac, /*num_level_sets=*/0);
+
     return ac;
 }
 
@@ -206,6 +209,122 @@ void fill_vertex_signs(AdaptCell<T>& ac,
 }
 
 // ---------------------------------------------------------------------------
+// recompute_active_level_set_masks
+// ---------------------------------------------------------------------------
+
+template <std::floating_point T>
+void recompute_active_level_set_masks(AdaptCell<T>& ac, int num_level_sets)
+{
+    const int tdim = ac.tdim;
+    const int n_cells = ac.n_entities(tdim);
+
+    ac.cell_active_level_set_mask.assign(static_cast<std::size_t>(n_cells),
+                                         std::uint64_t(0));
+    ac.active_level_set_mask = 0;
+
+    if (num_level_sets <= 0 || n_cells <= 0)
+        return;
+
+    const int nls = std::min(num_level_sets, 64);
+
+    for (int c = 0; c < n_cells; ++c)
+    {
+        auto verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
+        std::uint64_t leaf_mask = 0;
+
+        for (int ls = 0; ls < nls; ++ls)
+        {
+            const std::uint64_t bit = std::uint64_t(1) << ls;
+            bool has_neg = false;
+            bool has_pos = false;
+            bool has_zero = false;
+
+            for (const auto v : verts)
+            {
+                const auto zv = ac.zero_mask_per_vertex[static_cast<std::size_t>(v)];
+                const auto nv = ac.negative_mask_per_vertex[static_cast<std::size_t>(v)];
+                if ((zv & bit) != 0)
+                    has_zero = true;
+                else if ((nv & bit) != 0)
+                    has_neg = true;
+                else
+                    has_pos = true;
+            }
+
+            if (has_zero || (has_neg && has_pos))
+                leaf_mask |= bit;
+        }
+
+        ac.cell_active_level_set_mask[static_cast<std::size_t>(c)] = leaf_mask;
+        ac.active_level_set_mask |= leaf_mask;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// rebuild_zero_entity_inventory
+// ---------------------------------------------------------------------------
+
+template <std::floating_point T>
+void rebuild_zero_entity_inventory(AdaptCell<T>& ac)
+{
+    ac.zero_entity_dim.clear();
+    ac.zero_entity_id.clear();
+    ac.zero_entity_zero_mask.clear();
+    ac.zero_entity_is_owned.clear();
+    ac.zero_entity_parent_dim.clear();
+    ac.zero_entity_parent_id.clear();
+
+    const int n_vertices = ac.n_vertices();
+    for (int v = 0; v < n_vertices; ++v)
+    {
+        const auto mask = ac.zero_mask_per_vertex[static_cast<std::size_t>(v)];
+        if (mask == 0)
+            continue;
+
+        ac.zero_entity_dim.push_back(std::uint8_t(0));
+        ac.zero_entity_id.push_back(static_cast<std::int32_t>(v));
+        ac.zero_entity_zero_mask.push_back(mask);
+        ac.zero_entity_is_owned.push_back(std::uint8_t(1));
+        ac.zero_entity_parent_dim.push_back(
+            ac.vertex_parent_dim.empty() ? std::int8_t(-1)
+                                         : ac.vertex_parent_dim[static_cast<std::size_t>(v)]);
+        ac.zero_entity_parent_id.push_back(
+            ac.vertex_parent_id.empty() ? std::int32_t(-1)
+                                        : ac.vertex_parent_id[static_cast<std::size_t>(v)]);
+    }
+
+    for (int dim = 1; dim < ac.tdim; ++dim)
+    {
+        const int n_entities = ac.n_entities(dim);
+        for (int e = 0; e < n_entities; ++e)
+        {
+            auto verts = ac.entity_to_vertex[dim][static_cast<std::int32_t>(e)];
+            if (verts.empty())
+                continue;
+
+            std::uint64_t mask = ~std::uint64_t(0);
+            for (const auto v : verts)
+            {
+                mask &= ac.zero_mask_per_vertex[static_cast<std::size_t>(v)];
+                if (mask == 0)
+                    break;
+            }
+            if (mask == 0)
+                continue;
+
+            ac.zero_entity_dim.push_back(static_cast<std::uint8_t>(dim));
+            ac.zero_entity_id.push_back(static_cast<std::int32_t>(e));
+            ac.zero_entity_zero_mask.push_back(mask);
+            ac.zero_entity_is_owned.push_back(std::uint8_t(1));
+            ac.zero_entity_parent_dim.push_back(std::int8_t(-1));
+            ac.zero_entity_parent_id.push_back(std::int32_t(-1));
+        }
+    }
+
+    ++ac.zero_entity_version;
+}
+
+// ---------------------------------------------------------------------------
 // Explicit template instantiations
 // ---------------------------------------------------------------------------
 
@@ -222,5 +341,9 @@ template AdaptCell<float>  make_adapt_cell(const MeshView<float,  long>&, long);
 
 template void fill_vertex_signs(AdaptCell<double>&, std::span<const double>, int, double);
 template void fill_vertex_signs(AdaptCell<float>&,  std::span<const float>,  int, float);
+template void recompute_active_level_set_masks(AdaptCell<double>&, int);
+template void recompute_active_level_set_masks(AdaptCell<float>&, int);
+template void rebuild_zero_entity_inventory(AdaptCell<double>&);
+template void rebuild_zero_entity_inventory(AdaptCell<float>&);
 
 } // namespace cutcells

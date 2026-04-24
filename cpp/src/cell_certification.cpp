@@ -5,6 +5,7 @@
 
 #include "cell_certification.h"
 #include "bernstein.h"
+#include "cell_flags.h"
 #include "cell_topology.h"
 #include "cut_cell.h"
 #include "cut_tetrahedron.h"
@@ -278,16 +279,6 @@ void gather_adapt_edge_bernstein(const AdaptCell<T>& adapt_cell,
                                  int edge_id,
                                  std::vector<T>& edge_coeffs)
 {
-    int parent_edge_id = -1;
-    if (edge_is_on_single_parent_edge(adapt_cell, edge_id, parent_edge_id))
-    {
-        extract_parent_edge_bernstein(
-            ls_cell.cell_type, ls_cell.bernstein_order,
-            std::span<const T>(ls_cell.bernstein_coeffs),
-            parent_edge_id, edge_coeffs);
-        return;
-    }
-
     auto verts = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(edge_id)];
     const int tdim = adapt_cell.tdim;
     std::span<const T> xi_a(
@@ -546,11 +537,34 @@ void append_ready_cut_part_cells(
 
             if (token >= 0 && token < 100)
             {
-                // Straight cut vertices lie on the straight interface by construction.
-                // They should therefore participate in phi=0 face extraction even when
-                // the curved level set evaluated at this affine point is not exactly zero.
-                set_vertex_sign_for_level_set(
-                    adapt_cell, vertex_id, level_set_id, T(0), zero_tol);
+                const int local_edge_id = token;
+                const bool is_level_set_root =
+                    local_edge_id >= 0
+                    && local_edge_id < static_cast<int>(old_edge_ids_by_local_edge.size())
+                    && old_edge_ids_by_local_edge[static_cast<std::size_t>(local_edge_id)] >= 0
+                    && adapt_cell.get_edge_root_tag(
+                           level_set_id,
+                           old_edge_ids_by_local_edge[static_cast<std::size_t>(local_edge_id)])
+                           == EdgeRootTag::one_root;
+
+                if (is_level_set_root)
+                {
+                    // Straight cut vertices lie on the straight interface by
+                    // construction. They should participate in phi=0
+                    // extraction even when the curved level set evaluated at
+                    // this affine point is not exactly zero.
+                    set_vertex_sign_for_level_set(
+                        adapt_cell, vertex_id, level_set_id, T(0), zero_tol);
+                }
+                else
+                {
+                    // LUT triangulation may insert midpoints on uncut parent
+                    // edges. They inherit parent-edge provenance, but are not
+                    // zero vertices for this level set.
+                    const T value = ls_cell.value(x);
+                    set_vertex_sign_for_level_set(
+                        adapt_cell, vertex_id, level_set_id, value, zero_tol);
+                }
             }
             else
             {
@@ -1209,6 +1223,10 @@ void fill_all_vertex_signs_from_level_set(AdaptCell<T>& adapt_cell,
     const int tdim = adapt_cell.tdim;
     for (int v = 0; v < n_vertices; ++v)
     {
+        const std::uint64_t bit = std::uint64_t(1) << level_set_id;
+        if ((adapt_cell.zero_mask_per_vertex[static_cast<std::size_t>(v)] & bit) != 0)
+            continue;
+
         std::span<const T> xi(
             adapt_cell.vertex_coords.data()
                 + static_cast<std::size_t>(v) * static_cast<std::size_t>(tdim),
@@ -1228,7 +1246,8 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
                                 int level_set_id,
                                 T zero_tol,
                                 T sign_tol,
-                                int edge_max_depth)
+                                int edge_max_depth,
+                                bool triangulate_cut_parts)
 {
     const int tdim = adapt_cell.tdim;
     const int n_cells = adapt_cell.n_entities(tdim);
@@ -1290,6 +1309,23 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
         const std::vector<T> ls_values =
             gather_leaf_cell_vertex_level_set_values(adapt_cell, ls_cell, c);
 
+        bool has_strict_negative = false;
+        bool has_strict_positive = false;
+        for (const T value : ls_values)
+        {
+            has_strict_negative = has_strict_negative || value < -zero_tol;
+            has_strict_positive = has_strict_positive || value > zero_tol;
+        }
+        if (!(has_strict_negative && has_strict_positive))
+        {
+            std::vector<int> copy(old_cell_vertices.begin(), old_cell_vertices.end());
+            append_top_cell_local(new_types, new_cells, leaf_cell_type, std::span<const int>(copy));
+            old_cell_ids_for_new_cells.push_back(c);
+            explicit_current_ls_tags.push_back(
+                has_strict_negative ? CellCertTag::negative : CellCertTag::positive);
+            continue;
+        }
+
         std::array<int, 6> old_edge_ids_by_local_edge;
         old_edge_ids_by_local_edge.fill(-1);
         const auto ledges = cell::edges(leaf_cell_type);
@@ -1343,14 +1379,14 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
                 std::span<const T>(ls_values),
                 "phi<0",
                 negative_part,
-                /*triangulate=*/false);
+                triangulate_cut_parts);
             cell::triangle::cut(
                 std::span<const T>(vertex_coords),
                 tdim,
                 std::span<const T>(ls_values),
                 "phi>0",
                 positive_part,
-                /*triangulate=*/false);
+                triangulate_cut_parts);
 
             append_ready_cut_part_cells(
                 adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
@@ -1370,11 +1406,11 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
             cell::tetrahedron::cut(
                 std::span<const T>(vertex_coords), tdim,
                 std::span<const T>(ls_values), "phi<0",
-                negative_part, /*triangulate=*/false);
+                negative_part, triangulate_cut_parts);
             cell::tetrahedron::cut(
                 std::span<const T>(vertex_coords), tdim,
                 std::span<const T>(ls_values), "phi>0",
-                positive_part, /*triangulate=*/false);
+                positive_part, triangulate_cut_parts);
 
             append_ready_cut_part_cells(
                 adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
@@ -1484,14 +1520,16 @@ void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
                                             int level_set_id,
                                             int max_iterations,
                                             T zero_tol, T sign_tol,
-                                            int edge_max_depth)
+                                            int edge_max_depth,
+                                            bool triangulate_cut_parts)
 {
     fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
     certify_and_refine(adapt_cell, ls_cell, level_set_id,
                        max_iterations, zero_tol, sign_tol, edge_max_depth);
     fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
     process_ready_to_cut_cells(adapt_cell, ls_cell, level_set_id,
-                               zero_tol, sign_tol, edge_max_depth);
+                               zero_tol, sign_tol, edge_max_depth,
+                               triangulate_cut_parts);
 }
 
 // =====================================================================
@@ -1564,16 +1602,16 @@ template void fill_all_vertex_signs_from_level_set(AdaptCell<float>&,
 
 template void process_ready_to_cut_cells(AdaptCell<double>&,
                                          const LevelSetCell<double, int>&,
-                                         int, double, double, int);
+                                         int, double, double, int, bool);
 template void process_ready_to_cut_cells(AdaptCell<float>&,
                                          const LevelSetCell<float, int>&,
-                                         int, float, float, int);
+                                         int, float, float, int, bool);
 template void process_ready_to_cut_cells(AdaptCell<double>&,
                                          const LevelSetCell<double, long>&,
-                                         int, double, double, int);
+                                         int, double, double, int, bool);
 template void process_ready_to_cut_cells(AdaptCell<float>&,
                                          const LevelSetCell<float, long>&,
-                                         int, float, float, int);
+                                         int, float, float, int, bool);
 
 template void certify_and_refine(AdaptCell<double>&,
                                  const LevelSetCell<double, int>&,
@@ -1587,15 +1625,15 @@ template void certify_and_refine(AdaptCell<double>&,
 
 template void certify_refine_and_process_ready_cells(AdaptCell<double>&,
                                                      const LevelSetCell<double, int>&,
-                                                     int, int, double, double, int);
+                                                     int, int, double, double, int, bool);
 template void certify_refine_and_process_ready_cells(AdaptCell<float>&,
                                                      const LevelSetCell<float, int>&,
-                                                     int, int, float, float, int);
+                                                     int, int, float, float, int, bool);
 template void certify_refine_and_process_ready_cells(AdaptCell<double>&,
                                                      const LevelSetCell<double, long>&,
-                                                     int, int, double, double, int);
+                                                     int, int, double, double, int, bool);
 template void certify_refine_and_process_ready_cells(AdaptCell<float>&,
                                                      const LevelSetCell<float, long>&,
-                                                     int, int, float, float, int);
+                                                     int, int, float, float, int, bool);
 
 } // namespace cutcells

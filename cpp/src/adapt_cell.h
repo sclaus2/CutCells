@@ -112,6 +112,11 @@ struct AdaptCell
     ///< bit i set → level set i is active on this cell (cuts through it)
     std::uint64_t active_level_set_mask = 0;
 
+    /// Per-leaf-cell active level-set mask.
+    /// Parallel to entity_types[tdim]/entity_to_vertex[tdim]:
+    /// bit i set ↔ level set i intersects that leaf cell.
+    std::vector<std::uint64_t> cell_active_level_set_mask;
+
     // ---------------------------------------------------------------
     // Vertices (dimension 0)
     //
@@ -526,5 +531,26 @@ void build_edges(AdaptCell<T>& ac);
 /// @param ac  AdaptCell to update in place.
 template <std::floating_point T>
 void build_faces(AdaptCell<T>& ac);
+
+/// Recompute per-leaf and per-cell active level-set masks from vertex masks.
+///
+/// For each top-dimensional leaf cell, bit i is set if the cell has a
+/// sign change for level set i or contains at least one zero vertex for i.
+///
+/// @param ac               AdaptCell to update in place.
+/// @param num_level_sets   Number of level sets to scan (bits 0..num_level_sets-1).
+template <std::floating_point T>
+void recompute_active_level_set_masks(AdaptCell<T>& ac, int num_level_sets);
+
+/// Rebuild the zero-entity inventory from current topology and vertex masks.
+///
+/// Zero entities are registered for:
+///   - dim 0: vertices with nonzero zero-mask
+///   - dim 1..tdim-1: entities whose all vertices share at least one zero bit
+///     (mask = intersection of vertex zero masks).
+///
+/// @param ac  AdaptCell to update in place.
+template <std::floating_point T>
+void rebuild_zero_entity_inventory(AdaptCell<T>& ac);
 
 } // namespace cutcells

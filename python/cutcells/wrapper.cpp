@@ -721,24 +721,22 @@ inline bool part_mode_is_cut_only(std::string_view mode)
 template <typename T>
 cutcells::mesh::CutMesh<T> part_visualization_mesh(
     const cutcells::HOMeshPart<T, int>& part,
-    std::string_view mode,
-    bool triangulate)
+    std::string_view mode)
 {
   const bool cut_only = part_mode_is_cut_only(mode);
   return cutcells::output::visualization_mesh(
-      part, /*include_uncut_cells=*/!cut_only, triangulate);
+      part, /*include_uncut_cells=*/!cut_only, /*triangulate=*/false);
 }
 
 template <typename T>
 cutcells::quadrature::QuadratureRules<T> part_quadrature(
     const cutcells::HOMeshPart<T, int>& part,
     int order,
-    std::string_view mode,
-    bool triangulate)
+    std::string_view mode)
 {
   const bool cut_only = part_mode_is_cut_only(mode);
   return cutcells::output::quadrature_rules(
-      part, order, /*include_uncut_cells=*/!cut_only, triangulate);
+      part, order, /*include_uncut_cells=*/!cut_only, /*triangulate=*/false);
 }
 
 template <typename T>
@@ -1206,6 +1204,52 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
       nb::arg("degree"),
       nb::arg("name") = "phi",
       "Interpolate a batched callable phi(X) at higher-order level-set dof coordinates.");
+
+  m.def(
+      "interpolate_level_set",
+      [](const MeshViewT& mesh, nb::callable phi, int degree,
+         const std::string& name)
+      {
+        LevelSetMeshDataT mesh_data;
+        {
+          nb::gil_scoped_release release;
+          mesh_data = cutcells::create_level_set_mesh_data<T, int>(mesh, degree, T(-1));
+        }
+
+        auto mesh_data_ptr = std::make_shared<LevelSetMeshDataT>(std::move(mesh_data));
+        const std::size_t num_dofs = static_cast<std::size_t>(mesh_data_ptr->num_dofs());
+        const std::size_t gdim = static_cast<std::size_t>(mesh_data_ptr->gdim);
+
+        // Expose as (num_dofs, gdim), i.e. one point per row (matches tests + docs).
+        // Keep `mesh_data_ptr` alive via `owner` in case the callback holds onto X.
+        nb::object owner = nb::cast(mesh_data_ptr);
+        nb::ndarray<const T, nb::numpy> X(
+            mesh_data_ptr->dof_coordinates.data(),
+            {num_dofs, gdim},
+            owner);
+
+        // Intentional single batched callback invocation.
+        nb::object values_obj = phi(X);
+        auto values = nb::cast<ndarray1<T>>(values_obj);
+        if (static_cast<std::size_t>(values.size()) != num_dofs)
+        {
+          throw std::runtime_error(
+              "interpolate_level_set: callback must return a 1D array with length num_dofs");
+        }
+
+        return cutcells::create_level_set_function<T, int>(
+            std::move(mesh_data_ptr),
+            std::span<const T>(
+                values.data(),
+                static_cast<std::size_t>(values.size())),
+            name);
+      },
+      nb::arg("mesh"),
+      nb::arg("phi"),
+      nb::arg("degree"),
+      nb::arg("name") = "phi",
+      "Interpolate a batched callable phi(X) on higher-order level-set DOF coordinates.\n"
+      "X is passed as an ndarray of shape (num_dofs, gdim).");
 
   // ---- cut_mesh_view ----
   // Cuts a MeshView using a LevelSetFunction, returning a CutMesh.
@@ -1771,6 +1815,15 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                     nb::handle());
             },
             nb::rv_policy::reference_internal)
+        .def_prop_ro("active_level_set_mask",
+            [](const HOCutResult& self) {
+                return nb::ndarray<const std::uint64_t, nb::numpy>(
+                    self.cut_cells.active_level_set_mask.data(),
+                    {self.cut_cells.active_level_set_mask.size()},
+                    nb::handle());
+            },
+            nb::rv_policy::reference_internal,
+            "Per cut-cell bitmask of level sets intersecting the background cell.")
         .def_prop_ro("cell_domains",
             [](const HOCutResult& self) {
                 const int* data = reinterpret_cast<const int*>(
@@ -1841,38 +1894,33 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             nb::rv_policy::reference_internal)
         .def(
             "visualization_mesh",
-            [](const PartT& self, const std::string& mode, bool triangulate) {
+            [](const PartT& self, const std::string& mode) {
                 nb::gil_scoped_release release;
-                return part_visualization_mesh(self, mode, triangulate);
+                return part_visualization_mesh(self, mode);
             },
             nb::arg("mode") = "full",
-            nb::arg("triangulate") = false,
-            "Return a straight visualization mesh for a one-level-set HOMeshPart.\n"
-            "This bridge currently supports only single-level-set selections.")
+            "Return a straight visualization mesh for an HOMeshPart.")
         .def(
             "quadrature",
-            [](const PartT& self, int order, const std::string& mode, bool triangulate) {
+            [](const PartT& self, int order, const std::string& mode) {
                 nb::gil_scoped_release release;
-                return part_quadrature(self, order, mode, triangulate);
+                return part_quadrature(self, order, mode);
             },
             nb::arg("order") = 3,
             nb::arg("mode") = "full",
-            nb::arg("triangulate") = false,
             "Return straight quadrature rules for a one-level-set HOMeshPart.\n"
             "This bridge currently supports only single-level-set selections.")
         .def(
             "write_vtu",
             [](const PartT& self,
                const std::string& filename,
-               const std::string& mode,
-               bool triangulate) {
+               const std::string& mode) {
                 nb::gil_scoped_release release;
-                auto vis = part_visualization_mesh(self, mode, triangulate);
+                auto vis = part_visualization_mesh(self, mode);
                 io::write_vtk(filename, vis);
             },
             nb::arg("filename"),
             nb::arg("mode") = "full",
-            nb::arg("triangulate") = false,
             "Write a straight visualization VTU file for a one-level-set HOMeshPart.");
 
     // --- ho_cut() factory ---
@@ -1940,6 +1988,7 @@ void declare_certification(nb::module_& m, const std::string& suffix)
     nb::class_<AdaptCellT>(m, adapt_name.c_str(), "Adaptive local cell topology")
         .def(nb::init<>())
         .def_prop_ro("tdim", [](const AdaptCellT& self) { return self.tdim; })
+        .def_prop_ro("active_level_set_mask", [](const AdaptCellT& self) { return self.active_level_set_mask; })
         .def("num_vertices", &AdaptCellT::n_vertices)
         .def("num_edges", [](const AdaptCellT& self) { return self.n_entities(1); })
         .def("num_cells", [](const AdaptCellT& self) { return self.n_entities(self.tdim); })
@@ -1961,6 +2010,99 @@ void declare_certification(nb::module_& m, const std::string& suffix)
                 return nb::ndarray<const std::int32_t, nb::numpy>(
                     self.vertex_source_edge_id.data(),
                     {self.vertex_source_edge_id.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "zero_mask_per_vertex",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::uint64_t, nb::numpy>(
+                    self.zero_mask_per_vertex.data(),
+                    {self.zero_mask_per_vertex.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "negative_mask_per_vertex",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::uint64_t, nb::numpy>(
+                    self.negative_mask_per_vertex.data(),
+                    {self.negative_mask_per_vertex.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "cell_active_level_set_mask",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::uint64_t, nb::numpy>(
+                    self.cell_active_level_set_mask.data(),
+                    {self.cell_active_level_set_mask.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "num_zero_entities",
+            [](const AdaptCellT& self) { return self.n_zero_entities(); })
+        .def_prop_ro(
+            "zero_entity_dim",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::uint8_t, nb::numpy>(
+                    self.zero_entity_dim.data(),
+                    {self.zero_entity_dim.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "zero_entity_id",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.zero_entity_id.data(),
+                    {self.zero_entity_id.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "zero_entity_zero_mask",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::uint64_t, nb::numpy>(
+                    self.zero_entity_zero_mask.data(),
+                    {self.zero_entity_zero_mask.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "zero_entity_is_owned",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::uint8_t, nb::numpy>(
+                    self.zero_entity_is_owned.data(),
+                    {self.zero_entity_is_owned.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "zero_entity_parent_dim",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int8_t, nb::numpy>(
+                    self.zero_entity_parent_dim.data(),
+                    {self.zero_entity_parent_dim.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "zero_entity_parent_id",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.zero_entity_parent_id.data(),
+                    {self.zero_entity_parent_id.size()},
                     nb::cast(self, nb::rv_policy::reference));
             },
             nb::rv_policy::reference_internal)
@@ -2271,19 +2413,20 @@ void declare_certification(nb::module_& m, const std::string& suffix)
     m.def(
         "process_ready_to_cut_cells",
         [](AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell, int level_set_id,
-           T zero_tol, T sign_tol, int edge_max_depth)
+           T zero_tol, T sign_tol, int edge_max_depth, bool triangulate_cut_parts)
         {
             nb::gil_scoped_release release;
             cutcells::process_ready_to_cut_cells(
                 adapt_cell, ls_cell, level_set_id,
-                zero_tol, sign_tol, edge_max_depth);
+                zero_tol, sign_tol, edge_max_depth, triangulate_cut_parts);
         },
         nb::arg("adapt_cell"),
         nb::arg("level_set_cell"),
         nb::arg("level_set_id"),
         nb::arg("zero_tol") = T(1e-12),
         nb::arg("sign_tol") = T(1e-12),
-        nb::arg("edge_max_depth") = 20);
+        nb::arg("edge_max_depth") = 20,
+        nb::arg("triangulate_cut_parts") = false);
 
     m.def(
         "refine_green_on_multiple_root_edges",
@@ -2308,12 +2451,14 @@ void declare_certification(nb::module_& m, const std::string& suffix)
     m.def(
         "certify_refine_and_process_ready_cells",
         [](AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell, int level_set_id,
-           int max_iterations, T zero_tol, T sign_tol, int edge_max_depth)
+           int max_iterations, T zero_tol, T sign_tol, int edge_max_depth,
+           bool triangulate_cut_parts)
         {
             nb::gil_scoped_release release;
             cutcells::certify_refine_and_process_ready_cells(
                 adapt_cell, ls_cell, level_set_id,
-                max_iterations, zero_tol, sign_tol, edge_max_depth);
+                max_iterations, zero_tol, sign_tol, edge_max_depth,
+                triangulate_cut_parts);
         },
         nb::arg("adapt_cell"),
         nb::arg("level_set_cell"),
@@ -2321,7 +2466,8 @@ void declare_certification(nb::module_& m, const std::string& suffix)
         nb::arg("max_iterations") = 8,
         nb::arg("zero_tol") = T(1e-12),
         nb::arg("sign_tol") = T(1e-12),
-        nb::arg("edge_max_depth") = 20);
+        nb::arg("edge_max_depth") = 20,
+        nb::arg("triangulate_cut_parts") = false);
 
     m.def(
         "certify_and_refine",

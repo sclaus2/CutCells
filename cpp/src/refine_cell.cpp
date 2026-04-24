@@ -352,6 +352,11 @@ void apply_topology_update_preserve_certification(
                                     old_num_cells,
                                     old_cell_ids_for_new_cells);
     clear_topology_caches(adapt_cell);
+
+    const int nls = std::max(adapt_cell.cell_cert_tag_num_level_sets,
+                             adapt_cell.edge_root_tag_num_level_sets);
+    recompute_active_level_set_masks(adapt_cell, nls);
+    rebuild_zero_entity_inventory(adapt_cell);
 }
 
 

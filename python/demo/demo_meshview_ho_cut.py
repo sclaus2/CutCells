@@ -123,9 +123,9 @@ def main() -> None:
     print(f"  phi > 0  : cut={positive.num_cut_cells}, uncut={positive.num_uncut_cells}")
 
     print("Building straight hybrid visualization meshes from HOMeshPart ...")
-    inside_full = negative.visualization_mesh(mode="full", triangulate=False)
-    inside_cut = negative.visualization_mesh(mode="cut_only", triangulate=False)
-    interface_mesh = interface.visualization_mesh(mode="cut_only", triangulate=False)
+    inside_full = negative.visualization_mesh(mode="full")
+    inside_cut = negative.visualization_mesh(mode="cut_only")
+    interface_mesh = interface.visualization_mesh(mode="cut_only")
 
     print(f"  inside full cells={len(np.asarray(inside_full.types))}")
     print(f"  inside cut-only cells={len(np.asarray(inside_cut.types))}")
@@ -135,17 +135,14 @@ def main() -> None:
     q_inside_full = negative.quadrature(
         order=args.quadrature_order,
         mode="full",
-        triangulate=False,
     )
     q_inside_cut = negative.quadrature(
         order=args.quadrature_order,
         mode="cut_only",
-        triangulate=False,
     )
     q_interface = interface.quadrature(
         order=args.quadrature_order,
         mode="cut_only",
-        triangulate=False,
     )
 
     print(f"  inside full quadrature sum    = {q_inside_full.weights.sum():.12g}")
@@ -156,9 +153,9 @@ def main() -> None:
     inside_cut_path = args.output_dir / "phi_negative_cut_only_straight.vtu"
     interface_path = args.output_dir / "phi_interface_straight.vtu"
 
-    negative.write_vtu(str(inside_full_path), mode="full", triangulate=False)
-    negative.write_vtu(str(inside_cut_path), mode="cut_only", triangulate=False)
-    interface.write_vtu(str(interface_path), mode="cut_only", triangulate=False)
+    negative.write_vtu(str(inside_full_path), mode="full")
+    negative.write_vtu(str(inside_cut_path), mode="cut_only")
+    interface.write_vtu(str(interface_path), mode="cut_only")
 
     print(f"  wrote {inside_full_path}")
     print(f"  wrote {inside_cut_path}")

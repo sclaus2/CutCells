@@ -35,6 +35,35 @@ bool is_root_token(int token);
 QuadRoleAnalysis analyze_triangle_derived_quadrilateral(
     std::span<const int> quad_tokens);
 
+inline int parent_triangle_edge_token(int token_a, int token_b)
+{
+    if (is_root_token(token_a) || is_root_token(token_b))
+    {
+        throw std::runtime_error(
+            "parent_triangle_edge_token: midpoint endpoints must be original vertices");
+    }
+
+    const int a = token_a - 100;
+    const int b = token_b - 100;
+    if (a < 0 || a >= 3 || b < 0 || b >= 3)
+    {
+        throw std::runtime_error(
+            "parent_triangle_edge_token: invalid original-vertex token");
+    }
+
+    constexpr std::array<LocalEdge, 3> parent_edges = {{
+        {0, 1}, {1, 2}, {2, 0},
+    }};
+    for (std::size_t e = 0; e < parent_edges.size(); ++e)
+    {
+        const LocalEdge edge = parent_edges[e];
+        if ((edge.a == a && edge.b == b) || (edge.a == b && edge.b == a))
+            return static_cast<int>(e);
+    }
+
+    throw std::runtime_error("parent_triangle_edge_token: parent edge not found");
+}
+
 template <std::floating_point T>
 struct MidpointInsertionResult
 {
@@ -70,8 +99,12 @@ MidpointInsertionResult<T> split_triangle_derived_quadrilateral(
 
     MidpointInsertionResult<T> result;
     result.analysis = analyze_triangle_derived_quadrilateral(quad_tokens);
-    result.added_vertex_tokens.push_back(next_token_base++);
     result.added_vertex_edges.push_back(result.analysis.midpoint_edge);
+    const LocalEdge midpoint_edge = result.analysis.midpoint_edge;
+    result.added_vertex_tokens.push_back(parent_triangle_edge_token(
+        quad_tokens[static_cast<std::size_t>(midpoint_edge.a)],
+        quad_tokens[static_cast<std::size_t>(midpoint_edge.b)]));
+    (void) next_token_base;
 
     for (int d = 0; d < coord_dim; ++d)
     {
@@ -101,9 +134,9 @@ MidpointInsertionResult<T> split_triangle_derived_quadrilateral(
     };
 
     const std::array<std::array<int, 3>, 3> canonical_triangles = {{
-        {2, 0, 4},
-        {4, 0, 1},
-        {3, 4, 1},
+        {2, 1, 4},
+        {4, 1, 0},
+        {3, 4, 0},
     }};
 
     result.triangles.reserve(canonical_triangles.size());
