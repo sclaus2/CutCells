@@ -50,11 +50,13 @@ void restrict_subcell_bernstein_exact(cell::type parent_cell_type,
 ///
 /// Logic:
 ///   A. If the incident edge pattern is a directly cuttable simplex case:
-///        - triangle with exactly 2 one_root edges and no multiple_roots/zero
-///        - tetrahedron with exactly 3 or 4 one_root edges and no multiple_roots/zero
+///        - triangle with exactly 2 one_root edges and no multiple_roots
+///        - tetrahedron with exactly 3 or 4 one_root edges and no multiple_roots
 ///      → ready_to_cut.
-///   B. Else if any incident edge has tag one_root, multiple_roots, or zero → cut.
-///   B. Otherwise, restrict the parent Bernstein to the subcell and check
+///   B. Else if any incident edge has tag one_root or multiple_roots → cut.
+///      Zero edges alone fall through so later level sets can still classify
+///      or refine cells whose interface is inherited from an earlier cut.
+///   C. Otherwise, restrict the parent Bernstein to the subcell and check
 ///      the sign hull:
 ///        - all positive → positive
 ///        - all negative → negative
