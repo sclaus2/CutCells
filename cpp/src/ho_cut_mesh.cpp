@@ -289,7 +289,9 @@ void refresh_adapt_cell_semantics(
 
 template <std::floating_point T, std::integral I>
 std::pair<HOCutCells<T, I>, BackgroundMeshData<T, I>>
-cut(const MeshView<T, I>& mesh, const LevelSetFunction<T, I>& ls)
+cut(const MeshView<T, I>& mesh,
+    const LevelSetFunction<T, I>& ls,
+    bool triangulate_cut_parts)
 {
     if (!mesh.has_cell_types())
         throw std::runtime_error("cut: MeshView must have cell types");
@@ -345,7 +347,7 @@ cut(const MeshView<T, I>& mesh, const LevelSetFunction<T, I>& ls)
         certify_refine_and_process_ready_cells(
             ac, hc.level_set_cells.back(), /*level_set_id=*/0,
             /*max_iterations=*/8, T(1e-12), T(1e-12), /*edge_max_depth=*/20,
-            /*triangulate_cut_parts=*/false);
+            triangulate_cut_parts);
         {
             const std::array<int, 1> processed_ids = {0};
             const auto* processed_cell = &hc.level_set_cells.back();
@@ -380,7 +382,8 @@ cut(const MeshView<T, I>& mesh, const LevelSetFunction<T, I>& ls)
 template <std::floating_point T, std::integral I>
 std::pair<HOCutCells<T, I>, BackgroundMeshData<T, I>>
 cut(const MeshView<T, I>& mesh,
-    const std::vector<LevelSetFunction<T, I>>& level_sets)
+    const std::vector<LevelSetFunction<T, I>>& level_sets,
+    bool triangulate_cut_parts)
 {
     if (!mesh.has_cell_types())
         throw std::runtime_error("cut: MeshView must have cell types");
@@ -447,6 +450,7 @@ cut(const MeshView<T, I>& mesh,
             if (dom == cell::domain::intersected)
             {
                 any_intersected = true;
+                ls_cell.level_set_id = li;
                 intersected_ls_indices.push_back(li);
                 intersected_ls_cells.push_back(std::move(ls_cell));
             }
@@ -461,8 +465,9 @@ cut(const MeshView<T, I>& mesh,
         all_level_set_cells.reserve(static_cast<std::size_t>(nls));
         for (int li = 0; li < nls; ++li)
         {
-            all_level_set_cells.push_back(
-                make_cell_level_set(level_sets[static_cast<std::size_t>(li)], ci));
+            auto ls_cell = make_cell_level_set(level_sets[static_cast<std::size_t>(li)], ci);
+            ls_cell.level_set_id = li;
+            all_level_set_cells.push_back(std::move(ls_cell));
         }
 
         const int cut_idx = hc.num_cut_cells();
@@ -473,10 +478,6 @@ cut(const MeshView<T, I>& mesh,
 
         // Process intersecting level sets recursively (input order).
         //
-        // Multi-level-set cutting must leave the AdaptCell leaf mesh as
-        // simplexes after each cut; otherwise a later level set may be asked to
-        // cut quad/prism leaves, which the ready-to-cut certification path does
-        // not support.
         std::uint64_t cell_active_mask = 0;
         for (std::size_t k = 0; k < intersected_ls_indices.size(); ++k)
         {
@@ -484,7 +485,7 @@ cut(const MeshView<T, I>& mesh,
             certify_refine_and_process_ready_cells(
                 ac, intersected_ls_cells[k], li,
                 /*max_iterations=*/8, T(1e-12), T(1e-12),
-                /*edge_max_depth=*/20, /*triangulate_cut_parts=*/true);
+                /*edge_max_depth=*/20, triangulate_cut_parts);
 
             // New vertices created while processing level set li must be
             // reclassified for all already-processed level sets.
@@ -511,7 +512,9 @@ cut(const MeshView<T, I>& mesh,
             T(1e-12));
         rebuild_zero_entity_inventory(ac);
 
-        // Persist per-cell LevelSetCell blocks in HOCutCells CSR storage.
+        // Persist only level sets actively changing sign in this parent cell.
+        // Non-active level sets may still touch a vertex/face, but they are not
+        // curving constraints for this cut-cell.
         for (auto& ls_cell : intersected_ls_cells)
             hc.level_set_cells.push_back(std::move(ls_cell));
         hc.ls_offsets.push_back(
@@ -641,29 +644,29 @@ HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
 
 // cut() single LS
 template std::pair<HOCutCells<double, int>, BackgroundMeshData<double, int>>
-cut(const MeshView<double, int>&, const LevelSetFunction<double, int>&);
+cut(const MeshView<double, int>&, const LevelSetFunction<double, int>&, bool);
 
 template std::pair<HOCutCells<float, int>, BackgroundMeshData<float, int>>
-cut(const MeshView<float, int>&, const LevelSetFunction<float, int>&);
+cut(const MeshView<float, int>&, const LevelSetFunction<float, int>&, bool);
 
 template std::pair<HOCutCells<double, long>, BackgroundMeshData<double, long>>
-cut(const MeshView<double, long>&, const LevelSetFunction<double, long>&);
+cut(const MeshView<double, long>&, const LevelSetFunction<double, long>&, bool);
 
 template std::pair<HOCutCells<float, long>, BackgroundMeshData<float, long>>
-cut(const MeshView<float, long>&, const LevelSetFunction<float, long>&);
+cut(const MeshView<float, long>&, const LevelSetFunction<float, long>&, bool);
 
 // cut() multi LS
 template std::pair<HOCutCells<double, int>, BackgroundMeshData<double, int>>
-cut(const MeshView<double, int>&, const std::vector<LevelSetFunction<double, int>>&);
+cut(const MeshView<double, int>&, const std::vector<LevelSetFunction<double, int>>&, bool);
 
 template std::pair<HOCutCells<float, int>, BackgroundMeshData<float, int>>
-cut(const MeshView<float, int>&, const std::vector<LevelSetFunction<float, int>>&);
+cut(const MeshView<float, int>&, const std::vector<LevelSetFunction<float, int>>&, bool);
 
 template std::pair<HOCutCells<double, long>, BackgroundMeshData<double, long>>
-cut(const MeshView<double, long>&, const std::vector<LevelSetFunction<double, long>>&);
+cut(const MeshView<double, long>&, const std::vector<LevelSetFunction<double, long>>&, bool);
 
 template std::pair<HOCutCells<float, long>, BackgroundMeshData<float, long>>
-cut(const MeshView<float, long>&, const std::vector<LevelSetFunction<float, long>>&);
+cut(const MeshView<float, long>&, const std::vector<LevelSetFunction<float, long>>&, bool);
 
 // select_part()
 template HOMeshPart<double, int>

@@ -398,22 +398,22 @@ int expected_local_dofs(const HOCellFamily family, const int degree)
   return (degree + 1) * (degree + 2) * (degree + 3) / 6;
 }
 
-std::vector<int> basix_to_vtk_lagrange_permutation(const HOCellFamily family,
-                                                   const int local_dofs,
-                                                   const int degree)
+std::vector<int> basix_to_vtk_lagrange_permutation_impl(const HOCellFamily family,
+                                                        const int local_dofs,
+                                                        const int degree)
 {
-  if (degree < 2 || degree > 4)
-  {
-    throw std::runtime_error(
-        "write_level_set_vtu: unsupported polynomial degree " + std::to_string(degree)
+    if (degree < 2 || degree > 4)
+    {
+        throw std::runtime_error(
+        "basix_to_vtk_lagrange_permutation: unsupported polynomial degree " + std::to_string(degree)
         + " (supported: 2, 3, 4)");
-  }
+    }
 
-  if (local_dofs != expected_local_dofs(family, degree))
-  {
-    throw std::runtime_error(
-        "write_level_set_vtu: local dof count does not match cell family/degree");
-  }
+    if (local_dofs != expected_local_dofs(family, degree))
+    {
+        throw std::runtime_error(
+        "basix_to_vtk_lagrange_permutation: local dof count does not match cell family/degree");
+    }
 
   if (family == HOCellFamily::triangle)
     return basix_to_vtk_triangle(local_dofs);
@@ -424,6 +424,21 @@ std::vector<int> basix_to_vtk_lagrange_permutation(const HOCellFamily family,
 
 namespace cutcells::io
 {
+    std::vector<int> basix_to_vtk_lagrange_permutation(cell::type cell_type,
+                                                       int local_dofs,
+                                                       int degree)
+    {
+        HOCellFamily family;
+        if (cell_type == cell::type::triangle)
+            family = HOCellFamily::triangle;
+        else if (cell_type == cell::type::tetrahedron)
+            family = HOCellFamily::tetrahedron;
+        else
+            throw std::runtime_error(
+                "basix_to_vtk_lagrange_permutation: supported cells are triangle and tetrahedron");
+        return basix_to_vtk_lagrange_permutation_impl(family, local_dofs, degree);
+    }
+
     void write_vtk(std::string filename, const std::span<const double> element_vertex_coords,
                      const std::span<const int> connectivity,
                      const std::span<const int> offsets,
@@ -534,7 +549,7 @@ namespace cutcells::io
         {
             const std::span<const int> cell_dofs = mesh_data.cell_dofs_span(cell_id);
             const HOCellFamily family = infer_cell_family(mesh_data, cell_id);
-            const std::vector<int> perm = basix_to_vtk_lagrange_permutation(
+            const std::vector<int> perm = basix_to_vtk_lagrange_permutation_impl(
                 family,
                 static_cast<int>(cell_dofs.size()),
                 mesh_data.degree);
@@ -595,6 +610,104 @@ namespace cutcells::io
 
         ofs << "\t\t\t  <DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">";
         for (const int type : types)
+            ofs << type << " ";
+        ofs << "</DataArray>\n";
+        ofs << "\t\t\t</Cells>\n";
+
+        ofs << "\t\t</Piece>\n"
+            << "\t</UnstructuredGrid>\n"
+            << "</VTKFile>\n";
+    }
+
+    void write_lagrange_vtk(std::string filename,
+                            const std::span<const double> point_coords,
+                            const std::span<const int> connectivity,
+                            const std::span<const int> offsets,
+                            const std::span<const int> vtk_types,
+                            int gdim,
+                            const std::span<const std::int32_t> parent_map,
+                            const std::span<const std::int32_t> curved_valid,
+                            const std::span<const std::int32_t> subdivision_depth,
+                            const std::span<const std::int32_t> curving_status)
+    {
+        if (gdim < 1 || gdim > 3)
+            throw std::runtime_error("write_lagrange_vtk: gdim must be 1, 2, or 3");
+        if (offsets.empty())
+            throw std::runtime_error("write_lagrange_vtk: offsets must not be empty");
+
+        const int num_points = static_cast<int>(point_coords.size()) / gdim;
+        const int num_cells = static_cast<int>(offsets.size()) - 1;
+
+        auto check_cell_data = [num_cells](std::span<const std::int32_t> data,
+                                           const char* name)
+        {
+            if (!data.empty() && static_cast<int>(data.size()) != num_cells)
+                throw std::runtime_error(std::string("write_lagrange_vtk: cell data size mismatch for ") + name);
+        };
+        check_cell_data(parent_map, "parent_map");
+        check_cell_data(curved_valid, "curved_valid");
+        check_cell_data(subdivision_depth, "subdivision_depth");
+        check_cell_data(curving_status, "curving_status");
+
+        std::ofstream ofs(filename.c_str(), std::ios::out);
+        if (!ofs)
+            throw std::runtime_error("write_lagrange_vtk: unable to open file " + filename);
+
+        ofs << "<?xml version=\"1.0\"?>\n"
+            << "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" byte_order=\""
+            << vtk_byte_order() << "\">\n"
+            << "\t<UnstructuredGrid>\n"
+            << "\t\t<Piece NumberOfPoints=\"" << num_points
+            << "\" NumberOfCells=\"" << num_cells << "\">\n";
+
+        ofs << "\t\t\t<Points>\n"
+            << "\t\t\t  <DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">";
+        for (int i = 0; i < num_points; ++i)
+        {
+            const std::size_t base = static_cast<std::size_t>(i) * static_cast<std::size_t>(gdim);
+            const double x = point_coords[base];
+            const double y = (gdim >= 2) ? point_coords[base + 1] : 0.0;
+            const double z = (gdim >= 3) ? point_coords[base + 2] : 0.0;
+            ofs << x << " " << y << " " << z << " ";
+        }
+        ofs << "</DataArray>\n"
+            << "\t\t\t</Points>\n";
+
+        if (!parent_map.empty() || !curved_valid.empty()
+            || !subdivision_depth.empty() || !curving_status.empty())
+        {
+            ofs << "\t\t\t<CellData>\n";
+            auto write_i32_data = [&ofs](std::span<const std::int32_t> data,
+                                         const char* name)
+            {
+                if (data.empty())
+                    return;
+                ofs << "\t\t\t  <DataArray type=\"Int32\" Name=\"" << name
+                    << "\" format=\"ascii\">";
+                for (const auto v : data)
+                    ofs << v << " ";
+                ofs << "</DataArray>\n";
+            };
+            write_i32_data(parent_map, "parent_id");
+            write_i32_data(curved_valid, "curved_valid");
+            write_i32_data(subdivision_depth, "subdivision_depth");
+            write_i32_data(curving_status, "curving_status");
+            ofs << "\t\t\t</CellData>\n";
+        }
+
+        ofs << "\t\t\t<Cells>\n";
+        ofs << "\t\t\t  <DataArray type=\"Int32\" Name=\"connectivity\" format=\"ascii\">";
+        for (const int dof : connectivity)
+            ofs << dof << " ";
+        ofs << "</DataArray>\n";
+
+        ofs << "\t\t\t  <DataArray type=\"Int32\" Name=\"offsets\" format=\"ascii\">";
+        for (int i = 1; i < static_cast<int>(offsets.size()); ++i)
+            ofs << offsets[static_cast<std::size_t>(i)] << " ";
+        ofs << "</DataArray>\n";
+
+        ofs << "\t\t\t  <DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">";
+        for (const int type : vtk_types)
             ofs << type << " ";
         ofs << "</DataArray>\n";
         ofs << "\t\t\t</Cells>\n";

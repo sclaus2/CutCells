@@ -453,11 +453,30 @@ make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
         // Determine cell type
         cell::type ctype = infer_ls_cell_type(md, cell_id);
         cell_ls.cell_type = ctype;
+        cell_ls.gdim = gdim;
         cell_ls.tdim = cell::get_tdim(ctype);
 
         // Get the cell's DOF indices
         auto cell_dofs = md.cell_dofs_span(cell_id);
         const int ndofs = static_cast<int>(cell_dofs.size());
+        const int nv = cell::get_num_vertices(ctype);
+        if (ndofs < nv)
+        {
+            throw std::runtime_error(
+                "make_cell_level_set: cell dof map is missing vertex dofs");
+        }
+        cell_ls.parent_vertex_coords.resize(
+            static_cast<std::size_t>(nv * gdim), T(0));
+        for (int i = 0; i < nv; ++i)
+        {
+            const I dof = cell_dofs[static_cast<std::size_t>(i)];
+            const T* x = md.dof_coordinate(dof);
+            for (int d = 0; d < gdim; ++d)
+            {
+                cell_ls.parent_vertex_coords[
+                    static_cast<std::size_t>(i * gdim + d)] = x[d];
+            }
+        }
 
         // Extract nodal values from the global DOF array
         cell_ls.nodal_values.resize(static_cast<std::size_t>(ndofs));

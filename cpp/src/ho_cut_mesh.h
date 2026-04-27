@@ -13,6 +13,7 @@
 
 #include "adapt_cell.h"
 #include "cell_flags.h"
+#include "curving.h"
 #include "level_set.h"
 #include "level_set_cell.h"
 #include "mesh_view.h"
@@ -88,6 +89,10 @@ struct HOCutCells
     /// Size = num_cut_cells.
     std::vector<std::uint64_t> active_level_set_mask;
 
+    /// Central curved zero-entity identity/cache data.
+    /// Mutable because HOMeshPart is a const view but curving is a lazy cache.
+    mutable curving::CurvingData<T, I> curving;
+
     /// Number of intersected cells.
     int num_cut_cells() const
     {
@@ -142,7 +147,8 @@ struct HOMeshPart
 template <std::floating_point T, std::integral I = int>
 std::pair<HOCutCells<T, I>, BackgroundMeshData<T, I>>
 cut(const MeshView<T, I>& mesh,
-    const LevelSetFunction<T, I>& ls);
+    const LevelSetFunction<T, I>& ls,
+    bool triangulate_cut_parts = false);
 
 /// Build HOCutCells and BackgroundMeshData from a mesh and multiple level sets.
 ///
@@ -152,7 +158,8 @@ cut(const MeshView<T, I>& mesh,
 template <std::floating_point T, std::integral I = int>
 std::pair<HOCutCells<T, I>, BackgroundMeshData<T, I>>
 cut(const MeshView<T, I>& mesh,
-    const std::vector<LevelSetFunction<T, I>>& level_sets);
+    const std::vector<LevelSetFunction<T, I>>& level_sets,
+    bool triangulate_cut_parts = true);
 
 // =====================================================================
 // select_part() — builds HOMeshPart

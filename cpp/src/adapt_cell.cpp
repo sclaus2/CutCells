@@ -15,6 +15,136 @@
 
 namespace cutcells
 {
+namespace
+{
+
+template <std::floating_point T>
+T squared_distance_to_segment(std::span<const T> p,
+                              std::span<const T> a,
+                              std::span<const T> b,
+                              int dim)
+{
+    T ab2 = T(0);
+    T ap_ab = T(0);
+    for (int d = 0; d < dim; ++d)
+    {
+        const T ab = b[static_cast<std::size_t>(d)] - a[static_cast<std::size_t>(d)];
+        const T ap = p[static_cast<std::size_t>(d)] - a[static_cast<std::size_t>(d)];
+        ab2 += ab * ab;
+        ap_ab += ap * ab;
+    }
+    const T t = (ab2 > T(0)) ? std::clamp(ap_ab / ab2, T(0), T(1)) : T(0);
+    T dist2 = T(0);
+    for (int d = 0; d < dim; ++d)
+    {
+        const T x = a[static_cast<std::size_t>(d)]
+                  + t * (b[static_cast<std::size_t>(d)] - a[static_cast<std::size_t>(d)]);
+        const T r = p[static_cast<std::size_t>(d)] - x;
+        dist2 += r * r;
+    }
+    return dist2;
+}
+
+template <std::floating_point T>
+bool point_in_face_span(std::span<const T> p,
+                        const std::vector<T>& ref_vertices,
+                        int tdim,
+                        std::span<const int> face_vertices,
+                        T tol)
+{
+    if (tdim != 3 || face_vertices.size() < 3)
+        return false;
+
+    const T* a = ref_vertices.data() + static_cast<std::size_t>(face_vertices[0] * tdim);
+    const T* b = ref_vertices.data() + static_cast<std::size_t>(face_vertices[1] * tdim);
+    const T* c = ref_vertices.data() + static_cast<std::size_t>(face_vertices[2] * tdim);
+    std::array<T, 3> u = {};
+    std::array<T, 3> v = {};
+    std::array<T, 3> w = {};
+    for (int d = 0; d < 3; ++d)
+    {
+        u[static_cast<std::size_t>(d)] = b[d] - a[d];
+        v[static_cast<std::size_t>(d)] = c[d] - a[d];
+        w[static_cast<std::size_t>(d)] = p[static_cast<std::size_t>(d)] - a[d];
+    }
+    const std::array<T, 3> n = {
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0]};
+    const T n2 = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+    if (n2 <= tol * tol)
+        return false;
+    const T signed_dist =
+        (n[0] * w[0] + n[1] * w[1] + n[2] * w[2]) / std::sqrt(n2);
+    return std::fabs(signed_dist) <= tol;
+}
+
+template <std::floating_point T>
+std::pair<std::int8_t, std::int32_t>
+infer_zero_entity_parent_host(const AdaptCell<T>& ac,
+                              std::span<const std::int32_t> entity_vertices)
+{
+    const T tol = T(256) * std::numeric_limits<T>::epsilon();
+    const int tdim = ac.tdim;
+    const auto ref_vertices = cell::reference_vertices<T>(ac.parent_cell_type);
+
+    if (tdim >= 1)
+    {
+        auto parent_edges = cell::edges(ac.parent_cell_type);
+        for (int e = 0; e < static_cast<int>(parent_edges.size()); ++e)
+        {
+            const auto edge = parent_edges[static_cast<std::size_t>(e)];
+            std::span<const T> a(
+                ref_vertices.data() + static_cast<std::size_t>(edge[0] * tdim),
+                static_cast<std::size_t>(tdim));
+            std::span<const T> b(
+                ref_vertices.data() + static_cast<std::size_t>(edge[1] * tdim),
+                static_cast<std::size_t>(tdim));
+
+            bool all_on_edge = true;
+            for (const auto v : entity_vertices)
+            {
+                std::span<const T> p(
+                    ac.vertex_coords.data() + static_cast<std::size_t>(v * tdim),
+                    static_cast<std::size_t>(tdim));
+                if (squared_distance_to_segment<T>(p, a, b, tdim) > tol * tol)
+                {
+                    all_on_edge = false;
+                    break;
+                }
+            }
+            if (all_on_edge)
+                return {std::int8_t(1), std::int32_t(e)};
+        }
+    }
+
+    if (tdim == 3)
+    {
+        const int nfaces = cell::num_faces(ac.parent_cell_type);
+        for (int f = 0; f < nfaces; ++f)
+        {
+            auto face_vertices = cell::face_vertices(ac.parent_cell_type, f);
+            bool all_on_face = true;
+            for (const auto v : entity_vertices)
+            {
+                std::span<const T> p(
+                    ac.vertex_coords.data() + static_cast<std::size_t>(v * tdim),
+                    static_cast<std::size_t>(tdim));
+                if (!point_in_face_span<T>(p, ref_vertices, tdim, face_vertices, tol))
+                {
+                    all_on_face = false;
+                    break;
+                }
+            }
+            if (all_on_face)
+                return {std::int8_t(2), std::int32_t(f)};
+        }
+    }
+
+    return {static_cast<std::int8_t>(tdim), static_cast<std::int32_t>(ac.parent_cell_id)};
+}
+
+} // namespace
 
     template <std::floating_point T>
 void build_faces(AdaptCell<T>& ac)
@@ -316,8 +446,9 @@ void rebuild_zero_entity_inventory(AdaptCell<T>& ac)
             ac.zero_entity_id.push_back(static_cast<std::int32_t>(e));
             ac.zero_entity_zero_mask.push_back(mask);
             ac.zero_entity_is_owned.push_back(std::uint8_t(1));
-            ac.zero_entity_parent_dim.push_back(std::int8_t(-1));
-            ac.zero_entity_parent_id.push_back(std::int32_t(-1));
+            const auto host = infer_zero_entity_parent_host<T>(ac, verts);
+            ac.zero_entity_parent_dim.push_back(host.first);
+            ac.zero_entity_parent_id.push_back(host.second);
         }
     }
 

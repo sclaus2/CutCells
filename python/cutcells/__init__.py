@@ -23,15 +23,23 @@ def _load_cpp_module():
 
         # If we're running from a source tree, prefer an up-to-date in-tree build.
         # The repo keeps `cutcells/wrapper.cpp` next to this file; if the extension
-        # is older than the wrapper source, it's almost certainly stale (and tends
-        # to miss newer bindings like HOMeshPart.visualization_mesh, etc.).
+        # is older than the wrapper source or the C++ library sources, it's stale.
         wrapper_cpp = _Path(__file__).with_name("wrapper.cpp")
-        if wrapper_cpp.exists():
+        source_roots = [wrapper_cpp]
+        cpp_src = _Path(__file__).resolve().parents[2] / "cpp" / "src"
+        if cpp_src.exists():
             try:
-                wrapper_ts = wrapper_cpp.stat().st_mtime
+                source_roots.extend(cpp_src.glob("*.cpp"))
+                source_roots.extend(cpp_src.glob("*.h"))
+            except OSError:
+                pass
+        source_roots = [p for p in source_roots if p.exists()]
+        if source_roots:
+            try:
+                newest_source_ts = max(p.stat().st_mtime for p in source_roots)
                 candidates = [
                     c for c in candidates
-                    if c.exists() and c.stat().st_mtime >= wrapper_ts
+                    if c.exists() and c.stat().st_mtime >= newest_source_ts
                 ]
             except OSError:
                 pass

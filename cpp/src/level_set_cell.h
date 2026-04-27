@@ -26,8 +26,10 @@ struct LevelSetCell
 
     // --- Cell geometry ---
     cell::type cell_type = cell::type::point;  ///< cell type of the background cell
+    int gdim = 0;                              ///< geometric dimension
     int tdim = 0;                              ///< topological dimension
     I cell_id = static_cast<I>(-1);            ///< background cell index
+    std::vector<T> parent_vertex_coords;       ///< physical parent-cell vertices
 
     // --- Evaluation interface (uniform for both backends) ---
     // Evaluate the level set at a point xi in reference coordinates.

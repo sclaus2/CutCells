@@ -7,6 +7,7 @@
 
 #include <string>
 #include <concepts>
+#include <cstdint>
 #include <vector>
 #include "cut_cell.h"
 #include "cut_mesh.h"
@@ -15,6 +16,10 @@
 
 namespace cutcells::io
 {
+    std::vector<int> basix_to_vtk_lagrange_permutation(cell::type cell_type,
+                                                       int local_dofs,
+                                                       int degree);
+
     void write_vtk(std::string filename, const std::span<const double> element_vertex_coords,  
                     const std::span<const int> connectivity,
                     const std::span<const int> offsets,
@@ -78,4 +83,41 @@ namespace cutcells::io
     void write_level_set_vtu(std::string filename,
                              const cutcells::LevelSetFunction<double>& ls,
                              std::string field_name = "phi");
+
+    void write_lagrange_vtk(std::string filename,
+                            const std::span<const double> point_coords,
+                            const std::span<const int> connectivity,
+                            const std::span<const int> offsets,
+                            const std::span<const int> vtk_types,
+                            int gdim,
+                            const std::span<const std::int32_t> parent_map = {},
+                            const std::span<const std::int32_t> curved_valid = {},
+                            const std::span<const std::int32_t> subdivision_depth = {},
+                            const std::span<const std::int32_t> curving_status = {});
+
+    template <std::floating_point T>
+    void write_lagrange_vtk(std::string filename,
+                            const std::span<const T> point_coords,
+                            const std::span<const int> connectivity,
+                            const std::span<const int> offsets,
+                            const std::span<const int> vtk_types,
+                            int gdim,
+                            const std::span<const std::int32_t> parent_map = {},
+                            const std::span<const std::int32_t> curved_valid = {},
+                            const std::span<const std::int32_t> subdivision_depth = {},
+                            const std::span<const std::int32_t> curving_status = {})
+    {
+        std::vector<double> coords_d(point_coords.begin(), point_coords.end());
+        write_lagrange_vtk(
+            filename,
+            std::span<const double>(coords_d.data(), coords_d.size()),
+            connectivity,
+            offsets,
+            vtk_types,
+            gdim,
+            parent_map,
+            curved_valid,
+            subdivision_depth,
+            curving_status);
+    }
 }

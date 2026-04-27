@@ -19,6 +19,7 @@
 #include <optional>
 #include <numeric>
 #include <unordered_set>
+#include <cstdint>
 
 #include "../../cpp/src/cell_types.h"
 #include "../../cpp/src/cut_cell.h"
@@ -721,22 +722,59 @@ inline bool part_mode_is_cut_only(std::string_view mode)
 template <typename T>
 cutcells::mesh::CutMesh<T> part_visualization_mesh(
     const cutcells::HOMeshPart<T, int>& part,
-    std::string_view mode)
+    std::string_view mode,
+    int geometry_order,
+    std::string_view node_family)
 {
   const bool cut_only = part_mode_is_cut_only(mode);
+  const auto family = cutcells::curving::node_family_from_string(node_family);
   return cutcells::output::visualization_mesh(
-      part, /*include_uncut_cells=*/!cut_only, /*triangulate=*/false);
+      part, /*include_uncut_cells=*/!cut_only, geometry_order, family);
 }
 
 template <typename T>
 cutcells::quadrature::QuadratureRules<T> part_quadrature(
     const cutcells::HOMeshPart<T, int>& part,
     int order,
-    std::string_view mode)
+    std::string_view mode,
+    int geometry_order,
+    std::string_view node_family)
 {
   const bool cut_only = part_mode_is_cut_only(mode);
+  const auto family = cutcells::curving::node_family_from_string(node_family);
   return cutcells::output::quadrature_rules(
-      part, order, /*include_uncut_cells=*/!cut_only, /*triangulate=*/false);
+      part, order, /*include_uncut_cells=*/!cut_only, geometry_order, family);
+}
+
+template <typename T>
+void part_write_vtu(const cutcells::HOMeshPart<T, int>& part,
+                    const std::string& filename,
+                    std::string_view mode,
+                    int geometry_order,
+                    std::string_view node_family)
+{
+  const bool cut_only = part_mode_is_cut_only(mode);
+  auto family = cutcells::curving::node_family_from_string(node_family);
+  if (geometry_order > 1)
+  {
+    const auto grid = cutcells::output::curved_lagrange_grid(
+        part, /*include_uncut_cells=*/!cut_only, geometry_order, family);
+    cutcells::io::write_lagrange_vtk(
+        filename,
+        std::span<const T>(grid.points.data(), grid.points.size()),
+        std::span<const int>(grid.connectivity.data(), grid.connectivity.size()),
+        std::span<const int>(grid.offsets.data(), grid.offsets.size()),
+        std::span<const int>(grid.vtk_types.data(), grid.vtk_types.size()),
+        grid.gdim,
+        std::span<const std::int32_t>(grid.parent_map.data(), grid.parent_map.size()),
+        std::span<const std::int32_t>(grid.curved_valid.data(), grid.curved_valid.size()),
+        std::span<const std::int32_t>(grid.subdivision_depth.data(), grid.subdivision_depth.size()),
+        std::span<const std::int32_t>(grid.curving_status.data(), grid.curving_status.size()));
+    return;
+  }
+
+  auto vis = part_visualization_mesh(part, mode, geometry_order, node_family);
+  cutcells::io::write_vtk(filename, vis);
 }
 
 template <typename T>
@@ -1859,7 +1897,204 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             },
             nb::arg("cut_cell_id"),
             nb::rv_policy::reference_internal,
-            "Return the AdaptCell for a cut-cell index.");
+            "Return the AdaptCell for a cut-cell index.")
+        .def(
+            "curved_zero_nodes",
+            [](HOCutResult& self,
+               int geometry_order,
+               const std::string& node_family)
+            {
+                cutcells::curving::CurvingOptions<T> options;
+                options.geometry_order = geometry_order;
+                options.node_family =
+                    cutcells::curving::node_family_from_string(node_family);
+
+                try
+                {
+                    cutcells::curving::ensure_all_curved<T, int>(
+                        self.cut_cells.curving,
+                        std::span<const int>(self.cut_cells.parent_cell_ids),
+                        std::span<const cutcells::AdaptCell<T>>(self.cut_cells.adapt_cells),
+                        std::span<const cutcells::LevelSetCell<T, int>>(self.cut_cells.level_set_cells),
+                        std::span<const int>(self.cut_cells.ls_offsets),
+                        options);
+                }
+                catch (const std::exception& e)
+                {
+                    throw std::runtime_error(
+                        std::string("curved_zero_nodes: ensure_all_curved failed: ")
+                        + e.what());
+                }
+
+                std::vector<T> points;
+                std::vector<int32_t> offsets;
+                std::vector<uint8_t> status;
+                std::vector<int32_t> cut_cell_id;
+                std::vector<int32_t> local_zero_entity_id;
+                std::vector<int32_t> dim;
+                std::vector<int8_t> parent_dim;
+                std::vector<int32_t> parent_id;
+                std::vector<std::uint64_t> zero_mask;
+                std::vector<int32_t> stats_offsets;
+                std::vector<int32_t> node_iterations;
+                std::vector<uint8_t> node_status;
+                std::vector<uint8_t> node_failure_code;
+                std::vector<T> node_residual;
+                std::vector<std::uint32_t> node_active_face_mask;
+                std::vector<int32_t> node_closest_face_id;
+                std::vector<int32_t> node_safe_subspace_dim;
+                std::vector<uint8_t> node_projection_mode;
+                std::vector<int32_t> node_retry_count;
+                nb::list failure_reason;
+                std::vector<int32_t> total_iterations;
+                std::vector<int32_t> max_iterations;
+                offsets.reserve(self.cut_cells.curving.states.size() + 1);
+                offsets.push_back(0);
+                stats_offsets.reserve(self.cut_cells.curving.states.size() + 1);
+                stats_offsets.push_back(0);
+
+                for (std::size_t i = 0; i < self.cut_cells.curving.states.size(); ++i)
+                {
+                    try
+                    {
+                        const auto& state = self.cut_cells.curving.states[i];
+                        const auto& ident = self.cut_cells.curving.identities[i];
+                        points.insert(points.end(), state.ref_nodes.begin(), state.ref_nodes.end());
+                        offsets.push_back(static_cast<int32_t>(
+                            points.size() / static_cast<std::size_t>(self.cut_cells.tdim)));
+                        status.push_back(static_cast<uint8_t>(state.status));
+                        cut_cell_id.push_back(static_cast<int32_t>(ident.cut_cell_id));
+                        local_zero_entity_id.push_back(static_cast<int32_t>(ident.local_zero_entity_id));
+                        dim.push_back(static_cast<int32_t>(ident.dim));
+                        parent_dim.push_back(ident.parent_dim);
+                        parent_id.push_back(ident.parent_id);
+                        zero_mask.push_back(ident.zero_mask);
+                        node_iterations.insert(
+                            node_iterations.end(),
+                            state.node_iterations.begin(),
+                            state.node_iterations.end());
+                        node_status.insert(
+                            node_status.end(),
+                            state.node_status.begin(),
+                            state.node_status.end());
+                        node_failure_code.insert(
+                            node_failure_code.end(),
+                            state.node_failure_code.begin(),
+                            state.node_failure_code.end());
+                        node_residual.insert(
+                            node_residual.end(),
+                            state.node_residual.begin(),
+                            state.node_residual.end());
+                        node_active_face_mask.insert(
+                            node_active_face_mask.end(),
+                            state.node_active_face_mask.begin(),
+                            state.node_active_face_mask.end());
+                        node_closest_face_id.insert(
+                            node_closest_face_id.end(),
+                            state.node_closest_face_id.begin(),
+                            state.node_closest_face_id.end());
+                        node_safe_subspace_dim.insert(
+                            node_safe_subspace_dim.end(),
+                            state.node_safe_subspace_dim.begin(),
+                            state.node_safe_subspace_dim.end());
+                        node_projection_mode.insert(
+                            node_projection_mode.end(),
+                            state.node_projection_mode.begin(),
+                            state.node_projection_mode.end());
+                        node_retry_count.insert(
+                            node_retry_count.end(),
+                            state.node_retry_count.begin(),
+                            state.node_retry_count.end());
+                        stats_offsets.push_back(static_cast<int32_t>(node_iterations.size()));
+                        failure_reason.append(state.failure_reason);
+                        int total = 0;
+                        int max_iter = 0;
+                        for (const auto it : state.node_iterations)
+                        {
+                            total += static_cast<int>(it);
+                            max_iter = std::max(max_iter, static_cast<int>(it));
+                        }
+                        total_iterations.push_back(static_cast<int32_t>(total));
+                        max_iterations.push_back(static_cast<int32_t>(max_iter));
+                    }
+                    catch (const std::exception& e)
+                    {
+                        throw std::runtime_error(
+                            std::string("curved_zero_nodes: packaging state ")
+                            + std::to_string(i)
+                            + " failed: "
+                            + e.what());
+                    }
+                }
+
+                nb::dict result;
+                const std::size_t npoints =
+                    self.cut_cells.tdim > 0
+                        ? points.size() / static_cast<std::size_t>(self.cut_cells.tdim)
+                        : 0;
+                result["points"] = as_nbarray(
+                    std::move(points),
+                    {npoints, static_cast<std::size_t>(self.cut_cells.tdim)});
+                result["offsets"] = as_nbarray(std::move(offsets));
+                result["status"] = as_nbarray(std::move(status));
+                result["cut_cell_id"] = as_nbarray(std::move(cut_cell_id));
+                result["local_zero_entity_id"] = as_nbarray(std::move(local_zero_entity_id));
+                result["dim"] = as_nbarray(std::move(dim));
+                result["parent_dim"] = as_nbarray(std::move(parent_dim));
+                result["parent_id"] = as_nbarray(std::move(parent_id));
+                result["zero_mask"] = as_nbarray(std::move(zero_mask));
+                result["stats_offsets"] = as_nbarray(std::move(stats_offsets));
+                result["node_iterations"] = as_nbarray(std::move(node_iterations));
+                result["node_status"] = as_nbarray(std::move(node_status));
+                result["node_failure_code"] = as_nbarray(std::move(node_failure_code));
+                result["node_residual"] = as_nbarray(std::move(node_residual));
+                result["node_active_face_mask"] = as_nbarray(std::move(node_active_face_mask));
+                result["node_closest_face_id"] = as_nbarray(std::move(node_closest_face_id));
+                result["node_safe_subspace_dim"] = as_nbarray(std::move(node_safe_subspace_dim));
+                result["node_projection_mode"] = as_nbarray(std::move(node_projection_mode));
+                result["node_retry_count"] = as_nbarray(std::move(node_retry_count));
+                result["failure_reason"] = std::move(failure_reason);
+
+                nb::list failure_code_names;
+                for (const char* name : {
+                         "none",
+                         "exact_vertex",
+                         "boundary_from_edge",
+                         "invalid_constraint_count",
+                         "missing_level_set_cell",
+                         "empty_zero_mask",
+                         "unsupported_entity",
+                         "no_host_interval",
+                         "no_sign_changing_bracket",
+                         "brent_failed",
+                         "outside_host_domain",
+                         "singular_gradient_system",
+                         "line_search_failed",
+                         "max_iterations",
+                         "missing_boundary_edge",
+                         "boundary_edge_failed",
+                         "projection_failed",
+                         "closest_face_retry_failed",
+                         "constrained_newton_failed"})
+                    failure_code_names.append(name);
+                result["failure_code_names"] = std::move(failure_code_names);
+
+                nb::list projection_mode_names;
+                for (const char* name : {
+                         "none",
+                         "safe_line",
+                         "closest_face_retry",
+                         "constrained_newton",
+                         "vector_newton"})
+                    projection_mode_names.append(name);
+                result["projection_mode_names"] = std::move(projection_mode_names);
+                result["total_iterations"] = as_nbarray(std::move(total_iterations));
+                result["max_iterations"] = as_nbarray(std::move(max_iterations));
+                return result;
+            },
+            nb::arg("geometry_order") = 2,
+            nb::arg("node_family") = "gll",
+            "Return cached curved zero-entity nodes in parent reference coordinates.");
 
     // --- HOMeshPart ---
     std::string part_name = "HOMeshPart_" + type;
@@ -1894,77 +2129,90 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             nb::rv_policy::reference_internal)
         .def(
             "visualization_mesh",
-            [](const PartT& self, const std::string& mode) {
+            [](const PartT& self,
+               const std::string& mode,
+               int geometry_order,
+               const std::string& node_family) {
                 nb::gil_scoped_release release;
-                return part_visualization_mesh(self, mode);
+                return part_visualization_mesh(self, mode, geometry_order, node_family);
             },
             nb::arg("mode") = "full",
-            "Return a straight visualization mesh for an HOMeshPart.")
+            nb::arg("geometry_order") = -1,
+            nb::arg("node_family") = "gll",
+            "Return a visualization mesh for an HOMeshPart, preserving AdaptCell topology.")
         .def(
             "quadrature",
-            [](const PartT& self, int order, const std::string& mode) {
+            [](const PartT& self,
+               int order,
+               const std::string& mode,
+               int geometry_order,
+               const std::string& node_family) {
                 nb::gil_scoped_release release;
-                return part_quadrature(self, order, mode);
+                return part_quadrature(self, order, mode, geometry_order, node_family);
             },
             nb::arg("order") = 3,
             nb::arg("mode") = "full",
-            "Return straight quadrature rules for a one-level-set HOMeshPart.\n"
-            "This bridge currently supports only single-level-set selections.")
+            nb::arg("geometry_order") = -1,
+            nb::arg("node_family") = "gll",
+            "Return quadrature rules for an HOMeshPart, preserving AdaptCell topology. For curved geometry this is the construction node family.")
         .def(
             "write_vtu",
             [](const PartT& self,
                const std::string& filename,
-               const std::string& mode) {
+               const std::string& mode,
+               int geometry_order,
+               const std::string& node_family) {
                 nb::gil_scoped_release release;
-                auto vis = part_visualization_mesh(self, mode);
-                io::write_vtk(filename, vis);
+                part_write_vtu(self, filename, mode, geometry_order, node_family);
             },
             nb::arg("filename"),
             nb::arg("mode") = "full",
-            "Write a straight visualization VTU file for a one-level-set HOMeshPart.");
+            nb::arg("geometry_order") = -1,
+            nb::arg("node_family") = "gll",
+            "Write a VTU file for an HOMeshPart. geometry_order > 1 samples the requested construction node family into curved VTK Lagrange cells.");
 
     // --- ho_cut() factory ---
     m.def("ho_cut",
-        [](const MeshViewT& mesh, const LevelSetT& ls) {
+        [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<LevelSetT>(ls);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls);
+            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
             return HOCutResult{std::move(hc), std::move(bg), owned_ls};
         },
-        nb::arg("mesh"), nb::arg("level_set"),
+        nb::arg("mesh"), nb::arg("level_set"), nb::arg("triangulate") = false,
         "Cut a MeshView with a single LevelSetFunction (HO pipeline).\n"
         "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
 
     m.def("ho_cut",
-        [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets) {
+        [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets, bool triangulate) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls);
+            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
             return HOCutResult{std::move(hc), std::move(bg), owned_ls};
         },
-        nb::arg("mesh"), nb::arg("level_sets"),
+        nb::arg("mesh"), nb::arg("level_sets"), nb::arg("triangulate") = true,
         "Cut a MeshView with multiple LevelSetFunctions (HO pipeline).\n"
         "Returns an HOCutResult; use result[\"phi1 < 0 and phi2 = 0\"] to select parts.");
 
     m.def("cut",
-        [](const MeshViewT& mesh, const LevelSetT& ls) {
+        [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<LevelSetT>(ls);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls);
+            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
             return HOCutResult{std::move(hc), std::move(bg), owned_ls};
         },
-        nb::arg("mesh"), nb::arg("level_set"),
+        nb::arg("mesh"), nb::arg("level_set"), nb::arg("triangulate") = false,
         "Cut a MeshView with a single LevelSetFunction (HO pipeline).\n"
         "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
 
     m.def("cut",
-        [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets) {
+        [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets, bool triangulate) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls);
+            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
             return HOCutResult{std::move(hc), std::move(bg), owned_ls};
         },
-        nb::arg("mesh"), nb::arg("level_sets"),
+        nb::arg("mesh"), nb::arg("level_sets"), nb::arg("triangulate") = true,
         "Cut a MeshView with multiple LevelSetFunctions (HO pipeline).\n"
         "Returns an HOCutResult; use result[\"phi1 < 0 and phi2 = 0\"] to select parts.");
 
