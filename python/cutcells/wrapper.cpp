@@ -75,13 +75,14 @@ auto as_nbarray(V&& x, std::size_t ndim, const std::size_t* shape)
 template <typename V>
 auto as_nbarray(V&& x, const std::initializer_list<std::size_t> shape)
 {
-  return as_nbarray(x, shape.size(), shape.begin());
+  return as_nbarray(std::forward<V>(x), shape.size(), shape.begin());
 }
 
 template <typename V>
 auto as_nbarray(V&& x)
 {
-  return as_nbarray(std::move(x), {x.size()});
+  const std::size_t size = x.size();
+  return as_nbarray(std::forward<V>(x), {size});
 }
 
 template <typename V, std::size_t U>
