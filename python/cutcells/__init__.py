@@ -256,14 +256,18 @@ from .mesh_utils import (
     box_hex_mesh,
 )
 
-from .triangulation_analysis import (
-    CellCase,
-    analyze_all_cases,
-    analyze_single_cell_case,
-    classify_new_triangulation_edges,
-    classify_new_triangulation_simplices,
-    enumerate_cases,
-    single_cell_level_set,
-    single_cell_mesh,
-    summarize_analysis,
-)
+try:
+    from .triangulation_analysis import (
+        CellCase,
+        analyze_all_cases,
+        analyze_single_cell_case,
+        classify_new_triangulation_edges,
+        classify_new_triangulation_simplices,
+        enumerate_cases,
+        single_cell_level_set,
+        single_cell_mesh,
+        summarize_analysis,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != f"{__name__}.triangulation_analysis":
+        raise

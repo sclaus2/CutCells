@@ -6,7 +6,9 @@
 #pragma once
 
 #include <concepts>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -52,7 +54,8 @@ enum class CurvingFailureCode : std::uint8_t
     boundary_edge_failed = 15,
     projection_failed = 16,
     closest_face_retry_failed = 17,
-    constrained_newton_failed = 18
+    constrained_newton_failed = 18,
+    small_entity_kept_straight = 19
 };
 
 enum class CurvingProjectionMode : std::uint8_t
@@ -71,9 +74,14 @@ struct CurvingOptions
     NodeFamily node_family = NodeFamily::gll;
     int max_iter = 32;
     T xtol = T(1e-12);
-    T ftol = T(1e-12);
+    T ftol = std::sqrt(std::numeric_limits<T>::epsilon());
     T domain_tol = T(1e-10);
     T active_face_tol = T(1e-9);
+    // Length-scale threshold in parent reference coordinates. Zero edges
+    // shorter than this and zero faces whose boundary edges are all shorter
+    // than this are kept on their straight interpolation seeds instead of
+    // being projected.
+    T small_entity_tol = std::sqrt(std::numeric_limits<T>::epsilon());
     int max_subdivision_depth = 3;
 };
 
@@ -83,6 +91,7 @@ struct CurvedZeroEntityState
     CurvingStatus status = CurvingStatus::not_built;
     int geometry_order = -1;
     NodeFamily node_family = NodeFamily::gll;
+    T small_entity_tol = T(0);
     std::uint32_t zero_entity_version = 0;
     std::uint64_t zero_mask = 0;
     std::string failure_reason;

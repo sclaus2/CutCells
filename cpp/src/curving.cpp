@@ -139,6 +139,94 @@ std::vector<int> zero_entity_vertex_ids(const AdaptCell<T>& ac, int local_zero_e
 }
 
 template <std::floating_point T>
+T distance_between_vertices(const AdaptCell<T>& ac, int v0, int v1)
+{
+    T length2 = T(0);
+    for (int d = 0; d < ac.tdim; ++d)
+    {
+        const T delta =
+            ac.vertex_coords[static_cast<std::size_t>(v1 * ac.tdim + d)]
+          - ac.vertex_coords[static_cast<std::size_t>(v0 * ac.tdim + d)];
+        length2 += delta * delta;
+    }
+    return std::sqrt(length2);
+}
+
+template <std::floating_point T>
+T zero_entity_edge_length(const AdaptCell<T>& ac, int local_zero_entity_id)
+{
+    const int zdim = ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)];
+    if (zdim != 1)
+        return std::numeric_limits<T>::infinity();
+
+    const int zid = ac.zero_entity_id[static_cast<std::size_t>(local_zero_entity_id)];
+    auto verts = ac.entity_to_vertex[1][static_cast<std::int32_t>(zid)];
+    if (verts.size() != 2)
+        return std::numeric_limits<T>::infinity();
+    return distance_between_vertices<T>(
+        ac, static_cast<int>(verts[0]), static_cast<int>(verts[1]));
+}
+
+template <std::floating_point T>
+T zero_entity_face_max_edge_length(const AdaptCell<T>& ac, int local_zero_entity_id)
+{
+    const int zdim = ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)];
+    if (zdim != 2)
+        return std::numeric_limits<T>::infinity();
+
+    const int zid = ac.zero_entity_id[static_cast<std::size_t>(local_zero_entity_id)];
+    auto verts = ac.entity_to_vertex[2][static_cast<std::int32_t>(zid)];
+    if (verts.size() < 2)
+        return T(0);
+
+    T max_length = T(0);
+    for (std::size_t i = 0; i < verts.size(); ++i)
+    {
+        const int v0 = static_cast<int>(verts[i]);
+        const int v1 = static_cast<int>(verts[(i + 1) % verts.size()]);
+        max_length = std::max(
+            max_length,
+            distance_between_vertices<T>(
+                ac,
+                v0,
+                v1));
+    }
+    return max_length;
+}
+
+template <std::floating_point T>
+bool zero_entity_below_curving_threshold(const AdaptCell<T>& ac,
+                                         int local_zero_entity_id,
+                                         const CurvingOptions<T>& options)
+{
+    if (!(options.small_entity_tol > T(0)))
+        return false;
+
+    const int zdim = ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)];
+    if (zdim == 1)
+        return zero_entity_edge_length<T>(ac, local_zero_entity_id)
+            <= options.small_entity_tol;
+    if (zdim == 2)
+        return zero_entity_face_max_edge_length<T>(ac, local_zero_entity_id)
+            <= options.small_entity_tol;
+    return false;
+}
+
+template <std::floating_point T>
+void append_straight_seed_node_stats(CurvedZeroEntityState<T>& state,
+                                     const AdaptCell<T>& ac,
+                                     std::span<const T> seeds)
+{
+    const int n_nodes = static_cast<int>(
+        seeds.size() / static_cast<std::size_t>(std::max(ac.tdim, 1)));
+    for (int i = 0; i < n_nodes; ++i)
+        append_node_stats<T>(
+            state,
+            accepted_node_stats<T>(
+                CurvingFailureCode::small_entity_kept_straight));
+}
+
+template <std::floating_point T>
 std::pair<T, T> legendre_value_and_derivative(int order, T x)
 {
     if (order == 0)
@@ -1312,6 +1400,45 @@ std::vector<T> physical_host_gradient_reference_direction(
         fallback_ref);
 }
 
+template <std::floating_point T, std::integral I>
+bool accept_seed_if_level_sets_within_tolerance(
+    const AdaptCell<T>& ac,
+    int local_zero_entity_id,
+    std::span<const LevelSetCell<T, I>* const> active_cells,
+    std::span<const T> seed,
+    const CurvingOptions<T>& options,
+    std::vector<T>& out,
+    ProjectionStats<T>& stats)
+{
+    if (active_cells.empty())
+        return false;
+
+    T max_abs_value = T(0);
+    for (const LevelSetCell<T, I>* ls_cell : active_cells)
+    {
+        if (ls_cell == nullptr)
+            return false;
+        const T value = curving_level_set_value<T, I>(*ls_cell, seed);
+        max_abs_value = std::max(max_abs_value, std::fabs(value));
+        if (max_abs_value > options.ftol)
+            return false;
+    }
+
+    out.assign(seed.begin(), seed.end());
+    stats = {};
+    stats.status = CurvingStatus::curved;
+    stats.failure_code = CurvingFailureCode::none;
+    stats.residual = max_abs_value;
+    stats.active_face_mask = add_near_active_faces<T>(
+        ac,
+        seed,
+        structural_active_face_mask<T>(ac, local_zero_entity_id),
+        options.active_face_tol);
+    stats.safe_subspace_dim = active_subspace_dim<T>(ac, stats.active_face_mask);
+    stats.projection_mode = CurvingProjectionMode::none;
+    return true;
+}
+
 template <std::floating_point T>
 std::vector<std::vector<T>> scalar_candidate_directions(const AdaptCell<T>& ac,
                                                         int local_zero_entity_id,
@@ -1809,7 +1936,7 @@ bool scalar_project(const AdaptCell<T>& ac,
             structural_active_face_mask<T>(ac, local_zero_entity_id),
             options.active_face_tol);
         stats.safe_subspace_dim = active_subspace_dim<T>(ac, stats.active_face_mask);
-        stats.projection_mode = CurvingProjectionMode::safe_line;
+        stats.projection_mode = CurvingProjectionMode::none;
         return true;
     }
     std::vector<T> grad(static_cast<std::size_t>(tdim), T(0));
@@ -2108,6 +2235,10 @@ bool vector_project(const AdaptCell<T>& ac,
         return false;
     }
 
+    if (accept_seed_if_level_sets_within_tolerance<T, I>(
+            ac, local_zero_entity_id, ls_cells, seed, options, out, stats))
+        return true;
+
     std::vector<T> values(static_cast<std::size_t>(m), T(0));
     std::vector<T> grads(static_cast<std::size_t>(m * tdim), T(0));
     std::uint32_t active_mask = structural_active_face_mask<T>(ac, local_zero_entity_id);
@@ -2118,28 +2249,31 @@ bool vector_project(const AdaptCell<T>& ac,
     for (int iter = 0; iter < options.max_iter; ++iter)
     {
         T norm_f = T(0);
+        T max_f = T(0);
         for (int i = 0; i < m; ++i)
         {
             values[static_cast<std::size_t>(i)] =
                 ls_cells[static_cast<std::size_t>(i)]->value(
                     std::span<const T>(out.data(), out.size()));
             norm_f += values[static_cast<std::size_t>(i)] * values[static_cast<std::size_t>(i)];
+            max_f = std::max(max_f, std::fabs(values[static_cast<std::size_t>(i)]));
             ls_cells[static_cast<std::size_t>(i)]->grad(
                 std::span<const T>(out.data(), out.size()),
                 std::span<T>(grads.data() + static_cast<std::size_t>(i * tdim),
                              static_cast<std::size_t>(tdim)));
         }
         norm_f = std::sqrt(norm_f);
-        if (norm_f <= options.ftol)
+        if (max_f <= options.ftol)
         {
             stats.iterations = iter;
             stats.status = CurvingStatus::curved;
             stats.failure_code = CurvingFailureCode::none;
-            stats.residual = norm_f;
+            stats.residual = max_f;
             stats.active_face_mask = active_mask;
             stats.closest_face_id = closest_face_id;
             stats.safe_subspace_dim = active_subspace_dim<T>(ac, active_mask);
-            stats.projection_mode = CurvingProjectionMode::vector_newton;
+            stats.projection_mode =
+                (iter == 0) ? CurvingProjectionMode::none : CurvingProjectionMode::vector_newton;
             stats.retry_count = retry_count;
             return true;
         }
@@ -2331,21 +2465,21 @@ bool vector_project(const AdaptCell<T>& ac,
         }
     }
 
-    T final_norm = T(0);
+    T final_max = T(0);
     for (int i = 0; i < m; ++i)
     {
         const T f = ls_cells[static_cast<std::size_t>(i)]->value(
             std::span<const T>(out.data(), out.size()));
-        final_norm += f * f;
+        final_max = std::max(final_max, std::fabs(f));
     }
     stats.iterations = options.max_iter;
-    stats.residual = std::sqrt(final_norm);
+    stats.residual = final_max;
     stats.active_face_mask = active_mask;
     stats.closest_face_id = closest_face_id;
     stats.safe_subspace_dim = active_subspace_dim<T>(ac, active_mask);
     stats.projection_mode = CurvingProjectionMode::vector_newton;
     stats.retry_count = retry_count;
-    if (stats.residual <= options.ftol)
+    if (final_max <= options.ftol)
     {
         stats.status = CurvingStatus::curved;
         stats.failure_code = CurvingFailureCode::none;
@@ -2781,6 +2915,7 @@ void build_curved_state(CurvedZeroEntityState<T>& state,
     state.failure_reason.clear();
     state.geometry_order = options.geometry_order;
     state.node_family = options.node_family;
+    state.small_entity_tol = options.small_entity_tol;
     state.zero_entity_version = ac.zero_entity_version;
     state.zero_mask = ac.zero_entity_zero_mask[static_cast<std::size_t>(local_zero_entity_id)];
     state.ref_nodes.clear();
@@ -2820,6 +2955,19 @@ void build_curved_state(CurvedZeroEntityState<T>& state,
         ProjectionStats<T> stats;
         stats.failure_code = CurvingFailureCode::unsupported_entity;
         append_node_stats<T>(state, stats);
+        return;
+    }
+
+    if (zero_entity_below_curving_threshold<T>(ac, local_zero_entity_id, options))
+    {
+        if (zdim == 2)
+            append_face_seed_nodes<T>(ac, local_zero_entity_id, options, seeds);
+        state.ref_nodes = seeds;
+        append_straight_seed_node_stats<T>(
+            state,
+            ac,
+            std::span<const T>(state.ref_nodes.data(), state.ref_nodes.size()));
+        state.status = CurvingStatus::curved;
         return;
     }
 
@@ -3055,16 +3203,19 @@ const CurvedZeroEntityState<T>& ensure_curved(
         state.status == CurvingStatus::curved
         && state.geometry_order == options.geometry_order
         && state.node_family == options.node_family
+        && state.small_entity_tol == options.small_entity_tol
         && state.zero_entity_version == ac.zero_entity_version;
     const bool failed =
         state.status == CurvingStatus::failed
         && state.geometry_order == options.geometry_order
         && state.node_family == options.node_family
+        && state.small_entity_tol == options.small_entity_tol
         && state.zero_entity_version == ac.zero_entity_version;
     if (!valid && !failed)
     {
         std::vector<BoundaryEdgeState<T>> boundary_edges;
-        if (ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)] == 2)
+        if (ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)] == 2
+            && !zero_entity_below_curving_threshold<T>(ac, local_zero_entity_id, options))
         {
             const auto boundary_edge_refs =
                 face_boundary_zero_edges<T>(ac, local_zero_entity_id);
@@ -3074,6 +3225,7 @@ const CurvedZeroEntityState<T>& ensure_curved(
                 state.failure_reason = "hierarchical zero-face curving requires boundary zero edges";
                 state.geometry_order = options.geometry_order;
                 state.node_family = options.node_family;
+                state.small_entity_tol = options.small_entity_tol;
                 state.zero_entity_version = ac.zero_entity_version;
                 state.zero_mask = ac.zero_entity_zero_mask[
                     static_cast<std::size_t>(local_zero_entity_id)];
@@ -3114,6 +3266,7 @@ const CurvedZeroEntityState<T>& ensure_curved(
                         state.failure_reason = "hierarchical zero-face boundary edge curving failed";
                         state.geometry_order = options.geometry_order;
                         state.node_family = options.node_family;
+                        state.small_entity_tol = options.small_entity_tol;
                         state.zero_entity_version = ac.zero_entity_version;
                         state.zero_mask = ac.zero_entity_zero_mask[
                             static_cast<std::size_t>(local_zero_entity_id)];

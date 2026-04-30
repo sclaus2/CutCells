@@ -121,26 +121,104 @@ void clear_topology_caches(AdaptCell<T>& adapt_cell)
 }
 
 template <std::floating_point T>
-int append_vertex(AdaptCell<T>& adapt_cell, std::span<const T> coords)
+int append_vertex_with_parent_info(AdaptCell<T>& adapt_cell,
+                                   std::span<const T> coords,
+                                   int parent_dim,
+                                   int parent_id,
+                                   std::span<const T> parent_param,
+                                   int source_edge_id)
 {
     const int new_v = adapt_cell.n_vertices();
     adapt_cell.vertex_coords.insert(adapt_cell.vertex_coords.end(),
                                     coords.begin(), coords.end());
-    adapt_cell.vertex_parent_dim.push_back(static_cast<std::int8_t>(adapt_cell.tdim));
-    adapt_cell.vertex_parent_id.push_back(-1);
-    const std::int32_t param_offset = adapt_cell.vertex_parent_param_offset.empty()
-                                        ? 0
-                                        : adapt_cell.vertex_parent_param_offset.back();
-    adapt_cell.vertex_parent_param_offset.push_back(param_offset);
+    adapt_cell.vertex_parent_dim.push_back(static_cast<std::int8_t>(parent_dim));
+    adapt_cell.vertex_parent_id.push_back(static_cast<std::int32_t>(parent_id));
+    const std::int32_t param_offset =
+        static_cast<std::int32_t>(adapt_cell.vertex_parent_param.size());
+    adapt_cell.vertex_parent_param.insert(adapt_cell.vertex_parent_param.end(),
+                                          parent_param.begin(),
+                                          parent_param.end());
+    adapt_cell.vertex_parent_param_offset.push_back(
+        param_offset + static_cast<std::int32_t>(parent_param.size()));
     adapt_cell.zero_mask_per_vertex.push_back(0);
     adapt_cell.negative_mask_per_vertex.push_back(0);
-    adapt_cell.vertex_source_edge_id.push_back(-1);
+    adapt_cell.vertex_source_edge_id.push_back(static_cast<std::int32_t>(source_edge_id));
     return new_v;
 }
 
 template <std::floating_point T>
-int append_interpolated_vertex(AdaptCell<T>& adapt_cell, int v0, int v1, T t)
+bool vertex_parameter_on_parent_edge(const AdaptCell<T>& adapt_cell,
+                                     int vertex_id,
+                                     int parent_edge_id,
+                                     T& t)
 {
+    const int dim = adapt_cell.vertex_parent_dim[static_cast<std::size_t>(vertex_id)];
+    if (dim == 0)
+    {
+        const auto parent_edge =
+            cell::edges(adapt_cell.parent_cell_type)[static_cast<std::size_t>(parent_edge_id)];
+        if (parent_edge[0] == vertex_id)
+        {
+            t = T(0);
+            return true;
+        }
+        if (parent_edge[1] == vertex_id)
+        {
+            t = T(1);
+            return true;
+        }
+        return false;
+    }
+
+    if (dim != 1)
+        return false;
+    if (adapt_cell.vertex_parent_id[static_cast<std::size_t>(vertex_id)] != parent_edge_id)
+        return false;
+
+    const auto begin =
+        static_cast<std::size_t>(adapt_cell.vertex_parent_param_offset[static_cast<std::size_t>(vertex_id)]);
+    const auto end =
+        static_cast<std::size_t>(adapt_cell.vertex_parent_param_offset[static_cast<std::size_t>(vertex_id + 1)]);
+    if (end - begin != 1)
+        return false;
+
+    t = adapt_cell.vertex_parent_param[begin];
+    return true;
+}
+
+template <std::floating_point T>
+bool edge_is_on_single_parent_edge(const AdaptCell<T>& adapt_cell,
+                                   int edge_id,
+                                   int& parent_edge_id)
+{
+    auto edge_vertices = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(edge_id)];
+    if (edge_vertices.size() != 2)
+        return false;
+
+    const auto parent_edges = cell::edges(adapt_cell.parent_cell_type);
+    for (int pe = 0; pe < static_cast<int>(parent_edges.size()); ++pe)
+    {
+        T unused = T(0);
+        if (vertex_parameter_on_parent_edge(adapt_cell, edge_vertices[0], pe, unused)
+            && vertex_parameter_on_parent_edge(adapt_cell, edge_vertices[1], pe, unused))
+        {
+            parent_edge_id = pe;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+template <std::floating_point T>
+int append_interpolated_vertex_on_edge(AdaptCell<T>& adapt_cell, int edge_id, T t)
+{
+    auto edge_vertices = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(edge_id)];
+    if (edge_vertices.size() != 2)
+        throw std::runtime_error("append_interpolated_vertex_on_edge: invalid edge");
+    const int v0 = edge_vertices[0];
+    const int v1 = edge_vertices[1];
+
     std::vector<T> x(static_cast<std::size_t>(adapt_cell.tdim), T(0));
     for (int d = 0; d < adapt_cell.tdim; ++d)
     {
@@ -148,7 +226,30 @@ int append_interpolated_vertex(AdaptCell<T>& adapt_cell, int v0, int v1, T t)
         const T x1 = adapt_cell.vertex_coords[static_cast<std::size_t>(v1 * adapt_cell.tdim + d)];
         x[static_cast<std::size_t>(d)] = (T(1) - t) * x0 + t * x1;
     }
-    return append_vertex(adapt_cell, std::span<const T>(x));
+
+    int parent_dim = adapt_cell.tdim;
+    int parent_id = adapt_cell.parent_cell_id;
+    std::vector<T> parent_param(x.begin(), x.end());
+
+    int parent_edge_id = -1;
+    T parent_t0 = T(0);
+    T parent_t1 = T(1);
+    if (edge_is_on_single_parent_edge(adapt_cell, edge_id, parent_edge_id)
+        && vertex_parameter_on_parent_edge(adapt_cell, v0, parent_edge_id, parent_t0)
+        && vertex_parameter_on_parent_edge(adapt_cell, v1, parent_edge_id, parent_t1))
+    {
+        parent_dim = 1;
+        parent_id = parent_edge_id;
+        parent_param.assign(1, (T(1) - t) * parent_t0 + t * parent_t1);
+    }
+
+    return append_vertex_with_parent_info(
+        adapt_cell,
+        std::span<const T>(x),
+        parent_dim,
+        parent_id,
+        std::span<const T>(parent_param),
+        edge_id);
 }
 
 template <std::floating_point T>
@@ -162,7 +263,13 @@ int append_cell_center_vertex(AdaptCell<T>& adapt_cell, std::span<const std::int
             x[static_cast<std::size_t>(d)] +=
                 adapt_cell.vertex_coords[static_cast<std::size_t>(v * adapt_cell.tdim + d)] * inv;
     }
-    return append_vertex(adapt_cell, std::span<const T>(x));
+    return append_vertex_with_parent_info(
+        adapt_cell,
+        std::span<const T>(x),
+        adapt_cell.tdim,
+        adapt_cell.parent_cell_id,
+        std::span<const T>(x),
+        -1);
 }
 
 template <std::floating_point T>
@@ -426,11 +533,6 @@ bool refine_green_on_multiple_root_edges(AdaptCell<T>& adapt_cell,
     if (split_edge < 0)
         return false;
 
-    auto ev = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(split_edge)];
-    const int v0 = ev[0];
-    const int v1 = ev[1];
-    const int new_v = append_interpolated_vertex(adapt_cell, v0, v1, split_t);
-
     const int tdim = adapt_cell.tdim;
     const std::vector<cell::type> old_types = adapt_cell.entity_types[tdim];
     const EntityAdjacency old_cells = adapt_cell.entity_to_vertex[tdim];
@@ -447,6 +549,11 @@ bool refine_green_on_multiple_root_edges(AdaptCell<T>& adapt_cell,
     {
         return false;
     }
+
+    auto ev = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(split_edge)];
+    const int v0 = ev[0];
+    const int v1 = ev[1];
+    const int new_v = append_interpolated_vertex_on_edge(adapt_cell, split_edge, split_t);
 
     EntityAdjacency new_cells;
     new_cells.offsets.push_back(0);
@@ -589,8 +696,7 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
         if (it != midpoint_vertex_by_edge.end())
             return it->second;
 
-        auto ev = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(edge_id)];
-        const int mid = append_interpolated_vertex(adapt_cell, ev[0], ev[1], T(0.5));
+        const int mid = append_interpolated_vertex_on_edge(adapt_cell, edge_id, T(0.5));
         midpoint_vertex_by_edge[edge_id] = mid;
         return mid;
     };

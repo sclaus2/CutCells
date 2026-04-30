@@ -6,6 +6,7 @@
 
 
 #include <iostream>
+#include <cmath>
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/string.h>
@@ -18,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <numeric>
+#include <limits>
 #include <unordered_set>
 #include <cstdint>
 
@@ -48,6 +50,12 @@ using namespace cutcells;
 
 namespace
 {
+template <typename T>
+T default_sqrt_epsilon_tol()
+{
+  return std::sqrt(std::numeric_limits<T>::epsilon());
+}
+
 const std::string& cell_domain_to_str(cell::domain domain_id)
 {
   static const std::map<cell::domain, std::string> type_to_name
@@ -1903,12 +1911,14 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             "curved_zero_nodes",
             [](HOCutResult& self,
                int geometry_order,
-               const std::string& node_family)
+               const std::string& node_family,
+               T small_entity_tol)
             {
                 cutcells::curving::CurvingOptions<T> options;
                 options.geometry_order = geometry_order;
                 options.node_family =
                     cutcells::curving::node_family_from_string(node_family);
+                options.small_entity_tol = small_entity_tol;
 
                 try
                 {
@@ -2076,7 +2086,8 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                          "boundary_edge_failed",
                          "projection_failed",
                          "closest_face_retry_failed",
-                         "constrained_newton_failed"})
+                         "constrained_newton_failed",
+                         "small_entity_kept_straight"})
                     failure_code_names.append(name);
                 result["failure_code_names"] = std::move(failure_code_names);
 
@@ -2095,6 +2106,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             },
             nb::arg("geometry_order") = 2,
             nb::arg("node_family") = "gll",
+            nb::arg("small_entity_tol") = default_sqrt_epsilon_tol<T>(),
             "Return cached curved zero-entity nodes in parent reference coordinates.");
 
     // --- HOMeshPart ---
@@ -2259,6 +2271,46 @@ void declare_certification(nb::module_& m, const std::string& suffix)
                 return nb::ndarray<const std::int32_t, nb::numpy>(
                     self.vertex_source_edge_id.data(),
                     {self.vertex_source_edge_id.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "vertex_parent_dim",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int8_t, nb::numpy>(
+                    self.vertex_parent_dim.data(),
+                    {self.vertex_parent_dim.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "vertex_parent_id",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.vertex_parent_id.data(),
+                    {self.vertex_parent_id.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "vertex_parent_param",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const T, nb::numpy>(
+                    self.vertex_parent_param.data(),
+                    {self.vertex_parent_param.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "vertex_parent_param_offset",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.vertex_parent_param_offset.data(),
+                    {self.vertex_parent_param_offset.size()},
                     nb::cast(self, nb::rv_policy::reference));
             },
             nb::rv_policy::reference_internal)

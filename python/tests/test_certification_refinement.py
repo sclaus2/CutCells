@@ -292,6 +292,72 @@ class CertificationRefinementTests(unittest.TestCase):
         self.assertGreater(adapt.num_cells(), 0)
         self.assertGreater(adapt.num_vertices(), 3)
 
+    def test_curving_accepts_near_zero_multi_level_set_node_without_projection(self):
+        mesh = _single_triangle_mesh()
+
+        def phi(X):
+            return X[0] + X[1] - 0.25 + 5.12e-11 * X[0] * X[1]
+
+        ls0 = cutcells.create_level_set(mesh, phi, degree=2, name="phi")
+        ls1 = cutcells.create_level_set(mesh, phi, degree=2, name="psi")
+
+        result = cutcells.ho_cut(mesh, [ls0, ls1])
+        curved = result.curved_zero_nodes(geometry_order=2, node_family="gll")
+
+        status = np.asarray(curved["status"], dtype=np.uint8)
+        dim = np.asarray(curved["dim"], dtype=np.int32)
+        zero_mask = np.asarray(curved["zero_mask"], dtype=np.uint64)
+        offsets = np.asarray(curved["offsets"], dtype=np.int32)
+        stats_offsets = np.asarray(curved["stats_offsets"], dtype=np.int32)
+        node_iterations = np.asarray(curved["node_iterations"], dtype=np.int32)
+        node_residual = np.asarray(curved["node_residual"], dtype=np.float64)
+        node_projection_mode = np.asarray(curved["node_projection_mode"], dtype=np.uint8)
+        points = np.asarray(curved["points"], dtype=np.float64)
+
+        self.assertTrue(np.all(status == 2))  # CurvingStatus::curved
+        edge_state = int(np.flatnonzero((dim == 1) & (zero_mask == 3))[0])
+        node_begin = int(offsets[edge_state])
+        node_end = int(offsets[edge_state + 1])
+        stat_begin = int(stats_offsets[edge_state])
+        stat_end = int(stats_offsets[edge_state + 1])
+
+        self.assertEqual(node_end - node_begin, 3)
+        self.assertEqual(stat_end - stat_begin, 3)
+        mid_node = node_begin + 1
+        mid_stat = stat_begin + 1
+
+        np.testing.assert_allclose(points[mid_node], [0.125, 0.125], atol=1e-15)
+        self.assertLess(node_residual[mid_stat], 1.0e-12)
+        self.assertEqual(int(node_iterations[mid_stat]), 0)
+        self.assertEqual(int(node_projection_mode[mid_stat]), 0)  # CurvingProjectionMode::none
+
+    def test_curving_keeps_only_short_edge_faces_straight(self):
+        mesh = _single_tetra_mesh()
+        eps = 1.0e-4
+
+        def phi(X):
+            return X[0] + X[1] - eps
+
+        ls = cutcells.create_level_set(mesh, phi, degree=1, name="phi")
+        result = cutcells.ho_cut(mesh, ls)
+        curved = result.curved_zero_nodes(
+            geometry_order=2,
+            node_family="gll",
+            small_entity_tol=2.0e-2,
+        )
+
+        dim = np.asarray(curved["dim"], dtype=np.int32)
+        stats_offsets = np.asarray(curved["stats_offsets"], dtype=np.int32)
+        node_failure_code = np.asarray(curved["node_failure_code"], dtype=np.uint8)
+        small_code = list(curved["failure_code_names"]).index("small_entity_kept_straight")
+
+        face_states = np.flatnonzero(dim == 2)
+        self.assertGreater(len(face_states), 0)
+        for face_state in face_states:
+            begin = int(stats_offsets[face_state])
+            end = int(stats_offsets[face_state + 1])
+            self.assertFalse(np.all(node_failure_code[begin:end] == small_code))
+
     def test_cut_detects_quadratic_interior_tetra_intersection(self):
         mesh = _single_tetra_mesh()
         ls = cutcells.create_level_set(

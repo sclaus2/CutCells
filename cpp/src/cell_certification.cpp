@@ -563,6 +563,7 @@ void append_ready_cut_part_cells(
 
             int parent_dim = parent_tdim;
             int parent_id = -1;
+            std::vector<T> parent_param;
 
             int old_edge_id_for_token = -1;
             if (token >= 0 && token < 100)
@@ -579,13 +580,32 @@ void append_ready_cut_part_cells(
                     {
                         parent_dim = 1;
                         parent_id = parent_edge_id;
+
+                        auto edge_vertices =
+                            adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(old_edge_id)];
+                        T parent_t0 = T(0);
+                        T parent_t1 = T(1);
+                        if (edge_vertices.size() == 2
+                            && vertex_parameter_on_parent_edge(
+                                adapt_cell, edge_vertices[0], parent_edge_id, parent_t0)
+                            && vertex_parameter_on_parent_edge(
+                                adapt_cell, edge_vertices[1], parent_edge_id, parent_t1))
+                        {
+                            parent_param.assign(1, T(0.5) * (parent_t0 + parent_t1));
+                        }
                     }
                 }
+            }
+            if (parent_dim == parent_tdim && parent_id < 0)
+            {
+                parent_id = adapt_cell.parent_cell_id;
+                parent_param.assign(x.begin(), x.end());
             }
 
             vertex_id = append_vertex_with_parent_info(
                 adapt_cell, x, parent_dim, parent_id,
-                std::span<const T>(), /*source_edge_id=*/-1);
+                std::span<const T>(parent_param),
+                old_edge_id_for_token);
 
             if (token >= 0 && token < 100)
             {
@@ -1662,7 +1682,11 @@ void certify_and_refine(AdaptCell<T>& adapt_cell,
         if (did_green)
         {
             if (refine_green_on_multiple_root_edges(adapt_cell, level_set_id))
+            {
+                fill_all_vertex_signs_from_level_set(
+                    adapt_cell, ls_cell, level_set_id, zero_tol);
                 continue;
+            }
         }
 
         // 4. Red refinement: ambiguous cells.
@@ -1682,7 +1706,11 @@ void certify_and_refine(AdaptCell<T>& adapt_cell,
         if (did_red)
         {
             if (refine_red_on_ambiguous_cells(adapt_cell, level_set_id))
+            {
+                fill_all_vertex_signs_from_level_set(
+                    adapt_cell, ls_cell, level_set_id, zero_tol);
                 continue;
+            }
         }
 
         // 5. No refinement needed — stop.

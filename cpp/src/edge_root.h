@@ -19,6 +19,12 @@
 
 namespace cutcells::cell::edge_root
 {
+template <std::floating_point T>
+inline T default_value_tolerance()
+{
+    return std::sqrt(std::numeric_limits<T>::epsilon());
+}
+
 enum class method
 {
     linear = 0,
@@ -69,7 +75,7 @@ struct RaySearchOptions
 {
     int max_iter = 64;
     T xtol = T(1e-12);
-    T ftol = T(1e-12);
+    T ftol = default_value_tolerance<T>();
     T domain_tol = T(1e-10);
     std::array<T, 3> probe_scales = {T(1), T(2), T(4)};
     T max_probe_distance = std::numeric_limits<T>::infinity();
@@ -572,7 +578,7 @@ inline RootSolveInfo<T> find_root_parameter_info(const std::span<const T> p0,
                                                  const T level = T(0),
                                                  const int max_iter = 64,
                                                  const T xtol = T(1e-12),
-                                                 const T ftol = T(1e-12))
+                                                 const T ftol = default_value_tolerance<T>())
 {
     if (p0.size() != p1.size())
         throw std::invalid_argument("find_root_parameter: inconsistent point dimensions");
@@ -739,7 +745,8 @@ template <std::floating_point T, typename Phi>
 inline T find_root_parameter(const std::span<const T> p0, const std::span<const T> p1, Phi&& level_set,
                              const method root_method = method::linear,
                              const T level = T(0), const int max_iter = 64,
-                             const T xtol = T(1e-12), const T ftol = T(1e-12))
+                             const T xtol = T(1e-12),
+                             const T ftol = default_value_tolerance<T>())
 {
     return find_root_parameter_info<T>(p0, p1, std::forward<Phi>(level_set),
                                        root_method, level, max_iter, xtol, ftol).t;
@@ -750,7 +757,8 @@ inline void find_root_point(const std::span<const T> p0, const std::span<const T
                             const std::span<T> root_point, Phi&& level_set,
                             const method root_method = method::linear,
                             const T level = T(0), const int max_iter = 64,
-                            const T xtol = T(1e-12), const T ftol = T(1e-12))
+                            const T xtol = T(1e-12),
+                            const T ftol = default_value_tolerance<T>())
 {
     const T t = find_root_parameter<T>(p0, p1, std::forward<Phi>(level_set),
                                        root_method, level, max_iter, xtol, ftol);
