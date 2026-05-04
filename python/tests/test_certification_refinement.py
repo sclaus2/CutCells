@@ -471,6 +471,48 @@ class CertificationRefinementTests(unittest.TestCase):
         self.assertGreater(np.asarray(summary["accepted"]).size, 0)
         self.assertTrue(np.all(np.asarray(summary["graph_refinements"]) >= 0))
 
+    def test_cut_graph_check_accepts_orthogonal_surface_edge_refinement_mode(self):
+        grid = cutcells.box_tetrahedron_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 3, 3, 3)
+        mesh = cutcells.mesh_from_pyvista(grid)
+        ls = cutcells.create_level_set(
+            mesh,
+            lambda X: X[0] * X[0] + X[1] * X[1] + X[2] * X[2] - 0.36,
+            degree=2,
+            name="phi",
+        )
+
+        result = cutcells.cut(
+            mesh,
+            ls,
+            graph_max_refinements=1,
+            graph_refinement_mode="green_orthogonal_surface_edge",
+        )
+        summary = result.graph_check_summary()
+
+        self.assertGreater(np.asarray(summary["accepted"]).size, 0)
+        self.assertTrue(np.all(np.asarray(summary["graph_refinements"]) >= 0))
+
+    def test_cut_graph_check_accepts_surface_error_refinement_modes(self):
+        grid = cutcells.box_tetrahedron_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 3, 3, 3)
+        mesh = cutcells.mesh_from_pyvista(grid)
+        ls = cutcells.create_level_set(
+            mesh,
+            lambda X: X[0] * X[0] + X[1] * X[1] + X[2] * X[2] - 0.36,
+            degree=2,
+            name="phi",
+        )
+
+        for mode in ("green_midpoint_residual", "green_normal_variation"):
+            result = cutcells.cut(
+                mesh,
+                ls,
+                graph_max_refinements=1,
+                graph_refinement_mode=mode,
+            )
+            summary = result.graph_check_summary()
+            self.assertGreater(np.asarray(summary["accepted"]).size, 0)
+            self.assertTrue(np.all(np.asarray(summary["graph_refinements"]) >= 0))
+
     def test_scalar_projection_records_parent_clipped_tetra_bracket(self):
         mesh = _single_tetra_mesh()
         ls = cutcells.create_level_set(
@@ -540,6 +582,41 @@ class CertificationRefinementTests(unittest.TestCase):
         self.assertGreater(projected.size, 0)
         for idx in projected:
             self.assertGreaterEqual(float(np.dot(2.0 * seeds[idx], directions[idx])), -1e-12)
+
+    def test_triangulated_zero_quad_faces_curve_across_artificial_diagonal(self):
+        mesh = _single_tetra_mesh()
+        ls = cutcells.create_level_set(
+            mesh,
+            lambda X: X[0] + X[1] - 0.5,
+            degree=1,
+            name="phi",
+        )
+
+        result = cutcells.ho_cut(
+            mesh,
+            ls,
+            triangulate=True,
+            graph_max_refinements=0,
+            min_level_set_gradient_host_alignment=0.0,
+        )
+        curved = result.curved_zero_nodes(geometry_order=2, node_family="gll")
+        graph_nodes = result["phi = 0"].graph_check_node_data()
+
+        dim = np.asarray(curved["dim"], dtype=np.int32)
+        status = np.asarray(curved["status"], dtype=np.uint8)
+        edge_states = np.flatnonzero(dim == 1)
+        face_states = np.flatnonzero(dim == 2)
+
+        self.assertGreaterEqual(edge_states.size, 5)
+        self.assertTrue(np.all(status[edge_states] == 2))  # CurvingStatus::curved
+        self.assertGreaterEqual(face_states.size, 2)
+        self.assertTrue(np.all(status[face_states] == 2))  # CurvingStatus::curved
+        face_interior_nodes = (
+            np.asarray(graph_nodes["node_kind"], dtype=np.int32) == 3
+        )
+        self.assertTrue(np.any(
+            np.asarray(graph_nodes["node_index"], dtype=np.int32)[face_interior_nodes] > 0
+        ))
 
     def test_curving_accepts_near_zero_multi_level_set_node_without_projection(self):
         mesh = _single_triangle_mesh()

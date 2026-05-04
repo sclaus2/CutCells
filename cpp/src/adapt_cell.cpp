@@ -19,6 +19,51 @@ namespace
 {
 
 template <std::floating_point T>
+void clear_entity_host_provenance(AdaptCell<T>& ac, int dim)
+{
+    ac.entity_host_cell_id[dim].clear();
+    ac.entity_host_cell_type[dim].clear();
+    ac.entity_host_face_id[dim].clear();
+    ac.entity_source_level_set[dim].clear();
+    ac.entity_host_cell_vertices[dim].offsets.clear();
+    ac.entity_host_cell_vertices[dim].indices.clear();
+    ac.entity_host_cell_vertices[dim].offsets.push_back(std::int32_t(0));
+}
+
+template <std::floating_point T>
+std::span<const std::int32_t> host_vertices_for_entity(const AdaptCell<T>& ac,
+                                                       int dim,
+                                                       int entity_id)
+{
+    if (dim >= 0 && dim < AdaptCell<T>::max_dim
+        && entity_id >= 0
+        && entity_id < ac.entity_host_cell_vertices[dim].size())
+    {
+        return ac.entity_host_cell_vertices[dim][static_cast<std::int32_t>(entity_id)];
+    }
+    return {};
+}
+
+template <std::floating_point T>
+void append_entity_host_provenance(AdaptCell<T>& ac,
+                                   int dim,
+                                   int host_cell_id,
+                                   cell::type host_cell_type,
+                                   int host_face_id,
+                                   int source_level_set,
+                                   std::span<const std::int32_t> host_vertices)
+{
+    ac.entity_host_cell_id[dim].push_back(static_cast<std::int32_t>(host_cell_id));
+    ac.entity_host_cell_type[dim].push_back(host_cell_type);
+    ac.entity_host_face_id[dim].push_back(static_cast<std::int32_t>(host_face_id));
+    ac.entity_source_level_set[dim].push_back(static_cast<std::int32_t>(source_level_set));
+    for (const auto v : host_vertices)
+        ac.entity_host_cell_vertices[dim].indices.push_back(v);
+    ac.entity_host_cell_vertices[dim].offsets.push_back(
+        static_cast<std::int32_t>(ac.entity_host_cell_vertices[dim].indices.size()));
+}
+
+template <std::floating_point T>
 T squared_distance_to_segment(std::span<const T> p,
                               std::span<const T> a,
                               std::span<const T> b,
@@ -146,7 +191,7 @@ infer_zero_entity_parent_host(const AdaptCell<T>& ac,
 
 } // namespace
 
-    template <std::floating_point T>
+template <std::floating_point T>
 void build_faces(AdaptCell<T>& ac)
 {
     if (ac.tdim < 3)
@@ -157,6 +202,7 @@ void build_faces(AdaptCell<T>& ac)
     ac.entity_to_vertex[2].offsets.clear();
     ac.entity_to_vertex[2].indices.clear();
     ac.entity_to_vertex[2].offsets.push_back(std::int32_t(0));
+    clear_entity_host_provenance<T>(ac, 2);
 
     // Invalidate face cert tag storage: face count is about to change and
     // faces may be reordered, so all old tags are stale.
@@ -197,6 +243,27 @@ void build_faces(AdaptCell<T>& ac)
                     ac.entity_to_vertex[2].indices.push_back(global_fv[static_cast<std::size_t>(j)]);
                 ac.entity_to_vertex[2].offsets.push_back(
                     static_cast<std::int32_t>(ac.entity_to_vertex[2].indices.size()));
+
+                const int host_cell_id =
+                    (c < static_cast<int>(ac.cell_source_cell_id.size()))
+                        ? ac.cell_source_cell_id[static_cast<std::size_t>(c)]
+                        : c;
+                const cell::type host_cell_type =
+                    (ac.tdim < AdaptCell<T>::max_dim
+                     && c < static_cast<int>(ac.entity_host_cell_type[ac.tdim].size()))
+                        ? ac.entity_host_cell_type[ac.tdim][static_cast<std::size_t>(c)]
+                        : ctype;
+                const int source_level_set =
+                    (ac.tdim < AdaptCell<T>::max_dim
+                     && c < static_cast<int>(ac.entity_source_level_set[ac.tdim].size()))
+                        ? ac.entity_source_level_set[ac.tdim][static_cast<std::size_t>(c)]
+                        : -1;
+                const auto host_vertices =
+                    host_vertices_for_entity<T>(ac, ac.tdim, c);
+                append_entity_host_provenance<T>(
+                    ac, 2, host_cell_id, host_cell_type, -1, source_level_set,
+                    host_vertices.empty() ? std::span<const std::int32_t>(cell_verts)
+                                          : host_vertices);
             }
         }
     }
@@ -216,6 +283,7 @@ void build_edges(AdaptCell<T>& ac)
     ac.entity_to_vertex[1].offsets.clear();
     ac.entity_to_vertex[1].indices.clear();
     ac.entity_to_vertex[1].offsets.push_back(std::int32_t(0));
+    clear_entity_host_provenance<T>(ac, 1);
 
     // Track unique edges as (min_v, max_v) → edge_id.
     std::map<std::pair<std::int32_t, std::int32_t>, int> edge_map;
@@ -241,6 +309,27 @@ void build_edges(AdaptCell<T>& ac)
                 ac.entity_to_vertex[1].indices.push_back(lv1);
                 ac.entity_to_vertex[1].offsets.push_back(
                     static_cast<std::int32_t>(ac.entity_to_vertex[1].indices.size()));
+
+                const int host_cell_id =
+                    (c < static_cast<int>(ac.cell_source_cell_id.size()))
+                        ? ac.cell_source_cell_id[static_cast<std::size_t>(c)]
+                        : c;
+                const cell::type host_cell_type =
+                    (tdim < AdaptCell<T>::max_dim
+                     && c < static_cast<int>(ac.entity_host_cell_type[tdim].size()))
+                        ? ac.entity_host_cell_type[tdim][static_cast<std::size_t>(c)]
+                        : ctype;
+                const int source_level_set =
+                    (tdim < AdaptCell<T>::max_dim
+                     && c < static_cast<int>(ac.entity_source_level_set[tdim].size()))
+                        ? ac.entity_source_level_set[tdim][static_cast<std::size_t>(c)]
+                        : -1;
+                const auto host_vertices =
+                    host_vertices_for_entity<T>(ac, tdim, c);
+                append_entity_host_provenance<T>(
+                    ac, 1, host_cell_id, host_cell_type, -1, source_level_set,
+                    host_vertices.empty() ? std::span<const std::int32_t>(cell_verts)
+                                          : host_vertices);
             }
         }
     }
@@ -299,6 +388,22 @@ AdaptCell<T> make_adapt_cell(const MeshView<T, I>& mesh, I cell_id)
     for (int v = 0; v < nv; ++v)
         ac.entity_to_vertex[tdim].indices[static_cast<std::size_t>(v)] =
             std::int32_t(v);
+
+    ac.cell_source_cell_id.assign(1, std::int32_t(0));
+    ac.cell_refinement_generation.assign(1, std::int32_t(0));
+    ac.cell_refinement_reason.assign(1, CellRefinementReason::none);
+    ac.cell_host_parent_cell_id.assign(1, ac.parent_cell_id);
+    clear_entity_host_provenance<T>(ac, tdim);
+    append_entity_host_provenance<T>(
+        ac,
+        tdim,
+        0,
+        ctype,
+        -1,
+        -1,
+        std::span<const std::int32_t>(
+            ac.entity_to_vertex[tdim].indices.data(),
+            ac.entity_to_vertex[tdim].indices.size()));
             
     // Create edges and faces (if tdim=3) in the entity pools 
     build_edges(ac);
@@ -403,6 +508,13 @@ void rebuild_zero_entity_inventory(AdaptCell<T>& ac)
     ac.zero_entity_is_owned.clear();
     ac.zero_entity_parent_dim.clear();
     ac.zero_entity_parent_id.clear();
+    ac.zero_entity_host_cell_id.clear();
+    ac.zero_entity_host_cell_type.clear();
+    ac.zero_entity_host_face_id.clear();
+    ac.zero_entity_source_level_set.clear();
+    ac.zero_entity_host_cell_vertices.offsets.clear();
+    ac.zero_entity_host_cell_vertices.indices.clear();
+    ac.zero_entity_host_cell_vertices.offsets.push_back(std::int32_t(0));
 
     const int n_vertices = ac.n_vertices();
     for (int v = 0; v < n_vertices; ++v)
@@ -421,6 +533,12 @@ void rebuild_zero_entity_inventory(AdaptCell<T>& ac)
         ac.zero_entity_parent_id.push_back(
             ac.vertex_parent_id.empty() ? std::int32_t(-1)
                                         : ac.vertex_parent_id[static_cast<std::size_t>(v)]);
+        ac.zero_entity_host_cell_id.push_back(std::int32_t(-1));
+        ac.zero_entity_host_cell_type.push_back(cell::type::point);
+        ac.zero_entity_host_face_id.push_back(std::int32_t(-1));
+        ac.zero_entity_source_level_set.push_back(std::int32_t(-1));
+        ac.zero_entity_host_cell_vertices.offsets.push_back(
+            static_cast<std::int32_t>(ac.zero_entity_host_cell_vertices.indices.size()));
     }
 
     for (int dim = 1; dim < ac.tdim; ++dim)
@@ -449,6 +567,30 @@ void rebuild_zero_entity_inventory(AdaptCell<T>& ac)
             const auto host = infer_zero_entity_parent_host<T>(ac, verts);
             ac.zero_entity_parent_dim.push_back(host.first);
             ac.zero_entity_parent_id.push_back(host.second);
+            if (e < static_cast<int>(ac.entity_host_cell_id[dim].size()))
+            {
+                ac.zero_entity_host_cell_id.push_back(
+                    ac.entity_host_cell_id[dim][static_cast<std::size_t>(e)]);
+                ac.zero_entity_host_cell_type.push_back(
+                    ac.entity_host_cell_type[dim][static_cast<std::size_t>(e)]);
+                ac.zero_entity_host_face_id.push_back(
+                    ac.entity_host_face_id[dim][static_cast<std::size_t>(e)]);
+                ac.zero_entity_source_level_set.push_back(
+                    ac.entity_source_level_set[dim][static_cast<std::size_t>(e)]);
+                const auto host_vertices =
+                    ac.entity_host_cell_vertices[dim][static_cast<std::int32_t>(e)];
+                for (const auto hv : host_vertices)
+                    ac.zero_entity_host_cell_vertices.indices.push_back(hv);
+            }
+            else
+            {
+                ac.zero_entity_host_cell_id.push_back(std::int32_t(-1));
+                ac.zero_entity_host_cell_type.push_back(cell::type::point);
+                ac.zero_entity_host_face_id.push_back(std::int32_t(-1));
+                ac.zero_entity_source_level_set.push_back(std::int32_t(-1));
+            }
+            ac.zero_entity_host_cell_vertices.offsets.push_back(
+                static_cast<std::int32_t>(ac.zero_entity_host_cell_vertices.indices.size()));
         }
     }
 

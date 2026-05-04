@@ -108,6 +108,31 @@ std::vector<int> local_zero_entity_vertex_ids(const AdaptCell<T>& ac,
 }
 
 template <std::floating_point T>
+std::vector<int> zero_entity_host_cell_vertex_ids(const AdaptCell<T>& ac,
+                                                  int local_zero_entity_id)
+{
+    if (local_zero_entity_id < 0
+        || local_zero_entity_id >= ac.zero_entity_host_cell_vertices.size())
+    {
+        return {};
+    }
+    auto verts = ac.zero_entity_host_cell_vertices[
+        static_cast<std::int32_t>(local_zero_entity_id)];
+    std::vector<int> out;
+    out.reserve(verts.size());
+    for (const auto v : verts)
+        out.push_back(static_cast<int>(v));
+    return out;
+}
+
+template <std::floating_point T>
+bool zero_entity_has_explicit_host_cell(const AdaptCell<T>& ac,
+                                        int local_zero_entity_id)
+{
+    return !zero_entity_host_cell_vertex_ids<T>(ac, local_zero_entity_id).empty();
+}
+
+template <std::floating_point T>
 void append_unique_host_vertex(const AdaptCell<T>& ac,
                                int vertex_id,
                                std::vector<int>& vertex_ids,
@@ -165,7 +190,7 @@ LocalHostDomain<T> local_host_domain_for_zero_entity(
     int local_zero_entity_id)
 {
     LocalHostDomain<T> host;
-    if (ac.tdim != 3 || local_zero_entity_id < 0
+    if ((ac.tdim != 2 && ac.tdim != 3) || local_zero_entity_id < 0
         || local_zero_entity_id >= ac.n_zero_entities())
     {
         return host;
@@ -178,12 +203,79 @@ LocalHostDomain<T> local_host_domain_for_zero_entity(
     if (zverts.empty())
         return host;
 
-    const std::uint64_t zero_mask =
-        ac.zero_entity_zero_mask[static_cast<std::size_t>(local_zero_entity_id)];
-    const int n_cells = ac.n_entities(ac.tdim);
+    const auto explicit_host_vertices =
+        zero_entity_host_cell_vertex_ids<T>(ac, local_zero_entity_id);
+
+    if (ac.tdim == 2 && zdim == 1 && !explicit_host_vertices.empty())
+    {
+        host.dimension = 2;
+        host.ordered_boundary = true;
+        for (const int vertex_id : explicit_host_vertices)
+        {
+            const auto p = vertex_ref_point<T>(ac, vertex_id);
+            host.vertices.insert(host.vertices.end(), p.begin(), p.end());
+        }
+        return host;
+    }
+
+    if (zdim == 1
+        && local_zero_entity_id
+               < static_cast<int>(ac.zero_entity_host_face_id.size())
+        && local_zero_entity_id
+               < static_cast<int>(ac.zero_entity_host_cell_type.size())
+        && !explicit_host_vertices.empty())
+    {
+        const int host_face_id =
+            ac.zero_entity_host_face_id[static_cast<std::size_t>(local_zero_entity_id)];
+        const cell::type host_type =
+            ac.zero_entity_host_cell_type[static_cast<std::size_t>(local_zero_entity_id)];
+        if (host_face_id >= 0
+            && host_face_id < cell::num_faces(host_type))
+        {
+            auto face_vertices = cell::face_vertices(host_type, host_face_id);
+            host.dimension = 2;
+            host.ordered_boundary = true;
+            for (const auto local_v : face_vertices)
+            {
+                if (local_v < 0
+                    || local_v >= static_cast<int>(explicit_host_vertices.size()))
+                {
+                    host.vertices.clear();
+                    host.dimension = -1;
+                    return host;
+                }
+                const int vertex_id =
+                    explicit_host_vertices[static_cast<std::size_t>(local_v)];
+                const auto p = vertex_ref_point<T>(ac, vertex_id);
+                host.vertices.insert(host.vertices.end(), p.begin(), p.end());
+            }
+            return host;
+        }
+    }
+
+    if (zdim == 1 && !explicit_host_vertices.empty())
+    {
+        std::vector<int> ids;
+        for (const int v : explicit_host_vertices)
+            append_unique_host_vertex<T>(ac, v, ids, host.vertices);
+        if (static_cast<int>(ids.size()) >= 4)
+            host.dimension = 3;
+        return host;
+    }
 
     if (zdim == 2)
     {
+        if (!explicit_host_vertices.empty())
+        {
+            std::vector<int> ids;
+            for (const int v : explicit_host_vertices)
+                append_unique_host_vertex<T>(ac, v, ids, host.vertices);
+            if (static_cast<int>(ids.size()) >= 4)
+                host.dimension = 3;
+            return host;
+        }
+
+        const int n_cells = ac.n_entities(ac.tdim);
         std::vector<int> ids;
         for (int c = 0; c < n_cells; ++c)
         {
@@ -321,6 +413,65 @@ bool clip_line_interval_in_ordered_face(const LocalHostDomain<T>& host,
 }
 
 template <std::floating_point T>
+bool clip_line_interval_in_ordered_polygon_2d(const LocalHostDomain<T>& host,
+                                              int tdim,
+                                              std::span<const T> x0,
+                                              std::span<const T> direction,
+                                              T tol,
+                                              T& lo,
+                                              T& hi)
+{
+    if (tdim != 2 || !host.ordered_boundary)
+        return false;
+    const int nverts =
+        static_cast<int>(host.vertices.size() / static_cast<std::size_t>(tdim));
+    if (nverts < 3)
+        return false;
+
+    std::array<T, 2> centroid = {T(0), T(0)};
+    for (int i = 0; i < nverts; ++i)
+    {
+        centroid[0] += host.vertices[static_cast<std::size_t>(2 * i)];
+        centroid[1] += host.vertices[static_cast<std::size_t>(2 * i + 1)];
+    }
+    centroid[0] /= static_cast<T>(nverts);
+    centroid[1] /= static_cast<T>(nverts);
+
+    for (int i = 0; i < nverts; ++i)
+    {
+        const auto a = std::span<const T>(
+            host.vertices.data() + static_cast<std::size_t>(2 * i), 2);
+        const auto b = std::span<const T>(
+            host.vertices.data()
+                + static_cast<std::size_t>(2 * ((i + 1) % nverts)), 2);
+        std::array<T, 2> edge = {b[0] - a[0], b[1] - a[1]};
+        std::array<T, 2> inward = {-edge[1], edge[0]};
+        std::array<T, 2> ca = {centroid[0] - a[0], centroid[1] - a[1]};
+        if (local_dot<T>(
+                std::span<const T>(inward.data(), 2),
+                std::span<const T>(ca.data(), 2)) < T(0))
+        {
+            for (T& v : inward)
+                v = -v;
+        }
+        const T offset = -local_dot<T>(
+            std::span<const T>(inward.data(), 2), a);
+        if (!clip_interval_by_halfspace<T>(
+                x0,
+                direction,
+                std::span<const T>(inward.data(), 2),
+                offset,
+                tol,
+                lo,
+                hi))
+        {
+            return false;
+        }
+    }
+    return lo <= hi;
+}
+
+template <std::floating_point T>
 bool clip_line_interval_in_convex_hull(const LocalHostDomain<T>& host,
                                        int tdim,
                                        std::span<const T> x0,
@@ -332,8 +483,15 @@ bool clip_line_interval_in_convex_hull(const LocalHostDomain<T>& host,
     const int nverts =
         static_cast<int>(host.vertices.size() / static_cast<std::size_t>(tdim));
     if (host.dimension == 2)
-        return clip_line_interval_in_ordered_face<T>(
-            host, tdim, x0, direction, tol, lo, hi);
+    {
+        if (tdim == 3)
+            return clip_line_interval_in_ordered_face<T>(
+                host, tdim, x0, direction, tol, lo, hi);
+        if (tdim == 2)
+            return clip_line_interval_in_ordered_polygon_2d<T>(
+                host, tdim, x0, direction, tol, lo, hi);
+        return false;
+    }
 
     if (host.dimension != 3 || tdim != 3 || nverts < 4)
         return false;
@@ -449,6 +607,38 @@ std::vector<T> project_to_local_host_space(const AdaptCell<T>& ac,
 }
 
 template <std::floating_point T>
+std::vector<T> local_host_face_normal_reference(const AdaptCell<T>& ac,
+                                                int local_zero_entity_id,
+                                                T tol)
+{
+    const auto host = local_host_domain_for_zero_entity<T>(
+        ac, local_zero_entity_id);
+    if (ac.tdim != 3 || !host.valid(ac.tdim) || host.dimension != 2)
+        return {};
+
+    const int nverts = static_cast<int>(
+        host.vertices.size() / static_cast<std::size_t>(ac.tdim));
+    if (nverts < 3)
+        return {};
+
+    const auto p0 = std::span<const T>(host.vertices.data(), 3);
+    const auto p1 = std::span<const T>(host.vertices.data() + 3, 3);
+    const auto p2 = std::span<const T>(host.vertices.data() + 6, 3);
+    std::array<T, 3> e0 = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+    std::array<T, 3> e1 = {p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+    auto normal = local_cross<T>(
+        std::span<const T>(e0.data(), 3),
+        std::span<const T>(e1.data(), 3));
+    const T nn = local_norm<T>(std::span<const T>(normal.data(), 3));
+    if (nn <= tol)
+        return {};
+    std::vector<T> out(3, T(0));
+    for (int d = 0; d < 3; ++d)
+        out[static_cast<std::size_t>(d)] = normal[static_cast<std::size_t>(d)] / nn;
+    return out;
+}
+
+template <std::floating_point T>
 struct BoundaryEdgeState
 {
     std::array<int, 2> vertices = {-1, -1};
@@ -459,6 +649,7 @@ struct BoundaryEdgeState
 struct BoundaryEdgeRef
 {
     int local_zero_entity_id = -1;
+    int host_face_id = -1;
     bool use_curved_state = true;
 };
 
@@ -1123,6 +1314,8 @@ bool host_parameter_interval(const AdaptCell<T>& ac,
 {
     const auto local_host =
         local_host_domain_for_zero_entity<T>(ac, local_zero_entity_id);
+    const bool has_explicit_host =
+        zero_entity_has_explicit_host_cell<T>(ac, local_zero_entity_id);
     if (local_host.valid(ac.tdim))
     {
         T local_lo = -std::numeric_limits<T>::infinity();
@@ -1135,6 +1328,12 @@ bool host_parameter_interval(const AdaptCell<T>& ac,
             hi = local_hi;
             return true;
         }
+        if (has_explicit_host)
+            return false;
+    }
+    else if (has_explicit_host)
+    {
+        return false;
     }
 
     const auto host = zero_entity_parent_entity<T>(ac, local_zero_entity_id);
@@ -1685,7 +1884,20 @@ geom::VectorQuantity<T> straight_zero_entity_normal_direction(
         }
         else if (tdim == 3)
         {
-            if (host.dim == 2)
+            auto explicit_host_normal =
+                local_host_face_normal_reference<T>(
+                    ac, local_zero_entity_id, tol);
+            if (!explicit_host_normal.empty())
+            {
+                raw = geom::in_face_segment_normal<T>(
+                    std::span<const T>(a.data(), a.size()),
+                    std::span<const T>(b.data(), b.size()),
+                    std::span<const T>(
+                        explicit_host_normal.data(), explicit_host_normal.size()),
+                    true,
+                    tol);
+            }
+            else if (host.dim == 2)
             {
                 const auto face_normal = geom::parent_face_normal<T>(
                     ac.parent_cell_type, host.id, true, tol);
@@ -1948,6 +2160,48 @@ std::vector<T> level_set_physical_point(const LevelSetCell<T, I>& ls_cell,
 }
 
 template <std::floating_point T, std::integral I>
+std::vector<T> local_host_face_normal_physical(
+    const LevelSetCell<T, I>& ls_cell,
+    const AdaptCell<T>& ac,
+    int local_zero_entity_id,
+    T tol)
+{
+    const auto host = local_host_domain_for_zero_entity<T>(
+        ac, local_zero_entity_id);
+    if (ac.tdim != 3 || ls_cell.gdim != 3
+        || !host.valid(ac.tdim) || host.dimension != 2)
+    {
+        return {};
+    }
+
+    const int nverts = static_cast<int>(
+        host.vertices.size() / static_cast<std::size_t>(ac.tdim));
+    if (nverts < 3)
+        return {};
+
+    const auto p0_ref = std::span<const T>(host.vertices.data(), 3);
+    const auto p1_ref = std::span<const T>(host.vertices.data() + 3, 3);
+    const auto p2_ref = std::span<const T>(host.vertices.data() + 6, 3);
+    const auto p0 = level_set_physical_point<T, I>(ls_cell, p0_ref);
+    const auto p1 = level_set_physical_point<T, I>(ls_cell, p1_ref);
+    const auto p2 = level_set_physical_point<T, I>(ls_cell, p2_ref);
+
+    std::array<T, 3> e0 = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+    std::array<T, 3> e1 = {p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+    auto normal = local_cross<T>(
+        std::span<const T>(e0.data(), 3),
+        std::span<const T>(e1.data(), 3));
+    const T nn = local_norm<T>(std::span<const T>(normal.data(), 3));
+    if (nn <= tol)
+        return {};
+
+    std::vector<T> out(3, T(0));
+    for (int d = 0; d < 3; ++d)
+        out[static_cast<std::size_t>(d)] = normal[static_cast<std::size_t>(d)] / nn;
+    return out;
+}
+
+template <std::floating_point T, std::integral I>
 T curving_level_set_value(const LevelSetCell<T, I>& ls_cell,
                           std::span<const T> ref)
 {
@@ -1983,11 +2237,38 @@ std::vector<T> physical_host_gradient_reference_direction(
         grad_ref,
         fallback_ref);
 
+    bool restricted_to_explicit_host_face = false;
+    const auto explicit_host_normal =
+        local_host_face_normal_physical<T, I>(
+            ls_cell,
+            ac,
+            local_zero_entity_id,
+            std::numeric_limits<T>::epsilon() * T(128));
+    if (!explicit_host_normal.empty()
+        && direction_phys.size() == explicit_host_normal.size())
+    {
+        const T nn = vec_dot<T>(
+            std::span<const T>(
+                explicit_host_normal.data(), explicit_host_normal.size()),
+            std::span<const T>(
+                explicit_host_normal.data(), explicit_host_normal.size()));
+        if (nn > T(0))
+        {
+            const T c = vec_dot<T>(
+                std::span<const T>(direction_phys.data(), direction_phys.size()),
+                std::span<const T>(
+                    explicit_host_normal.data(), explicit_host_normal.size())) / nn;
+            for (std::size_t d = 0; d < direction_phys.size(); ++d)
+                direction_phys[d] -= c * explicit_host_normal[d];
+            restricted_to_explicit_host_face = true;
+        }
+    }
+
     const int parent_dim =
         ac.zero_entity_parent_dim[static_cast<std::size_t>(local_zero_entity_id)];
     const int parent_id =
         ac.zero_entity_parent_id[static_cast<std::size_t>(local_zero_entity_id)];
-    if (parent_dim == 2 && gdim == 3)
+    if (!restricted_to_explicit_host_face && parent_dim == 2 && gdim == 3)
     {
         auto face = cell::face_vertices(ac.parent_cell_type, parent_id);
         if (face.size() >= 3)
@@ -2024,7 +2305,7 @@ std::vector<T> physical_host_gradient_reference_direction(
             }
         }
     }
-    else if (parent_dim == 1)
+    else if (!restricted_to_explicit_host_face && parent_dim == 1)
     {
         auto edges = cell::edges(ac.parent_cell_type);
         if (parent_id >= 0 && parent_id < static_cast<int>(edges.size()))
@@ -2053,7 +2334,7 @@ std::vector<T> physical_host_gradient_reference_direction(
             }
         }
     }
-    else if (parent_dim == 0)
+    else if (!restricted_to_explicit_host_face && parent_dim == 0)
     {
         return std::vector<T>(static_cast<std::size_t>(tdim), T(0));
     }
@@ -3807,7 +4088,7 @@ bool build_hierarchical_face_nodes(
 
                 if (!append_quad_interior_node(u, v))
                 {
-                    state.failure_reason = "projection failed inside parent host domain";
+                    state.failure_reason = "projection failed inside zero-entity host domain";
                     return false;
                 }
             }
@@ -3959,6 +4240,16 @@ void build_curved_state(CurvedZeroEntityState<T>& state,
             seeds.data() + static_cast<std::size_t>(i * ac.tdim),
             static_cast<std::size_t>(ac.tdim));
 
+        if (zdim == 1 && (i == 0 || i == nseeds - 1))
+        {
+            state.ref_nodes.insert(state.ref_nodes.end(), seed.begin(), seed.end());
+            append_node_stats<T>(
+                state,
+                accepted_node_stats<T>(CurvingFailureCode::exact_vertex),
+                ac.tdim);
+            continue;
+        }
+
         ProjectionStats<T> stats;
         const bool ok = project_seed_to_zero_entity<T, I>(
             ac,
@@ -3974,7 +4265,7 @@ void build_curved_state(CurvedZeroEntityState<T>& state,
         if (!ok)
         {
             state.status = CurvingStatus::failed;
-            state.failure_reason = "projection failed inside parent host domain";
+            state.failure_reason = "projection failed inside zero-entity host domain";
             state.ref_nodes.clear();
             return;
         }
@@ -4168,6 +4459,12 @@ void rebuild_identity(CurvingData<T, I>& curving,
 }
 
 template <std::floating_point T>
+int host_face_for_zero_face_boundary_edge(const AdaptCell<T>& ac,
+                                          int zero_face_id,
+                                          int zero_edge_id,
+                                          T tol);
+
+template <std::floating_point T>
 std::vector<BoundaryEdgeRef> face_boundary_zero_edges(const AdaptCell<T>& ac,
                                                       int local_zero_entity_id)
 {
@@ -4193,7 +4490,6 @@ std::vector<BoundaryEdgeRef> face_boundary_zero_edges(const AdaptCell<T>& ac,
             face_verts[static_cast<std::size_t>(edge[1])]
         };
         int match = -1;
-        bool use_curved_state = true;
         for (int z = 0; z < ac.n_zero_entities(); ++z)
         {
             if (ac.zero_entity_dim[static_cast<std::size_t>(z)] != 1)
@@ -4207,15 +4503,183 @@ std::vector<BoundaryEdgeRef> face_boundary_zero_edges(const AdaptCell<T>& ac,
                     std::span<const int>(edge_verts.data(), edge_verts.size())))
             {
                 match = z;
-                use_curved_state = true;
                 break;
             }
         }
         if (match < 0)
             return {};
-        edge_ids.push_back({match, use_curved_state});
+        const int host_face_id =
+            host_face_for_zero_face_boundary_edge<T>(
+                ac,
+                local_zero_entity_id,
+                match,
+                T(256) * std::numeric_limits<T>::epsilon());
+        // Triangulated zero quadrilaterals introduce an artificial diagonal.
+        // It is a zero subedge of the output triangle, but it is not on a
+        // host-cell boundary face. Keep it as a curved zero edge; a negative
+        // host_face_id makes its contextual host the uncut subcell volume.
+        edge_ids.push_back({match, host_face_id, true});
     }
     return edge_ids;
+}
+
+template <std::floating_point T>
+bool point_in_triangle_ref(const AdaptCell<T>& ac,
+                           std::span<const int> tri_vertices,
+                           std::span<const T> point,
+                           T tol)
+{
+    if (ac.tdim != 3 || tri_vertices.size() != 3 || point.size() != 3)
+        return false;
+    const auto a = vertex_ref_point<T>(ac, tri_vertices[0]);
+    const auto b = vertex_ref_point<T>(ac, tri_vertices[1]);
+    const auto c = vertex_ref_point<T>(ac, tri_vertices[2]);
+    std::array<T, 3> v0 = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+    std::array<T, 3> v1 = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+    std::array<T, 3> v2 = {point[0] - a[0], point[1] - a[1], point[2] - a[2]};
+    const auto n = local_cross<T>(
+        std::span<const T>(v0.data(), 3),
+        std::span<const T>(v1.data(), 3));
+    const T area2 = local_norm<T>(std::span<const T>(n.data(), 3));
+    if (area2 <= tol)
+        return false;
+    const T plane =
+        std::fabs(local_dot<T>(
+            std::span<const T>(v2.data(), 3),
+            std::span<const T>(n.data(), 3))) / area2;
+    if (plane > tol)
+        return false;
+
+    const T d00 = local_dot<T>(
+        std::span<const T>(v0.data(), 3),
+        std::span<const T>(v0.data(), 3));
+    const T d01 = local_dot<T>(
+        std::span<const T>(v0.data(), 3),
+        std::span<const T>(v1.data(), 3));
+    const T d11 = local_dot<T>(
+        std::span<const T>(v1.data(), 3),
+        std::span<const T>(v1.data(), 3));
+    const T d20 = local_dot<T>(
+        std::span<const T>(v2.data(), 3),
+        std::span<const T>(v0.data(), 3));
+    const T d21 = local_dot<T>(
+        std::span<const T>(v2.data(), 3),
+        std::span<const T>(v1.data(), 3));
+    const T denom = d00 * d11 - d01 * d01;
+    if (std::fabs(denom) <= tol * tol)
+        return false;
+    const T v = (d11 * d20 - d01 * d21) / denom;
+    const T w = (d00 * d21 - d01 * d20) / denom;
+    const T u = T(1) - v - w;
+    return u >= -tol && v >= -tol && w >= -tol
+        && u <= T(1) + tol && v <= T(1) + tol && w <= T(1) + tol;
+}
+
+template <std::floating_point T>
+int host_face_for_zero_face_boundary_edge(const AdaptCell<T>& ac,
+                                          int zero_face_id,
+                                          int zero_edge_id,
+                                          T tol)
+{
+    if (zero_face_id < 0 || zero_edge_id < 0
+        || zero_face_id >= ac.n_zero_entities()
+        || zero_edge_id >= ac.n_zero_entities())
+    {
+        return -1;
+    }
+    if (zero_face_id >= static_cast<int>(ac.zero_entity_host_cell_type.size()))
+        return -1;
+    const cell::type host_type =
+        ac.zero_entity_host_cell_type[static_cast<std::size_t>(zero_face_id)];
+    const auto host_cell_vertices =
+        zero_entity_host_cell_vertex_ids<T>(ac, zero_face_id);
+    const auto edge_vertices =
+        local_zero_entity_vertex_ids<T>(ac, zero_edge_id);
+    if (host_cell_vertices.empty() || edge_vertices.size() != 2
+        || host_type == cell::type::point)
+    {
+        return -1;
+    }
+
+    const auto p0 = vertex_ref_point<T>(ac, edge_vertices[0]);
+    const auto p1 = vertex_ref_point<T>(ac, edge_vertices[1]);
+    for (int f = 0; f < cell::num_faces(host_type); ++f)
+    {
+        auto local_face = cell::face_vertices(host_type, f);
+        if (local_face.size() != 3)
+            continue;
+        std::array<int, 3> face_vertices = {
+            host_cell_vertices[static_cast<std::size_t>(local_face[0])],
+            host_cell_vertices[static_cast<std::size_t>(local_face[1])],
+            host_cell_vertices[static_cast<std::size_t>(local_face[2])]
+        };
+        if (point_in_triangle_ref<T>(
+                ac,
+                std::span<const int>(face_vertices.data(), face_vertices.size()),
+                p0,
+                tol)
+            && point_in_triangle_ref<T>(
+                ac,
+                std::span<const int>(face_vertices.data(), face_vertices.size()),
+                p1,
+                tol))
+        {
+            return f;
+        }
+    }
+    return -1;
+}
+
+template <std::floating_point T>
+void override_zero_edge_host_from_face(AdaptCell<T>& ac,
+                                       int zero_edge_id,
+                                       int zero_face_id,
+                                       int host_face_id)
+{
+    if (zero_edge_id < 0 || zero_face_id < 0
+        || zero_edge_id >= ac.n_zero_entities()
+        || zero_face_id >= ac.n_zero_entities())
+    {
+        return;
+    }
+    if (zero_face_id >= static_cast<int>(ac.zero_entity_host_cell_id.size())
+        || zero_edge_id >= static_cast<int>(ac.zero_entity_host_cell_id.size()))
+    {
+        return;
+    }
+    const auto face_host_vertices =
+        zero_entity_host_cell_vertex_ids<T>(ac, zero_face_id);
+    if (face_host_vertices.empty())
+        return;
+
+    ac.zero_entity_host_cell_id[static_cast<std::size_t>(zero_edge_id)] =
+        ac.zero_entity_host_cell_id[static_cast<std::size_t>(zero_face_id)];
+    ac.zero_entity_host_cell_type[static_cast<std::size_t>(zero_edge_id)] =
+        ac.zero_entity_host_cell_type[static_cast<std::size_t>(zero_face_id)];
+    ac.zero_entity_host_face_id[static_cast<std::size_t>(zero_edge_id)] =
+        static_cast<std::int32_t>(host_face_id);
+    ac.zero_entity_source_level_set[static_cast<std::size_t>(zero_edge_id)] =
+        ac.zero_entity_source_level_set[static_cast<std::size_t>(zero_face_id)];
+
+    EntityAdjacency updated;
+    updated.offsets.push_back(std::int32_t(0));
+    for (int z = 0; z < ac.n_zero_entities(); ++z)
+    {
+        if (z == zero_edge_id)
+        {
+            for (const int v : face_host_vertices)
+                updated.indices.push_back(static_cast<std::int32_t>(v));
+        }
+        else if (z < ac.zero_entity_host_cell_vertices.size())
+        {
+            const auto old = ac.zero_entity_host_cell_vertices[static_cast<std::int32_t>(z)];
+            for (const auto v : old)
+                updated.indices.push_back(v);
+        }
+        updated.offsets.push_back(
+            static_cast<std::int32_t>(updated.indices.size()));
+    }
+    ac.zero_entity_host_cell_vertices = std::move(updated);
 }
 
 template <std::floating_point T, std::integral I>
@@ -4262,6 +4726,7 @@ const CurvedZeroEntityState<T>& ensure_curved(
     if (!valid && !failed)
     {
         std::vector<BoundaryEdgeState<T>> boundary_edges;
+        std::vector<CurvedZeroEntityState<T>> contextual_boundary_edge_states;
         if (ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)] == 2
             && !zero_entity_below_curving_threshold<T>(ac, local_zero_entity_id, options))
         {
@@ -4300,20 +4765,31 @@ const CurvedZeroEntityState<T>& ensure_curved(
             }
 
             boundary_edges.reserve(boundary_edge_refs.size());
+            contextual_boundary_edge_states.reserve(boundary_edge_refs.size());
             for (const auto& edge_ref : boundary_edge_refs)
             {
                 const CurvedZeroEntityState<T>* edge_state = nullptr;
                 if (edge_ref.use_curved_state)
                 {
-                    edge_state = &ensure_curved<T, I>(
-                        curving,
-                        parent_cell_ids,
-                        adapt_cells,
+                    AdaptCell<T> edge_context_ac = ac;
+                    override_zero_edge_host_from_face<T>(
+                        edge_context_ac,
+                        edge_ref.local_zero_entity_id,
+                        local_zero_entity_id,
+                        edge_ref.host_face_id);
+                    contextual_boundary_edge_states.emplace_back();
+                    auto& mutable_edge_state =
+                        contextual_boundary_edge_states.back();
+                    build_curved_state<T, I>(
+                        mutable_edge_state,
+                        edge_context_ac,
                         level_set_cells,
                         ls_offsets,
                         cut_cell_id,
                         edge_ref.local_zero_entity_id,
+                        std::span<const BoundaryEdgeState<T>>(),
                         options);
+                    edge_state = &mutable_edge_state;
                     if (edge_state->status != CurvingStatus::curved)
                     {
                         state.status = CurvingStatus::failed;

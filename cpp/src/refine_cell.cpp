@@ -117,6 +117,12 @@ void clear_topology_caches(AdaptCell<T>& adapt_cell)
     adapt_cell.zero_entity_is_owned.clear();
     adapt_cell.zero_entity_parent_dim.clear();
     adapt_cell.zero_entity_parent_id.clear();
+    adapt_cell.zero_entity_host_cell_id.clear();
+    adapt_cell.zero_entity_host_cell_type.clear();
+    adapt_cell.zero_entity_host_face_id.clear();
+    adapt_cell.zero_entity_source_level_set.clear();
+    adapt_cell.zero_entity_host_cell_vertices.offsets.clear();
+    adapt_cell.zero_entity_host_cell_vertices.indices.clear();
     ++adapt_cell.zero_entity_version;
 }
 
@@ -423,6 +429,133 @@ void rebuild_leaf_cell_certification(
     }
 }
 
+template <std::floating_point T>
+void rebuild_leaf_cell_provenance(
+    AdaptCell<T>& adapt_cell,
+    std::span<const cell::type> old_cell_types,
+    const EntityAdjacency& old_cells,
+    std::span<const std::int32_t> old_cell_source_cell_id,
+    std::span<const std::int32_t> old_cell_refinement_generation,
+    std::span<const CellRefinementReason> old_cell_refinement_reason,
+    std::span<const std::int32_t> old_cell_host_parent_cell_id,
+    const EntityAdjacency& old_host_cell_vertices,
+    std::span<const cell::type> old_host_cell_types,
+    std::span<const std::int32_t> old_source_level_sets,
+    std::span<const int> old_cell_ids_for_new_cells,
+    std::span<const int> source_cell_ids_for_new_cells,
+    std::span<const CellRefinementReason> refinement_reasons_for_new_cells)
+{
+    const int tdim = adapt_cell.tdim;
+    const int n_cells = adapt_cell.n_entities(tdim);
+
+    adapt_cell.cell_source_cell_id.assign(
+        static_cast<std::size_t>(n_cells), std::int32_t(-1));
+    adapt_cell.cell_refinement_generation.assign(
+        static_cast<std::size_t>(n_cells), std::int32_t(0));
+    adapt_cell.cell_refinement_reason.assign(
+        static_cast<std::size_t>(n_cells), CellRefinementReason::none);
+    adapt_cell.cell_host_parent_cell_id.assign(
+        static_cast<std::size_t>(n_cells), adapt_cell.parent_cell_id);
+
+    adapt_cell.entity_host_cell_id[tdim].clear();
+    adapt_cell.entity_host_cell_type[tdim].clear();
+    adapt_cell.entity_host_face_id[tdim].clear();
+    adapt_cell.entity_source_level_set[tdim].clear();
+    adapt_cell.entity_host_cell_vertices[tdim].offsets.clear();
+    adapt_cell.entity_host_cell_vertices[tdim].indices.clear();
+    adapt_cell.entity_host_cell_vertices[tdim].offsets.push_back(std::int32_t(0));
+
+    auto append_host_vertices = [&](std::span<const std::int32_t> vertices)
+    {
+        for (const auto v : vertices)
+            adapt_cell.entity_host_cell_vertices[tdim].indices.push_back(v);
+        adapt_cell.entity_host_cell_vertices[tdim].offsets.push_back(
+            static_cast<std::int32_t>(
+                adapt_cell.entity_host_cell_vertices[tdim].indices.size()));
+    };
+
+    const int old_num_cells = static_cast<int>(old_cell_types.size());
+    for (int c = 0; c < n_cells; ++c)
+    {
+        const int old_c =
+            (c < static_cast<int>(old_cell_ids_for_new_cells.size()))
+                ? old_cell_ids_for_new_cells[static_cast<std::size_t>(c)]
+                : -1;
+        const int source_c =
+            (c < static_cast<int>(source_cell_ids_for_new_cells.size()))
+                ? source_cell_ids_for_new_cells[static_cast<std::size_t>(c)]
+                : old_c;
+        const CellRefinementReason reason =
+            (c < static_cast<int>(refinement_reasons_for_new_cells.size()))
+                ? refinement_reasons_for_new_cells[static_cast<std::size_t>(c)]
+                : CellRefinementReason::none;
+        const CellRefinementReason stored_reason =
+            (reason == CellRefinementReason::none
+             && old_c >= 0
+             && old_c < static_cast<int>(old_cell_refinement_reason.size()))
+                ? old_cell_refinement_reason[static_cast<std::size_t>(old_c)]
+                : reason;
+        const int meta_c =
+            (source_c >= 0 && source_c < old_num_cells)
+                ? source_c
+                : ((old_c >= 0 && old_c < old_num_cells) ? old_c : -1);
+
+        adapt_cell.cell_source_cell_id[static_cast<std::size_t>(c)] =
+            static_cast<std::int32_t>(source_c);
+        if (meta_c >= 0
+            && meta_c < static_cast<int>(old_cell_refinement_generation.size()))
+        {
+            const bool unchanged_copy =
+                old_c == source_c && old_c >= 0
+                && reason == CellRefinementReason::none;
+            adapt_cell.cell_refinement_generation[static_cast<std::size_t>(c)] =
+                old_cell_refinement_generation[static_cast<std::size_t>(meta_c)]
+                + (unchanged_copy ? 0 : 1);
+        }
+        adapt_cell.cell_refinement_reason[static_cast<std::size_t>(c)] = stored_reason;
+        if (meta_c >= 0
+            && meta_c < static_cast<int>(old_cell_host_parent_cell_id.size()))
+        {
+            adapt_cell.cell_host_parent_cell_id[static_cast<std::size_t>(c)] =
+                old_cell_host_parent_cell_id[static_cast<std::size_t>(meta_c)];
+        }
+
+        adapt_cell.entity_host_cell_id[tdim].push_back(
+            static_cast<std::int32_t>(source_c));
+        const cell::type host_type =
+            (meta_c >= 0 && meta_c < static_cast<int>(old_host_cell_types.size()))
+                ? old_host_cell_types[static_cast<std::size_t>(meta_c)]
+                : ((meta_c >= 0 && meta_c < static_cast<int>(old_cell_types.size()))
+                ? old_cell_types[static_cast<std::size_t>(meta_c)]
+                : adapt_cell.entity_types[tdim][static_cast<std::size_t>(c)]);
+        adapt_cell.entity_host_cell_type[tdim].push_back(host_type);
+        adapt_cell.entity_host_face_id[tdim].push_back(std::int32_t(-1));
+        const int source_level_set =
+            (meta_c >= 0 && meta_c < static_cast<int>(old_source_level_sets.size()))
+                ? old_source_level_sets[static_cast<std::size_t>(meta_c)]
+                : -1;
+        adapt_cell.entity_source_level_set[tdim].push_back(
+            reason == CellRefinementReason::cut_level_set
+                ? source_level_set
+                : std::int32_t(-1));
+
+        std::span<const std::int32_t> host_vertices;
+        if (reason == CellRefinementReason::cut_level_set
+            && meta_c >= 0 && meta_c < old_cells.size())
+        {
+            host_vertices = old_cells[static_cast<std::int32_t>(meta_c)];
+        }
+        else if (old_c >= 0 && old_c < old_host_cell_vertices.size()
+                 && reason == CellRefinementReason::none)
+        {
+            host_vertices = old_host_cell_vertices[static_cast<std::int32_t>(old_c)];
+        }
+        if (host_vertices.empty())
+            host_vertices = adapt_cell.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
+        append_host_vertices(host_vertices);
+    }
+}
+
 void append_top_cell(std::vector<cell::type>& types,
                      EntityAdjacency& adj,
                      cell::type ctype,
@@ -441,17 +574,49 @@ void apply_topology_update_preserve_certification(
     AdaptCell<T>& adapt_cell,
     std::vector<cell::type>&& new_types,
     EntityAdjacency&& new_cells,
-    std::span<const int> old_cell_ids_for_new_cells)
+    std::span<const int> old_cell_ids_for_new_cells,
+    std::span<const int> source_cell_ids_for_new_cells,
+    std::span<const CellRefinementReason> refinement_reasons_for_new_cells)
 {
     const int tdim = adapt_cell.tdim;
     const CapturedEdgeState<T> old_edge_state = capture_edge_state(adapt_cell);
     const int old_num_level_sets = adapt_cell.cell_cert_tag_num_level_sets;
     const int old_num_cells = adapt_cell.n_entities(tdim);
     const std::vector<CellCertTag> old_cell_tags = adapt_cell.cell_cert_tag;
+    const std::vector<cell::type> old_cell_types = adapt_cell.entity_types[tdim];
+    const EntityAdjacency old_cells = adapt_cell.entity_to_vertex[tdim];
+    const std::vector<std::int32_t> old_cell_source_cell_id =
+        adapt_cell.cell_source_cell_id;
+    const std::vector<std::int32_t> old_cell_refinement_generation =
+        adapt_cell.cell_refinement_generation;
+    const std::vector<CellRefinementReason> old_cell_refinement_reason =
+        adapt_cell.cell_refinement_reason;
+    const std::vector<std::int32_t> old_cell_host_parent_cell_id =
+        adapt_cell.cell_host_parent_cell_id;
+    const EntityAdjacency old_host_cell_vertices =
+        adapt_cell.entity_host_cell_vertices[tdim];
+    const std::vector<cell::type> old_host_cell_types =
+        adapt_cell.entity_host_cell_type[tdim];
+    const std::vector<std::int32_t> old_source_level_sets =
+        adapt_cell.entity_source_level_set[tdim];
 
     adapt_cell.entity_types[tdim] = std::move(new_types);
     adapt_cell.entity_to_vertex[tdim] = std::move(new_cells);
 
+    rebuild_leaf_cell_provenance<T>(
+        adapt_cell,
+        std::span<const cell::type>(old_cell_types),
+        old_cells,
+        std::span<const std::int32_t>(old_cell_source_cell_id),
+        std::span<const std::int32_t>(old_cell_refinement_generation),
+        std::span<const CellRefinementReason>(old_cell_refinement_reason),
+        std::span<const std::int32_t>(old_cell_host_parent_cell_id),
+        old_host_cell_vertices,
+        std::span<const cell::type>(old_host_cell_types),
+        std::span<const std::int32_t>(old_source_level_sets),
+        old_cell_ids_for_new_cells,
+        source_cell_ids_for_new_cells,
+        refinement_reasons_for_new_cells);
     rebuild_leaf_edges_preserve_certification(adapt_cell, old_edge_state);
     rebuild_leaf_cell_certification(adapt_cell,
                                     std::span<const CellCertTag>(old_cell_tags),
@@ -559,6 +724,8 @@ bool refine_green_on_multiple_root_edges(AdaptCell<T>& adapt_cell,
     new_cells.offsets.push_back(0);
     std::vector<cell::type> new_types;
     std::vector<int> old_cell_ids_for_new_cells;
+    std::vector<int> source_cell_ids_for_new_cells;
+    std::vector<CellRefinementReason> refinement_reasons_for_new_cells;
 
     for (int c = 0; c < static_cast<int>(old_types.size()); ++c)
     {
@@ -577,8 +744,12 @@ bool refine_green_on_multiple_root_edges(AdaptCell<T>& adapt_cell,
                 const std::array<int, 3> t1 = {new_v, b, cvert};
                 append_top_cell(new_types, new_cells, cell::type::triangle, std::span<const int>(t0));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::green_edge);
                 append_top_cell(new_types, new_cells, cell::type::triangle, std::span<const int>(t1));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::green_edge);
                 split = true;
             }
             else if ((b == v0 && cvert == v1) || (b == v1 && cvert == v0))
@@ -587,8 +758,12 @@ bool refine_green_on_multiple_root_edges(AdaptCell<T>& adapt_cell,
                 const std::array<int, 3> t1 = {new_v, cvert, a};
                 append_top_cell(new_types, new_cells, cell::type::triangle, std::span<const int>(t0));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::green_edge);
                 append_top_cell(new_types, new_cells, cell::type::triangle, std::span<const int>(t1));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::green_edge);
                 split = true;
             }
             else if ((cvert == v0 && a == v1) || (cvert == v1 && a == v0))
@@ -597,8 +772,12 @@ bool refine_green_on_multiple_root_edges(AdaptCell<T>& adapt_cell,
                 const std::array<int, 3> t1 = {new_v, a, b};
                 append_top_cell(new_types, new_cells, cell::type::triangle, std::span<const int>(t0));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::green_edge);
                 append_top_cell(new_types, new_cells, cell::type::triangle, std::span<const int>(t1));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::green_edge);
                 split = true;
             }
 
@@ -607,6 +786,8 @@ bool refine_green_on_multiple_root_edges(AdaptCell<T>& adapt_cell,
                 std::vector<int> copy(verts.begin(), verts.end());
                 append_top_cell(new_types, new_cells, cell::type::triangle, std::span<const int>(copy));
                 old_cell_ids_for_new_cells.push_back(c);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::none);
             }
         }
         else
@@ -642,8 +823,12 @@ bool refine_green_on_multiple_root_edges(AdaptCell<T>& adapt_cell,
                 t1[static_cast<std::size_t>(pos[0])] = new_v;
                 append_top_cell(new_types, new_cells, cell::type::tetrahedron, std::span<const int>(t0));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::green_edge);
                 append_top_cell(new_types, new_cells, cell::type::tetrahedron, std::span<const int>(t1));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::green_edge);
                 split = true;
                 break;
             }
@@ -653,13 +838,17 @@ bool refine_green_on_multiple_root_edges(AdaptCell<T>& adapt_cell,
                 std::vector<int> copy(verts.begin(), verts.end());
                 append_top_cell(new_types, new_cells, cell::type::tetrahedron, std::span<const int>(copy));
                 old_cell_ids_for_new_cells.push_back(c);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::none);
             }
         }
     }
 
     apply_topology_update_preserve_certification(
         adapt_cell, std::move(new_types), std::move(new_cells),
-        std::span<const int>(old_cell_ids_for_new_cells));
+        std::span<const int>(old_cell_ids_for_new_cells),
+        std::span<const int>(source_cell_ids_for_new_cells),
+        std::span<const CellRefinementReason>(refinement_reasons_for_new_cells));
     return true;
 }
 
@@ -705,6 +894,8 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
     new_cells.offsets.push_back(0);
     std::vector<cell::type> new_types;
     std::vector<int> old_cell_ids_for_new_cells;
+    std::vector<int> source_cell_ids_for_new_cells;
+    std::vector<CellRefinementReason> refinement_reasons_for_new_cells;
 
     for (int c = 0; c < n_cells; ++c)
     {
@@ -718,6 +909,8 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
             std::vector<int> copy(verts.begin(), verts.end());
             append_top_cell(new_types, new_cells, ctype, std::span<const int>(copy));
             old_cell_ids_for_new_cells.push_back(c);
+            source_cell_ids_for_new_cells.push_back(c);
+            refinement_reasons_for_new_cells.push_back(CellRefinementReason::none);
             continue;
         }
 
@@ -743,6 +936,8 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
             {
                 append_top_cell(new_types, new_cells, cell::type::interval, std::span<const int>(child));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::red_cell);
             }
             break;
         }
@@ -778,6 +973,8 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
                     local_to_global[static_cast<std::size_t>(child[2])]};
                 append_top_cell(new_types, new_cells, cell::type::triangle, std::span<const int>(g));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::red_cell);
             }
             break;
         }
@@ -816,6 +1013,8 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
                     local_to_global[static_cast<std::size_t>(child[3])]};
                 append_top_cell(new_types, new_cells, cell::type::quadrilateral, std::span<const int>(g));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::red_cell);
             }
             break;
         }
@@ -853,6 +1052,8 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
                     local_to_global[static_cast<std::size_t>(child[3])]};
                 append_top_cell(new_types, new_cells, cell::type::tetrahedron, std::span<const int>(g));
                 old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::red_cell);
             }
             break;
         }
@@ -864,7 +1065,9 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
 
     apply_topology_update_preserve_certification(
         adapt_cell, std::move(new_types), std::move(new_cells),
-        std::span<const int>(old_cell_ids_for_new_cells));
+        std::span<const int>(old_cell_ids_for_new_cells),
+        std::span<const int>(source_cell_ids_for_new_cells),
+        std::span<const CellRefinementReason>(refinement_reasons_for_new_cells));
     return true;
 }
 
@@ -913,11 +1116,15 @@ template void apply_topology_update_preserve_certification(
     AdaptCell<double>&,
     std::vector<cell::type>&&,
     EntityAdjacency&&,
-    std::span<const int>);
+    std::span<const int>,
+    std::span<const int>,
+    std::span<const CellRefinementReason>);
 template void apply_topology_update_preserve_certification(
     AdaptCell<float>&,
     std::vector<cell::type>&&,
     EntityAdjacency&&,
-    std::span<const int>);
+    std::span<const int>,
+    std::span<const int>,
+    std::span<const CellRefinementReason>);
 
 } // namespace cutcells

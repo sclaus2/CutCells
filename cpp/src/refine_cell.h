@@ -64,7 +64,9 @@ void apply_topology_update_preserve_certification(
     AdaptCell<T>& adapt_cell,
     std::vector<cell::type>&& new_types,
     EntityAdjacency&& new_cells,
-    std::span<const int> old_cell_ids_for_new_cells);
+    std::span<const int> old_cell_ids_for_new_cells,
+    std::span<const int> source_cell_ids_for_new_cells = {},
+    std::span<const CellRefinementReason> refinement_reasons_for_new_cells = {});
 
 // =====================================================================
 // Invalidation helpers

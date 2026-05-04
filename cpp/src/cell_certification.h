@@ -28,7 +28,10 @@ enum class GraphProjectionMode : std::uint8_t
 enum class GraphRefinementMode : std::uint8_t
 {
     green_edge = 0,
-    red_failed_cell = 1
+    red_failed_cell = 1,
+    green_orthogonal_surface_edge = 2,
+    green_midpoint_residual = 3,
+    green_normal_variation = 4
 };
 
 template <std::floating_point T>
@@ -40,7 +43,7 @@ struct ReadyCellGraphOptions
     GraphProjectionMode projection_mode =
         GraphProjectionMode::level_set_gradient;
     GraphRefinementMode refinement_mode =
-        GraphRefinementMode::green_edge;
+        GraphRefinementMode::green_midpoint_residual;
     graph_criteria::Options<T> criteria = {};
     T min_level_set_gradient_host_alignment = T(0.9);
 };
@@ -92,6 +95,10 @@ struct ZeroEntityGraphDiagnostics
     int level_set_id = -1;
     int dimension = -1;
     std::uint64_t zero_mask = 0;
+    int host_cell_id = -1;
+    cell::type host_cell_type = cell::type::point;
+    int host_face_id = -1;
+    int source_level_set = -1;
     bool accepted = true;
     int checked_edges = 0;
     int checked_faces = 0;
@@ -119,6 +126,7 @@ struct ZeroEntityGraphDiagnostics
 
     int requested_refinement_entity_dim = -1;
     int requested_refinement_entity_id = -1;
+    std::vector<T> requested_refinement_point;
     std::vector<GraphNodeDiagnostics<T>> nodes;
 };
 
@@ -154,6 +162,7 @@ struct ReadyCellGraphDiagnostics
     T first_failed_projection_root_t = std::numeric_limits<T>::quiet_NaN();
     int first_requested_refinement_entity_dim = -1;
     int first_requested_refinement_entity_id = -1;
+    std::vector<T> first_requested_refinement_point;
 
     /// Diagnostics attached to the committed AdaptCell zero entities. These
     /// are populated after the linear cut is committed and before any lazy

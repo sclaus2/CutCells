@@ -91,6 +91,25 @@ cutcells::GraphRefinementMode graph_refinement_mode_from_string(
   {
     return cutcells::GraphRefinementMode::red_failed_cell;
   }
+  if (name == "green_orthogonal_surface_edge"
+      || name == "orthogonal_surface_edge"
+      || name == "surface_orthogonal_edge"
+      || name == "orthogonal_edge")
+  {
+    return cutcells::GraphRefinementMode::green_orthogonal_surface_edge;
+  }
+  if (name == "green_midpoint_residual"
+      || name == "midpoint_residual"
+      || name == "residual")
+  {
+    return cutcells::GraphRefinementMode::green_midpoint_residual;
+  }
+  if (name == "green_normal_variation"
+      || name == "normal_variation"
+      || name == "curvature")
+  {
+    return cutcells::GraphRefinementMode::green_normal_variation;
+  }
   throw std::invalid_argument("unknown graph refinement mode");
 }
 
@@ -2495,6 +2514,10 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                 std::vector<std::int32_t> local_zero_entity_id;
                 std::vector<std::int32_t> level_set_id;
                 std::vector<std::int32_t> zero_entity_dim;
+                std::vector<std::int32_t> host_cell_id;
+                std::vector<std::int32_t> host_cell_type;
+                std::vector<std::int32_t> host_face_id;
+                std::vector<std::int32_t> source_level_set;
                 std::vector<std::int32_t> graph_accepted;
                 std::vector<std::int32_t> graph_failed_checks;
                 std::vector<std::int32_t> graph_checked_edges;
@@ -2524,6 +2547,10 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                 local_zero_entity_id.reserve(infos.size());
                 level_set_id.reserve(infos.size());
                 zero_entity_dim.reserve(infos.size());
+                host_cell_id.reserve(infos.size());
+                host_cell_type.reserve(infos.size());
+                host_face_id.reserve(infos.size());
+                source_level_set.reserve(infos.size());
                 graph_accepted.reserve(infos.size());
                 graph_failed_checks.reserve(infos.size());
                 graph_checked_edges.reserve(infos.size());
@@ -2597,6 +2624,10 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                     if (record == nullptr)
                     {
                         level_set_id.push_back(-1);
+                        host_cell_id.push_back(-1);
+                        host_cell_type.push_back(-1);
+                        host_face_id.push_back(-1);
+                        source_level_set.push_back(-1);
                         graph_accepted.push_back(-1);
                         graph_failed_checks.push_back(-1);
                         graph_checked_edges.push_back(-1);
@@ -2626,6 +2657,11 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                     }
 
                     level_set_id.push_back(record->level_set_id);
+                    host_cell_id.push_back(record->host_cell_id);
+                    host_cell_type.push_back(
+                        static_cast<std::int32_t>(record->host_cell_type));
+                    host_face_id.push_back(record->host_face_id);
+                    source_level_set.push_back(record->source_level_set);
                     graph_accepted.push_back(record->accepted ? 1 : 0);
                     graph_failed_checks.push_back(record->failed_checks);
                     graph_checked_edges.push_back(record->checked_edges);
@@ -2678,6 +2714,14 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                     as_nbarray(std::move(local_zero_entity_id));
                 out["level_set_id"] = as_nbarray(std::move(level_set_id));
                 out["zero_entity_dim"] = as_nbarray(std::move(zero_entity_dim));
+                out["zero_entity_host_cell_id"] =
+                    as_nbarray(std::move(host_cell_id));
+                out["zero_entity_host_cell_type"] =
+                    as_nbarray(std::move(host_cell_type));
+                out["zero_entity_host_face_id"] =
+                    as_nbarray(std::move(host_face_id));
+                out["zero_entity_source_level_set"] =
+                    as_nbarray(std::move(source_level_set));
                 out["graph_accepted"] = as_nbarray(std::move(graph_accepted));
                 out["graph_failed_checks"] =
                     as_nbarray(std::move(graph_failed_checks));
@@ -2956,7 +3000,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         nb::arg("mesh"), nb::arg("level_set"), nb::arg("triangulate") = false,
         nb::arg("graph_max_refinements") = 5,
         nb::arg("graph_projection_direction") = "level_set_gradient",
-        nb::arg("graph_refinement_mode") = "green_edge",
+        nb::arg("graph_refinement_mode") = "green_midpoint_residual",
         nb::arg("min_level_set_gradient_host_alignment") = T(0.9),
         nb::arg("graph_enabled") = true,
         "Cut a MeshView with a single LevelSetFunction (HO pipeline).\n"
@@ -2987,7 +3031,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         nb::arg("mesh"), nb::arg("level_sets"), nb::arg("triangulate") = true,
         nb::arg("graph_max_refinements") = 5,
         nb::arg("graph_projection_direction") = "level_set_gradient",
-        nb::arg("graph_refinement_mode") = "green_edge",
+        nb::arg("graph_refinement_mode") = "green_midpoint_residual",
         nb::arg("min_level_set_gradient_host_alignment") = T(0.9),
         nb::arg("graph_enabled") = true,
         "Cut a MeshView with multiple LevelSetFunctions (HO pipeline).\n"
@@ -3018,7 +3062,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         nb::arg("mesh"), nb::arg("level_set"), nb::arg("triangulate") = false,
         nb::arg("graph_max_refinements") = 5,
         nb::arg("graph_projection_direction") = "level_set_gradient",
-        nb::arg("graph_refinement_mode") = "green_edge",
+        nb::arg("graph_refinement_mode") = "green_midpoint_residual",
         nb::arg("min_level_set_gradient_host_alignment") = T(0.9),
         nb::arg("graph_enabled") = true,
         "Cut a MeshView with a single LevelSetFunction (HO pipeline).\n"
@@ -3049,7 +3093,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         nb::arg("mesh"), nb::arg("level_sets"), nb::arg("triangulate") = true,
         nb::arg("graph_max_refinements") = 5,
         nb::arg("graph_projection_direction") = "level_set_gradient",
-        nb::arg("graph_refinement_mode") = "green_edge",
+        nb::arg("graph_refinement_mode") = "green_midpoint_residual",
         nb::arg("min_level_set_gradient_host_alignment") = T(0.9),
         nb::arg("graph_enabled") = true,
         "Cut a MeshView with multiple LevelSetFunctions (HO pipeline).\n"
@@ -3254,6 +3298,26 @@ void declare_certification(nb::module_& m, const std::string& suffix)
             },
             nb::rv_policy::reference_internal)
         .def_prop_ro(
+            "face_connectivity",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.entity_to_vertex[2].indices.data(),
+                    {self.entity_to_vertex[2].indices.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "face_offsets",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.entity_to_vertex[2].offsets.data(),
+                    {self.entity_to_vertex[2].offsets.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
             "cell_types",
             [](const AdaptCellT& self)
             {
@@ -3272,6 +3336,48 @@ void declare_certification(nb::module_& m, const std::string& suffix)
                 return nb::ndarray<const std::int32_t, nb::numpy>(
                     self.entity_to_vertex[self.tdim].indices.data(),
                     {self.entity_to_vertex[self.tdim].indices.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "cell_source_cell_id",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.cell_source_cell_id.data(),
+                    {self.cell_source_cell_id.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "cell_refinement_generation",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.cell_refinement_generation.data(),
+                    {self.cell_refinement_generation.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "cell_refinement_reason",
+            [](const AdaptCellT& self)
+            {
+                const auto* data = reinterpret_cast<const std::uint8_t*>(
+                    self.cell_refinement_reason.data());
+                return nb::ndarray<const std::uint8_t, nb::numpy>(
+                    data,
+                    {self.cell_refinement_reason.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "cell_host_parent_cell_id",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.cell_host_parent_cell_id.data(),
+                    {self.cell_host_parent_cell_id.size()},
                     nb::cast(self, nb::rv_policy::reference));
             },
             nb::rv_policy::reference_internal)
@@ -3589,7 +3695,7 @@ void declare_certification(nb::module_& m, const std::string& suffix)
         nb::arg("level_set_cell"),
         nb::arg("level_set_id"),
         nb::arg("projection_direction") = "level_set_gradient",
-        nb::arg("refinement_mode") = "green_edge",
+        nb::arg("refinement_mode") = "green_midpoint_residual",
         nb::arg("graph_max_refinements") = 5,
         nb::arg("max_relative_correction_distance") = T(0.5),
         nb::arg("max_relative_tangential_shift") = T(0.25),
@@ -3696,7 +3802,7 @@ void declare_certification(nb::module_& m, const std::string& suffix)
         nb::arg("edge_max_depth") = 20,
         nb::arg("triangulate_cut_parts") = false,
         nb::arg("projection_direction") = "level_set_gradient",
-        nb::arg("refinement_mode") = "green_edge",
+        nb::arg("refinement_mode") = "green_midpoint_residual",
         nb::arg("graph_max_refinements") = 5,
         nb::arg("max_relative_correction_distance") = T(0.5),
         nb::arg("max_relative_tangential_shift") = T(0.25),
