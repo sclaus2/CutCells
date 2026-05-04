@@ -221,11 +221,18 @@ classify_new_edges = _cutcellscpp.classify_new_edges
 fill_all_vertex_signs_from_level_set = _cutcellscpp.fill_all_vertex_signs_from_level_set
 classify_leaf_cells = _cutcellscpp.classify_leaf_cells
 process_ready_to_cut_cells = _cutcellscpp.process_ready_to_cut_cells
+check_ready_to_cut_cell_graphs = _cutcellscpp.check_ready_to_cut_cell_graphs
+refine_ready_cell_on_largest_midpoint_value = (
+    _cutcellscpp.refine_ready_cell_on_largest_midpoint_value
+)
 refine_green_on_multiple_root_edges = _cutcellscpp.refine_green_on_multiple_root_edges
 refine_red_on_ambiguous_cells = _cutcellscpp.refine_red_on_ambiguous_cells
 certify_and_refine = _cutcellscpp.certify_and_refine
 certify_refine_and_process_ready_cells = (
     _cutcellscpp.certify_refine_and_process_ready_cells
+)
+certify_refine_graph_check_and_process_ready_cells = (
+    _cutcellscpp.certify_refine_graph_check_and_process_ready_cells
 )
 cut = _cutcellscpp.cut
 higher_order_cut = _cutcellscpp.higher_order_cut
@@ -257,6 +264,7 @@ from .mesh_utils import (
 )
 
 try:
+    from . import triangulation_analysis as triangulation_analysis
     from .triangulation_analysis import (
         CellCase,
         analyze_all_cases,

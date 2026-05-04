@@ -518,12 +518,20 @@ T LevelSetCell<T, I>::value(std::span<const T> xi) const
             std::span<const T>(bernstein_coeffs), xi);
     }
 
-    // Fallback: delegate to the global level set value function (in physical
-    // coordinates). This path requires an external mapping from reference to
-    // physical space, which is not yet wired up here.
+    // Analytical fallback: delegate to the global level-set value in physical
+    // coordinates after mapping xi to x.
+    if (global_level_set != nullptr
+        && global_level_set->has_value()
+        && !parent_vertex_coords.empty())
+    {
+        const auto x = cell::push_forward_affine_map<T>(
+            cell_type, parent_vertex_coords, gdim, xi);
+        return global_level_set->value(x.data(), cell_id);
+    }
+
     throw std::runtime_error(
         "LevelSetCell::value: no Bernstein coefficients available "
-        "and analytical fallback not yet implemented");
+        "and no analytical fallback available");
 }
 
 // ---------------------------------------------------------------------------
@@ -533,7 +541,14 @@ T LevelSetCell<T, I>::value(std::span<const T> xi) const
 template <std::floating_point T, std::integral I>
 void LevelSetCell<T, I>::grad(std::span<const T> xi, std::span<T> g) const
 {
-    // Polynomial backend: gradient of the Bernstein expansion
+    if (static_cast<int>(g.size()) != tdim)
+    {
+        throw std::runtime_error(
+            "LevelSetCell::grad: output gradient has wrong dimension");
+    }
+
+    // Polynomial backend: gradient of the Bernstein expansion in reference
+    // coordinates. This is the gradient of the local approximation phi_h.
     if (!bernstein_coeffs.empty())
     {
         bernstein::gradient(
@@ -542,9 +557,43 @@ void LevelSetCell<T, I>::grad(std::span<const T> xi, std::span<T> g) const
         return;
     }
 
+    // Analytical fallback: LevelSetFunction::grad is physical dphi/dx.
+    // Pull it back to the parent reference element as dphi/dxi = J^T dphi/dx.
+    if (global_level_set != nullptr
+        && global_level_set->has_gradient()
+        && !parent_vertex_coords.empty())
+    {
+        const auto x = cell::push_forward_affine_map<T>(
+            cell_type, parent_vertex_coords, gdim, xi);
+        std::vector<T> grad_phys(static_cast<std::size_t>(gdim), T(0));
+        global_level_set->grad(x.data(), cell_id, grad_phys.data());
+
+        const auto cols = cell::jacobian_col_indices(cell_type);
+        for (int a = 0; a < tdim; ++a)
+        {
+            const int va = cols[static_cast<std::size_t>(a)];
+            if (va < 0)
+            {
+                throw std::runtime_error(
+                    "LevelSetCell::grad: invalid affine Jacobian column");
+            }
+            T value = T(0);
+            for (int r = 0; r < gdim; ++r)
+            {
+                const T j_ra =
+                    parent_vertex_coords[
+                        static_cast<std::size_t>(va * gdim + r)]
+                  - parent_vertex_coords[static_cast<std::size_t>(r)];
+                value += j_ra * grad_phys[static_cast<std::size_t>(r)];
+            }
+            g[static_cast<std::size_t>(a)] = value;
+        }
+        return;
+    }
+
     throw std::runtime_error(
         "LevelSetCell::grad: no Bernstein coefficients available "
-        "and analytical fallback not yet implemented");
+        "and no analytical fallback available");
 }
 
 // ---------------------------------------------------------------------------

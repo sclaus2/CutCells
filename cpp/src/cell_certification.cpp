@@ -7,10 +7,13 @@
 #include "bernstein.h"
 #include "cell_flags.h"
 #include "cell_topology.h"
+#include "curving.h"
 #include "cut_cell.h"
 #include "cut_tetrahedron.h"
 #include "cut_triangle.h"
 #include "edge_certification.h"
+#include "geometric_quantity.h"
+#include "mapping.h"
 #include "reference_cell.h"
 #include "refine_cell.h"
 
@@ -22,6 +25,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <utility>
 
 namespace cutcells
 {
@@ -1345,6 +1349,2320 @@ void fill_all_vertex_signs_from_level_set(AdaptCell<T>& adapt_cell,
     }
 }
 
+template <std::floating_point T>
+std::span<const T> point_span(const std::vector<T>& points,
+                              int point_id,
+                              int dim)
+{
+    return std::span<const T>(
+        points.data()
+            + static_cast<std::size_t>(point_id)
+                  * static_cast<std::size_t>(dim),
+        static_cast<std::size_t>(dim));
+}
+
+template <std::floating_point T>
+geom::ParentEntity common_parent_entity_for_points(
+    cell::type parent_cell_type,
+    const std::vector<T>& points,
+    int dim,
+    T tol)
+{
+    const int npoints = static_cast<int>(
+        points.size() / static_cast<std::size_t>(dim));
+
+    if (npoints == 0)
+        return {-1, -1};
+
+    const auto edges = cell::edges(parent_cell_type);
+    for (int e = 0; e < static_cast<int>(edges.size()); ++e)
+    {
+        bool all_on_edge = true;
+        for (int i = 0; i < npoints; ++i)
+            all_on_edge = all_on_edge
+                       && geom::point_on_parent_edge<T>(
+                              parent_cell_type, e, point_span<T>(points, i, dim), tol);
+        if (all_on_edge)
+            return {1, e};
+    }
+
+    if (cell::get_tdim(parent_cell_type) == 3)
+    {
+        for (int f = 0; f < cell::num_faces(parent_cell_type); ++f)
+        {
+            bool all_on_face = true;
+            for (int i = 0; i < npoints; ++i)
+                all_on_face = all_on_face
+                           && geom::point_on_parent_face<T>(
+                                  parent_cell_type, f, point_span<T>(points, i, dim), tol);
+            if (all_on_face)
+                return {2, f};
+        }
+    }
+
+    return {cell::get_tdim(parent_cell_type), -1};
+}
+
+template <std::floating_point T>
+geom::ParentEntity common_parent_face_or_cell_for_points(
+    cell::type parent_cell_type,
+    const std::vector<T>& points,
+    int dim,
+    T tol)
+{
+    const int npoints = static_cast<int>(
+        points.size() / static_cast<std::size_t>(dim));
+    if (cell::get_tdim(parent_cell_type) == 3)
+    {
+        for (int f = 0; f < cell::num_faces(parent_cell_type); ++f)
+        {
+            bool all_on_face = true;
+            for (int i = 0; i < npoints; ++i)
+                all_on_face = all_on_face
+                           && geom::point_on_parent_face<T>(
+                                  parent_cell_type, f, point_span<T>(points, i, dim), tol);
+            if (all_on_face)
+                return {2, f};
+        }
+    }
+    return {cell::get_tdim(parent_cell_type), -1};
+}
+
+template <std::floating_point T>
+void mark_graph_failure(ReadyCellGraphDiagnostics<T>& diagnostics,
+                        int cell_id,
+                        graph_criteria::FailureReason reason)
+{
+    diagnostics.accepted = false;
+    ++diagnostics.failed_checks;
+    if (diagnostics.first_failed_cell < 0)
+    {
+        diagnostics.first_failed_cell = cell_id;
+        diagnostics.first_failure_reason = reason;
+    }
+}
+
+template <std::floating_point T>
+void mark_graph_refinement_request(ReadyCellGraphDiagnostics<T>& diagnostics,
+                                   int entity_dim,
+                                   int entity_id)
+{
+    if (entity_dim < 0 || entity_id < 0)
+        return;
+    if (diagnostics.first_requested_refinement_entity_dim < 0)
+    {
+        diagnostics.first_requested_refinement_entity_dim = entity_dim;
+        diagnostics.first_requested_refinement_entity_id = entity_id;
+    }
+}
+
+template <std::floating_point T>
+void observe_graph_direction(ReadyCellGraphDiagnostics<T>& diagnostics,
+                             const graph_criteria::DirectionReport<T>& report)
+{
+    diagnostics.min_true_transversality =
+        std::min(diagnostics.min_true_transversality,
+                 report.metrics.true_transversality);
+    diagnostics.min_host_normal_alignment =
+        std::min(diagnostics.min_host_normal_alignment,
+                 report.metrics.host_normal_alignment);
+    diagnostics.max_drift_amplification =
+        std::max(diagnostics.max_drift_amplification,
+                 report.metrics.drift_amplification);
+    diagnostics.max_relative_correction_distance =
+        std::max(diagnostics.max_relative_correction_distance,
+                 report.metrics.relative_correction_distance);
+    diagnostics.max_relative_tangential_shift =
+        std::max(diagnostics.max_relative_tangential_shift,
+                 report.metrics.relative_tangential_shift);
+}
+
+template <std::floating_point T>
+void observe_graph_node(ReadyCellGraphDiagnostics<T>& diagnostics,
+                        const GraphNodeDiagnostics<T>& node)
+{
+    diagnostics.nodes.push_back(node);
+    if (std::isfinite(node.level_set_gradient_host_alignment))
+    {
+        diagnostics.min_level_set_gradient_host_alignment =
+            std::min(diagnostics.min_level_set_gradient_host_alignment,
+                     node.level_set_gradient_host_alignment);
+    }
+    if (!node.accepted)
+    {
+        mark_graph_refinement_request<T>(
+            diagnostics,
+            node.requested_refinement_entity_dim,
+            node.requested_refinement_entity_id);
+    }
+}
+
+template <std::floating_point T>
+void observe_failed_graph_projection(
+    ReadyCellGraphDiagnostics<T>& diagnostics,
+    const curving::ProjectionDiagnostic<T>& projection)
+{
+    if (!diagnostics.first_failed_projection_seed.empty())
+        return;
+    diagnostics.first_failed_projection_seed = projection.seed;
+    diagnostics.first_failed_projection_direction = projection.direction;
+    diagnostics.first_failed_projection_clip_lo = projection.clip_lo;
+    diagnostics.first_failed_projection_clip_hi = projection.clip_hi;
+    diagnostics.first_failed_projection_root_t = projection.root_t;
+}
+
+template <std::floating_point T>
+void observe_failed_face_orientation(
+    ReadyCellGraphDiagnostics<T>& diagnostics,
+    const graph_criteria::FaceQualityReport<T>& quality)
+{
+    if (diagnostics.first_failed_face_triangle_index < 0)
+    {
+        diagnostics.first_failed_face_triangle_index =
+            quality.failed_triangle_index;
+        diagnostics.first_failed_face_area_ratio =
+            quality.failed_surface_jacobian_ratio;
+    }
+}
+
+template <std::floating_point T>
+int find_adapt_edge_by_vertices(const AdaptCell<T>& adapt_cell, int a, int b)
+{
+    if (a < 0 || b < 0)
+        return -1;
+    const int n_edges = adapt_cell.n_entities(1);
+    for (int e = 0; e < n_edges; ++e)
+    {
+        auto ev = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(e)];
+        if (ev.size() != 2)
+            continue;
+        const int e0 = static_cast<int>(ev[0]);
+        const int e1 = static_cast<int>(ev[1]);
+        if ((e0 == a && e1 == b) || (e0 == b && e1 == a))
+            return e;
+    }
+    return -1;
+}
+
+template <std::floating_point T>
+int graph_refinement_edge_from_failed_face_segment(
+    const AdaptCell<T>& adapt_cell,
+    int a,
+    int b)
+{
+    int edge_id = find_adapt_edge_by_vertices<T>(adapt_cell, a, b);
+    if (edge_id >= 0)
+        return edge_id;
+
+    auto source_edge = [&](int v) -> int
+    {
+        if (v < 0
+            || v >= static_cast<int>(adapt_cell.vertex_source_edge_id.size()))
+        {
+            return -1;
+        }
+        const int source = adapt_cell.vertex_source_edge_id[static_cast<std::size_t>(v)];
+        return (source >= 0 && source < adapt_cell.n_entities(1)) ? source : -1;
+    };
+
+    edge_id = source_edge(a);
+    if (edge_id >= 0)
+        return edge_id;
+    return source_edge(b);
+}
+
+template <std::floating_point T>
+T graph_alignment_to_host_normal(std::span<const T> direction,
+                                 std::span<const T> host_normal,
+                                 T tol)
+{
+    if (direction.size() != host_normal.size())
+        return std::numeric_limits<T>::quiet_NaN();
+    const auto alignment = geom::alignment<T>(direction, host_normal, tol);
+    if (alignment.degenerate)
+        return T(0);
+    return std::fabs(alignment.cosine);
+}
+
+template <std::floating_point T>
+T graph_angle_to_tangent_degrees(T host_alignment)
+{
+    if (!std::isfinite(host_alignment))
+        return std::numeric_limits<T>::quiet_NaN();
+    const T clipped = std::clamp(host_alignment, T(0), T(1));
+    const T pi = std::acos(T(-1));
+    return std::asin(clipped) * T(180) / pi;
+}
+
+template <std::floating_point T>
+bool solve_graph_dense_small(std::vector<T> A,
+                             std::vector<T> b,
+                             int n,
+                             std::vector<T>& x,
+                             T tol)
+{
+    if (n <= 0 || static_cast<int>(A.size()) != n * n
+        || static_cast<int>(b.size()) != n)
+    {
+        return false;
+    }
+
+    for (int k = 0; k < n; ++k)
+    {
+        int pivot = k;
+        T pivot_abs = std::fabs(A[static_cast<std::size_t>(k * n + k)]);
+        for (int i = k + 1; i < n; ++i)
+        {
+            const T candidate =
+                std::fabs(A[static_cast<std::size_t>(i * n + k)]);
+            if (candidate > pivot_abs)
+            {
+                pivot = i;
+                pivot_abs = candidate;
+            }
+        }
+        if (pivot_abs <= tol)
+            return false;
+
+        if (pivot != k)
+        {
+            for (int j = k; j < n; ++j)
+            {
+                std::swap(A[static_cast<std::size_t>(k * n + j)],
+                          A[static_cast<std::size_t>(pivot * n + j)]);
+            }
+            std::swap(b[static_cast<std::size_t>(k)],
+                      b[static_cast<std::size_t>(pivot)]);
+        }
+
+        const T diag = A[static_cast<std::size_t>(k * n + k)];
+        for (int i = k + 1; i < n; ++i)
+        {
+            const T factor = A[static_cast<std::size_t>(i * n + k)] / diag;
+            A[static_cast<std::size_t>(i * n + k)] = T(0);
+            for (int j = k + 1; j < n; ++j)
+            {
+                A[static_cast<std::size_t>(i * n + j)] -=
+                    factor * A[static_cast<std::size_t>(k * n + j)];
+            }
+            b[static_cast<std::size_t>(i)] -=
+                factor * b[static_cast<std::size_t>(k)];
+        }
+    }
+
+    x.assign(static_cast<std::size_t>(n), T(0));
+    for (int i = n - 1; i >= 0; --i)
+    {
+        T value = b[static_cast<std::size_t>(i)];
+        for (int j = i + 1; j < n; ++j)
+            value -= A[static_cast<std::size_t>(i * n + j)]
+                   * x[static_cast<std::size_t>(j)];
+        const T diag = A[static_cast<std::size_t>(i * n + i)];
+        if (std::fabs(diag) <= tol)
+            return false;
+        x[static_cast<std::size_t>(i)] = value / diag;
+    }
+    return true;
+}
+
+template <std::floating_point T, std::integral I>
+bool graph_affine_jacobian(const LevelSetCell<T, I>& ls_cell,
+                           std::vector<T>& jacobian)
+{
+    const int tdim = ls_cell.tdim;
+    const int gdim = ls_cell.gdim;
+    if (tdim <= 0 || tdim > 3 || gdim <= 0
+        || ls_cell.parent_vertex_coords.empty())
+    {
+        return false;
+    }
+
+    const auto cols = cell::jacobian_col_indices(ls_cell.cell_type);
+    jacobian.assign(static_cast<std::size_t>(gdim * tdim), T(0));
+    for (int a = 0; a < tdim; ++a)
+    {
+        const int va = cols[static_cast<std::size_t>(a)];
+        if (va < 0)
+            return false;
+        for (int r = 0; r < gdim; ++r)
+        {
+            jacobian[static_cast<std::size_t>(r * tdim + a)] =
+                ls_cell.parent_vertex_coords[
+                    static_cast<std::size_t>(va * gdim + r)]
+              - ls_cell.parent_vertex_coords[static_cast<std::size_t>(r)];
+        }
+    }
+    return true;
+}
+
+template <std::floating_point T, std::integral I>
+T graph_metric_alignment_to_host_normal(
+    const LevelSetCell<T, I>& ls_cell,
+    std::span<const T> direction_ref,
+    const graph_criteria::HostFrame<T>& host,
+    T tol)
+{
+    if (static_cast<int>(direction_ref.size()) != ls_cell.tdim)
+    {
+        return std::numeric_limits<T>::quiet_NaN();
+    }
+
+    std::vector<T> jacobian;
+    if (!graph_affine_jacobian<T, I>(ls_cell, jacobian))
+        return graph_alignment_to_host_normal<T>(
+            direction_ref,
+            std::span<const T>(host.normal.data(), host.normal.size()),
+            tol);
+
+    std::vector<T> direction_phys(static_cast<std::size_t>(ls_cell.gdim), T(0));
+    for (int r = 0; r < ls_cell.gdim; ++r)
+    {
+        for (int a = 0; a < ls_cell.tdim; ++a)
+        {
+            const T j_ra = jacobian[static_cast<std::size_t>(
+                r * ls_cell.tdim + a)];
+            direction_phys[static_cast<std::size_t>(r)] +=
+                j_ra * direction_ref[static_cast<std::size_t>(a)];
+        }
+    }
+
+    const T direction_norm = geom::norm<T>(
+        std::span<const T>(direction_phys.data(), direction_phys.size()));
+    if (direction_norm <= tol)
+        return T(0);
+
+    if (host.dimension == graph_criteria::HostDimension::edge)
+    {
+        if (static_cast<int>(host.tangent.size()) != ls_cell.tdim)
+            return std::numeric_limits<T>::quiet_NaN();
+
+        std::vector<T> tangent_phys(static_cast<std::size_t>(ls_cell.gdim), T(0));
+        for (int r = 0; r < ls_cell.gdim; ++r)
+        {
+            for (int a = 0; a < ls_cell.tdim; ++a)
+            {
+                tangent_phys[static_cast<std::size_t>(r)] +=
+                    jacobian[static_cast<std::size_t>(r * ls_cell.tdim + a)]
+                  * host.tangent[static_cast<std::size_t>(a)];
+            }
+        }
+
+        const T tangent_norm = geom::norm<T>(
+            std::span<const T>(tangent_phys.data(), tangent_phys.size()));
+        if (tangent_norm <= tol)
+            return std::numeric_limits<T>::quiet_NaN();
+
+        const T cosine = geom::dot<T>(
+            std::span<const T>(direction_phys.data(), direction_phys.size()),
+            std::span<const T>(tangent_phys.data(), tangent_phys.size()))
+          / (direction_norm * tangent_norm);
+        const T clipped = std::clamp(cosine, T(-1), T(1));
+        return std::sqrt(std::max(T(0), T(1) - clipped * clipped));
+    }
+
+    if (static_cast<int>(host.normal.size()) != ls_cell.tdim
+        || ls_cell.gdim != ls_cell.tdim)
+    {
+        return graph_alignment_to_host_normal<T>(
+            direction_ref,
+            std::span<const T>(host.normal.data(), host.normal.size()),
+            tol);
+    }
+
+    std::vector<T> jt(static_cast<std::size_t>(ls_cell.tdim * ls_cell.tdim), T(0));
+    for (int a = 0; a < ls_cell.tdim; ++a)
+    {
+        for (int r = 0; r < ls_cell.gdim; ++r)
+        {
+            jt[static_cast<std::size_t>(a * ls_cell.tdim + r)] =
+                jacobian[static_cast<std::size_t>(r * ls_cell.tdim + a)];
+        }
+    }
+    std::vector<T> normal_phys;
+    std::vector<T> rhs(host.normal.begin(), host.normal.end());
+    if (!solve_graph_dense_small<T>(
+            std::move(jt), std::move(rhs), ls_cell.tdim, normal_phys, tol))
+    {
+        return graph_alignment_to_host_normal<T>(
+            direction_ref,
+            std::span<const T>(host.normal.data(), host.normal.size()),
+            tol);
+    }
+
+    return graph_alignment_to_host_normal<T>(
+        std::span<const T>(direction_phys.data(), direction_phys.size()),
+        std::span<const T>(normal_phys.data(), normal_phys.size()),
+        tol);
+}
+
+template <std::floating_point T>
+std::vector<T> graph_pull_back_physical_direction(
+    std::span<const T> jacobian,
+    int gdim,
+    int tdim,
+    std::span<const T> direction_phys,
+    std::span<const T> fallback_ref,
+    T tol)
+{
+    std::vector<T> gram(static_cast<std::size_t>(tdim * tdim), T(0));
+    std::vector<T> rhs(static_cast<std::size_t>(tdim), T(0));
+    for (int a = 0; a < tdim; ++a)
+    {
+        for (int r = 0; r < gdim; ++r)
+        {
+            rhs[static_cast<std::size_t>(a)] +=
+                jacobian[static_cast<std::size_t>(r * tdim + a)]
+              * direction_phys[static_cast<std::size_t>(r)];
+        }
+        for (int b = 0; b < tdim; ++b)
+        {
+            T value = T(0);
+            for (int r = 0; r < gdim; ++r)
+            {
+                value += jacobian[static_cast<std::size_t>(r * tdim + a)]
+                       * jacobian[static_cast<std::size_t>(r * tdim + b)];
+            }
+            gram[static_cast<std::size_t>(a * tdim + b)] = value;
+        }
+    }
+
+    std::vector<T> out;
+    if (solve_graph_dense_small<T>(
+            std::move(gram), std::move(rhs), tdim, out, tol))
+    {
+        return out;
+    }
+    return std::vector<T>(fallback_ref.begin(), fallback_ref.end());
+}
+
+template <std::floating_point T, std::integral I>
+std::vector<T> graph_parent_entity_metric_gradient_direction(
+    const LevelSetCell<T, I>& ls_cell,
+    geom::ParentEntity parent_entity,
+    std::span<const T> grad_ref,
+    T tol)
+{
+    const auto fallback = geom::restricted_level_set_gradient_in_parent_frame<T>(
+        ls_cell.cell_type, parent_entity, grad_ref, tol);
+    std::vector<T> fallback_ref =
+        fallback.value.empty()
+            ? std::vector<T>(grad_ref.begin(), grad_ref.end())
+            : fallback.value;
+
+    std::vector<T> jacobian;
+    if (!graph_affine_jacobian<T, I>(ls_cell, jacobian))
+        return fallback_ref;
+
+    const int tdim = ls_cell.tdim;
+    const int gdim = ls_cell.gdim;
+
+    std::vector<T> grad_phys;
+    if (gdim == tdim)
+    {
+        std::vector<T> jt(static_cast<std::size_t>(tdim * tdim), T(0));
+        for (int a = 0; a < tdim; ++a)
+        {
+            for (int r = 0; r < gdim; ++r)
+            {
+                jt[static_cast<std::size_t>(a * tdim + r)] =
+                    jacobian[static_cast<std::size_t>(r * tdim + a)];
+            }
+        }
+        std::vector<T> rhs(grad_ref.begin(), grad_ref.end());
+        if (!solve_graph_dense_small<T>(
+                std::move(jt), std::move(rhs), tdim, grad_phys, tol))
+        {
+            return fallback_ref;
+        }
+    }
+    else
+    {
+        grad_phys.assign(static_cast<std::size_t>(gdim), T(0));
+        for (int r = 0; r < gdim; ++r)
+        {
+            for (int a = 0; a < tdim; ++a)
+            {
+                grad_phys[static_cast<std::size_t>(r)] +=
+                    jacobian[static_cast<std::size_t>(r * tdim + a)]
+                  * fallback_ref[static_cast<std::size_t>(a)];
+            }
+        }
+    }
+
+    if (parent_entity.dim == 2 && gdim == 3)
+    {
+        const auto face = cell::face_vertices(ls_cell.cell_type, parent_entity.id);
+        if (face.size() >= 3)
+        {
+            std::array<T, 3> e0 = {T(0), T(0), T(0)};
+            std::array<T, 3> e1 = {T(0), T(0), T(0)};
+            for (int d = 0; d < 3; ++d)
+            {
+                e0[static_cast<std::size_t>(d)] =
+                    ls_cell.parent_vertex_coords[
+                        static_cast<std::size_t>(face[1] * gdim + d)]
+                  - ls_cell.parent_vertex_coords[
+                        static_cast<std::size_t>(face[0] * gdim + d)];
+                e1[static_cast<std::size_t>(d)] =
+                    ls_cell.parent_vertex_coords[
+                        static_cast<std::size_t>(face[2] * gdim + d)]
+                  - ls_cell.parent_vertex_coords[
+                        static_cast<std::size_t>(face[0] * gdim + d)];
+            }
+            std::array<T, 3> normal = {
+                e0[1] * e1[2] - e0[2] * e1[1],
+                e0[2] * e1[0] - e0[0] * e1[2],
+                e0[0] * e1[1] - e0[1] * e1[0]};
+            const T nn = normal[0] * normal[0]
+                       + normal[1] * normal[1]
+                       + normal[2] * normal[2];
+            if (nn > tol * tol)
+            {
+                const T c = (grad_phys[0] * normal[0]
+                           + grad_phys[1] * normal[1]
+                           + grad_phys[2] * normal[2]) / nn;
+                for (int d = 0; d < 3; ++d)
+                    grad_phys[static_cast<std::size_t>(d)] -= c * normal[d];
+            }
+        }
+    }
+    else if (parent_entity.dim == 1)
+    {
+        const auto edges = cell::edges(ls_cell.cell_type);
+        if (parent_entity.id >= 0
+            && parent_entity.id < static_cast<int>(edges.size()))
+        {
+            const auto edge = edges[static_cast<std::size_t>(parent_entity.id)];
+            std::vector<T> tangent(static_cast<std::size_t>(gdim), T(0));
+            for (int d = 0; d < gdim; ++d)
+            {
+                tangent[static_cast<std::size_t>(d)] =
+                    ls_cell.parent_vertex_coords[
+                        static_cast<std::size_t>(edge[1] * gdim + d)]
+                  - ls_cell.parent_vertex_coords[
+                        static_cast<std::size_t>(edge[0] * gdim + d)];
+            }
+            const T tt = geom::dot<T>(
+                std::span<const T>(tangent.data(), tangent.size()),
+                std::span<const T>(tangent.data(), tangent.size()));
+            if (tt > tol * tol)
+            {
+                const T c = geom::dot<T>(
+                    std::span<const T>(grad_phys.data(), grad_phys.size()),
+                    std::span<const T>(tangent.data(), tangent.size())) / tt;
+                for (int d = 0; d < gdim; ++d)
+                    grad_phys[static_cast<std::size_t>(d)] =
+                        c * tangent[static_cast<std::size_t>(d)];
+            }
+        }
+    }
+    else if (parent_entity.dim == 0)
+    {
+        return std::vector<T>(static_cast<std::size_t>(tdim), T(0));
+    }
+
+    auto pulled = graph_pull_back_physical_direction<T>(
+        std::span<const T>(jacobian.data(), jacobian.size()),
+        gdim,
+        tdim,
+        std::span<const T>(grad_phys.data(), grad_phys.size()),
+        std::span<const T>(fallback_ref.data(), fallback_ref.size()),
+        tol);
+    const auto admissible = geom::admissible_direction_in_parent_frame<T>(
+        ls_cell.cell_type,
+        parent_entity,
+        std::span<const T>(pulled.data(), pulled.size()),
+        tol);
+    return admissible.value.empty() ? pulled : admissible.value;
+}
+
+template <std::floating_point T>
+curving::CurvingOptions<T> graph_curving_options(
+    const ReadyCellGraphOptions<T>& graph_options)
+{
+    curving::CurvingOptions<T> options;
+    options.geometry_order = std::max(graph_options.geometry_order, 1);
+    options.direction_mode =
+        (graph_options.projection_mode
+         == GraphProjectionMode::straight_zero_entity_normal)
+            ? curving::CurvingDirectionMode::straight_zero_entity_normal
+            : curving::CurvingDirectionMode::level_set_gradient;
+    options.domain_tol = graph_options.criteria.tolerance;
+    options.active_face_tol = graph_options.criteria.tolerance;
+    return options;
+}
+
+inline graph_criteria::FailureReason graph_failure_from_curving(
+    curving::CurvingFailureCode code)
+{
+    switch (code)
+    {
+    case curving::CurvingFailureCode::none:
+    case curving::CurvingFailureCode::exact_vertex:
+    case curving::CurvingFailureCode::boundary_from_edge:
+    case curving::CurvingFailureCode::small_entity_kept_straight:
+        return graph_criteria::FailureReason::none;
+    case curving::CurvingFailureCode::invalid_constraint_count:
+    case curving::CurvingFailureCode::missing_level_set_cell:
+    case curving::CurvingFailureCode::empty_zero_mask:
+    case curving::CurvingFailureCode::unsupported_entity:
+    case curving::CurvingFailureCode::missing_boundary_edge:
+    case curving::CurvingFailureCode::boundary_edge_failed:
+        return graph_criteria::FailureReason::invalid_input;
+    case curving::CurvingFailureCode::no_host_interval:
+    case curving::CurvingFailureCode::outside_host_domain:
+        return graph_criteria::FailureReason::root_segment_leaves_parent_entity;
+    case curving::CurvingFailureCode::singular_gradient_system:
+        return graph_criteria::FailureReason::degenerate_direction;
+    case curving::CurvingFailureCode::no_sign_changing_bracket:
+    case curving::CurvingFailureCode::brent_failed:
+    case curving::CurvingFailureCode::line_search_failed:
+    case curving::CurvingFailureCode::max_iterations:
+    case curving::CurvingFailureCode::projection_failed:
+    case curving::CurvingFailureCode::closest_face_retry_failed:
+    case curving::CurvingFailureCode::constrained_newton_failed:
+        return graph_criteria::FailureReason::root_not_on_search_line;
+    }
+    return graph_criteria::FailureReason::root_not_on_search_line;
+}
+
+template <std::floating_point T, std::integral I>
+bool project_graph_point(
+    const AdaptCell<T>& adapt_cell,
+    int local_zero_entity_id,
+    const LevelSetCell<T, I>& ls_cell,
+    geom::ParentEntity admissible_parent_entity,
+    const graph_criteria::HostFrame<T>& host,
+    std::span<const T> host_point,
+    GraphNodeKind node_kind,
+    int node_index,
+    int requested_refinement_edge_id,
+    const ReadyCellGraphOptions<T>& graph_options,
+    ReadyCellGraphDiagnostics<T>& diagnostics,
+    int source_cell_id,
+    std::vector<T>& corrected_point)
+{
+    GraphNodeDiagnostics<T> node;
+    node.node_index = node_index;
+    node.node_kind = node_kind;
+    node.parent_entity_dim = admissible_parent_entity.dim;
+    node.parent_entity_id = admissible_parent_entity.id;
+    node.seed.assign(host_point.begin(), host_point.end());
+    node.straight_helper_normal.assign(host.normal.begin(), host.normal.end());
+    if (requested_refinement_edge_id >= 0)
+    {
+        node.requested_refinement_entity_dim = 1;
+        node.requested_refinement_entity_id = requested_refinement_edge_id;
+    }
+    node.selected_direction_kind =
+        (graph_options.projection_mode
+         == GraphProjectionMode::straight_zero_entity_normal)
+            ? graph_criteria::DirectionKind::projected_straight_host_normal
+            : graph_criteria::DirectionKind::projected_level_set_gradient;
+
+    std::vector<T> gradient(static_cast<std::size_t>(ls_cell.tdim), T(0));
+    curving::reference_level_set_gradient<T, I>(
+        ls_cell,
+        host_point,
+        std::span<T>(gradient.data(), gradient.size()));
+    auto graph_gradient_direction =
+        graph_parent_entity_metric_gradient_direction<T, I>(
+            ls_cell,
+            admissible_parent_entity,
+            std::span<const T>(gradient.data(), gradient.size()),
+            graph_options.criteria.tolerance);
+    node.level_set_gradient_direction = graph_gradient_direction;
+    node.level_set_gradient_host_alignment =
+        graph_metric_alignment_to_host_normal<T, I>(
+        ls_cell,
+        std::span<const T>(
+            graph_gradient_direction.data(), graph_gradient_direction.size()),
+        host,
+        graph_options.criteria.tolerance);
+    node.level_set_gradient_angle_to_tangent_deg =
+        graph_angle_to_tangent_degrees<T>(
+            node.level_set_gradient_host_alignment);
+    if (std::isfinite(node.level_set_gradient_host_alignment)
+        && node.level_set_gradient_host_alignment
+               < graph_options.min_level_set_gradient_host_alignment)
+    {
+        node.accepted = false;
+        node.failure_reason =
+            graph_criteria::FailureReason::direction_too_tangential_to_host;
+        observe_graph_node<T>(diagnostics, node);
+        mark_graph_failure<T>(
+            diagnostics, source_cell_id, node.failure_reason);
+        return false;
+    }
+
+    std::vector<T> straight_normal_direction;
+    const auto admissible_normal =
+        geom::admissible_direction_in_parent_frame<T>(
+            ls_cell.cell_type,
+            admissible_parent_entity,
+            std::span<const T>(host.normal.data(), host.normal.size()),
+            graph_options.criteria.tolerance);
+    if (!admissible_normal.degenerate())
+        straight_normal_direction = admissible_normal.value;
+
+    const T grad_norm = geom::norm<T>(
+        std::span<const T>(
+            graph_gradient_direction.data(), graph_gradient_direction.size()));
+    const T normal_norm = geom::norm<T>(
+        std::span<const T>(
+            straight_normal_direction.data(), straight_normal_direction.size()));
+    std::vector<T> selected_policy_direction;
+    if (graph_options.projection_mode == GraphProjectionMode::level_set_gradient)
+    {
+        if (grad_norm > graph_options.criteria.tolerance)
+        {
+            selected_policy_direction = graph_gradient_direction;
+            node.selected_direction_kind =
+                graph_criteria::DirectionKind::projected_level_set_gradient;
+        }
+        else
+        {
+            selected_policy_direction = straight_normal_direction;
+            node.selected_direction_kind =
+                graph_criteria::DirectionKind::projected_straight_host_normal;
+            node.fallback_used = true;
+        }
+    }
+    else
+    {
+        if (normal_norm > graph_options.criteria.tolerance)
+        {
+            selected_policy_direction = straight_normal_direction;
+            node.selected_direction_kind =
+                graph_criteria::DirectionKind::projected_straight_host_normal;
+        }
+        else
+        {
+            selected_policy_direction = graph_gradient_direction;
+            node.selected_direction_kind =
+                graph_criteria::DirectionKind::projected_level_set_gradient;
+            node.fallback_used = true;
+        }
+    }
+
+    const auto curving_options = graph_curving_options<T>(graph_options);
+    auto projection = curving::project_seed_to_zero_entity_diagnostic<T, I>(
+        adapt_cell,
+        local_zero_entity_id,
+        ls_cell,
+        host_point,
+        curving_options);
+
+    if (!projection.accepted)
+    {
+        node.accepted = false;
+        node.failure_reason = graph_failure_from_curving(projection.failure_code);
+        node.selected_direction = selected_policy_direction;
+        node.corrected = projection.projected;
+        observe_graph_node<T>(diagnostics, node);
+        observe_failed_graph_projection<T>(diagnostics, projection);
+        mark_graph_failure<T>(diagnostics, source_cell_id, node.failure_reason);
+        return false;
+    }
+
+    corrected_point = std::move(projection.projected);
+    node.corrected = corrected_point;
+    if (corrected_point.size() != host_point.size())
+    {
+        node.accepted = false;
+        node.failure_reason = graph_criteria::FailureReason::invalid_input;
+        observe_graph_node<T>(diagnostics, node);
+        mark_graph_failure<T>(
+            diagnostics,
+            source_cell_id,
+            graph_criteria::FailureReason::invalid_input);
+        return false;
+    }
+
+    std::vector<T> direction = std::move(selected_policy_direction);
+    if (geom::norm<T>(std::span<const T>(direction.data(), direction.size()))
+        <= graph_options.criteria.tolerance)
+    {
+        direction.resize(host_point.size(), T(0));
+        for (std::size_t d = 0; d < host_point.size(); ++d)
+            direction[d] = corrected_point[d] - host_point[d];
+    }
+
+    if (geom::norm<T>(std::span<const T>(direction.data(), direction.size()))
+        <= graph_options.criteria.tolerance)
+    {
+        node.accepted = true;
+        node.failure_reason = graph_criteria::FailureReason::none;
+        node.selected_direction = direction;
+        observe_graph_node<T>(diagnostics, node);
+        return true;
+    }
+    node.selected_direction = direction;
+
+    auto report = graph_criteria::evaluate_direction<T>(
+        ls_cell.cell_type,
+        admissible_parent_entity,
+        host,
+        host_point,
+        std::span<const T>(
+            graph_gradient_direction.data(), graph_gradient_direction.size()),
+        std::span<const T>(direction.data(), direction.size()),
+        std::span<const T>(corrected_point.data(), corrected_point.size()),
+        node.selected_direction_kind,
+        graph_options.criteria);
+    const T metric_selected_alignment =
+        graph_metric_alignment_to_host_normal<T, I>(
+            ls_cell,
+            std::span<const T>(direction.data(), direction.size()),
+            host,
+            graph_options.criteria.tolerance);
+    if (std::isfinite(metric_selected_alignment))
+    {
+        report.metrics.host_normal_alignment = metric_selected_alignment;
+        report.metrics.drift_amplification =
+            graph_criteria::drift_from_alignment<T>(
+                metric_selected_alignment,
+                graph_options.criteria.tolerance);
+        if ((report.failure_reason
+             == graph_criteria::FailureReason::excessive_drift_amplification
+             || report.failure_reason
+                    == graph_criteria::FailureReason::direction_too_tangential_to_host)
+            && report.metrics.drift_amplification
+                   <= graph_options.criteria.max_drift_amplification
+            && report.metrics.host_normal_alignment
+                   >= graph_options.criteria.min_host_normal_alignment)
+        {
+            report.accepted = true;
+            report.failure_reason = graph_criteria::FailureReason::none;
+        }
+    }
+    observe_graph_direction<T>(diagnostics, report);
+    node.true_transversality = report.metrics.true_transversality;
+    node.selected_host_alignment = report.metrics.host_normal_alignment;
+    node.drift_amplification = report.metrics.drift_amplification;
+    node.relative_correction_distance =
+        report.metrics.relative_correction_distance;
+    node.relative_tangential_shift =
+        report.metrics.relative_tangential_shift;
+    if (!report.accepted)
+    {
+        if (report.failure_reason
+            == graph_criteria::FailureReason::root_not_on_search_line)
+        {
+            node.accepted = true;
+            node.failure_reason = graph_criteria::FailureReason::none;
+            observe_graph_node<T>(diagnostics, node);
+            return true;
+        }
+        node.accepted = false;
+        node.failure_reason = report.failure_reason;
+        observe_graph_node<T>(diagnostics, node);
+        observe_failed_graph_projection<T>(diagnostics, projection);
+        mark_graph_failure<T>(
+            diagnostics, source_cell_id, report.failure_reason);
+        return false;
+    }
+    node.accepted = true;
+    node.failure_reason = graph_criteria::FailureReason::none;
+    observe_graph_node<T>(diagnostics, node);
+    return true;
+}
+
+template <std::floating_point T>
+bool build_edge_host_frame(std::span<const T> a,
+                           std::span<const T> b,
+                           std::span<const T> zero_face_normal,
+                           graph_criteria::HostFrame<T>& host,
+                           T tol)
+{
+    const auto tangent = geom::segment_tangent<T>(a, b, true, tol);
+    if (tangent.degenerate())
+        return false;
+
+    host.dimension = graph_criteria::HostDimension::edge;
+    host.tangent = tangent.value;
+    host.h = tangent.norm;
+
+    if (a.size() == 2)
+    {
+        const auto normal = geom::segment_normal<T>(a, b, true, tol);
+        if (normal.degenerate())
+            return false;
+        host.normal = normal.value;
+        return true;
+    }
+
+    if (zero_face_normal.size() == 3)
+    {
+        const auto normal = geom::in_face_segment_normal<T>(
+            a, b, zero_face_normal, true, tol);
+        if (normal.degenerate())
+            return false;
+        host.normal = normal.value;
+        return true;
+    }
+
+    return false;
+}
+
+template <std::floating_point T>
+bool build_face_host_frame(const std::vector<T>& face_vertices,
+                           graph_criteria::HostFrame<T>& host,
+                           T tol)
+{
+    const int dim = 3;
+    const int nverts = static_cast<int>(
+        face_vertices.size() / static_cast<std::size_t>(dim));
+    if (nverts < 3)
+        return false;
+
+    const auto normal = geom::face_normal<T>(
+        point_span<T>(face_vertices, 0, dim),
+        point_span<T>(face_vertices, 1, dim),
+        point_span<T>(face_vertices, 2, dim),
+        true,
+        tol);
+    if (normal.degenerate())
+        return false;
+
+    T h = T(0);
+    for (int i = 0; i < nverts; ++i)
+    {
+        const auto a = point_span<T>(face_vertices, i, dim);
+        const auto b = point_span<T>(face_vertices, (i + 1) % nverts, dim);
+        h = std::max(h, geom::norm<T>(
+            std::span<const T>(geom::subtract<T>(b, a).data(), dim)));
+    }
+
+    host.dimension = graph_criteria::HostDimension::face;
+    host.normal = normal.value;
+    host.tangent.clear();
+    host.h = h;
+    return h > tol;
+}
+
+template <std::floating_point T, std::integral I>
+bool check_zero_edge_graph(const AdaptCell<T>& adapt_cell,
+                           int local_zero_entity_id,
+                           const LevelSetCell<T, I>& ls_cell,
+                           std::span<const T> a,
+                           std::span<const T> b,
+                           std::span<const T> zero_face_normal,
+                           bool face_boundary_edge_check,
+                           int requested_refinement_edge_id,
+                           const ReadyCellGraphOptions<T>& graph_options,
+                           ReadyCellGraphDiagnostics<T>& diagnostics,
+                           int source_cell_id)
+{
+    ++diagnostics.checked_edges;
+
+    std::vector<T> host_points;
+    const int order = std::max(graph_options.geometry_order, 1);
+    for (int k = 0; k <= order; ++k)
+    {
+        const T s = T(k) / T(order);
+        for (std::size_t d = 0; d < a.size(); ++d)
+            host_points.push_back((T(1) - s) * a[d] + s * b[d]);
+    }
+
+    const auto parent_entity =
+        (ls_cell.tdim == 3 && zero_face_normal.size() == 3)
+            ? common_parent_face_or_cell_for_points<T>(
+                  ls_cell.cell_type,
+                  host_points,
+                  ls_cell.tdim,
+                  graph_options.criteria.tolerance)
+            : common_parent_entity_for_points<T>(
+                  ls_cell.cell_type,
+                  host_points,
+                  ls_cell.tdim,
+                  graph_options.criteria.tolerance);
+
+    std::vector<T> frame_normal(zero_face_normal.begin(), zero_face_normal.end());
+    if (ls_cell.tdim == 3 && parent_entity.dim == 2)
+    {
+        const auto parent_normal = geom::parent_face_normal<T>(
+            ls_cell.cell_type,
+            parent_entity.id,
+            true,
+            graph_options.criteria.tolerance);
+        if (!parent_normal.degenerate())
+            frame_normal = parent_normal.value;
+    }
+
+    graph_criteria::HostFrame<T> host;
+    if (!build_edge_host_frame<T>(
+            a,
+            b,
+            std::span<const T>(frame_normal.data(), frame_normal.size()),
+            host,
+            graph_options.criteria.tolerance))
+    {
+        mark_graph_failure<T>(
+            diagnostics,
+            source_cell_id,
+            graph_criteria::FailureReason::invalid_host_frame);
+        return false;
+    }
+
+    std::vector<T> corrected_points;
+    corrected_points.reserve(host_points.size());
+    for (int i = 0; i <= order; ++i)
+    {
+        if (i == 0 || i == order)
+        {
+            auto endpoint = point_span<T>(host_points, i, ls_cell.tdim);
+            corrected_points.insert(
+                corrected_points.end(), endpoint.begin(), endpoint.end());
+            continue;
+        }
+
+        const GraphNodeKind node_kind =
+            face_boundary_edge_check
+                ? GraphNodeKind::face_boundary_edge
+                : GraphNodeKind::edge_interior;
+        std::vector<T> corrected;
+        if (!project_graph_point<T, I>(
+                adapt_cell,
+                local_zero_entity_id,
+                ls_cell,
+                parent_entity,
+                host,
+                point_span<T>(host_points, i, ls_cell.tdim),
+                node_kind,
+                i,
+                requested_refinement_edge_id,
+                graph_options,
+                diagnostics,
+                source_cell_id,
+                corrected))
+        {
+            return false;
+        }
+        corrected_points.insert(
+            corrected_points.end(), corrected.begin(), corrected.end());
+    }
+
+    const auto ordering = graph_criteria::evaluate_projected_edge_ordering<T>(
+        std::span<const T>(host_points.data(), host_points.size()),
+        std::span<const T>(corrected_points.data(), corrected_points.size()),
+        ls_cell.tdim,
+        std::span<const T>(host.tangent.data(), host.tangent.size()),
+        host.h,
+        graph_options.criteria);
+    diagnostics.min_edge_gap_ratio =
+        std::min(diagnostics.min_edge_gap_ratio, ordering.minimum_gap_ratio);
+    if (!ordering.accepted)
+    {
+        mark_graph_failure<T>(
+            diagnostics, source_cell_id, ordering.failure_reason);
+        return false;
+    }
+
+    return true;
+}
+
+template <std::floating_point T>
+std::vector<T> graph_push_forward_vector(const std::vector<T>& jacobian,
+                                         int gdim,
+                                         int tdim,
+                                         std::span<const T> vector_ref)
+{
+    std::vector<T> out(static_cast<std::size_t>(gdim), T(0));
+    if (static_cast<int>(vector_ref.size()) != tdim
+        || static_cast<int>(jacobian.size()) != gdim * tdim)
+    {
+        return out;
+    }
+    for (int r = 0; r < gdim; ++r)
+    {
+        for (int a = 0; a < tdim; ++a)
+        {
+            out[static_cast<std::size_t>(r)] +=
+                jacobian[static_cast<std::size_t>(r * tdim + a)]
+              * vector_ref[static_cast<std::size_t>(a)];
+        }
+    }
+    return out;
+}
+
+template <std::floating_point T>
+std::pair<T, T> graph_legendre_value_and_derivative(int order, T x)
+{
+    if (order == 0)
+        return {T(1), T(0)};
+    if (order == 1)
+        return {x, T(1)};
+
+    T pm2 = T(1);
+    T pm1 = x;
+    for (int n = 2; n <= order; ++n)
+    {
+        const T p = ((T(2 * n - 1) * x * pm1) - T(n - 1) * pm2) / T(n);
+        pm2 = pm1;
+        pm1 = p;
+    }
+
+    const T denom = T(1) - x * x;
+    if (std::abs(denom) <= T(64) * std::numeric_limits<T>::epsilon())
+        return {pm1, T(0)};
+    return {pm1, T(order) * (pm2 - x * pm1) / denom};
+}
+
+template <std::floating_point T>
+std::vector<T> graph_gll_parameters(int order)
+{
+    order = std::max(order, 1);
+    std::vector<T> params(static_cast<std::size_t>(order + 1), T(0));
+    params.front() = T(0);
+    params.back() = T(1);
+    if (order == 1)
+        return params;
+
+    const T pi = std::acos(T(-1));
+    const T eps = T(128) * std::numeric_limits<T>::epsilon();
+    for (int i = 1; i < order; ++i)
+    {
+        T x = -std::cos(pi * T(i) / T(order));
+        for (int iter = 0; iter < 32; ++iter)
+        {
+            const auto [p, dp] = graph_legendre_value_and_derivative<T>(order, x);
+            const T denom = T(1) - x * x;
+            if (std::abs(denom) <= eps)
+                break;
+            const T d2p = (T(2) * x * dp - T(order * (order + 1)) * p) / denom;
+            if (std::abs(d2p) <= eps)
+                break;
+            const T step = dp / d2p;
+            x -= step;
+            x = std::clamp(x, -T(1) + eps, T(1) - eps);
+            if (std::abs(step) <= eps)
+                break;
+        }
+        params[static_cast<std::size_t>(i)] = T(0.5) * (x + T(1));
+    }
+    return params;
+}
+
+template <std::floating_point T>
+std::vector<T> graph_interpolation_parameters(int order,
+                                              curving::NodeFamily family)
+{
+    order = std::max(order, 1);
+    if (family == curving::NodeFamily::gll)
+        return graph_gll_parameters<T>(order);
+
+    std::vector<T> params(static_cast<std::size_t>(order + 1), T(0));
+    for (int i = 0; i <= order; ++i)
+        params[static_cast<std::size_t>(i)] = T(i) / T(order);
+    return params;
+}
+
+template <std::floating_point T>
+T graph_lagrange_basis_1d(int i, std::span<const T> params, T x)
+{
+    T value = T(1);
+    const T xi = params[static_cast<std::size_t>(i)];
+    for (int j = 0; j < static_cast<int>(params.size()); ++j)
+    {
+        if (j == i)
+            continue;
+        value *= (x - params[static_cast<std::size_t>(j)])
+               / (xi - params[static_cast<std::size_t>(j)]);
+    }
+    return value;
+}
+
+template <std::floating_point T>
+T graph_warp_factor(int order, T r)
+{
+    if (order <= 1)
+        return T(0);
+
+    std::vector<T> equispaced(static_cast<std::size_t>(order + 1), T(0));
+    auto gll = graph_gll_parameters<T>(order);
+    for (int i = 0; i <= order; ++i)
+    {
+        equispaced[static_cast<std::size_t>(i)] =
+            -T(1) + T(2 * i) / T(order);
+        gll[static_cast<std::size_t>(i)] =
+            T(2) * gll[static_cast<std::size_t>(i)] - T(1);
+    }
+
+    T warp = T(0);
+    for (int i = 0; i <= order; ++i)
+    {
+        const T Li = graph_lagrange_basis_1d<T>(
+            i, std::span<const T>(equispaced.data(), equispaced.size()), r);
+        warp += Li * (gll[static_cast<std::size_t>(i)]
+                    - equispaced[static_cast<std::size_t>(i)]);
+    }
+
+    const T edge_factor = T(1) - r * r;
+    if (std::abs(edge_factor) > T(64) * std::numeric_limits<T>::epsilon())
+        warp /= edge_factor;
+    return warp;
+}
+
+template <std::floating_point T>
+std::array<T, 3> graph_equilateral_to_reference_barycentric(T x, T y)
+{
+    const T sqrt3 = std::sqrt(T(3));
+    std::array<T, 3> w = {};
+    w[2] = (sqrt3 * y + T(1)) / T(3);
+    w[1] = (x + T(1) - w[2]) / T(2);
+    w[0] = T(1) - w[1] - w[2];
+
+    T sum = T(0);
+    for (T& wi : w)
+    {
+        if (std::abs(wi) < T(256) * std::numeric_limits<T>::epsilon())
+            wi = T(0);
+        if (std::abs(wi - T(1)) < T(256) * std::numeric_limits<T>::epsilon())
+            wi = T(1);
+        wi = std::clamp(wi, T(0), T(1));
+        sum += wi;
+    }
+    if (sum > T(0))
+        for (T& wi : w)
+            wi /= sum;
+    return w;
+}
+
+template <std::floating_point T>
+std::vector<std::array<T, 3>> graph_triangle_barycentric_nodes(
+    int order,
+    curving::NodeFamily family)
+{
+    order = std::max(order, 1);
+    std::vector<std::array<T, 3>> nodes;
+    nodes.reserve(static_cast<std::size_t>((order + 1) * (order + 2) / 2));
+
+    if (family != curving::NodeFamily::gll)
+    {
+        for (int j = 0; j <= order; ++j)
+        {
+            for (int i = 0; i <= order - j; ++i)
+            {
+                const T u = T(i) / T(order);
+                const T v = T(j) / T(order);
+                nodes.push_back({T(1) - u - v, u, v});
+            }
+        }
+        return nodes;
+    }
+
+    constexpr std::array<T, 16> alpha_opt = {
+        T(0.0), T(0.0), T(1.4152), T(0.1001),
+        T(0.2751), T(0.9800), T(1.0999), T(1.2832),
+        T(1.3648), T(1.4773), T(1.4959), T(1.5743),
+        T(1.5770), T(1.6223), T(1.6258), T(1.6530)};
+    const T alpha = (order < static_cast<int>(alpha_opt.size()))
+                      ? alpha_opt[static_cast<std::size_t>(order)]
+                      : T(5) / T(3);
+    const T sqrt3 = std::sqrt(T(3));
+    const T cos120 = -T(0.5);
+    const T sin120 = sqrt3 / T(2);
+    const T cos240 = -T(0.5);
+    const T sin240 = -sqrt3 / T(2);
+
+    for (int j = 0; j <= order; ++j)
+    {
+        for (int i = 0; i <= order - j; ++i)
+        {
+            const T u = T(i) / T(order);
+            const T v = T(j) / T(order);
+            const T lambda0 = T(1) - u - v;
+            const T lambda1 = u;
+            const T lambda2 = v;
+
+            T x = -lambda0 + lambda1;
+            T y = (-lambda0 - lambda1 + T(2) * lambda2) / sqrt3;
+
+            const T L1 = lambda2;
+            const T L2 = lambda0;
+            const T L3 = lambda1;
+            const T warp1 = T(4) * L2 * L3 * graph_warp_factor<T>(order, L3 - L2)
+                          * (T(1) + (alpha * L1) * (alpha * L1));
+            const T warp2 = T(4) * L1 * L3 * graph_warp_factor<T>(order, L1 - L3)
+                          * (T(1) + (alpha * L2) * (alpha * L2));
+            const T warp3 = T(4) * L1 * L2 * graph_warp_factor<T>(order, L2 - L1)
+                          * (T(1) + (alpha * L3) * (alpha * L3));
+
+            x += warp1 + cos120 * warp2 + cos240 * warp3;
+            y += sin120 * warp2 + sin240 * warp3;
+            nodes.push_back(graph_equilateral_to_reference_barycentric<T>(x, y));
+        }
+    }
+    return nodes;
+}
+
+template <std::floating_point T>
+std::vector<T> graph_triangle_monomials(int order, std::span<const T> bary)
+{
+    const T u = bary[1];
+    const T v = bary[2];
+    std::vector<T> values;
+    values.reserve(static_cast<std::size_t>((order + 1) * (order + 2) / 2));
+    for (int total = 0; total <= order; ++total)
+    {
+        for (int j = 0; j <= total; ++j)
+        {
+            const int i = total - j;
+            values.push_back(std::pow(u, i) * std::pow(v, j));
+        }
+    }
+    return values;
+}
+
+template <std::floating_point T>
+std::vector<T> graph_triangle_lagrange_basis(
+    int order,
+    curving::NodeFamily family,
+    std::span<const T> bary)
+{
+    const auto nodes = graph_triangle_barycentric_nodes<T>(order, family);
+    const int n = static_cast<int>(nodes.size());
+    std::vector<T> matrix(static_cast<std::size_t>(n * n), T(0));
+    for (int row = 0; row < n; ++row)
+    {
+        const auto mono = graph_triangle_monomials<T>(
+            order,
+            std::span<const T>(nodes[static_cast<std::size_t>(row)].data(), 3));
+        for (int col = 0; col < n; ++col)
+            matrix[static_cast<std::size_t>(col * n + row)] =
+                mono[static_cast<std::size_t>(col)];
+    }
+
+    const auto rhs = graph_triangle_monomials<T>(order, bary);
+    std::vector<T> basis;
+    if (!solve_graph_dense_small<T>(std::move(matrix), rhs, n, basis,
+                                    T(256) * std::numeric_limits<T>::epsilon()))
+    {
+        return {};
+    }
+    return basis;
+}
+
+template <std::floating_point T>
+std::vector<T> graph_eval_curved_zero_face_ref(
+    const curving::CurvedZeroEntityState<T>& state,
+    cell::type entity_type,
+    int order,
+    curving::NodeFamily family,
+    std::span<const T> xi)
+{
+    const int nodes_per_face =
+        (entity_type == cell::type::quadrilateral)
+            ? (order + 1) * (order + 1)
+            : (order + 1) * (order + 2) / 2;
+    if (nodes_per_face <= 0
+        || state.ref_nodes.size() % static_cast<std::size_t>(nodes_per_face) != 0)
+    {
+        return {};
+    }
+    const int tdim = static_cast<int>(
+        state.ref_nodes.size() / static_cast<std::size_t>(nodes_per_face));
+    std::vector<T> out(static_cast<std::size_t>(tdim), T(0));
+
+    if (entity_type == cell::type::quadrilateral)
+    {
+        const auto params = graph_interpolation_parameters<T>(order, family);
+        const T u = xi[0];
+        const T v = xi[1];
+        int node = 0;
+        for (int j = 0; j <= order; ++j)
+        {
+            const T Lj = graph_lagrange_basis_1d<T>(
+                j, std::span<const T>(params.data(), params.size()), v);
+            for (int i = 0; i <= order; ++i)
+            {
+                const T Li = graph_lagrange_basis_1d<T>(
+                    i, std::span<const T>(params.data(), params.size()), u);
+                const T L = Li * Lj;
+                for (int d = 0; d < tdim; ++d)
+                    out[static_cast<std::size_t>(d)] += L * state.ref_nodes[
+                        static_cast<std::size_t>(node * tdim + d)];
+                ++node;
+            }
+        }
+        return out;
+    }
+
+    if (entity_type == cell::type::triangle)
+    {
+        const std::array<T, 3> bary = {T(1) - xi[0] - xi[1], xi[0], xi[1]};
+        const auto basis = graph_triangle_lagrange_basis<T>(
+            order, family, std::span<const T>(bary.data(), bary.size()));
+        if (basis.empty())
+            return {};
+        for (int node = 0; node < static_cast<int>(basis.size()); ++node)
+        {
+            const T L = basis[static_cast<std::size_t>(node)];
+            for (int d = 0; d < tdim; ++d)
+                out[static_cast<std::size_t>(d)] += L * state.ref_nodes[
+                    static_cast<std::size_t>(node * tdim + d)];
+        }
+        return out;
+    }
+
+    return {};
+}
+
+template <std::floating_point T>
+std::vector<T> graph_eval_straight_zero_face_ref(
+    const AdaptCell<T>& adapt_cell,
+    std::span<const int> vertices,
+    cell::type entity_type,
+    std::span<const T> xi)
+{
+    std::vector<T> out(static_cast<std::size_t>(adapt_cell.tdim), T(0));
+    std::array<T, 4> weights = {};
+    int nweights = 0;
+    if (entity_type == cell::type::triangle)
+    {
+        weights = {T(1) - xi[0] - xi[1], xi[0], xi[1], T(0)};
+        nweights = 3;
+    }
+    else if (entity_type == cell::type::quadrilateral)
+    {
+        const T u = xi[0];
+        const T v = xi[1];
+        weights = {(T(1) - u) * (T(1) - v),
+                   u * (T(1) - v),
+                   (T(1) - u) * v,
+                   u * v};
+        nweights = 4;
+    }
+    else
+    {
+        return {};
+    }
+
+    if (static_cast<int>(vertices.size()) < nweights)
+        return {};
+    for (int i = 0; i < nweights; ++i)
+    {
+        const int vertex = vertices[static_cast<std::size_t>(i)];
+        for (int d = 0; d < adapt_cell.tdim; ++d)
+        {
+            out[static_cast<std::size_t>(d)] +=
+                weights[static_cast<std::size_t>(i)]
+              * adapt_cell.vertex_coords[
+                    static_cast<std::size_t>(vertex * adapt_cell.tdim + d)];
+        }
+    }
+    return out;
+}
+
+template <std::floating_point T>
+T graph_signed_surface_jacobian_ratio(std::span<const T> host_du_phys,
+                                      std::span<const T> host_dv_phys,
+                                      std::span<const T> corr_du_phys,
+                                      std::span<const T> corr_dv_phys,
+                                      T tol)
+{
+    if (host_du_phys.size() != 3 || host_dv_phys.size() != 3
+        || corr_du_phys.size() != 3
+        || corr_dv_phys.size() != 3)
+    {
+        return std::numeric_limits<T>::quiet_NaN();
+    }
+
+    const auto host_cross = geom::cross<T>(
+        host_du_phys, host_dv_phys);
+    const T denom =
+        host_cross[0] * host_cross[0]
+      + host_cross[1] * host_cross[1]
+      + host_cross[2] * host_cross[2];
+    if (denom <= tol * tol)
+        return std::numeric_limits<T>::quiet_NaN();
+
+    const auto corr_cross = geom::cross<T>(corr_du_phys, corr_dv_phys);
+    const T numer =
+        corr_cross[0] * host_cross[0]
+      + corr_cross[1] * host_cross[1]
+      + corr_cross[2] * host_cross[2];
+    return numer / denom;
+}
+
+template <std::floating_point T, std::integral I>
+bool check_zero_face_surface_jacobian(
+    const AdaptCell<T>& adapt_cell,
+    int local_zero_entity_id,
+    const LevelSetCell<T, I>& ls_cell,
+    std::span<const int> ordered_vertices,
+    const ReadyCellGraphOptions<T>& graph_options,
+    ReadyCellGraphDiagnostics<T>& diagnostics,
+    int source_cell_id)
+{
+    graph_criteria::FaceQualityReport<T> report;
+    report.minimum_surface_jacobian_ratio =
+        std::numeric_limits<T>::infinity();
+
+    const int dim = ls_cell.tdim;
+    if (dim != 3 || ls_cell.gdim != 3)
+    {
+        mark_graph_failure<T>(
+            diagnostics,
+            source_cell_id,
+            graph_criteria::FailureReason::invalid_input);
+        return false;
+    }
+
+    const int zdim =
+        adapt_cell.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)];
+    const int zid =
+        adapt_cell.zero_entity_id[static_cast<std::size_t>(local_zero_entity_id)];
+    if (zdim != 2 || zid < 0 || zid >= adapt_cell.n_entities(2))
+    {
+        mark_graph_failure<T>(
+            diagnostics,
+            source_cell_id,
+            graph_criteria::FailureReason::invalid_input);
+        return false;
+    }
+
+    const cell::type entity_type =
+        adapt_cell.entity_types[2][static_cast<std::size_t>(zid)];
+    if (entity_type != cell::type::triangle
+        && entity_type != cell::type::quadrilateral)
+    {
+        mark_graph_failure<T>(
+            diagnostics,
+            source_cell_id,
+            graph_criteria::FailureReason::invalid_input);
+        return false;
+    }
+
+    const auto curving_options = graph_curving_options<T>(graph_options);
+    curving::CurvingData<T, I> curving_data;
+    const std::array<I, 1> parent_cell_ids = {static_cast<I>(ls_cell.cell_id)};
+    const std::array<AdaptCell<T>, 1> adapt_cells = {adapt_cell};
+    const std::array<LevelSetCell<T, I>, 1> level_set_cells = {ls_cell};
+    const std::array<int, 2> ls_offsets = {0, 1};
+    const auto& state = curving::ensure_curved<T, I>(
+        curving_data,
+        std::span<const I>(parent_cell_ids.data(), parent_cell_ids.size()),
+        std::span<const AdaptCell<T>>(adapt_cells.data(), adapt_cells.size()),
+        std::span<const LevelSetCell<T, I>>(
+            level_set_cells.data(), level_set_cells.size()),
+        std::span<const int>(ls_offsets.data(), ls_offsets.size()),
+        0,
+        local_zero_entity_id,
+        curving_options);
+    if (state.status != curving::CurvingStatus::curved)
+    {
+        mark_graph_failure<T>(
+            diagnostics,
+            source_cell_id,
+            graph_criteria::FailureReason::invalid_input);
+        return false;
+    }
+
+    std::vector<T> jacobian;
+    if (!graph_affine_jacobian<T, I>(ls_cell, jacobian))
+    {
+        mark_graph_failure<T>(
+            diagnostics,
+            source_cell_id,
+            graph_criteria::FailureReason::invalid_input);
+        return false;
+    }
+
+    std::vector<std::array<T, 2>> samples;
+    if (entity_type == cell::type::triangle)
+    {
+        samples = {{{T(1) / T(3), T(1) / T(3)},
+                    {T(0.2), T(0.2)},
+                    {T(0.6), T(0.2)},
+                    {T(0.2), T(0.6)}}};
+    }
+    else
+    {
+        samples = {{{T(0.5), T(0.5)},
+                    {T(0.25), T(0.25)},
+                    {T(0.75), T(0.25)},
+                    {T(0.25), T(0.75)},
+                    {T(0.75), T(0.75)}}};
+    }
+
+    const T h = T(1.0e-5);
+    auto eval_curved = [&](std::span<const T> xi)
+    {
+        return graph_eval_curved_zero_face_ref<T>(
+            state, entity_type, curving_options.geometry_order,
+            curving_options.node_family, xi);
+    };
+    auto eval_straight = [&](std::span<const T> xi)
+    {
+        return graph_eval_straight_zero_face_ref<T>(
+            adapt_cell, ordered_vertices, entity_type, xi);
+    };
+
+    for (int sample_id = 0; sample_id < static_cast<int>(samples.size()); ++sample_id)
+    {
+        const auto xi = samples[static_cast<std::size_t>(sample_id)];
+        const std::array<T, 2> xi_u_plus = {xi[0] + h, xi[1]};
+        const std::array<T, 2> xi_u_minus = {xi[0] - h, xi[1]};
+        const std::array<T, 2> xi_v_plus = {xi[0], xi[1] + h};
+        const std::array<T, 2> xi_v_minus = {xi[0], xi[1] - h};
+
+        const auto curved_u_plus = eval_curved(
+            std::span<const T>(xi_u_plus.data(), xi_u_plus.size()));
+        const auto curved_u_minus = eval_curved(
+            std::span<const T>(xi_u_minus.data(), xi_u_minus.size()));
+        const auto curved_v_plus = eval_curved(
+            std::span<const T>(xi_v_plus.data(), xi_v_plus.size()));
+        const auto curved_v_minus = eval_curved(
+            std::span<const T>(xi_v_minus.data(), xi_v_minus.size()));
+        const auto straight_u_plus = eval_straight(
+            std::span<const T>(xi_u_plus.data(), xi_u_plus.size()));
+        const auto straight_u_minus = eval_straight(
+            std::span<const T>(xi_u_minus.data(), xi_u_minus.size()));
+        const auto straight_v_plus = eval_straight(
+            std::span<const T>(xi_v_plus.data(), xi_v_plus.size()));
+        const auto straight_v_minus = eval_straight(
+            std::span<const T>(xi_v_minus.data(), xi_v_minus.size()));
+
+        if (curved_u_plus.empty() || curved_u_minus.empty()
+            || curved_v_plus.empty() || curved_v_minus.empty()
+            || straight_u_plus.empty() || straight_u_minus.empty()
+            || straight_v_plus.empty() || straight_v_minus.empty())
+        {
+            mark_graph_failure<T>(
+                diagnostics,
+                source_cell_id,
+                graph_criteria::FailureReason::invalid_input);
+            return false;
+        }
+
+        std::vector<T> curved_du(static_cast<std::size_t>(dim), T(0));
+        std::vector<T> curved_dv(static_cast<std::size_t>(dim), T(0));
+        std::vector<T> straight_du(static_cast<std::size_t>(dim), T(0));
+        std::vector<T> straight_dv(static_cast<std::size_t>(dim), T(0));
+        for (int d = 0; d < dim; ++d)
+        {
+            curved_du[static_cast<std::size_t>(d)] =
+                (curved_u_plus[static_cast<std::size_t>(d)]
+               - curved_u_minus[static_cast<std::size_t>(d)]) / (T(2) * h);
+            curved_dv[static_cast<std::size_t>(d)] =
+                (curved_v_plus[static_cast<std::size_t>(d)]
+               - curved_v_minus[static_cast<std::size_t>(d)]) / (T(2) * h);
+            straight_du[static_cast<std::size_t>(d)] =
+                (straight_u_plus[static_cast<std::size_t>(d)]
+               - straight_u_minus[static_cast<std::size_t>(d)]) / (T(2) * h);
+            straight_dv[static_cast<std::size_t>(d)] =
+                (straight_v_plus[static_cast<std::size_t>(d)]
+               - straight_v_minus[static_cast<std::size_t>(d)]) / (T(2) * h);
+        }
+
+        const auto curved_du_phys = graph_push_forward_vector<T>(
+            jacobian, ls_cell.gdim, ls_cell.tdim,
+            std::span<const T>(curved_du.data(), curved_du.size()));
+        const auto curved_dv_phys = graph_push_forward_vector<T>(
+            jacobian, ls_cell.gdim, ls_cell.tdim,
+            std::span<const T>(curved_dv.data(), curved_dv.size()));
+        const auto straight_du_phys = graph_push_forward_vector<T>(
+            jacobian, ls_cell.gdim, ls_cell.tdim,
+            std::span<const T>(straight_du.data(), straight_du.size()));
+        const auto straight_dv_phys = graph_push_forward_vector<T>(
+            jacobian, ls_cell.gdim, ls_cell.tdim,
+            std::span<const T>(straight_dv.data(), straight_dv.size()));
+
+        const T ratio = graph_signed_surface_jacobian_ratio<T>(
+            std::span<const T>(straight_du_phys.data(), straight_du_phys.size()),
+            std::span<const T>(straight_dv_phys.data(), straight_dv_phys.size()),
+            std::span<const T>(curved_du_phys.data(), curved_du_phys.size()),
+            std::span<const T>(curved_dv_phys.data(), curved_dv_phys.size()),
+            graph_options.criteria.tolerance);
+        if (!std::isfinite(ratio))
+        {
+            mark_graph_failure<T>(
+                diagnostics,
+                source_cell_id,
+                graph_criteria::FailureReason::face_degenerate);
+            return false;
+        }
+
+        report.minimum_surface_jacobian_ratio =
+            std::min(report.minimum_surface_jacobian_ratio, ratio);
+        if (ratio <= graph_options.criteria.min_surface_jacobian_ratio)
+        {
+            report.accepted = false;
+            report.failure_reason =
+                graph_criteria::FailureReason::surface_jacobian_not_positive;
+            report.failed_triangle_index = sample_id;
+            report.failed_surface_jacobian_ratio = ratio;
+            diagnostics.min_face_area_ratio =
+                std::min(diagnostics.min_face_area_ratio,
+                         report.minimum_surface_jacobian_ratio);
+            observe_failed_face_orientation<T>(diagnostics, report);
+            int requested_edge_id = -1;
+            if (entity_type == cell::type::triangle
+                && ordered_vertices.size() >= 3)
+            {
+                const std::array<T, 3> bary = {T(1) - xi[0] - xi[1], xi[0], xi[1]};
+                int closest = 0;
+                if (bary[1] < bary[closest])
+                    closest = 1;
+                if (bary[2] < bary[closest])
+                    closest = 2;
+                const int a = ordered_vertices[
+                    static_cast<std::size_t>((closest + 1) % 3)];
+                const int b = ordered_vertices[
+                    static_cast<std::size_t>((closest + 2) % 3)];
+                requested_edge_id =
+                    graph_refinement_edge_from_failed_face_segment<T>(
+                        adapt_cell, a, b);
+            }
+            else if (entity_type == cell::type::quadrilateral
+                     && ordered_vertices.size() >= 4)
+            {
+                std::array<T, 4> dist = {xi[1], T(1) - xi[0], T(1) - xi[1], xi[0]};
+                int side = 0;
+                for (int i = 1; i < 4; ++i)
+                    if (dist[static_cast<std::size_t>(i)]
+                        < dist[static_cast<std::size_t>(side)])
+                        side = i;
+                const std::array<std::array<int, 2>, 4> side_vertices = {{
+                    {{0, 1}}, {{1, 3}}, {{2, 3}}, {{0, 2}}}};
+                const int a = ordered_vertices[static_cast<std::size_t>(
+                    side_vertices[static_cast<std::size_t>(side)][0])];
+                const int b = ordered_vertices[static_cast<std::size_t>(
+                    side_vertices[static_cast<std::size_t>(side)][1])];
+                requested_edge_id =
+                    graph_refinement_edge_from_failed_face_segment<T>(
+                        adapt_cell, a, b);
+            }
+            mark_graph_refinement_request<T>(
+                diagnostics, 1, requested_edge_id);
+            mark_graph_failure<T>(
+                diagnostics, source_cell_id, report.failure_reason);
+            return false;
+        }
+    }
+
+    diagnostics.min_face_area_ratio =
+        std::min(diagnostics.min_face_area_ratio,
+                 report.minimum_surface_jacobian_ratio);
+    return true;
+}
+
+template <std::floating_point T, std::integral I>
+bool check_zero_face_graph(const AdaptCell<T>& adapt_cell,
+                           int local_zero_entity_id,
+                           const LevelSetCell<T, I>& ls_cell,
+                           std::span<const int> ordered_vertices,
+                           const std::vector<T>& vertex_coords,
+                           const ReadyCellGraphOptions<T>& graph_options,
+                           ReadyCellGraphDiagnostics<T>& diagnostics,
+                           int source_cell_id)
+{
+    ++diagnostics.checked_faces;
+
+    std::vector<T> face_vertices;
+    face_vertices.reserve(ordered_vertices.size() * static_cast<std::size_t>(ls_cell.tdim));
+    for (const int v : ordered_vertices)
+    {
+        auto p = point_span<T>(vertex_coords, v, ls_cell.tdim);
+        face_vertices.insert(face_vertices.end(), p.begin(), p.end());
+    }
+
+    graph_criteria::HostFrame<T> host;
+    if (!build_face_host_frame<T>(
+            face_vertices, host, graph_options.criteria.tolerance))
+    {
+        mark_graph_failure<T>(
+            diagnostics,
+            source_cell_id,
+            graph_criteria::FailureReason::invalid_host_frame);
+        return false;
+    }
+
+    const int nverts = static_cast<int>(ordered_vertices.size());
+    int longest_face_edge_id = -1;
+    T longest_face_edge_length = T(0);
+    for (int i = 0; i < nverts; ++i)
+    {
+        const int a = ordered_vertices[static_cast<std::size_t>(i)];
+        const int b = ordered_vertices[
+            static_cast<std::size_t>((i + 1) % nverts)];
+        const auto pa = point_span<T>(vertex_coords, a, ls_cell.tdim);
+        const auto pb = point_span<T>(vertex_coords, b, ls_cell.tdim);
+        const auto edge_delta = geom::subtract<T>(pb, pa);
+        const T edge_length = geom::norm<T>(
+            std::span<const T>(edge_delta.data(), edge_delta.size()));
+        const int adapt_edge_id = find_adapt_edge_by_vertices<T>(
+            adapt_cell, a, b);
+        if (adapt_edge_id >= 0 && edge_length > longest_face_edge_length)
+        {
+            longest_face_edge_length = edge_length;
+            longest_face_edge_id = adapt_edge_id;
+        }
+
+        if (!check_zero_edge_graph<T, I>(
+                adapt_cell,
+                local_zero_entity_id,
+                ls_cell,
+                pa,
+                pb,
+                std::span<const T>(host.normal.data(), host.normal.size()),
+                true,
+                adapt_edge_id,
+                graph_options,
+                diagnostics,
+                source_cell_id))
+        {
+            return false;
+        }
+    }
+
+    std::vector<T> face_center(static_cast<std::size_t>(ls_cell.tdim), T(0));
+    for (const int v : ordered_vertices)
+    {
+        const auto p = point_span<T>(vertex_coords, v, ls_cell.tdim);
+        for (int d = 0; d < ls_cell.tdim; ++d)
+            face_center[static_cast<std::size_t>(d)] += p[static_cast<std::size_t>(d)];
+    }
+    for (T& value : face_center)
+        value /= static_cast<T>(nverts);
+
+    std::vector<T> corrected_face_center;
+    const geom::ParentEntity cell_interior{ls_cell.tdim, -1};
+    if (!project_graph_point<T, I>(
+            adapt_cell,
+            local_zero_entity_id,
+            ls_cell,
+            cell_interior,
+            host,
+            std::span<const T>(face_center.data(), face_center.size()),
+            GraphNodeKind::face_interior,
+            0,
+            longest_face_edge_id,
+            graph_options,
+            diagnostics,
+            source_cell_id,
+            corrected_face_center))
+    {
+        return false;
+    }
+
+    return check_zero_face_surface_jacobian<T, I>(
+        adapt_cell,
+        local_zero_entity_id,
+        ls_cell,
+        ordered_vertices,
+        graph_options,
+        diagnostics,
+        source_cell_id);
+}
+
+template <std::floating_point T>
+std::vector<int> adapt_zero_entity_vertex_ids(const AdaptCell<T>& ac,
+                                              int local_zero_entity_id)
+{
+    const int zdim = ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)];
+    const int zid = ac.zero_entity_id[static_cast<std::size_t>(local_zero_entity_id)];
+    if (zdim == 0)
+        return {zid};
+
+    auto verts = ac.entity_to_vertex[zdim][static_cast<std::int32_t>(zid)];
+    std::vector<int> out;
+    out.reserve(verts.size());
+    for (const auto v : verts)
+        out.push_back(static_cast<int>(v));
+    return out;
+}
+
+inline bool contains_vertex_id(std::span<const int> vertices, int vertex_id)
+{
+    for (const int v : vertices)
+    {
+        if (v == vertex_id)
+            return true;
+    }
+    return false;
+}
+
+template <std::floating_point T>
+std::vector<T> face_normal_for_zero_entity(const AdaptCell<T>& ac,
+                                           int local_zero_entity_id,
+                                           T tol)
+{
+    std::vector<T> normal(static_cast<std::size_t>(ac.tdim), T(0));
+    if (ac.tdim != 3
+        || ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)] != 2)
+    {
+        return normal;
+    }
+
+    const auto face_vertices =
+        adapt_zero_entity_vertex_ids<T>(ac, local_zero_entity_id);
+    std::vector<T> face_coords;
+    face_coords.reserve(face_vertices.size() * 3);
+    for (const int v : face_vertices)
+    {
+        auto p = point_span<T>(ac.vertex_coords, v, 3);
+        face_coords.insert(face_coords.end(), p.begin(), p.end());
+    }
+
+    graph_criteria::HostFrame<T> host;
+    if (!build_face_host_frame<T>(face_coords, host, tol))
+        return normal;
+    return host.normal;
+}
+
+template <std::floating_point T>
+std::vector<T> face_normal_for_zero_edge(const AdaptCell<T>& ac,
+                                         int local_zero_edge_id,
+                                         int level_set_id,
+                                         T tol)
+{
+    std::vector<T> normal(static_cast<std::size_t>(ac.tdim), T(0));
+    if (ac.tdim != 3
+        || ac.zero_entity_dim[static_cast<std::size_t>(local_zero_edge_id)] != 1)
+    {
+        return normal;
+    }
+
+    const auto edge_vertices =
+        adapt_zero_entity_vertex_ids<T>(ac, local_zero_edge_id);
+    if (edge_vertices.size() != 2)
+        return normal;
+
+    const std::uint64_t bit = std::uint64_t(1) << level_set_id;
+    T best_norm = T(0);
+    for (int z = 0; z < ac.n_zero_entities(); ++z)
+    {
+        if (ac.zero_entity_dim[static_cast<std::size_t>(z)] != 2)
+            continue;
+        if ((ac.zero_entity_zero_mask[static_cast<std::size_t>(z)] & bit) == 0)
+            continue;
+
+        const auto face_vertices = adapt_zero_entity_vertex_ids<T>(ac, z);
+        if (!contains_vertex_id(std::span<const int>(face_vertices.data(), face_vertices.size()),
+                                edge_vertices[0])
+            || !contains_vertex_id(
+                std::span<const int>(face_vertices.data(), face_vertices.size()),
+                edge_vertices[1]))
+        {
+            continue;
+        }
+
+        auto candidate = face_normal_for_zero_entity<T>(ac, z, tol);
+        const T n = geom::norm<T>(
+            std::span<const T>(candidate.data(), candidate.size()));
+        if (n > best_norm)
+        {
+            best_norm = n;
+            normal = std::move(candidate);
+        }
+    }
+
+    if (best_norm <= tol)
+    std::fill(normal.begin(), normal.end(), T(0));
+    return normal;
+}
+
+template <std::floating_point T>
+ZeroEntityGraphDiagnostics<T> make_zero_entity_graph_record(
+    int local_zero_entity_id,
+    int level_set_id,
+    int dimension,
+    std::uint64_t zero_mask,
+    const ReadyCellGraphDiagnostics<T>& entity_diag)
+{
+    ZeroEntityGraphDiagnostics<T> record;
+    record.local_zero_entity_id = local_zero_entity_id;
+    record.level_set_id = level_set_id;
+    record.dimension = dimension;
+    record.zero_mask = zero_mask;
+    record.accepted = entity_diag.accepted;
+    record.checked_edges = entity_diag.checked_edges;
+    record.checked_faces = entity_diag.checked_faces;
+    record.failed_checks = entity_diag.failed_checks;
+    record.failure_reason = entity_diag.accepted
+                                ? graph_criteria::FailureReason::none
+                                : entity_diag.first_failure_reason;
+    record.min_true_transversality = entity_diag.min_true_transversality;
+    record.min_host_normal_alignment = entity_diag.min_host_normal_alignment;
+    record.max_drift_amplification = entity_diag.max_drift_amplification;
+    record.max_relative_correction_distance =
+        entity_diag.max_relative_correction_distance;
+    record.max_relative_tangential_shift =
+        entity_diag.max_relative_tangential_shift;
+    record.min_edge_gap_ratio = entity_diag.min_edge_gap_ratio;
+    record.min_face_area_ratio = entity_diag.min_face_area_ratio;
+    record.min_level_set_gradient_host_alignment =
+        entity_diag.min_level_set_gradient_host_alignment;
+    record.failed_face_triangle_index =
+        entity_diag.first_failed_face_triangle_index;
+    record.failed_face_area_ratio =
+        entity_diag.first_failed_face_area_ratio;
+    record.failed_projection_seed = entity_diag.first_failed_projection_seed;
+    record.failed_projection_direction =
+        entity_diag.first_failed_projection_direction;
+    record.failed_projection_clip_lo =
+        entity_diag.first_failed_projection_clip_lo;
+    record.failed_projection_clip_hi =
+        entity_diag.first_failed_projection_clip_hi;
+    record.failed_projection_root_t =
+        entity_diag.first_failed_projection_root_t;
+    record.requested_refinement_entity_dim =
+        entity_diag.first_requested_refinement_entity_dim;
+    record.requested_refinement_entity_id =
+        entity_diag.first_requested_refinement_entity_id;
+    record.nodes = entity_diag.nodes;
+    return record;
+}
+
+template <std::floating_point T>
+void accumulate_zero_entity_graph_record(ReadyCellGraphDiagnostics<T>& diagnostics,
+                                         const ZeroEntityGraphDiagnostics<T>& record,
+                                         int source_cell_id)
+{
+    diagnostics.checked_edges += record.checked_edges;
+    diagnostics.checked_faces += record.checked_faces;
+    diagnostics.min_true_transversality =
+        std::min(diagnostics.min_true_transversality,
+                 record.min_true_transversality);
+    diagnostics.min_host_normal_alignment =
+        std::min(diagnostics.min_host_normal_alignment,
+                 record.min_host_normal_alignment);
+    diagnostics.max_drift_amplification =
+        std::max(diagnostics.max_drift_amplification,
+                 record.max_drift_amplification);
+    diagnostics.max_relative_correction_distance =
+        std::max(diagnostics.max_relative_correction_distance,
+                 record.max_relative_correction_distance);
+    diagnostics.max_relative_tangential_shift =
+        std::max(diagnostics.max_relative_tangential_shift,
+                 record.max_relative_tangential_shift);
+    diagnostics.min_edge_gap_ratio =
+        std::min(diagnostics.min_edge_gap_ratio, record.min_edge_gap_ratio);
+    diagnostics.min_face_area_ratio =
+        std::min(diagnostics.min_face_area_ratio, record.min_face_area_ratio);
+    diagnostics.min_level_set_gradient_host_alignment =
+        std::min(diagnostics.min_level_set_gradient_host_alignment,
+                 record.min_level_set_gradient_host_alignment);
+    if (diagnostics.first_failed_face_triangle_index < 0
+        && record.failed_face_triangle_index >= 0)
+    {
+        diagnostics.first_failed_face_triangle_index =
+            record.failed_face_triangle_index;
+        diagnostics.first_failed_face_area_ratio =
+            record.failed_face_area_ratio;
+    }
+    for (const auto& node : record.nodes)
+        diagnostics.nodes.push_back(node);
+    if (!record.accepted)
+    {
+        mark_graph_refinement_request<T>(
+            diagnostics,
+            record.requested_refinement_entity_dim,
+            record.requested_refinement_entity_id);
+        mark_graph_failure<T>(diagnostics, source_cell_id, record.failure_reason);
+    }
+}
+
+template <std::floating_point T, std::integral I>
+void populate_committed_zero_entity_graph_diagnostics(
+    const AdaptCell<T>& adapt_cell,
+    const LevelSetCell<T, I>& ls_cell,
+    int level_set_id,
+    const ReadyCellGraphOptions<T>& graph_options,
+    ReadyCellGraphDiagnostics<T>& diagnostics)
+{
+    const int graph_refinements = diagnostics.graph_refinements;
+    diagnostics = ReadyCellGraphDiagnostics<T>{};
+    diagnostics.graph_refinements = graph_refinements;
+    if (!graph_options.enabled)
+        return;
+
+    const std::uint64_t bit = std::uint64_t(1) << level_set_id;
+    for (int z = 0; z < adapt_cell.n_zero_entities(); ++z)
+    {
+        if ((adapt_cell.zero_entity_zero_mask[static_cast<std::size_t>(z)] & bit) == 0)
+            continue;
+
+        const int zdim = adapt_cell.zero_entity_dim[static_cast<std::size_t>(z)];
+        if (zdim != 1 && zdim != 2)
+            continue;
+
+        ReadyCellGraphDiagnostics<T> entity_diag;
+        const auto vertices = adapt_zero_entity_vertex_ids<T>(adapt_cell, z);
+        if (zdim == 1)
+        {
+            if (vertices.size() != 2)
+            {
+                mark_graph_failure<T>(
+                    entity_diag, -1, graph_criteria::FailureReason::invalid_input);
+            }
+            else
+            {
+                const auto zero_face_normal =
+                    face_normal_for_zero_edge<T>(
+                        adapt_cell, z, level_set_id,
+                        graph_options.criteria.tolerance);
+                (void)check_zero_edge_graph<T, I>(
+                    adapt_cell,
+                    z,
+                    ls_cell,
+                    point_span<T>(adapt_cell.vertex_coords, vertices[0], adapt_cell.tdim),
+                    point_span<T>(adapt_cell.vertex_coords, vertices[1], adapt_cell.tdim),
+                    std::span<const T>(zero_face_normal.data(), zero_face_normal.size()),
+                    false,
+                    find_adapt_edge_by_vertices<T>(
+                        adapt_cell, vertices[0], vertices[1]),
+                    graph_options,
+                    entity_diag,
+                    -1);
+            }
+        }
+        else
+        {
+            if (adapt_cell.tdim != 3 || vertices.size() < 3)
+            {
+                mark_graph_failure<T>(
+                    entity_diag, -1, graph_criteria::FailureReason::invalid_input);
+            }
+            else
+            {
+                const auto face_normal =
+                    face_normal_for_zero_entity<T>(
+                        adapt_cell, z, graph_options.criteria.tolerance);
+                const T normal_norm = geom::norm<T>(
+                    std::span<const T>(face_normal.data(), face_normal.size()));
+                if (normal_norm <= graph_options.criteria.tolerance)
+                {
+                    mark_graph_failure<T>(
+                        entity_diag, -1,
+                        graph_criteria::FailureReason::invalid_host_frame);
+                }
+                else
+                {
+                    (void)check_zero_face_graph<T, I>(
+                        adapt_cell,
+                        z,
+                        ls_cell,
+                        std::span<const int>(vertices.data(), vertices.size()),
+                        adapt_cell.vertex_coords,
+                        graph_options,
+                        entity_diag,
+                        -1);
+                }
+            }
+        }
+
+        auto record =
+            make_zero_entity_graph_record<T>(
+                z,
+                level_set_id,
+                zdim,
+                adapt_cell.zero_entity_zero_mask[static_cast<std::size_t>(z)],
+                entity_diag);
+        accumulate_zero_entity_graph_record<T>(diagnostics, record, -1);
+        diagnostics.zero_entities.push_back(std::move(record));
+    }
+}
+
+template <std::floating_point T>
+int find_top_cell_incident_to_edge(const AdaptCell<T>& adapt_cell, int edge_id)
+{
+    if (edge_id < 0 || edge_id >= adapt_cell.n_entities(1))
+        return -1;
+
+    const auto edge_vertices =
+        adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(edge_id)];
+    if (edge_vertices.size() != 2)
+        return -1;
+
+    const int a = static_cast<int>(edge_vertices[0]);
+    const int b = static_cast<int>(edge_vertices[1]);
+    const int tdim = adapt_cell.tdim;
+    for (int c = 0; c < adapt_cell.n_entities(tdim); ++c)
+    {
+        const auto verts =
+            adapt_cell.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
+        bool has_a = false;
+        bool has_b = false;
+        for (const auto v : verts)
+        {
+            has_a = has_a || static_cast<int>(v) == a;
+            has_b = has_b || static_cast<int>(v) == b;
+        }
+        if (has_a && has_b)
+            return c;
+    }
+    return -1;
+}
+
+template <std::floating_point T, std::integral I>
+ReadyCellGraphDiagnostics<T> check_processed_ready_to_cut_cell_graphs(
+    const AdaptCell<T>& adapt_cell,
+    const LevelSetCell<T, I>& ls_cell,
+    int level_set_id,
+    T zero_tol,
+    T sign_tol,
+    int edge_max_depth,
+    bool triangulate_cut_parts,
+    const ReadyCellGraphOptions<T>& graph_options)
+{
+    ReadyCellGraphDiagnostics<T> diagnostics;
+    if (!graph_options.enabled)
+        return diagnostics;
+
+    bool has_ready = false;
+    const int tdim = adapt_cell.tdim;
+    for (int c = 0; c < adapt_cell.n_entities(tdim); ++c)
+    {
+        if (adapt_cell.get_cell_cert_tag(level_set_id, c)
+            == CellCertTag::ready_to_cut)
+        {
+            has_ready = true;
+            break;
+        }
+    }
+    if (!has_ready)
+        return diagnostics;
+
+    AdaptCell<T> temporary = adapt_cell;
+    process_ready_to_cut_cells(
+        temporary,
+        ls_cell,
+        level_set_id,
+        zero_tol,
+        sign_tol,
+        edge_max_depth,
+        triangulate_cut_parts);
+    fill_all_vertex_signs_from_level_set(
+        temporary, ls_cell, level_set_id, zero_tol);
+    build_edges(temporary);
+    if (temporary.tdim == 3)
+        build_faces(temporary);
+    recompute_active_level_set_masks(temporary, level_set_id + 1);
+    rebuild_zero_entity_inventory(temporary);
+
+    populate_committed_zero_entity_graph_diagnostics(
+        temporary, ls_cell, level_set_id, graph_options, diagnostics);
+
+    if (diagnostics.zero_entities.empty())
+    {
+        mark_graph_failure<T>(
+            diagnostics, -1, graph_criteria::FailureReason::invalid_input);
+    }
+
+    if (!diagnostics.accepted && diagnostics.first_failed_cell < 0
+        && diagnostics.first_requested_refinement_entity_dim == 1)
+    {
+        diagnostics.first_failed_cell = find_top_cell_incident_to_edge<T>(
+            adapt_cell, diagnostics.first_requested_refinement_entity_id);
+    }
+
+    return diagnostics;
+}
+
 // =====================================================================
 // process_ready_to_cut_cells
 // =====================================================================
@@ -1636,6 +3954,260 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
 
 }
 
+template <std::floating_point T, std::integral I>
+ReadyCellGraphDiagnostics<T> check_ready_to_cut_cell_graphs(
+    const AdaptCell<T>& adapt_cell,
+    const LevelSetCell<T, I>& ls_cell,
+    int level_set_id,
+    const ReadyCellGraphOptions<T>& graph_options)
+{
+    ReadyCellGraphDiagnostics<T> diagnostics;
+
+    if (!graph_options.enabled)
+        return diagnostics;
+
+    const int tdim = adapt_cell.tdim;
+    const int n_cells = adapt_cell.n_entities(tdim);
+
+    for (int c = 0; c < n_cells; ++c)
+    {
+        if (adapt_cell.get_cell_cert_tag(level_set_id, c)
+            != CellCertTag::ready_to_cut)
+        {
+            continue;
+        }
+
+        ++diagnostics.checked_cells;
+
+        const cell::type leaf_cell_type =
+            adapt_cell.entity_types[tdim][static_cast<std::size_t>(c)];
+        if (leaf_cell_type != cell::type::triangle
+            && leaf_cell_type != cell::type::tetrahedron)
+        {
+            mark_graph_failure<T>(
+                diagnostics,
+                c,
+                graph_criteria::FailureReason::invalid_input);
+            return diagnostics;
+        }
+
+        AdaptCell<T> temporary = adapt_cell;
+        for (int other = 0; other < n_cells; ++other)
+        {
+            if (other != c
+                && temporary.get_cell_cert_tag(level_set_id, other)
+                    == CellCertTag::ready_to_cut)
+            {
+                temporary.set_cell_cert_tag(
+                    level_set_id, other, CellCertTag::not_classified);
+            }
+        }
+
+        process_ready_to_cut_cells(
+            temporary,
+            ls_cell,
+            level_set_id,
+            graph_options.criteria.tolerance,
+            graph_options.criteria.tolerance,
+            /*edge_max_depth=*/20,
+            /*triangulate_cut_parts=*/false);
+
+        ReadyCellGraphDiagnostics<T> temporary_zero_diag;
+        populate_committed_zero_entity_graph_diagnostics(
+            temporary,
+            ls_cell,
+            level_set_id,
+            graph_options,
+            temporary_zero_diag);
+
+        bool checked_zero_entity = false;
+        for (const auto& record : temporary_zero_diag.zero_entities)
+        {
+            checked_zero_entity = true;
+            accumulate_zero_entity_graph_record<T>(diagnostics, record, c);
+            if (!diagnostics.accepted)
+                return diagnostics;
+        }
+
+        if (!checked_zero_entity)
+        {
+            mark_graph_failure<T>(
+                diagnostics,
+                c,
+                graph_criteria::FailureReason::invalid_input);
+            return diagnostics;
+        }
+    }
+
+    return diagnostics;
+}
+
+template <std::floating_point T, std::integral I>
+bool refine_ready_cell_on_largest_midpoint_value(
+    AdaptCell<T>& adapt_cell,
+    const LevelSetCell<T, I>& ls_cell,
+    int level_set_id,
+    int cell_id)
+{
+    const int tdim = adapt_cell.tdim;
+    if (cell_id < 0 || cell_id >= adapt_cell.n_entities(tdim))
+        return false;
+
+    const auto edge_lookup = build_leaf_edge_lookup(adapt_cell);
+    auto verts = adapt_cell.entity_to_vertex[tdim][static_cast<std::int32_t>(cell_id)];
+    const cell::type ctype = adapt_cell.entity_types[tdim][static_cast<std::size_t>(cell_id)];
+    const auto ledges = cell::edges(ctype);
+
+    int selected_edge = -1;
+    T selected_value = -std::numeric_limits<T>::infinity();
+    for (const auto& le : ledges)
+    {
+        const int a = verts[static_cast<std::size_t>(le[0])];
+        const int b = verts[static_cast<std::size_t>(le[1])];
+        const std::pair<int, int> key = {std::min(a, b), std::max(a, b)};
+        auto it = edge_lookup.find(key);
+        if (it == edge_lookup.end())
+            continue;
+
+        std::vector<T> midpoint(static_cast<std::size_t>(tdim), T(0));
+        for (int d = 0; d < tdim; ++d)
+        {
+            midpoint[static_cast<std::size_t>(d)] =
+                T(0.5)
+                * (adapt_cell.vertex_coords[static_cast<std::size_t>(a * tdim + d)]
+                   + adapt_cell.vertex_coords[static_cast<std::size_t>(b * tdim + d)]);
+        }
+        const T value = ls_cell.value(
+            std::span<const T>(midpoint.data(), midpoint.size()));
+        if (selected_edge < 0 || value > selected_value)
+        {
+            selected_edge = it->second;
+            selected_value = value;
+        }
+    }
+
+    if (selected_edge < 0)
+        return false;
+
+    const int n_edges = adapt_cell.n_entities(1);
+    if (adapt_cell.edge_root_tag_num_level_sets <= level_set_id)
+        adapt_cell.resize_edge_root_tags(level_set_id + 1);
+    if (adapt_cell.edge_green_split_has_value.size()
+        < static_cast<std::size_t>((level_set_id + 1) * n_edges))
+    {
+        adapt_cell.resize_green_split_data(level_set_id + 1);
+    }
+
+    const auto idx =
+        static_cast<std::size_t>(level_set_id * n_edges + selected_edge);
+    adapt_cell.set_edge_root_tag(
+        level_set_id, selected_edge, EdgeRootTag::multiple_roots);
+    adapt_cell.edge_green_split_param[idx] = T(0.5);
+    adapt_cell.edge_green_split_has_value[idx] = 1;
+
+    return refine_green_on_multiple_root_edges(adapt_cell, level_set_id);
+}
+
+template <std::floating_point T, std::integral I>
+T graph_requested_edge_split_parameter(
+    const AdaptCell<T>& adapt_cell,
+    const LevelSetCell<T, I>& ls_cell,
+    int level_set_id,
+    int edge_id,
+    T zero_tol,
+    T sign_tol,
+    int edge_max_depth)
+{
+    const T fallback = T(0.5);
+    const int n_edges = adapt_cell.n_entities(1);
+    if (edge_id < 0 || edge_id >= n_edges)
+        return fallback;
+
+    const T endpoint_tol =
+        std::max(zero_tol, T(64) * std::numeric_limits<T>::epsilon());
+    auto usable = [&](T t)
+    {
+        return std::isfinite(t) && t > endpoint_tol
+            && t < T(1) - endpoint_tol;
+    };
+
+    const auto idx =
+        static_cast<std::size_t>(level_set_id * n_edges + edge_id);
+    if (idx < adapt_cell.edge_one_root_has_value.size()
+        && adapt_cell.edge_one_root_has_value[idx]
+        && idx < adapt_cell.edge_one_root_param.size()
+        && usable(adapt_cell.edge_one_root_param[idx]))
+    {
+        return adapt_cell.edge_one_root_param[idx];
+    }
+
+    if (adapt_cell.get_edge_root_tag(level_set_id, edge_id)
+        != EdgeRootTag::one_root)
+    {
+        return fallback;
+    }
+
+    std::vector<T> edge_coeffs;
+    gather_adapt_edge_bernstein(adapt_cell, ls_cell, edge_id, edge_coeffs);
+
+    T root_t = fallback;
+    if (locate_one_root_parameter(
+            std::span<const T>(edge_coeffs), zero_tol, sign_tol,
+            edge_max_depth, root_t)
+        && usable(root_t))
+    {
+        return root_t;
+    }
+
+    return fallback;
+}
+
+template <std::floating_point T, std::integral I>
+bool refine_green_on_requested_graph_edge(AdaptCell<T>& adapt_cell,
+                                          const LevelSetCell<T, I>& ls_cell,
+                                          int level_set_id,
+                                          int edge_id,
+                                          T zero_tol,
+                                          T sign_tol,
+                                          int edge_max_depth)
+{
+    if (edge_id < 0 || edge_id >= adapt_cell.n_entities(1))
+        return false;
+
+    const int n_edges = adapt_cell.n_entities(1);
+    if (adapt_cell.edge_root_tag_num_level_sets <= level_set_id)
+        adapt_cell.resize_edge_root_tags(level_set_id + 1);
+    if (adapt_cell.edge_green_split_has_value.size()
+        < static_cast<std::size_t>((level_set_id + 1) * n_edges))
+    {
+        adapt_cell.resize_green_split_data(level_set_id + 1);
+    }
+
+    const auto idx =
+        static_cast<std::size_t>(level_set_id * n_edges + edge_id);
+    adapt_cell.set_edge_root_tag(
+        level_set_id, edge_id, EdgeRootTag::multiple_roots);
+    adapt_cell.edge_green_split_param[idx] =
+        graph_requested_edge_split_parameter<T, I>(
+            adapt_cell, ls_cell, level_set_id, edge_id,
+            zero_tol, sign_tol, edge_max_depth);
+    adapt_cell.edge_green_split_has_value[idx] = 1;
+    return refine_green_on_multiple_root_edges(adapt_cell, level_set_id);
+}
+
+template <std::floating_point T>
+bool refine_red_on_graph_failed_cell(AdaptCell<T>& adapt_cell,
+                                     int level_set_id,
+                                     int cell_id)
+{
+    if (cell_id < 0 || cell_id >= adapt_cell.n_entities(adapt_cell.tdim))
+        return false;
+
+    adapt_cell.set_cell_cert_tag(
+        level_set_id, cell_id, CellCertTag::ambiguous);
+    return refine_red_on_ambiguous_cells(adapt_cell, level_set_id);
+}
+
 // =====================================================================
 // certify_and_refine
 // =====================================================================
@@ -1719,6 +4291,95 @@ void certify_and_refine(AdaptCell<T>& adapt_cell,
 }
 
 template <std::floating_point T, std::integral I>
+ReadyCellGraphDiagnostics<T> certify_refine_graph_check_and_process_ready_cells(
+    AdaptCell<T>& adapt_cell,
+    const LevelSetCell<T, I>& ls_cell,
+    int level_set_id,
+    int max_iterations,
+    T zero_tol, T sign_tol,
+    int edge_max_depth,
+    bool triangulate_cut_parts,
+    const ReadyCellGraphOptions<T>& graph_options)
+{
+    fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
+
+    ReadyCellGraphDiagnostics<T> diagnostics;
+    for (int graph_iter = 0; graph_iter <= graph_options.max_refinements; ++graph_iter)
+    {
+        certify_and_refine(adapt_cell, ls_cell, level_set_id,
+                           max_iterations, zero_tol, sign_tol, edge_max_depth);
+        fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
+
+        diagnostics = check_processed_ready_to_cut_cell_graphs(
+            adapt_cell, ls_cell, level_set_id,
+            zero_tol, sign_tol, edge_max_depth,
+            triangulate_cut_parts, graph_options);
+        if (!diagnostics.accepted
+            && diagnostics.first_requested_refinement_entity_dim != 1)
+        {
+            diagnostics = check_ready_to_cut_cell_graphs(
+                adapt_cell, ls_cell, level_set_id, graph_options);
+        }
+        diagnostics.graph_refinements = graph_iter;
+
+        if (diagnostics.accepted)
+            break;
+
+        if (graph_iter >= graph_options.max_refinements)
+        {
+            break;
+        }
+
+        bool refined = false;
+        if (graph_options.refinement_mode
+            == GraphRefinementMode::red_failed_cell)
+        {
+            refined = refine_red_on_graph_failed_cell<T>(
+                adapt_cell, level_set_id, diagnostics.first_failed_cell);
+        }
+        else if (diagnostics.first_requested_refinement_entity_dim == 1)
+        {
+            refined = refine_green_on_requested_graph_edge<T>(
+                adapt_cell,
+                ls_cell,
+                level_set_id,
+                diagnostics.first_requested_refinement_entity_id,
+                zero_tol,
+                sign_tol,
+                edge_max_depth);
+        }
+
+        if (!refined)
+        {
+            refined = refine_ready_cell_on_largest_midpoint_value(
+                adapt_cell, ls_cell, level_set_id, diagnostics.first_failed_cell);
+        }
+
+        if (!refined)
+        {
+            break;
+        }
+
+        fill_all_vertex_signs_from_level_set(
+            adapt_cell, ls_cell, level_set_id, zero_tol);
+    }
+
+    process_ready_to_cut_cells(adapt_cell, ls_cell, level_set_id,
+                               zero_tol, sign_tol, edge_max_depth,
+                               triangulate_cut_parts);
+    fill_all_vertex_signs_from_level_set(
+        adapt_cell, ls_cell, level_set_id, zero_tol);
+    build_edges(adapt_cell);
+    if (adapt_cell.tdim == 3)
+        build_faces(adapt_cell);
+    recompute_active_level_set_masks(adapt_cell, level_set_id + 1);
+    rebuild_zero_entity_inventory(adapt_cell);
+    populate_committed_zero_entity_graph_diagnostics(
+        adapt_cell, ls_cell, level_set_id, graph_options, diagnostics);
+    return diagnostics;
+}
+
+template <std::floating_point T, std::integral I>
 void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
                                             const LevelSetCell<T, I>& ls_cell,
                                             int level_set_id,
@@ -1727,13 +4388,17 @@ void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
                                             int edge_max_depth,
                                             bool triangulate_cut_parts)
 {
-    fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
-    certify_and_refine(adapt_cell, ls_cell, level_set_id,
-                       max_iterations, zero_tol, sign_tol, edge_max_depth);
-    fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
-    process_ready_to_cut_cells(adapt_cell, ls_cell, level_set_id,
-                               zero_tol, sign_tol, edge_max_depth,
-                               triangulate_cut_parts);
+    const ReadyCellGraphOptions<T> graph_options;
+    (void)certify_refine_graph_check_and_process_ready_cells(
+        adapt_cell,
+        ls_cell,
+        level_set_id,
+        max_iterations,
+        zero_tol,
+        sign_tol,
+        edge_max_depth,
+        triangulate_cut_parts,
+        graph_options);
 }
 
 // =====================================================================
@@ -1817,6 +4482,73 @@ template void process_ready_to_cut_cells(AdaptCell<float>&,
                                          const LevelSetCell<float, long>&,
                                          int, float, float, int, bool);
 
+template ReadyCellGraphDiagnostics<double> check_ready_to_cut_cell_graphs(
+    const AdaptCell<double>&,
+    const LevelSetCell<double, int>&,
+    int,
+    const ReadyCellGraphOptions<double>&);
+template ReadyCellGraphDiagnostics<float> check_ready_to_cut_cell_graphs(
+    const AdaptCell<float>&,
+    const LevelSetCell<float, int>&,
+    int,
+    const ReadyCellGraphOptions<float>&);
+template ReadyCellGraphDiagnostics<double> check_ready_to_cut_cell_graphs(
+    const AdaptCell<double>&,
+    const LevelSetCell<double, long>&,
+    int,
+    const ReadyCellGraphOptions<double>&);
+template ReadyCellGraphDiagnostics<float> check_ready_to_cut_cell_graphs(
+    const AdaptCell<float>&,
+    const LevelSetCell<float, long>&,
+    int,
+    const ReadyCellGraphOptions<float>&);
+
+template void populate_committed_zero_entity_graph_diagnostics(
+    const AdaptCell<double>&,
+    const LevelSetCell<double, int>&,
+    int,
+    const ReadyCellGraphOptions<double>&,
+    ReadyCellGraphDiagnostics<double>&);
+template void populate_committed_zero_entity_graph_diagnostics(
+    const AdaptCell<float>&,
+    const LevelSetCell<float, int>&,
+    int,
+    const ReadyCellGraphOptions<float>&,
+    ReadyCellGraphDiagnostics<float>&);
+template void populate_committed_zero_entity_graph_diagnostics(
+    const AdaptCell<double>&,
+    const LevelSetCell<double, long>&,
+    int,
+    const ReadyCellGraphOptions<double>&,
+    ReadyCellGraphDiagnostics<double>&);
+template void populate_committed_zero_entity_graph_diagnostics(
+    const AdaptCell<float>&,
+    const LevelSetCell<float, long>&,
+    int,
+    const ReadyCellGraphOptions<float>&,
+    ReadyCellGraphDiagnostics<float>&);
+
+template bool refine_ready_cell_on_largest_midpoint_value(
+    AdaptCell<double>&,
+    const LevelSetCell<double, int>&,
+    int,
+    int);
+template bool refine_ready_cell_on_largest_midpoint_value(
+    AdaptCell<float>&,
+    const LevelSetCell<float, int>&,
+    int,
+    int);
+template bool refine_ready_cell_on_largest_midpoint_value(
+    AdaptCell<double>&,
+    const LevelSetCell<double, long>&,
+    int,
+    int);
+template bool refine_ready_cell_on_largest_midpoint_value(
+    AdaptCell<float>&,
+    const LevelSetCell<float, long>&,
+    int,
+    int);
+
 template void certify_and_refine(AdaptCell<double>&,
                                  const LevelSetCell<double, int>&,
                                  int, int, double, double, int);
@@ -1839,5 +4571,50 @@ template void certify_refine_and_process_ready_cells(AdaptCell<double>&,
 template void certify_refine_and_process_ready_cells(AdaptCell<float>&,
                                                      const LevelSetCell<float, long>&,
                                                      int, int, float, float, int, bool);
+
+template ReadyCellGraphDiagnostics<double>
+certify_refine_graph_check_and_process_ready_cells(
+    AdaptCell<double>&,
+    const LevelSetCell<double, int>&,
+    int,
+    int,
+    double,
+    double,
+    int,
+    bool,
+    const ReadyCellGraphOptions<double>&);
+template ReadyCellGraphDiagnostics<float>
+certify_refine_graph_check_and_process_ready_cells(
+    AdaptCell<float>&,
+    const LevelSetCell<float, int>&,
+    int,
+    int,
+    float,
+    float,
+    int,
+    bool,
+    const ReadyCellGraphOptions<float>&);
+template ReadyCellGraphDiagnostics<double>
+certify_refine_graph_check_and_process_ready_cells(
+    AdaptCell<double>&,
+    const LevelSetCell<double, long>&,
+    int,
+    int,
+    double,
+    double,
+    int,
+    bool,
+    const ReadyCellGraphOptions<double>&);
+template ReadyCellGraphDiagnostics<float>
+certify_refine_graph_check_and_process_ready_cells(
+    AdaptCell<float>&,
+    const LevelSetCell<float, long>&,
+    int,
+    int,
+    float,
+    float,
+    int,
+    bool,
+    const ReadyCellGraphOptions<float>&);
 
 } // namespace cutcells

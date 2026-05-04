@@ -22,6 +22,7 @@
 #include <limits>
 #include <unordered_set>
 #include <cstdint>
+#include <string_view>
 
 #include "../../cpp/src/cell_types.h"
 #include "../../cpp/src/cut_cell.h"
@@ -54,6 +55,111 @@ template <typename T>
 T default_sqrt_epsilon_tol()
 {
   return std::sqrt(std::numeric_limits<T>::epsilon());
+}
+
+cutcells::GraphProjectionMode graph_projection_mode_from_string(
+    std::string_view name)
+{
+  if (name == "straight_zero_entity_normal"
+      || name == "zero_entity_normal"
+      || name == "straight_normal"
+      || name == "normal")
+  {
+    return cutcells::GraphProjectionMode::straight_zero_entity_normal;
+  }
+  if (name == "level_set_gradient"
+      || name == "level-set-gradient"
+      || name == "gradient")
+  {
+    return cutcells::GraphProjectionMode::level_set_gradient;
+  }
+  throw std::invalid_argument("unknown graph projection mode");
+}
+
+cutcells::GraphRefinementMode graph_refinement_mode_from_string(
+    std::string_view name)
+{
+  if (name == "green_edge"
+      || name == "green"
+      || name == "edge")
+  {
+    return cutcells::GraphRefinementMode::green_edge;
+  }
+  if (name == "red_failed_cell"
+      || name == "red"
+      || name == "cell")
+  {
+    return cutcells::GraphRefinementMode::red_failed_cell;
+  }
+  throw std::invalid_argument("unknown graph refinement mode");
+}
+
+template <typename T>
+cutcells::ReadyCellGraphOptions<T> make_graph_options(
+    std::string_view projection_direction,
+    std::string_view refinement_mode,
+    int max_refinements,
+    T max_relative_correction_distance,
+    T max_relative_tangential_shift,
+    T max_drift_amplification,
+    T min_host_normal_alignment,
+    T min_level_set_gradient_host_alignment,
+    bool enabled)
+{
+  cutcells::ReadyCellGraphOptions<T> options;
+  options.enabled = enabled;
+  options.projection_mode = graph_projection_mode_from_string(projection_direction);
+  options.refinement_mode = graph_refinement_mode_from_string(refinement_mode);
+  options.max_refinements = max_refinements;
+  options.criteria.max_relative_correction_distance =
+      max_relative_correction_distance;
+  options.criteria.max_relative_tangential_shift =
+      max_relative_tangential_shift;
+  options.criteria.max_drift_amplification = max_drift_amplification;
+  options.criteria.min_host_normal_alignment = min_host_normal_alignment;
+  options.min_level_set_gradient_host_alignment =
+      min_level_set_gradient_host_alignment;
+  return options;
+}
+
+template <typename T>
+nb::dict graph_diagnostics_to_dict(
+    const cutcells::ReadyCellGraphDiagnostics<T>& diagnostics)
+{
+  nb::dict out;
+  out["accepted"] = diagnostics.accepted;
+  out["checked_cells"] = diagnostics.checked_cells;
+  out["checked_edges"] = diagnostics.checked_edges;
+  out["checked_faces"] = diagnostics.checked_faces;
+  out["failed_checks"] = diagnostics.failed_checks;
+  out["graph_refinements"] = diagnostics.graph_refinements;
+  out["first_failed_cell"] = diagnostics.first_failed_cell;
+  out["first_failure_reason"] = std::string(
+      cutcells::graph_criteria::failure_reason_name(
+          diagnostics.first_failure_reason));
+  out["min_true_transversality"] = diagnostics.min_true_transversality;
+  out["min_host_normal_alignment"] = diagnostics.min_host_normal_alignment;
+  out["max_drift_amplification"] = diagnostics.max_drift_amplification;
+  out["max_relative_correction_distance"] =
+      diagnostics.max_relative_correction_distance;
+  out["max_relative_tangential_shift"] =
+      diagnostics.max_relative_tangential_shift;
+  out["min_edge_gap_ratio"] = diagnostics.min_edge_gap_ratio;
+  out["min_face_area_ratio"] = diagnostics.min_face_area_ratio;
+  out["min_surface_jacobian_ratio"] = diagnostics.min_face_area_ratio;
+  out["min_level_set_gradient_host_alignment"] =
+      diagnostics.min_level_set_gradient_host_alignment;
+  out["first_failed_face_triangle_index"] =
+      diagnostics.first_failed_face_triangle_index;
+  out["first_failed_face_area_ratio"] =
+      diagnostics.first_failed_face_area_ratio;
+  out["first_failed_surface_jacobian_ratio"] =
+      diagnostics.first_failed_face_area_ratio;
+  out["first_requested_refinement_entity_dim"] =
+      diagnostics.first_requested_refinement_entity_dim;
+  out["first_requested_refinement_entity_id"] =
+      diagnostics.first_requested_refinement_entity_id;
+  return out;
 }
 
 const std::string& cell_domain_to_str(cell::domain domain_id)
@@ -733,12 +839,15 @@ cutcells::mesh::CutMesh<T> part_visualization_mesh(
     const cutcells::HOMeshPart<T, int>& part,
     std::string_view mode,
     int geometry_order,
-    std::string_view node_family)
+    std::string_view node_family,
+    std::string_view projection_direction)
 {
   const bool cut_only = part_mode_is_cut_only(mode);
   const auto family = cutcells::curving::node_family_from_string(node_family);
+  const auto direction =
+      cutcells::curving::direction_mode_from_string(projection_direction);
   return cutcells::output::visualization_mesh(
-      part, /*include_uncut_cells=*/!cut_only, geometry_order, family);
+      part, /*include_uncut_cells=*/!cut_only, geometry_order, family, direction);
 }
 
 template <typename T>
@@ -747,12 +856,15 @@ cutcells::quadrature::QuadratureRules<T> part_quadrature(
     int order,
     std::string_view mode,
     int geometry_order,
-    std::string_view node_family)
+    std::string_view node_family,
+    std::string_view projection_direction)
 {
   const bool cut_only = part_mode_is_cut_only(mode);
   const auto family = cutcells::curving::node_family_from_string(node_family);
+  const auto direction =
+      cutcells::curving::direction_mode_from_string(projection_direction);
   return cutcells::output::quadrature_rules(
-      part, order, /*include_uncut_cells=*/!cut_only, geometry_order, family);
+      part, order, /*include_uncut_cells=*/!cut_only, geometry_order, family, direction);
 }
 
 template <typename T>
@@ -760,14 +872,17 @@ void part_write_vtu(const cutcells::HOMeshPart<T, int>& part,
                     const std::string& filename,
                     std::string_view mode,
                     int geometry_order,
-                    std::string_view node_family)
+                    std::string_view node_family,
+                    std::string_view projection_direction)
 {
   const bool cut_only = part_mode_is_cut_only(mode);
   auto family = cutcells::curving::node_family_from_string(node_family);
+  const auto direction =
+      cutcells::curving::direction_mode_from_string(projection_direction);
   if (geometry_order > 1)
   {
     const auto grid = cutcells::output::curved_lagrange_grid(
-        part, /*include_uncut_cells=*/!cut_only, geometry_order, family);
+        part, /*include_uncut_cells=*/!cut_only, geometry_order, family, direction);
     cutcells::io::write_lagrange_vtk(
         filename,
         std::span<const T>(grid.points.data(), grid.points.size()),
@@ -782,7 +897,8 @@ void part_write_vtu(const cutcells::HOMeshPart<T, int>& part,
     return;
   }
 
-  auto vis = part_visualization_mesh(part, mode, geometry_order, node_family);
+  auto vis = part_visualization_mesh(
+      part, mode, geometry_order, node_family, projection_direction);
   cutcells::io::write_vtk(filename, vis);
 }
 
@@ -1883,6 +1999,87 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             },
             nb::rv_policy::reference_internal,
             "Per-level-set domain classification, shape (num_level_sets, num_cells).")
+        .def(
+            "graph_check_summary",
+            [](const HOCutResult& self)
+            {
+                const auto& diagnostics = self.cut_cells.graph_diagnostics;
+                std::vector<std::int32_t> accepted;
+                std::vector<std::int32_t> checked_cells;
+                std::vector<std::int32_t> checked_edges;
+                std::vector<std::int32_t> checked_faces;
+                std::vector<std::int32_t> failed_checks;
+                std::vector<std::int32_t> graph_refinements;
+                std::vector<T> min_true_transversality;
+                std::vector<T> min_host_normal_alignment;
+                std::vector<T> max_drift_amplification;
+                std::vector<T> max_relative_correction_distance;
+                std::vector<T> max_relative_tangential_shift;
+                std::vector<T> min_edge_gap_ratio;
+                std::vector<T> min_face_area_ratio;
+                std::vector<T> min_level_set_gradient_host_alignment;
+
+                accepted.reserve(diagnostics.size());
+                checked_cells.reserve(diagnostics.size());
+                checked_edges.reserve(diagnostics.size());
+                checked_faces.reserve(diagnostics.size());
+                failed_checks.reserve(diagnostics.size());
+                graph_refinements.reserve(diagnostics.size());
+                min_true_transversality.reserve(diagnostics.size());
+                min_host_normal_alignment.reserve(diagnostics.size());
+                max_drift_amplification.reserve(diagnostics.size());
+                max_relative_correction_distance.reserve(diagnostics.size());
+                max_relative_tangential_shift.reserve(diagnostics.size());
+                min_edge_gap_ratio.reserve(diagnostics.size());
+                min_face_area_ratio.reserve(diagnostics.size());
+                min_level_set_gradient_host_alignment.reserve(diagnostics.size());
+
+                for (const auto& d : diagnostics)
+                {
+                    accepted.push_back(d.accepted ? 1 : 0);
+                    checked_cells.push_back(d.checked_cells);
+                    checked_edges.push_back(d.checked_edges);
+                    checked_faces.push_back(d.checked_faces);
+                    failed_checks.push_back(d.failed_checks);
+                    graph_refinements.push_back(d.graph_refinements);
+                    min_true_transversality.push_back(d.min_true_transversality);
+                    min_host_normal_alignment.push_back(d.min_host_normal_alignment);
+                    max_drift_amplification.push_back(d.max_drift_amplification);
+                    max_relative_correction_distance.push_back(
+                        d.max_relative_correction_distance);
+                    max_relative_tangential_shift.push_back(
+                        d.max_relative_tangential_shift);
+                    min_edge_gap_ratio.push_back(d.min_edge_gap_ratio);
+                    min_face_area_ratio.push_back(d.min_face_area_ratio);
+                    min_level_set_gradient_host_alignment.push_back(
+                        d.min_level_set_gradient_host_alignment);
+                }
+
+                nb::dict out;
+                out["accepted"] = as_nbarray(std::move(accepted));
+                out["checked_cells"] = as_nbarray(std::move(checked_cells));
+                out["checked_edges"] = as_nbarray(std::move(checked_edges));
+                out["checked_faces"] = as_nbarray(std::move(checked_faces));
+                out["failed_checks"] = as_nbarray(std::move(failed_checks));
+                out["graph_refinements"] = as_nbarray(std::move(graph_refinements));
+                out["min_true_transversality"] =
+                    as_nbarray(std::move(min_true_transversality));
+                out["min_host_normal_alignment"] =
+                    as_nbarray(std::move(min_host_normal_alignment));
+                out["max_drift_amplification"] =
+                    as_nbarray(std::move(max_drift_amplification));
+                out["max_relative_correction_distance"] =
+                    as_nbarray(std::move(max_relative_correction_distance));
+                out["max_relative_tangential_shift"] =
+                    as_nbarray(std::move(max_relative_tangential_shift));
+                out["min_edge_gap_ratio"] = as_nbarray(std::move(min_edge_gap_ratio));
+                out["min_face_area_ratio"] = as_nbarray(std::move(min_face_area_ratio));
+                out["min_surface_jacobian_ratio"] = out["min_face_area_ratio"];
+                out["min_level_set_gradient_host_alignment"] =
+                    as_nbarray(std::move(min_level_set_gradient_host_alignment));
+                return out;
+            },
+            "Return per-cut-cell graph preflight diagnostics.")
         .def("__getitem__",
             [](const HOCutResult& self, const std::string& expr_str) {
                 return cutcells::select_part(
@@ -1912,28 +2109,89 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             [](HOCutResult& self,
                int geometry_order,
                const std::string& node_family,
-               T small_entity_tol)
+               T small_entity_tol,
+               const std::string& projection_direction)
             {
                 cutcells::curving::CurvingOptions<T> options;
                 options.geometry_order = geometry_order;
                 options.node_family =
                     cutcells::curving::node_family_from_string(node_family);
+                options.direction_mode =
+                    cutcells::curving::direction_mode_from_string(projection_direction);
                 options.small_entity_tol = small_entity_tol;
 
                 try
                 {
-                    cutcells::curving::ensure_all_curved<T, int>(
-                        self.cut_cells.curving,
-                        std::span<const int>(self.cut_cells.parent_cell_ids),
-                        std::span<const cutcells::AdaptCell<T>>(self.cut_cells.adapt_cells),
-                        std::span<const cutcells::LevelSetCell<T, int>>(self.cut_cells.level_set_cells),
-                        std::span<const int>(self.cut_cells.ls_offsets),
-                        options);
+                    auto parent_cell_ids =
+                        std::span<const int>(self.cut_cells.parent_cell_ids);
+                    auto adapt_cells =
+                        std::span<const cutcells::AdaptCell<T>>(self.cut_cells.adapt_cells);
+                    auto level_set_cells =
+                        std::span<const cutcells::LevelSetCell<T, int>>(
+                            self.cut_cells.level_set_cells);
+                    auto ls_offsets = std::span<const int>(self.cut_cells.ls_offsets);
+
+                    if (!self.cut_cells.curving.identity_valid
+                        || self.cut_cells.curving.num_cut_cells
+                               != static_cast<int>(adapt_cells.size()))
+                    {
+                        cutcells::curving::rebuild_identity<T, int>(
+                            self.cut_cells.curving, parent_cell_ids, adapt_cells);
+                    }
+
+                    for (std::size_t i = 0;
+                         i < self.cut_cells.curving.identities.size(); ++i)
+                    {
+                        const auto& ident = self.cut_cells.curving.identities[i];
+                        bool graph_ok = true;
+                        if (ident.cut_cell_id >= 0
+                            && ident.cut_cell_id
+                                   < static_cast<int>(
+                                       self.cut_cells.graph_diagnostics.size()))
+                        {
+                            const auto& graph_diag =
+                                self.cut_cells.graph_diagnostics[
+                                    static_cast<std::size_t>(ident.cut_cell_id)];
+                            for (const auto& record : graph_diag.zero_entities)
+                            {
+                                if (record.local_zero_entity_id
+                                    == ident.local_zero_entity_id)
+                                {
+                                    graph_ok = record.accepted;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!graph_ok)
+                        {
+                            auto& state = self.cut_cells.curving.states[i];
+                            state = cutcells::curving::CurvedZeroEntityState<T>{};
+                            state.status = cutcells::curving::CurvingStatus::failed;
+                            state.geometry_order = options.geometry_order;
+                            state.node_family = options.node_family;
+                            state.direction_mode = options.direction_mode;
+                            state.small_entity_tol = options.small_entity_tol;
+                            state.zero_mask = ident.zero_mask;
+                            state.failure_reason = "graph check failed before curving";
+                            continue;
+                        }
+
+                        (void)cutcells::curving::ensure_curved<T, int>(
+                            self.cut_cells.curving,
+                            parent_cell_ids,
+                            adapt_cells,
+                            level_set_cells,
+                            ls_offsets,
+                            ident.cut_cell_id,
+                            ident.local_zero_entity_id,
+                            options);
+                    }
                 }
                 catch (const std::exception& e)
                 {
                     throw std::runtime_error(
-                        std::string("curved_zero_nodes: ensure_all_curved failed: ")
+                        std::string("curved_zero_nodes: ensure_curved failed: ")
                         + e.what());
                 }
 
@@ -1945,6 +2203,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                 std::vector<int32_t> dim;
                 std::vector<int8_t> parent_dim;
                 std::vector<int32_t> parent_id;
+                std::vector<uint8_t> direction_mode;
                 std::vector<std::uint64_t> zero_mask;
                 std::vector<int32_t> stats_offsets;
                 std::vector<int32_t> node_iterations;
@@ -1956,6 +2215,11 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                 std::vector<int32_t> node_safe_subspace_dim;
                 std::vector<uint8_t> node_projection_mode;
                 std::vector<int32_t> node_retry_count;
+                std::vector<T> node_seed;
+                std::vector<T> node_direction;
+                std::vector<T> node_clip_lo;
+                std::vector<T> node_clip_hi;
+                std::vector<T> node_root_t;
                 nb::list failure_reason;
                 std::vector<int32_t> total_iterations;
                 std::vector<int32_t> max_iterations;
@@ -1979,6 +2243,8 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                         dim.push_back(static_cast<int32_t>(ident.dim));
                         parent_dim.push_back(ident.parent_dim);
                         parent_id.push_back(ident.parent_id);
+                        direction_mode.push_back(
+                            static_cast<uint8_t>(state.direction_mode));
                         zero_mask.push_back(ident.zero_mask);
                         node_iterations.insert(
                             node_iterations.end(),
@@ -2016,6 +2282,26 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                             node_retry_count.end(),
                             state.node_retry_count.begin(),
                             state.node_retry_count.end());
+                        node_seed.insert(
+                            node_seed.end(),
+                            state.node_seed.begin(),
+                            state.node_seed.end());
+                        node_direction.insert(
+                            node_direction.end(),
+                            state.node_direction.begin(),
+                            state.node_direction.end());
+                        node_clip_lo.insert(
+                            node_clip_lo.end(),
+                            state.node_clip_lo.begin(),
+                            state.node_clip_lo.end());
+                        node_clip_hi.insert(
+                            node_clip_hi.end(),
+                            state.node_clip_hi.begin(),
+                            state.node_clip_hi.end());
+                        node_root_t.insert(
+                            node_root_t.end(),
+                            state.node_root_t.begin(),
+                            state.node_root_t.end());
                         stats_offsets.push_back(static_cast<int32_t>(node_iterations.size()));
                         failure_reason.append(state.failure_reason);
                         int total = 0;
@@ -2053,6 +2339,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                 result["dim"] = as_nbarray(std::move(dim));
                 result["parent_dim"] = as_nbarray(std::move(parent_dim));
                 result["parent_id"] = as_nbarray(std::move(parent_id));
+                result["direction_mode"] = as_nbarray(std::move(direction_mode));
                 result["zero_mask"] = as_nbarray(std::move(zero_mask));
                 result["stats_offsets"] = as_nbarray(std::move(stats_offsets));
                 result["node_iterations"] = as_nbarray(std::move(node_iterations));
@@ -2064,6 +2351,16 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                 result["node_safe_subspace_dim"] = as_nbarray(std::move(node_safe_subspace_dim));
                 result["node_projection_mode"] = as_nbarray(std::move(node_projection_mode));
                 result["node_retry_count"] = as_nbarray(std::move(node_retry_count));
+                const std::size_t nstats = node_root_t.size();
+                result["node_seed"] = as_nbarray(
+                    std::move(node_seed),
+                    {nstats, static_cast<std::size_t>(self.cut_cells.tdim)});
+                result["node_direction"] = as_nbarray(
+                    std::move(node_direction),
+                    {nstats, static_cast<std::size_t>(self.cut_cells.tdim)});
+                result["node_clip_lo"] = as_nbarray(std::move(node_clip_lo));
+                result["node_clip_hi"] = as_nbarray(std::move(node_clip_hi));
+                result["node_root_t"] = as_nbarray(std::move(node_root_t));
                 result["failure_reason"] = std::move(failure_reason);
 
                 nb::list failure_code_names;
@@ -2100,6 +2397,12 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                          "vector_newton"})
                     projection_mode_names.append(name);
                 result["projection_mode_names"] = std::move(projection_mode_names);
+                nb::list direction_mode_names;
+                for (const char* name : {
+                         "straight_zero_entity_normal",
+                         "level_set_gradient"})
+                    direction_mode_names.append(name);
+                result["direction_mode_names"] = std::move(direction_mode_names);
                 result["total_iterations"] = as_nbarray(std::move(total_iterations));
                 result["max_iterations"] = as_nbarray(std::move(max_iterations));
                 return result;
@@ -2107,6 +2410,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             nb::arg("geometry_order") = 2,
             nb::arg("node_family") = "gll",
             nb::arg("small_entity_tol") = default_sqrt_epsilon_tol<T>(),
+            nb::arg("projection_direction") = "level_set_gradient",
             "Return cached curved zero-entity nodes in parent reference coordinates.");
 
     // --- HOMeshPart ---
@@ -2145,13 +2449,16 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             [](const PartT& self,
                const std::string& mode,
                int geometry_order,
-               const std::string& node_family) {
+               const std::string& node_family,
+               const std::string& projection_direction) {
                 nb::gil_scoped_release release;
-                return part_visualization_mesh(self, mode, geometry_order, node_family);
+                return part_visualization_mesh(
+                    self, mode, geometry_order, node_family, projection_direction);
             },
             nb::arg("mode") = "full",
             nb::arg("geometry_order") = -1,
             nb::arg("node_family") = "gll",
+            nb::arg("projection_direction") = "level_set_gradient",
             "Return a visualization mesh for an HOMeshPart, preserving AdaptCell topology.")
         .def(
             "quadrature",
@@ -2159,73 +2466,592 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
                int order,
                const std::string& mode,
                int geometry_order,
-               const std::string& node_family) {
+               const std::string& node_family,
+               const std::string& projection_direction) {
                 nb::gil_scoped_release release;
-                return part_quadrature(self, order, mode, geometry_order, node_family);
+                return part_quadrature(
+                    self, order, mode, geometry_order, node_family, projection_direction);
             },
             nb::arg("order") = 3,
             nb::arg("mode") = "full",
             nb::arg("geometry_order") = -1,
             nb::arg("node_family") = "gll",
+            nb::arg("projection_direction") = "level_set_gradient",
             "Return quadrature rules for an HOMeshPart, preserving AdaptCell topology. For curved geometry this is the construction node family.")
+        .def(
+            "graph_check_zero_entity_data",
+            [](const PartT& self)
+            {
+                if (self.cut_cells == nullptr)
+                    throw std::runtime_error(
+                        "HOMeshPart is not attached to cut-cell storage");
+
+                const auto infos =
+                    cutcells::output::selected_zero_entity_infos<T, int>(self);
+                const T nan = std::numeric_limits<T>::quiet_NaN();
+
+                std::vector<std::int32_t> cut_cell_id;
+                std::vector<std::int32_t> parent_cell_id;
+                std::vector<std::int32_t> local_zero_entity_id;
+                std::vector<std::int32_t> level_set_id;
+                std::vector<std::int32_t> zero_entity_dim;
+                std::vector<std::int32_t> graph_accepted;
+                std::vector<std::int32_t> graph_failed_checks;
+                std::vector<std::int32_t> graph_checked_edges;
+                std::vector<std::int32_t> graph_checked_faces;
+                std::vector<std::int32_t> graph_failure_reason_code;
+                nb::list graph_failure_reason;
+                std::vector<T> min_true_transversality;
+                std::vector<T> min_host_normal_alignment;
+                std::vector<T> max_drift_amplification;
+                std::vector<T> max_relative_correction_distance;
+                std::vector<T> max_relative_tangential_shift;
+                std::vector<T> min_edge_gap_ratio;
+                std::vector<T> min_face_area_ratio;
+                std::vector<T> min_level_set_gradient_host_alignment;
+                std::vector<std::int32_t> failed_face_triangle_index;
+                std::vector<T> failed_face_area_ratio;
+                std::vector<T> graph_failed_projection_seed;
+                std::vector<T> graph_failed_projection_direction;
+                std::vector<T> graph_failed_projection_clip_lo;
+                std::vector<T> graph_failed_projection_clip_hi;
+                std::vector<T> graph_failed_projection_root_t;
+                std::vector<std::int32_t> requested_refinement_entity_dim;
+                std::vector<std::int32_t> requested_refinement_entity_id;
+
+                cut_cell_id.reserve(infos.size());
+                parent_cell_id.reserve(infos.size());
+                local_zero_entity_id.reserve(infos.size());
+                level_set_id.reserve(infos.size());
+                zero_entity_dim.reserve(infos.size());
+                graph_accepted.reserve(infos.size());
+                graph_failed_checks.reserve(infos.size());
+                graph_checked_edges.reserve(infos.size());
+                graph_checked_faces.reserve(infos.size());
+                graph_failure_reason_code.reserve(infos.size());
+                min_true_transversality.reserve(infos.size());
+                min_host_normal_alignment.reserve(infos.size());
+                max_drift_amplification.reserve(infos.size());
+                max_relative_correction_distance.reserve(infos.size());
+                max_relative_tangential_shift.reserve(infos.size());
+                min_edge_gap_ratio.reserve(infos.size());
+                min_face_area_ratio.reserve(infos.size());
+                min_level_set_gradient_host_alignment.reserve(infos.size());
+                failed_face_triangle_index.reserve(infos.size());
+                failed_face_area_ratio.reserve(infos.size());
+                graph_failed_projection_seed.reserve(
+                    infos.size() * static_cast<std::size_t>(self.cut_cells->tdim));
+                graph_failed_projection_direction.reserve(
+                    infos.size() * static_cast<std::size_t>(self.cut_cells->tdim));
+                graph_failed_projection_clip_lo.reserve(infos.size());
+                graph_failed_projection_clip_hi.reserve(infos.size());
+                graph_failed_projection_root_t.reserve(infos.size());
+                requested_refinement_entity_dim.reserve(infos.size());
+                requested_refinement_entity_id.reserve(infos.size());
+
+                auto append_projection_vector =
+                    [&](std::vector<T>& out, const std::vector<T>& values)
+                {
+                    for (int d = 0; d < self.cut_cells->tdim; ++d)
+                    {
+                        out.push_back(
+                            d < static_cast<int>(values.size())
+                                ? values[static_cast<std::size_t>(d)]
+                                : nan);
+                    }
+                };
+
+                for (const auto& info : infos)
+                {
+                    cut_cell_id.push_back(info.cut_cell_id);
+                    parent_cell_id.push_back(info.parent_cell_id);
+                    local_zero_entity_id.push_back(info.local_zero_entity_id);
+                    zero_entity_dim.push_back(info.dimension);
+
+                    const cutcells::ZeroEntityGraphDiagnostics<T>* record = nullptr;
+                    if (info.cut_cell_id >= 0
+                        && info.cut_cell_id
+                               < static_cast<std::int32_t>(
+                                   self.cut_cells->graph_diagnostics.size()))
+                    {
+                        const auto& diag =
+                            self.cut_cells->graph_diagnostics[
+                                static_cast<std::size_t>(info.cut_cell_id)];
+                        for (const auto& candidate : diag.zero_entities)
+                        {
+                            const std::uint64_t candidate_bit =
+                                candidate.level_set_id >= 0
+                                    ? (std::uint64_t(1) << candidate.level_set_id)
+                                    : std::uint64_t(0);
+                            if (candidate.local_zero_entity_id
+                                    == info.local_zero_entity_id
+                                && (self.expr.zero_required == 0
+                                    || (self.expr.zero_required & candidate_bit) != 0))
+                            {
+                                record = &candidate;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (record == nullptr)
+                    {
+                        level_set_id.push_back(-1);
+                        graph_accepted.push_back(-1);
+                        graph_failed_checks.push_back(-1);
+                        graph_checked_edges.push_back(-1);
+                        graph_checked_faces.push_back(-1);
+                        graph_failure_reason_code.push_back(-1);
+                        graph_failure_reason.append("missing");
+                        min_true_transversality.push_back(nan);
+                        min_host_normal_alignment.push_back(nan);
+                        max_drift_amplification.push_back(nan);
+                        max_relative_correction_distance.push_back(nan);
+                        max_relative_tangential_shift.push_back(nan);
+                        min_edge_gap_ratio.push_back(nan);
+                        min_face_area_ratio.push_back(nan);
+                        min_level_set_gradient_host_alignment.push_back(nan);
+                        failed_face_triangle_index.push_back(-1);
+                        failed_face_area_ratio.push_back(nan);
+                        append_projection_vector(
+                            graph_failed_projection_seed, std::vector<T>{});
+                        append_projection_vector(
+                            graph_failed_projection_direction, std::vector<T>{});
+                        graph_failed_projection_clip_lo.push_back(nan);
+                        graph_failed_projection_clip_hi.push_back(nan);
+                        graph_failed_projection_root_t.push_back(nan);
+                        requested_refinement_entity_dim.push_back(-1);
+                        requested_refinement_entity_id.push_back(-1);
+                        continue;
+                    }
+
+                    level_set_id.push_back(record->level_set_id);
+                    graph_accepted.push_back(record->accepted ? 1 : 0);
+                    graph_failed_checks.push_back(record->failed_checks);
+                    graph_checked_edges.push_back(record->checked_edges);
+                    graph_checked_faces.push_back(record->checked_faces);
+                    graph_failure_reason_code.push_back(
+                        static_cast<std::int32_t>(record->failure_reason));
+                    graph_failure_reason.append(std::string(
+                        cutcells::graph_criteria::failure_reason_name(
+                            record->failure_reason)));
+                    min_true_transversality.push_back(
+                        record->min_true_transversality);
+                    min_host_normal_alignment.push_back(
+                        record->min_host_normal_alignment);
+                    max_drift_amplification.push_back(
+                        record->max_drift_amplification);
+                    max_relative_correction_distance.push_back(
+                        record->max_relative_correction_distance);
+                    max_relative_tangential_shift.push_back(
+                        record->max_relative_tangential_shift);
+                    min_edge_gap_ratio.push_back(record->min_edge_gap_ratio);
+                    min_face_area_ratio.push_back(record->min_face_area_ratio);
+                    min_level_set_gradient_host_alignment.push_back(
+                        record->min_level_set_gradient_host_alignment);
+                    failed_face_triangle_index.push_back(
+                        record->failed_face_triangle_index);
+                    failed_face_area_ratio.push_back(
+                        record->failed_face_area_ratio);
+                    append_projection_vector(
+                        graph_failed_projection_seed,
+                        record->failed_projection_seed);
+                    append_projection_vector(
+                        graph_failed_projection_direction,
+                        record->failed_projection_direction);
+                    graph_failed_projection_clip_lo.push_back(
+                        record->failed_projection_clip_lo);
+                    graph_failed_projection_clip_hi.push_back(
+                        record->failed_projection_clip_hi);
+                    graph_failed_projection_root_t.push_back(
+                        record->failed_projection_root_t);
+                    requested_refinement_entity_dim.push_back(
+                        record->requested_refinement_entity_dim);
+                    requested_refinement_entity_id.push_back(
+                        record->requested_refinement_entity_id);
+                }
+
+                nb::dict out;
+                out["cut_cell_id"] = as_nbarray(std::move(cut_cell_id));
+                out["parent_cell_id"] = as_nbarray(std::move(parent_cell_id));
+                out["local_zero_entity_id"] =
+                    as_nbarray(std::move(local_zero_entity_id));
+                out["level_set_id"] = as_nbarray(std::move(level_set_id));
+                out["zero_entity_dim"] = as_nbarray(std::move(zero_entity_dim));
+                out["graph_accepted"] = as_nbarray(std::move(graph_accepted));
+                out["graph_failed_checks"] =
+                    as_nbarray(std::move(graph_failed_checks));
+                out["graph_checked_edges"] =
+                    as_nbarray(std::move(graph_checked_edges));
+                out["graph_checked_faces"] =
+                    as_nbarray(std::move(graph_checked_faces));
+                out["graph_failure_reason_code"] =
+                    as_nbarray(std::move(graph_failure_reason_code));
+                out["graph_failure_reason"] = graph_failure_reason;
+                out["graph_min_transversality"] =
+                    as_nbarray(std::move(min_true_transversality));
+                out["graph_min_host_alignment"] =
+                    as_nbarray(std::move(min_host_normal_alignment));
+                out["graph_max_drift"] =
+                    as_nbarray(std::move(max_drift_amplification));
+                out["graph_max_correction"] =
+                    as_nbarray(std::move(max_relative_correction_distance));
+                out["graph_max_tangential_shift"] =
+                    as_nbarray(std::move(max_relative_tangential_shift));
+                out["graph_min_edge_gap"] =
+                    as_nbarray(std::move(min_edge_gap_ratio));
+                out["graph_min_face_area"] =
+                    as_nbarray(std::move(min_face_area_ratio));
+                out["graph_min_surface_jacobian_ratio"] =
+                    out["graph_min_face_area"];
+                out["graph_min_level_set_gradient_host_alignment"] =
+                    as_nbarray(std::move(min_level_set_gradient_host_alignment));
+                out["graph_failed_face_triangle_index"] =
+                    as_nbarray(std::move(failed_face_triangle_index));
+                out["graph_failed_face_area_ratio"] =
+                    as_nbarray(std::move(failed_face_area_ratio));
+                out["graph_failed_surface_jacobian_ratio"] =
+                    out["graph_failed_face_area_ratio"];
+                out["graph_failed_projection_seed"] = as_nbarray(
+                    std::move(graph_failed_projection_seed),
+                    {infos.size(), static_cast<std::size_t>(self.cut_cells->tdim)});
+                out["graph_failed_projection_direction"] = as_nbarray(
+                    std::move(graph_failed_projection_direction),
+                    {infos.size(), static_cast<std::size_t>(self.cut_cells->tdim)});
+                out["graph_failed_projection_clip_lo"] =
+                    as_nbarray(std::move(graph_failed_projection_clip_lo));
+                out["graph_failed_projection_clip_hi"] =
+                    as_nbarray(std::move(graph_failed_projection_clip_hi));
+                out["graph_failed_projection_root_t"] =
+                    as_nbarray(std::move(graph_failed_projection_root_t));
+                out["graph_requested_refinement_entity_dim"] =
+                    as_nbarray(std::move(requested_refinement_entity_dim));
+                out["graph_requested_refinement_entity_id"] =
+                    as_nbarray(std::move(requested_refinement_entity_id));
+                return out;
+            },
+            "Return graph-check values aligned with the cells of the straight phi = 0 visualization mesh.")
+        .def(
+            "graph_check_node_data",
+            [](const PartT& self)
+            {
+                if (self.cut_cells == nullptr)
+                    throw std::runtime_error(
+                        "HOMeshPart is not attached to cut-cell storage");
+
+                const auto infos =
+                    cutcells::output::selected_zero_entity_infos<T, int>(self);
+                const int tdim = self.cut_cells->tdim;
+                const T nan = std::numeric_limits<T>::quiet_NaN();
+
+                std::vector<std::int32_t> cut_cell_id;
+                std::vector<std::int32_t> parent_cell_id;
+                std::vector<std::int32_t> local_zero_entity_id;
+                std::vector<std::int32_t> zero_entity_dim;
+                std::vector<std::int32_t> node_index;
+                std::vector<std::int32_t> node_kind;
+                std::vector<std::int32_t> node_accepted;
+                std::vector<std::int32_t> selected_direction_kind;
+                std::vector<std::int32_t> fallback_used;
+                std::vector<std::int32_t> failure_reason_code;
+                nb::list failure_reason;
+                std::vector<std::int32_t> parent_entity_dim;
+                std::vector<std::int32_t> parent_entity_id;
+                std::vector<std::int32_t> requested_refinement_entity_dim;
+                std::vector<std::int32_t> requested_refinement_entity_id;
+                std::vector<T> gradient_host_alignment;
+                std::vector<T> gradient_angle_to_tangent_deg;
+                std::vector<T> selected_host_alignment;
+                std::vector<T> drift_amplification;
+                std::vector<T> relative_correction_distance;
+                std::vector<T> relative_tangential_shift;
+                std::vector<T> true_transversality;
+                std::vector<T> seed;
+                std::vector<T> corrected;
+                std::vector<T> selected_direction;
+                std::vector<T> level_set_gradient_direction;
+                std::vector<T> straight_helper_normal;
+
+                auto append_vector = [&](std::vector<T>& out, const std::vector<T>& values)
+                {
+                    for (int d = 0; d < tdim; ++d)
+                    {
+                        out.push_back(
+                            d < static_cast<int>(values.size())
+                                ? values[static_cast<std::size_t>(d)]
+                                : nan);
+                    }
+                };
+
+                for (const auto& info : infos)
+                {
+                    const cutcells::ZeroEntityGraphDiagnostics<T>* record = nullptr;
+                    if (info.cut_cell_id >= 0
+                        && info.cut_cell_id
+                               < static_cast<std::int32_t>(
+                                   self.cut_cells->graph_diagnostics.size()))
+                    {
+                        const auto& diag =
+                            self.cut_cells->graph_diagnostics[
+                                static_cast<std::size_t>(info.cut_cell_id)];
+                        for (const auto& candidate : diag.zero_entities)
+                        {
+                            const std::uint64_t candidate_bit =
+                                candidate.level_set_id >= 0
+                                    ? (std::uint64_t(1) << candidate.level_set_id)
+                                    : std::uint64_t(0);
+                            if (candidate.local_zero_entity_id
+                                    == info.local_zero_entity_id
+                                && (self.expr.zero_required == 0
+                                    || (self.expr.zero_required & candidate_bit) != 0))
+                            {
+                                record = &candidate;
+                                break;
+                            }
+                        }
+                    }
+                    if (record == nullptr)
+                        continue;
+
+                    for (const auto& node : record->nodes)
+                    {
+                        cut_cell_id.push_back(info.cut_cell_id);
+                        parent_cell_id.push_back(info.parent_cell_id);
+                        local_zero_entity_id.push_back(info.local_zero_entity_id);
+                        zero_entity_dim.push_back(info.dimension);
+                        node_index.push_back(node.node_index);
+                        node_kind.push_back(static_cast<std::int32_t>(node.node_kind));
+                        node_accepted.push_back(node.accepted ? 1 : 0);
+                        selected_direction_kind.push_back(
+                            static_cast<std::int32_t>(node.selected_direction_kind));
+                        fallback_used.push_back(node.fallback_used ? 1 : 0);
+                        failure_reason_code.push_back(
+                            static_cast<std::int32_t>(node.failure_reason));
+                        failure_reason.append(std::string(
+                            cutcells::graph_criteria::failure_reason_name(
+                                node.failure_reason)));
+                        parent_entity_dim.push_back(node.parent_entity_dim);
+                        parent_entity_id.push_back(node.parent_entity_id);
+                        requested_refinement_entity_dim.push_back(
+                            node.requested_refinement_entity_dim);
+                        requested_refinement_entity_id.push_back(
+                            node.requested_refinement_entity_id);
+                        gradient_host_alignment.push_back(
+                            node.level_set_gradient_host_alignment);
+                        gradient_angle_to_tangent_deg.push_back(
+                            node.level_set_gradient_angle_to_tangent_deg);
+                        selected_host_alignment.push_back(
+                            node.selected_host_alignment);
+                        drift_amplification.push_back(node.drift_amplification);
+                        relative_correction_distance.push_back(
+                            node.relative_correction_distance);
+                        relative_tangential_shift.push_back(
+                            node.relative_tangential_shift);
+                        true_transversality.push_back(node.true_transversality);
+                        append_vector(seed, node.seed);
+                        append_vector(corrected, node.corrected);
+                        append_vector(selected_direction, node.selected_direction);
+                        append_vector(
+                            level_set_gradient_direction,
+                            node.level_set_gradient_direction);
+                        append_vector(straight_helper_normal, node.straight_helper_normal);
+                    }
+                }
+
+                const std::size_t n = node_index.size();
+                nb::dict out;
+                out["cut_cell_id"] = as_nbarray(std::move(cut_cell_id));
+                out["parent_cell_id"] = as_nbarray(std::move(parent_cell_id));
+                out["local_zero_entity_id"] =
+                    as_nbarray(std::move(local_zero_entity_id));
+                out["zero_entity_dim"] = as_nbarray(std::move(zero_entity_dim));
+                out["node_index"] = as_nbarray(std::move(node_index));
+                out["node_kind"] = as_nbarray(std::move(node_kind));
+                out["node_accepted"] = as_nbarray(std::move(node_accepted));
+                out["selected_direction_kind"] =
+                    as_nbarray(std::move(selected_direction_kind));
+                out["fallback_used"] = as_nbarray(std::move(fallback_used));
+                out["failure_reason_code"] =
+                    as_nbarray(std::move(failure_reason_code));
+                out["failure_reason"] = failure_reason;
+                out["parent_entity_dim"] =
+                    as_nbarray(std::move(parent_entity_dim));
+                out["parent_entity_id"] = as_nbarray(std::move(parent_entity_id));
+                out["requested_refinement_entity_dim"] =
+                    as_nbarray(std::move(requested_refinement_entity_dim));
+                out["requested_refinement_entity_id"] =
+                    as_nbarray(std::move(requested_refinement_entity_id));
+                out["level_set_gradient_host_alignment"] =
+                    as_nbarray(std::move(gradient_host_alignment));
+                out["level_set_gradient_angle_to_tangent_deg"] =
+                    as_nbarray(std::move(gradient_angle_to_tangent_deg));
+                out["selected_host_alignment"] =
+                    as_nbarray(std::move(selected_host_alignment));
+                out["drift_amplification"] =
+                    as_nbarray(std::move(drift_amplification));
+                out["relative_correction_distance"] =
+                    as_nbarray(std::move(relative_correction_distance));
+                out["relative_tangential_shift"] =
+                    as_nbarray(std::move(relative_tangential_shift));
+                out["true_transversality"] =
+                    as_nbarray(std::move(true_transversality));
+                out["seed"] = as_nbarray(
+                    std::move(seed), {n, static_cast<std::size_t>(tdim)});
+                out["corrected"] = as_nbarray(
+                    std::move(corrected), {n, static_cast<std::size_t>(tdim)});
+                out["selected_direction"] = as_nbarray(
+                    std::move(selected_direction),
+                    {n, static_cast<std::size_t>(tdim)});
+                out["level_set_gradient_direction"] = as_nbarray(
+                    std::move(level_set_gradient_direction),
+                    {n, static_cast<std::size_t>(tdim)});
+                out["straight_helper_normal"] = as_nbarray(
+                    std::move(straight_helper_normal),
+                    {n, static_cast<std::size_t>(tdim)});
+                return out;
+            },
+            "Return flat per-node graph-check diagnostics for the selected zero interface.")
         .def(
             "write_vtu",
             [](const PartT& self,
                const std::string& filename,
                const std::string& mode,
                int geometry_order,
-               const std::string& node_family) {
+               const std::string& node_family,
+               const std::string& projection_direction) {
                 nb::gil_scoped_release release;
-                part_write_vtu(self, filename, mode, geometry_order, node_family);
+                part_write_vtu(
+                    self, filename, mode, geometry_order, node_family, projection_direction);
             },
             nb::arg("filename"),
             nb::arg("mode") = "full",
             nb::arg("geometry_order") = -1,
             nb::arg("node_family") = "gll",
+            nb::arg("projection_direction") = "level_set_gradient",
             "Write a VTU file for an HOMeshPart. geometry_order > 1 samples the requested construction node family into curved VTK Lagrange cells.");
 
     // --- ho_cut() factory ---
     m.def("ho_cut",
-        [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate) {
+        [](const MeshViewT& mesh, const LevelSetT& ls,
+           bool triangulate, int graph_max_refinements,
+           const std::string& graph_projection_direction,
+           const std::string& graph_refinement_mode,
+           T min_level_set_gradient_host_alignment,
+           bool graph_enabled) {
             nb::gil_scoped_release release;
+            cutcells::ReadyCellGraphOptions<T> graph_options;
+            graph_options.enabled = graph_enabled;
+            graph_options.max_refinements = graph_max_refinements;
+            graph_options.projection_mode =
+                graph_projection_mode_from_string(graph_projection_direction);
+            graph_options.refinement_mode =
+                graph_refinement_mode_from_string(graph_refinement_mode);
+            graph_options.min_level_set_gradient_host_alignment =
+                min_level_set_gradient_host_alignment;
             auto owned_ls = std::make_shared<LevelSetT>(ls);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
+            auto [hc, bg] = cutcells::cut(
+                mesh, *owned_ls, triangulate, graph_options);
             return HOCutResult{std::move(hc), std::move(bg), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_set"), nb::arg("triangulate") = false,
+        nb::arg("graph_max_refinements") = 5,
+        nb::arg("graph_projection_direction") = "level_set_gradient",
+        nb::arg("graph_refinement_mode") = "green_edge",
+        nb::arg("min_level_set_gradient_host_alignment") = T(0.9),
+        nb::arg("graph_enabled") = true,
         "Cut a MeshView with a single LevelSetFunction (HO pipeline).\n"
         "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
 
     m.def("ho_cut",
-        [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets, bool triangulate) {
+        [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets,
+           bool triangulate, int graph_max_refinements,
+           const std::string& graph_projection_direction,
+           const std::string& graph_refinement_mode,
+           T min_level_set_gradient_host_alignment,
+           bool graph_enabled) {
             nb::gil_scoped_release release;
+            cutcells::ReadyCellGraphOptions<T> graph_options;
+            graph_options.enabled = graph_enabled;
+            graph_options.max_refinements = graph_max_refinements;
+            graph_options.projection_mode =
+                graph_projection_mode_from_string(graph_projection_direction);
+            graph_options.refinement_mode =
+                graph_refinement_mode_from_string(graph_refinement_mode);
+            graph_options.min_level_set_gradient_host_alignment =
+                min_level_set_gradient_host_alignment;
             auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
+            auto [hc, bg] = cutcells::cut(
+                mesh, *owned_ls, triangulate, graph_options);
             return HOCutResult{std::move(hc), std::move(bg), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_sets"), nb::arg("triangulate") = true,
+        nb::arg("graph_max_refinements") = 5,
+        nb::arg("graph_projection_direction") = "level_set_gradient",
+        nb::arg("graph_refinement_mode") = "green_edge",
+        nb::arg("min_level_set_gradient_host_alignment") = T(0.9),
+        nb::arg("graph_enabled") = true,
         "Cut a MeshView with multiple LevelSetFunctions (HO pipeline).\n"
         "Returns an HOCutResult; use result[\"phi1 < 0 and phi2 = 0\"] to select parts.");
 
     m.def("cut",
-        [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate) {
+        [](const MeshViewT& mesh, const LevelSetT& ls,
+           bool triangulate, int graph_max_refinements,
+           const std::string& graph_projection_direction,
+           const std::string& graph_refinement_mode,
+           T min_level_set_gradient_host_alignment,
+           bool graph_enabled) {
             nb::gil_scoped_release release;
+            cutcells::ReadyCellGraphOptions<T> graph_options;
+            graph_options.enabled = graph_enabled;
+            graph_options.max_refinements = graph_max_refinements;
+            graph_options.projection_mode =
+                graph_projection_mode_from_string(graph_projection_direction);
+            graph_options.refinement_mode =
+                graph_refinement_mode_from_string(graph_refinement_mode);
+            graph_options.min_level_set_gradient_host_alignment =
+                min_level_set_gradient_host_alignment;
             auto owned_ls = std::make_shared<LevelSetT>(ls);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
+            auto [hc, bg] = cutcells::cut(
+                mesh, *owned_ls, triangulate, graph_options);
             return HOCutResult{std::move(hc), std::move(bg), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_set"), nb::arg("triangulate") = false,
+        nb::arg("graph_max_refinements") = 5,
+        nb::arg("graph_projection_direction") = "level_set_gradient",
+        nb::arg("graph_refinement_mode") = "green_edge",
+        nb::arg("min_level_set_gradient_host_alignment") = T(0.9),
+        nb::arg("graph_enabled") = true,
         "Cut a MeshView with a single LevelSetFunction (HO pipeline).\n"
         "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
 
     m.def("cut",
-        [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets, bool triangulate) {
+        [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets,
+           bool triangulate, int graph_max_refinements,
+           const std::string& graph_projection_direction,
+           const std::string& graph_refinement_mode,
+           T min_level_set_gradient_host_alignment,
+           bool graph_enabled) {
             nb::gil_scoped_release release;
+            cutcells::ReadyCellGraphOptions<T> graph_options;
+            graph_options.enabled = graph_enabled;
+            graph_options.max_refinements = graph_max_refinements;
+            graph_options.projection_mode =
+                graph_projection_mode_from_string(graph_projection_direction);
+            graph_options.refinement_mode =
+                graph_refinement_mode_from_string(graph_refinement_mode);
+            graph_options.min_level_set_gradient_host_alignment =
+                min_level_set_gradient_host_alignment;
             auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
+            auto [hc, bg] = cutcells::cut(
+                mesh, *owned_ls, triangulate, graph_options);
             return HOCutResult{std::move(hc), std::move(bg), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_sets"), nb::arg("triangulate") = true,
+        nb::arg("graph_max_refinements") = 5,
+        nb::arg("graph_projection_direction") = "level_set_gradient",
+        nb::arg("graph_refinement_mode") = "green_edge",
+        nb::arg("min_level_set_gradient_host_alignment") = T(0.9),
+        nb::arg("graph_enabled") = true,
         "Cut a MeshView with multiple LevelSetFunctions (HO pipeline).\n"
         "Returns an HOCutResult; use result[\"phi1 < 0 and phi2 = 0\"] to select parts.");
 
@@ -2730,6 +3556,62 @@ void declare_certification(nb::module_& m, const std::string& suffix)
         nb::arg("triangulate_cut_parts") = false);
 
     m.def(
+        "check_ready_to_cut_cell_graphs",
+        [](const AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell, int level_set_id,
+           const std::string& projection_direction,
+           const std::string& refinement_mode,
+           int graph_max_refinements,
+           T max_relative_correction_distance,
+           T max_relative_tangential_shift,
+           T max_drift_amplification,
+           T min_host_normal_alignment,
+           T min_level_set_gradient_host_alignment)
+        {
+            auto options = make_graph_options<T>(
+                projection_direction,
+                refinement_mode,
+                graph_max_refinements,
+                max_relative_correction_distance,
+                max_relative_tangential_shift,
+                max_drift_amplification,
+                min_host_normal_alignment,
+                min_level_set_gradient_host_alignment,
+                true);
+            cutcells::ReadyCellGraphDiagnostics<T> diagnostics;
+            {
+                nb::gil_scoped_release release;
+                diagnostics = cutcells::check_ready_to_cut_cell_graphs(
+                    adapt_cell, ls_cell, level_set_id, options);
+            }
+            return graph_diagnostics_to_dict<T>(diagnostics);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_cell"),
+        nb::arg("level_set_id"),
+        nb::arg("projection_direction") = "level_set_gradient",
+        nb::arg("refinement_mode") = "green_edge",
+        nb::arg("graph_max_refinements") = 5,
+        nb::arg("max_relative_correction_distance") = T(0.5),
+        nb::arg("max_relative_tangential_shift") = T(0.25),
+        nb::arg("max_drift_amplification") = T(4),
+        nb::arg("min_host_normal_alignment") = T(0.25),
+        nb::arg("min_level_set_gradient_host_alignment") = T(0.9));
+
+    m.def(
+        "refine_ready_cell_on_largest_midpoint_value",
+        [](AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell,
+           int level_set_id, int cell_id)
+        {
+            nb::gil_scoped_release release;
+            return cutcells::refine_ready_cell_on_largest_midpoint_value(
+                adapt_cell, ls_cell, level_set_id, cell_id);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_cell"),
+        nb::arg("level_set_id"),
+        nb::arg("cell_id"));
+
+    m.def(
         "refine_green_on_multiple_root_edges",
         [](AdaptCellT& adapt_cell, int level_set_id)
         {
@@ -2769,6 +3651,59 @@ void declare_certification(nb::module_& m, const std::string& suffix)
         nb::arg("sign_tol") = T(1e-12),
         nb::arg("edge_max_depth") = 20,
         nb::arg("triangulate_cut_parts") = false);
+
+    m.def(
+        "certify_refine_graph_check_and_process_ready_cells",
+        [](AdaptCellT& adapt_cell, const LevelSetCellT& ls_cell, int level_set_id,
+           int max_iterations, T zero_tol, T sign_tol, int edge_max_depth,
+           bool triangulate_cut_parts, const std::string& projection_direction,
+           const std::string& refinement_mode,
+           int graph_max_refinements,
+           T max_relative_correction_distance,
+           T max_relative_tangential_shift,
+           T max_drift_amplification,
+           T min_host_normal_alignment,
+           T min_level_set_gradient_host_alignment,
+           bool graph_enabled)
+        {
+            auto options = make_graph_options<T>(
+                projection_direction,
+                refinement_mode,
+                graph_max_refinements,
+                max_relative_correction_distance,
+                max_relative_tangential_shift,
+                max_drift_amplification,
+                min_host_normal_alignment,
+                min_level_set_gradient_host_alignment,
+                graph_enabled);
+            cutcells::ReadyCellGraphDiagnostics<T> diagnostics;
+            {
+                nb::gil_scoped_release release;
+                diagnostics =
+                    cutcells::certify_refine_graph_check_and_process_ready_cells(
+                        adapt_cell, ls_cell, level_set_id,
+                        max_iterations, zero_tol, sign_tol, edge_max_depth,
+                        triangulate_cut_parts, options);
+            }
+            return graph_diagnostics_to_dict<T>(diagnostics);
+        },
+        nb::arg("adapt_cell"),
+        nb::arg("level_set_cell"),
+        nb::arg("level_set_id"),
+        nb::arg("max_iterations") = 8,
+        nb::arg("zero_tol") = T(1e-12),
+        nb::arg("sign_tol") = T(1e-12),
+        nb::arg("edge_max_depth") = 20,
+        nb::arg("triangulate_cut_parts") = false,
+        nb::arg("projection_direction") = "level_set_gradient",
+        nb::arg("refinement_mode") = "green_edge",
+        nb::arg("graph_max_refinements") = 5,
+        nb::arg("max_relative_correction_distance") = T(0.5),
+        nb::arg("max_relative_tangential_shift") = T(0.25),
+        nb::arg("max_drift_amplification") = T(4),
+        nb::arg("min_host_normal_alignment") = T(0.25),
+        nb::arg("min_level_set_gradient_host_alignment") = T(0.9),
+        nb::arg("graph_enabled") = true);
 
     m.def(
         "certify_and_refine",

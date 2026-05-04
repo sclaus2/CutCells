@@ -7,6 +7,7 @@
 
 #include "cell_topology.h"
 #include "edge_root.h"
+#include "geometric_quantity.h"
 #include "mapping.h"
 #include "reference_cell.h"
 
@@ -24,6 +25,428 @@ namespace
 
 template <std::floating_point T>
 bool solve_dense_small(std::vector<T> A, std::vector<T> b, int n, std::vector<T>& x);
+
+template <std::floating_point T>
+T local_dot(std::span<const T> a, std::span<const T> b)
+{
+    T value = T(0);
+    for (std::size_t i = 0; i < a.size(); ++i)
+        value += a[i] * b[i];
+    return value;
+}
+
+template <std::floating_point T>
+T local_norm(std::span<const T> a)
+{
+    return std::sqrt(local_dot<T>(a, a));
+}
+
+template <std::floating_point T>
+std::array<T, 3> local_cross(std::span<const T> a, std::span<const T> b)
+{
+    return {a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]};
+}
+
+template <std::floating_point T>
+std::span<const T> vertex_ref_point(const AdaptCell<T>& ac, int vertex_id)
+{
+    return std::span<const T>(
+        ac.vertex_coords.data()
+            + static_cast<std::size_t>(vertex_id)
+                  * static_cast<std::size_t>(ac.tdim),
+        static_cast<std::size_t>(ac.tdim));
+}
+
+template <class Int>
+bool vertex_list_contains(std::span<const Int> vertices, int vertex)
+{
+    for (const auto v : vertices)
+    {
+        if (static_cast<int>(v) == vertex)
+            return true;
+    }
+    return false;
+}
+
+template <std::floating_point T>
+bool cell_contains_vertices(std::span<const std::int32_t> cell_vertices,
+                            std::span<const int> query_vertices)
+{
+    for (const int v : query_vertices)
+    {
+        if (!vertex_list_contains<std::int32_t>(cell_vertices, v))
+            return false;
+    }
+    return true;
+}
+
+template <std::floating_point T>
+std::vector<int> local_zero_entity_vertex_ids(const AdaptCell<T>& ac,
+                                              int local_zero_entity_id)
+{
+    if (local_zero_entity_id < 0
+        || local_zero_entity_id >= ac.n_zero_entities())
+    {
+        return {};
+    }
+
+    const int zdim =
+        ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)];
+    const int zid =
+        ac.zero_entity_id[static_cast<std::size_t>(local_zero_entity_id)];
+    if (zdim == 0)
+        return {zid};
+
+    auto verts = ac.entity_to_vertex[zdim][static_cast<std::int32_t>(zid)];
+    std::vector<int> out;
+    out.reserve(verts.size());
+    for (const auto v : verts)
+        out.push_back(static_cast<int>(v));
+    return out;
+}
+
+template <std::floating_point T>
+void append_unique_host_vertex(const AdaptCell<T>& ac,
+                               int vertex_id,
+                               std::vector<int>& vertex_ids,
+                               std::vector<T>& coords)
+{
+    if (vertex_list_contains<int>(
+            std::span<const int>(vertex_ids.data(), vertex_ids.size()),
+            vertex_id))
+    {
+        return;
+    }
+    vertex_ids.push_back(vertex_id);
+    const auto p = vertex_ref_point<T>(ac, vertex_id);
+    coords.insert(coords.end(), p.begin(), p.end());
+}
+
+template <std::floating_point T>
+struct LocalHostDomain
+{
+    int dimension = -1;
+    bool ordered_boundary = false;
+    std::vector<T> vertices;
+
+    bool valid(int tdim) const
+    {
+        if (dimension <= 0 || dimension > tdim)
+            return false;
+        const int nverts =
+            static_cast<int>(vertices.size() / static_cast<std::size_t>(tdim));
+        return nverts >= dimension + 1;
+    }
+};
+
+template <std::floating_point T>
+bool face_is_zero_for_mask(const AdaptCell<T>& ac,
+                           std::span<const int> face_vertices,
+                           std::uint64_t zero_mask)
+{
+    if (zero_mask == 0)
+        return false;
+    for (const int v : face_vertices)
+    {
+        if ((ac.zero_mask_per_vertex[static_cast<std::size_t>(v)] & zero_mask)
+            != zero_mask)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+template <std::floating_point T>
+LocalHostDomain<T> local_host_domain_for_zero_entity(
+    const AdaptCell<T>& ac,
+    int local_zero_entity_id)
+{
+    LocalHostDomain<T> host;
+    if (ac.tdim != 3 || local_zero_entity_id < 0
+        || local_zero_entity_id >= ac.n_zero_entities())
+    {
+        return host;
+    }
+
+    const int zdim =
+        ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)];
+    const auto zverts =
+        local_zero_entity_vertex_ids<T>(ac, local_zero_entity_id);
+    if (zverts.empty())
+        return host;
+
+    const std::uint64_t zero_mask =
+        ac.zero_entity_zero_mask[static_cast<std::size_t>(local_zero_entity_id)];
+    const int n_cells = ac.n_entities(ac.tdim);
+
+    if (zdim == 2)
+    {
+        std::vector<int> ids;
+        for (int c = 0; c < n_cells; ++c)
+        {
+            const auto cell_vertices =
+                ac.entity_to_vertex[ac.tdim][static_cast<std::int32_t>(c)];
+            bool touches_zero_face = false;
+            for (const int v : zverts)
+                touches_zero_face = touches_zero_face
+                                  || vertex_list_contains<std::int32_t>(
+                                      cell_vertices, v);
+            if (!touches_zero_face)
+            {
+                continue;
+            }
+
+            for (const auto v : cell_vertices)
+                append_unique_host_vertex<T>(ac, static_cast<int>(v), ids, host.vertices);
+        }
+
+        if (static_cast<int>(ids.size()) >= 4)
+            host.dimension = 3;
+    }
+
+    return host;
+}
+
+template <std::floating_point T>
+bool clip_interval_by_halfspace(std::span<const T> x0,
+                                std::span<const T> direction,
+                                std::span<const T> normal,
+                                T offset,
+                                T tol,
+                                T& lo,
+                                T& hi)
+{
+    const T a = local_dot<T>(direction, normal);
+    const T b = local_dot<T>(x0, normal) + offset;
+    if (std::fabs(a) <= tol)
+        return b >= -tol;
+
+    const T t = (-tol - b) / a;
+    if (a > T(0))
+        lo = std::max(lo, t);
+    else
+        hi = std::min(hi, t);
+    return lo <= hi;
+}
+
+template <std::floating_point T>
+bool clip_line_interval_in_ordered_face(const LocalHostDomain<T>& host,
+                                        int tdim,
+                                        std::span<const T> x0,
+                                        std::span<const T> direction,
+                                        T tol,
+                                        T& lo,
+                                        T& hi)
+{
+    if (tdim != 3 || !host.ordered_boundary)
+        return false;
+    const int nverts =
+        static_cast<int>(host.vertices.size() / static_cast<std::size_t>(tdim));
+    if (nverts < 3)
+        return false;
+
+    const auto p0 = std::span<const T>(host.vertices.data(), 3);
+    const auto p1 = std::span<const T>(host.vertices.data() + 3, 3);
+    const auto p2 = std::span<const T>(host.vertices.data() + 6, 3);
+    std::array<T, 3> e0 = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+    std::array<T, 3> e1 = {p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+    auto normal = local_cross<T>(
+        std::span<const T>(e0.data(), 3),
+        std::span<const T>(e1.data(), 3));
+    const T normal_norm =
+        local_norm<T>(std::span<const T>(normal.data(), 3));
+    const T direction_norm = local_norm<T>(direction);
+    if (normal_norm <= tol || direction_norm <= tol)
+        return false;
+    const T plane_seed = (x0[0] - p0[0]) * normal[0]
+                       + (x0[1] - p0[1]) * normal[1]
+                       + (x0[2] - p0[2]) * normal[2];
+    const T plane_dir = local_dot<T>(
+        direction, std::span<const T>(normal.data(), 3));
+    if (std::fabs(plane_seed) > tol * normal_norm
+        || std::fabs(plane_dir) > tol * normal_norm * direction_norm)
+    {
+        return false;
+    }
+
+    std::array<T, 3> centroid = {T(0), T(0), T(0)};
+    for (int i = 0; i < nverts; ++i)
+    {
+        const auto p = std::span<const T>(
+            host.vertices.data() + static_cast<std::size_t>(3 * i), 3);
+        for (int d = 0; d < 3; ++d)
+            centroid[static_cast<std::size_t>(d)] += p[static_cast<std::size_t>(d)];
+    }
+    for (T& x : centroid)
+        x /= static_cast<T>(nverts);
+
+    for (int i = 0; i < nverts; ++i)
+    {
+        const auto a = std::span<const T>(
+            host.vertices.data() + static_cast<std::size_t>(3 * i), 3);
+        const auto b = std::span<const T>(
+            host.vertices.data()
+                + static_cast<std::size_t>(3 * ((i + 1) % nverts)), 3);
+        std::array<T, 3> edge = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        auto inward = local_cross<T>(
+            std::span<const T>(normal.data(), 3),
+            std::span<const T>(edge.data(), 3));
+        std::array<T, 3> ca = {
+            centroid[0] - a[0], centroid[1] - a[1], centroid[2] - a[2]};
+        if (local_dot<T>(
+                std::span<const T>(inward.data(), 3),
+                std::span<const T>(ca.data(), 3)) < T(0))
+        {
+            for (T& v : inward)
+                v = -v;
+        }
+        const T offset = -local_dot<T>(
+            std::span<const T>(inward.data(), 3), a);
+        if (!clip_interval_by_halfspace<T>(
+                x0,
+                direction,
+                std::span<const T>(inward.data(), 3),
+                offset,
+                tol,
+                lo,
+                hi))
+        {
+            return false;
+        }
+    }
+    return lo <= hi;
+}
+
+template <std::floating_point T>
+bool clip_line_interval_in_convex_hull(const LocalHostDomain<T>& host,
+                                       int tdim,
+                                       std::span<const T> x0,
+                                       std::span<const T> direction,
+                                       T tol,
+                                       T& lo,
+                                       T& hi)
+{
+    const int nverts =
+        static_cast<int>(host.vertices.size() / static_cast<std::size_t>(tdim));
+    if (host.dimension == 2)
+        return clip_line_interval_in_ordered_face<T>(
+            host, tdim, x0, direction, tol, lo, hi);
+
+    if (host.dimension != 3 || tdim != 3 || nverts < 4)
+        return false;
+
+    int accepted_planes = 0;
+    for (int i = 0; i < nverts; ++i)
+    {
+        const auto pi = std::span<const T>(
+            host.vertices.data() + static_cast<std::size_t>(3 * i), 3);
+        for (int j = i + 1; j < nverts; ++j)
+        {
+            const auto pj = std::span<const T>(
+                host.vertices.data() + static_cast<std::size_t>(3 * j), 3);
+            for (int k = j + 1; k < nverts; ++k)
+            {
+                const auto pk = std::span<const T>(
+                    host.vertices.data() + static_cast<std::size_t>(3 * k), 3);
+                std::array<T, 3> e0 = {
+                    pj[0] - pi[0], pj[1] - pi[1], pj[2] - pi[2]};
+                std::array<T, 3> e1 = {
+                    pk[0] - pi[0], pk[1] - pi[1], pk[2] - pi[2]};
+                auto normal = local_cross<T>(
+                    std::span<const T>(e0.data(), 3),
+                    std::span<const T>(e1.data(), 3));
+                const T nn = local_norm<T>(
+                    std::span<const T>(normal.data(), 3));
+                if (nn <= tol)
+                    continue;
+
+                bool has_pos = false;
+                bool has_neg = false;
+                for (int m = 0; m < nverts; ++m)
+                {
+                    const auto pm = std::span<const T>(
+                        host.vertices.data() + static_cast<std::size_t>(3 * m), 3);
+                    const T s = (pm[0] - pi[0]) * normal[0]
+                              + (pm[1] - pi[1]) * normal[1]
+                              + (pm[2] - pi[2]) * normal[2];
+                    has_pos = has_pos || s > tol * nn;
+                    has_neg = has_neg || s < -tol * nn;
+                    if (has_pos && has_neg)
+                        break;
+                }
+                if (has_pos && has_neg)
+                    continue;
+                if (!has_pos && !has_neg)
+                    continue;
+                if (has_neg)
+                {
+                    for (T& v : normal)
+                        v = -v;
+                }
+                const T offset = -local_dot<T>(
+                    std::span<const T>(normal.data(), 3), pi);
+                if (!clip_interval_by_halfspace<T>(
+                        x0,
+                        direction,
+                        std::span<const T>(normal.data(), 3),
+                        offset,
+                        tol,
+                        lo,
+                        hi))
+                {
+                    return false;
+                }
+                ++accepted_planes;
+            }
+        }
+    }
+
+    return accepted_planes > 0 && lo <= hi;
+}
+
+template <std::floating_point T>
+std::vector<T> project_to_local_host_space(const AdaptCell<T>& ac,
+                                           int local_zero_entity_id,
+                                           std::span<const T> direction,
+                                           T tol)
+{
+    std::vector<T> out(direction.begin(), direction.end());
+    const auto host = local_host_domain_for_zero_entity<T>(
+        ac, local_zero_entity_id);
+    if (!host.valid(ac.tdim) || host.dimension == ac.tdim)
+        return out;
+
+    if (host.dimension == 2 && ac.tdim == 3)
+    {
+        const int nverts = static_cast<int>(
+            host.vertices.size() / static_cast<std::size_t>(ac.tdim));
+        if (nverts < 3)
+            return out;
+        const auto p0 = std::span<const T>(host.vertices.data(), 3);
+        const auto p1 = std::span<const T>(host.vertices.data() + 3, 3);
+        const auto p2 = std::span<const T>(host.vertices.data() + 6, 3);
+        std::array<T, 3> e0 = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+        std::array<T, 3> e1 = {p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+        auto normal = local_cross<T>(
+            std::span<const T>(e0.data(), 3),
+            std::span<const T>(e1.data(), 3));
+        const T nn = local_dot<T>(
+            std::span<const T>(normal.data(), 3),
+            std::span<const T>(normal.data(), 3));
+        if (nn <= tol * tol)
+            return out;
+        const T c = local_dot<T>(
+            std::span<const T>(out.data(), out.size()),
+            std::span<const T>(normal.data(), 3)) / nn;
+        for (int d = 0; d < 3; ++d)
+            out[static_cast<std::size_t>(d)] -= c * normal[static_cast<std::size_t>(d)];
+    }
+
+    return out;
+}
 
 template <std::floating_point T>
 struct BoundaryEdgeState
@@ -51,11 +474,17 @@ struct ProjectionStats
     int safe_subspace_dim = -1;
     CurvingProjectionMode projection_mode = CurvingProjectionMode::none;
     int retry_count = 0;
+    std::vector<T> seed;
+    std::vector<T> direction;
+    T clip_lo = std::numeric_limits<T>::quiet_NaN();
+    T clip_hi = std::numeric_limits<T>::quiet_NaN();
+    T root_t = std::numeric_limits<T>::quiet_NaN();
 };
 
 template <std::floating_point T>
 void append_node_stats(CurvedZeroEntityState<T>& state,
-                       const ProjectionStats<T>& stats)
+                       const ProjectionStats<T>& stats,
+                       int tdim)
 {
     state.node_iterations.push_back(static_cast<std::int32_t>(stats.iterations));
     state.node_status.push_back(static_cast<std::uint8_t>(stats.status));
@@ -66,6 +495,23 @@ void append_node_stats(CurvedZeroEntityState<T>& state,
     state.node_safe_subspace_dim.push_back(static_cast<std::int32_t>(stats.safe_subspace_dim));
     state.node_projection_mode.push_back(static_cast<std::uint8_t>(stats.projection_mode));
     state.node_retry_count.push_back(static_cast<std::int32_t>(stats.retry_count));
+
+    const T nan = std::numeric_limits<T>::quiet_NaN();
+    auto append_vector = [&](std::vector<T>& dst, const std::vector<T>& src)
+    {
+        for (int d = 0; d < tdim; ++d)
+        {
+            dst.push_back(
+                d < static_cast<int>(src.size())
+                    ? src[static_cast<std::size_t>(d)]
+                    : nan);
+        }
+    };
+    append_vector(state.node_seed, stats.seed);
+    append_vector(state.node_direction, stats.direction);
+    state.node_clip_lo.push_back(stats.clip_lo);
+    state.node_clip_hi.push_back(stats.clip_hi);
+    state.node_root_t.push_back(stats.root_t);
 }
 
 template <std::floating_point T>
@@ -223,7 +669,8 @@ void append_straight_seed_node_stats(CurvedZeroEntityState<T>& state,
         append_node_stats<T>(
             state,
             accepted_node_stats<T>(
-                CurvingFailureCode::small_entity_kept_straight));
+                CurvingFailureCode::small_entity_kept_straight),
+            ac.tdim);
 }
 
 template <std::floating_point T>
@@ -647,39 +1094,61 @@ std::vector<std::array<T, 4>> reference_domain_inequalities(cell::type cell_type
 }
 
 template <std::floating_point T>
+geom::ParentEntity zero_entity_parent_entity(const AdaptCell<T>& ac,
+                                             int local_zero_entity_id)
+{
+    if (local_zero_entity_id < 0
+        || local_zero_entity_id >= ac.n_zero_entities())
+    {
+        return {-1, -1};
+    }
+
+    const int parent_dim =
+        ac.zero_entity_parent_dim[static_cast<std::size_t>(local_zero_entity_id)];
+    int parent_id =
+        ac.zero_entity_parent_id[static_cast<std::size_t>(local_zero_entity_id)];
+    if (parent_dim == ac.tdim)
+        parent_id = -1;
+    return {parent_dim, parent_id};
+}
+
+template <std::floating_point T>
 bool host_parameter_interval(const AdaptCell<T>& ac,
+                             int local_zero_entity_id,
                              std::span<const T> x0,
                              std::span<const T> d,
                              T tol,
                              T& lo,
                              T& hi)
 {
-    lo = -std::numeric_limits<T>::infinity();
-    hi =  std::numeric_limits<T>::infinity();
-    const auto ineq = reference_domain_inequalities<T>(ac.parent_cell_type);
-    for (const auto& row : ineq)
+    const auto local_host =
+        local_host_domain_for_zero_entity<T>(ac, local_zero_entity_id);
+    if (local_host.valid(ac.tdim))
     {
-        T ax = T(0);
-        T ad = T(0);
-        for (int k = 0; k < ac.tdim; ++k)
+        T local_lo = -std::numeric_limits<T>::infinity();
+        T local_hi = std::numeric_limits<T>::infinity();
+        if (clip_line_interval_in_convex_hull<T>(
+                local_host, ac.tdim, x0, d, tol, local_lo, local_hi)
+            && local_lo <= local_hi)
         {
-            ax += row[static_cast<std::size_t>(k)] * x0[static_cast<std::size_t>(k)];
-            ad += row[static_cast<std::size_t>(k)] * d[static_cast<std::size_t>(k)];
+            lo = local_lo;
+            hi = local_hi;
+            return true;
         }
-        const T rhs = row[3] + tol - ax;
-        if (std::fabs(ad) <= T(64) * std::numeric_limits<T>::epsilon())
-        {
-            if (rhs < T(0))
-                return false;
-            continue;
-        }
-        const T bound = rhs / ad;
-        if (ad > T(0))
-            hi = std::min(hi, bound);
-        else
-            lo = std::max(lo, bound);
     }
-    return lo <= hi;
+
+    const auto host = zero_entity_parent_entity<T>(ac, local_zero_entity_id);
+    const auto interval = geom::clip_line_interval_in_parent_entity<T>(
+        ac.parent_cell_type,
+        host,
+        x0,
+        d,
+        -std::numeric_limits<T>::infinity(),
+        std::numeric_limits<T>::infinity(),
+        tol);
+    lo = interval.t0;
+    hi = interval.t1;
+    return interval.valid && lo <= hi;
 }
 
 template <std::floating_point T>
@@ -695,6 +1164,25 @@ template <std::floating_point T>
 T vec_norm(std::span<const T> a)
 {
     return std::sqrt(vec_dot<T>(a, a));
+}
+
+template <std::floating_point T>
+std::vector<T> normalized_delta_direction(std::span<const T> from,
+                                          std::span<const T> to,
+                                          T tol)
+{
+    std::vector<T> direction(from.size(), T(0));
+    for (std::size_t i = 0; i < from.size(); ++i)
+        direction[i] = to[i] - from[i];
+
+    const T norm = vec_norm<T>(
+        std::span<const T>(direction.data(), direction.size()));
+    if (norm <= tol)
+        return {};
+
+    for (T& value : direction)
+        value /= norm;
+    return direction;
 }
 
 template <std::floating_point T>
@@ -1022,6 +1510,28 @@ void append_unique_direction(std::vector<std::vector<T>>& directions,
 }
 
 template <std::floating_point T>
+void append_admissible_unique_direction(std::vector<std::vector<T>>& directions,
+                                        const AdaptCell<T>& ac,
+                                        int local_zero_entity_id,
+                                        std::span<const T> raw_direction,
+                                        T tol)
+{
+    const auto projected = geom::admissible_direction_in_parent_frame<T>(
+        ac.parent_cell_type,
+        zero_entity_parent_entity<T>(ac, local_zero_entity_id),
+        raw_direction,
+        tol);
+    if (projected.degenerate())
+        return;
+    auto local_projected = project_to_local_host_space<T>(
+        ac,
+        local_zero_entity_id,
+        std::span<const T>(projected.value.data(), projected.value.size()),
+        tol);
+    append_unique_direction<T>(directions, std::move(local_projected), tol);
+}
+
+template <std::floating_point T>
 std::vector<T> zero_entity_edge_tangent(const AdaptCell<T>& ac,
                                         int local_zero_entity_id)
 {
@@ -1076,6 +1586,175 @@ std::vector<T> zero_entity_face_normal(const AdaptCell<T>& ac,
 }
 
 template <std::floating_point T>
+bool contains_vertex(std::span<const std::int32_t> vertices, std::int32_t query)
+{
+    for (const auto vertex : vertices)
+        if (vertex == query)
+            return true;
+    return false;
+}
+
+template <std::floating_point T>
+std::vector<T> adjacent_zero_face_normal_for_edge(const AdaptCell<T>& ac,
+                                                  int local_zero_entity_id,
+                                                  T tol)
+{
+    std::vector<T> best(static_cast<std::size_t>(ac.tdim), T(0));
+    if (ac.tdim != 3)
+        return best;
+
+    const int zdim = ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)];
+    if (zdim != 1)
+        return best;
+
+    const int zid = ac.zero_entity_id[static_cast<std::size_t>(local_zero_entity_id)];
+    auto edge_vertices = ac.entity_to_vertex[1][static_cast<std::int32_t>(zid)];
+    if (edge_vertices.size() != 2)
+        return best;
+
+    const std::uint64_t edge_mask =
+        ac.zero_entity_zero_mask[static_cast<std::size_t>(local_zero_entity_id)];
+    T best_norm = T(0);
+    for (int z = 0; z < ac.n_zero_entities(); ++z)
+    {
+        if (ac.zero_entity_dim[static_cast<std::size_t>(z)] != 2)
+            continue;
+
+        const std::uint64_t face_mask =
+            ac.zero_entity_zero_mask[static_cast<std::size_t>(z)];
+        if ((face_mask & edge_mask) != face_mask)
+            continue;
+
+        const int face_id = ac.zero_entity_id[static_cast<std::size_t>(z)];
+        auto face_vertices = ac.entity_to_vertex[2][static_cast<std::int32_t>(face_id)];
+        if (!contains_vertex<T>(face_vertices, edge_vertices[0])
+            || !contains_vertex<T>(face_vertices, edge_vertices[1]))
+        {
+            continue;
+        }
+
+        auto normal = zero_entity_face_normal<T>(ac, z);
+        const T n = vec_norm<T>(std::span<const T>(normal.data(), normal.size()));
+        if (n > best_norm)
+        {
+            best_norm = n;
+            best = std::move(normal);
+        }
+    }
+
+    if (best_norm <= tol)
+        std::fill(best.begin(), best.end(), T(0));
+    return best;
+}
+
+template <std::floating_point T>
+geom::VectorQuantity<T> straight_zero_entity_normal_direction(
+    const AdaptCell<T>& ac,
+    int local_zero_entity_id,
+    T tol)
+{
+    const int zdim = ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)];
+    const int tdim = ac.tdim;
+    const auto host = zero_entity_parent_entity<T>(ac, local_zero_entity_id);
+
+    if (zdim == 1)
+    {
+        const int zid = ac.zero_entity_id[static_cast<std::size_t>(local_zero_entity_id)];
+        auto verts = ac.entity_to_vertex[1][static_cast<std::int32_t>(zid)];
+        if (verts.size() != 2)
+            return {{}, T(0), geom::Degeneracy::invalid_parent_entity};
+
+        std::vector<T> a(static_cast<std::size_t>(tdim), T(0));
+        std::vector<T> b(static_cast<std::size_t>(tdim), T(0));
+        for (int d = 0; d < tdim; ++d)
+        {
+            a[static_cast<std::size_t>(d)] =
+                ac.vertex_coords[static_cast<std::size_t>(verts[0] * tdim + d)];
+            b[static_cast<std::size_t>(d)] =
+                ac.vertex_coords[static_cast<std::size_t>(verts[1] * tdim + d)];
+        }
+
+        geom::VectorQuantity<T> raw;
+        if (tdim == 2)
+        {
+            raw = geom::segment_normal<T>(
+                std::span<const T>(a.data(), a.size()),
+                std::span<const T>(b.data(), b.size()),
+                true,
+                tol);
+        }
+        else if (tdim == 3)
+        {
+            if (host.dim == 2)
+            {
+                const auto face_normal = geom::parent_face_normal<T>(
+                    ac.parent_cell_type, host.id, true, tol);
+                if (face_normal.degenerate())
+                    return {{}, T(0), face_normal.degeneracy};
+                raw = geom::in_face_segment_normal<T>(
+                    std::span<const T>(a.data(), a.size()),
+                    std::span<const T>(b.data(), b.size()),
+                    std::span<const T>(face_normal.value.data(), face_normal.value.size()),
+                    true,
+                    tol);
+            }
+            else
+            {
+                auto face_normal = adjacent_zero_face_normal_for_edge<T>(
+                    ac, local_zero_entity_id, tol);
+                auto face_normal_quantity = geom::make_vector_quantity<T>(
+                    std::move(face_normal),
+                    tol,
+                    geom::Degeneracy::zero_projection);
+                if (!face_normal_quantity.degenerate())
+                {
+                    raw = geom::in_face_segment_normal<T>(
+                        std::span<const T>(a.data(), a.size()),
+                        std::span<const T>(b.data(), b.size()),
+                        std::span<const T>(
+                            face_normal_quantity.value.data(),
+                            face_normal_quantity.value.size()),
+                        true,
+                        tol);
+                }
+                else
+                {
+                    raw = std::move(face_normal_quantity);
+                }
+            }
+        }
+        else
+        {
+            return {std::vector<T>(static_cast<std::size_t>(tdim), T(0)),
+                    T(0),
+                    geom::Degeneracy::zero_projection};
+        }
+
+        if (raw.degenerate())
+            return raw;
+        return geom::admissible_direction_in_parent_frame<T>(
+            ac.parent_cell_type,
+            host,
+            std::span<const T>(raw.value.data(), raw.value.size()),
+            tol);
+    }
+
+    if (zdim == 2 && tdim == 3)
+    {
+        auto normal = zero_entity_face_normal<T>(ac, local_zero_entity_id);
+        return geom::admissible_direction_in_parent_frame<T>(
+            ac.parent_cell_type,
+            host,
+            std::span<const T>(normal.data(), normal.size()),
+            tol);
+    }
+
+    return {std::vector<T>(static_cast<std::size_t>(tdim), T(0)),
+            T(0),
+            geom::Degeneracy::zero_projection};
+}
+
+template <std::floating_point T>
 std::vector<T> remove_component(std::vector<T> direction,
                                 std::span<const T> tangent)
 {
@@ -1087,6 +1766,21 @@ std::vector<T> remove_component(std::vector<T> direction,
     for (std::size_t i = 0; i < direction.size(); ++i)
         direction[i] -= c * tangent[i];
     return direction;
+}
+
+template <std::floating_point T>
+void orient_with_level_set_gradient(std::vector<T>& direction,
+                                    std::span<const T> grad)
+{
+    if (direction.size() != grad.size())
+        return;
+    if (vec_dot<T>(
+            std::span<const T>(direction.data(), direction.size()),
+            grad) < T(0))
+    {
+        for (T& value : direction)
+            value = -value;
+    }
 }
 
 template <std::floating_point T, std::integral I>
@@ -1257,13 +1951,6 @@ template <std::floating_point T, std::integral I>
 T curving_level_set_value(const LevelSetCell<T, I>& ls_cell,
                           std::span<const T> ref)
 {
-    if (ls_cell.global_level_set != nullptr
-        && ls_cell.global_level_set->has_value()
-        && !ls_cell.parent_vertex_coords.empty())
-    {
-        const auto x = level_set_physical_point<T, I>(ls_cell, ref);
-        return ls_cell.global_level_set->value(x.data(), ls_cell.cell_id);
-    }
     return ls_cell.value(ref);
 }
 
@@ -1272,27 +1959,6 @@ void curving_level_set_grad(const LevelSetCell<T, I>& ls_cell,
                             std::span<const T> ref,
                             std::span<T> grad_ref)
 {
-    if (ls_cell.global_level_set != nullptr
-        && ls_cell.global_level_set->has_gradient()
-        && !ls_cell.parent_vertex_coords.empty())
-    {
-        std::vector<T> jacobian;
-        if (affine_jacobian<T, I>(ls_cell, jacobian))
-        {
-            const auto x = level_set_physical_point<T, I>(ls_cell, ref);
-            std::vector<T> grad_phys(static_cast<std::size_t>(ls_cell.gdim), T(0));
-            ls_cell.global_level_set->grad(x.data(), ls_cell.cell_id, grad_phys.data());
-            for (int a = 0; a < ls_cell.tdim; ++a)
-            {
-                T value = T(0);
-                for (int r = 0; r < ls_cell.gdim; ++r)
-                    value += jacobian[static_cast<std::size_t>(r * ls_cell.tdim + a)]
-                           * grad_phys[static_cast<std::size_t>(r)];
-                grad_ref[static_cast<std::size_t>(a)] = value;
-            }
-            return;
-        }
-    }
     ls_cell.grad(ref, grad_ref);
 }
 
@@ -1392,12 +2058,17 @@ std::vector<T> physical_host_gradient_reference_direction(
         return std::vector<T>(static_cast<std::size_t>(tdim), T(0));
     }
 
-    return pull_back_physical_direction<T>(
+    auto pulled = pull_back_physical_direction<T>(
         std::span<const T>(jacobian.data(), jacobian.size()),
         gdim,
         tdim,
         std::span<const T>(direction_phys.data(), direction_phys.size()),
         fallback_ref);
+    return project_to_local_host_space<T>(
+        ac,
+        local_zero_entity_id,
+        std::span<const T>(pulled.data(), pulled.size()),
+        std::numeric_limits<T>::epsilon() * T(128));
 }
 
 template <std::floating_point T, std::integral I>
@@ -1413,6 +2084,7 @@ bool accept_seed_if_level_sets_within_tolerance(
     if (active_cells.empty())
         return false;
 
+    stats.seed.assign(seed.begin(), seed.end());
     T max_abs_value = T(0);
     for (const LevelSetCell<T, I>* ls_cell : active_cells)
     {
@@ -1455,18 +2127,54 @@ std::vector<std::vector<T>> scalar_candidate_directions(const AdaptCell<T>& ac,
     const std::uint32_t host_mask =
         structural_active_face_mask<T>(ac, local_zero_entity_id);
 
-    // First try the local closest-point direction for the implicit geometry,
-    // restricted only by the structural parent host entity. Extra near-face
-    // constraints can overrestrict seeds on warped cut quads and create large
-    // tangential motion, so those are kept for fallback directions below.
-    append_unique_direction<T>(
-        directions, std::vector<T>(host_metric_grad.begin(), host_metric_grad.end()), tol);
+    auto append_host_gradient = [&]()
+    {
+        // The primary implicit-geometry direction is restricted only by the
+        // structural parent host entity. Extra near-face constraints can
+        // overrestrict seeds on warped cut quads and create large tangential
+        // motion, so those are kept for fallback directions below.
+        append_admissible_unique_direction<T>(
+            directions, ac, local_zero_entity_id, host_metric_grad, tol);
+    };
+
+    auto append_straight_normal = [&]() -> bool
+    {
+        const auto normal = straight_zero_entity_normal_direction<T>(
+            ac, local_zero_entity_id, tol);
+        if (!normal.degenerate())
+        {
+            auto direction = normal.value;
+            orient_with_level_set_gradient<T>(direction, grad);
+            append_admissible_unique_direction<T>(
+                directions,
+                ac,
+                local_zero_entity_id,
+                std::span<const T>(direction.data(), direction.size()),
+                tol);
+            return true;
+        }
+        return false;
+    };
+
+    if (options.direction_mode == CurvingDirectionMode::straight_zero_entity_normal)
+    {
+        append_straight_normal();
+        append_host_gradient();
+    }
+    else
+    {
+        append_host_gradient();
+    }
 
     if (active_mask != host_mask)
     {
-        append_unique_direction<T>(
-            directions, project_to_active_face_space<T>(
-                ac, metric_grad, active_mask), tol);
+        auto d = project_to_active_face_space<T>(ac, metric_grad, active_mask);
+        append_admissible_unique_direction<T>(
+            directions,
+            ac,
+            local_zero_entity_id,
+            std::span<const T>(d.data(), d.size()),
+            tol);
     }
 
     if (zdim == 1)
@@ -1475,20 +2183,42 @@ std::vector<std::vector<T>> scalar_candidate_directions(const AdaptCell<T>& ac,
         auto d = project_to_active_face_space<T>(ac, metric_grad, active_mask);
         d = remove_component<T>(
             std::move(d), std::span<const T>(tangent.data(), tangent.size()));
-        append_unique_direction<T>(directions, std::move(d), tol);
+        append_admissible_unique_direction<T>(
+            directions,
+            ac,
+            local_zero_entity_id,
+            std::span<const T>(d.data(), d.size()),
+            tol);
     }
     else if (zdim == 2)
     {
-        auto normal = zero_entity_face_normal<T>(ac, local_zero_entity_id);
-        append_unique_direction<T>(
-            directions,
-            project_to_active_face_space<T>(
-                ac, std::span<const T>(normal.data(), normal.size()), active_mask),
-            tol);
+        const auto normal = straight_zero_entity_normal_direction<T>(
+            ac, local_zero_entity_id, tol);
+        if (!normal.degenerate())
+        {
+            auto d = project_to_active_face_space<T>(
+                ac,
+                std::span<const T>(normal.value.data(), normal.value.size()),
+                active_mask);
+            orient_with_level_set_gradient<T>(d, grad);
+            append_admissible_unique_direction<T>(
+                directions,
+                ac,
+                local_zero_entity_id,
+                std::span<const T>(d.data(), d.size()),
+                tol);
+        }
     }
 
-    append_unique_direction<T>(
-        directions, project_to_active_face_space<T>(ac, grad, active_mask), tol);
+    {
+        auto d = project_to_active_face_space<T>(ac, grad, active_mask);
+        append_admissible_unique_direction<T>(
+            directions,
+            ac,
+            local_zero_entity_id,
+            std::span<const T>(d.data(), d.size()),
+            tol);
+    }
 
     const auto parent_vertices = cell::reference_vertices<T>(ac.parent_cell_type);
     const int nv = cell::get_num_vertices(ac.parent_cell_type);
@@ -1499,24 +2229,37 @@ std::vector<std::vector<T>> scalar_candidate_directions(const AdaptCell<T>& ac,
             ray[static_cast<std::size_t>(d)] =
                 seed[static_cast<std::size_t>(d)]
               - parent_vertices[static_cast<std::size_t>(v * ac.tdim + d)];
-        append_unique_direction<T>(
+        auto d = project_to_active_face_space<T>(
+            ac, std::span<const T>(ray.data(), ray.size()), active_mask);
+        append_admissible_unique_direction<T>(
             directions,
-            project_to_active_face_space<T>(
-                ac, std::span<const T>(ray.data(), ray.size()), active_mask),
+            ac,
+            local_zero_entity_id,
+            std::span<const T>(d.data(), d.size()),
             tol);
     }
 
     const auto basis = active_nullspace_basis<T>(ac, active_mask);
     for (const auto& b : basis)
-        append_unique_direction<T>(directions, b, tol);
+        append_admissible_unique_direction<T>(
+            directions,
+            ac,
+            local_zero_entity_id,
+            std::span<const T>(b.data(), b.size()),
+            tol);
+
+    if (options.direction_mode == CurvingDirectionMode::level_set_gradient)
+        append_straight_normal();
 
     return directions;
 }
 
 template <std::floating_point T, class Eval>
 bool try_scalar_line_search(const AdaptCell<T>& ac,
+                            int local_zero_entity_id,
                             std::span<const T> seed,
                             std::span<const std::vector<T>> directions,
+                            std::span<const T> gradient_at_seed,
                             const CurvingOptions<T>& options,
                             Eval&& eval_on_point,
                             std::vector<T>& out,
@@ -1525,18 +2268,43 @@ bool try_scalar_line_search(const AdaptCell<T>& ac,
     const int tdim = ac.tdim;
     for (const auto& unit : directions)
     {
+        std::vector<T> direction = unit;
+        if (direction.size() != static_cast<std::size_t>(tdim))
+        {
+            stats.failure_code = CurvingFailureCode::singular_gradient_system;
+            continue;
+        }
+        if (gradient_at_seed.size() == direction.size()
+            && vec_dot<T>(gradient_at_seed, std::span<const T>(
+                                         direction.data(), direction.size())) < T(0))
+        {
+            for (T& value : direction)
+                value = -value;
+        }
+        stats.seed.assign(seed.begin(), seed.end());
+        stats.direction = direction;
+        stats.clip_lo = std::numeric_limits<T>::quiet_NaN();
+        stats.clip_hi = std::numeric_limits<T>::quiet_NaN();
+        stats.root_t = std::numeric_limits<T>::quiet_NaN();
+
         T lo = T(0), hi = T(0);
         if (!host_parameter_interval<T>(
-                ac, seed, std::span<const T>(unit.data(), unit.size()),
+                ac,
+                local_zero_entity_id,
+                seed,
+                std::span<const T>(direction.data(), direction.size()),
                 options.domain_tol, lo, hi))
         {
             stats.failure_code = CurvingFailureCode::no_host_interval;
             continue;
         }
-        lo = std::max(lo, -T(2));
-        hi = std::min(hi, T(2));
+        stats.clip_lo = lo;
+        stats.clip_hi = hi;
         if (!(lo <= T(0) && T(0) <= hi))
+        {
+            stats.failure_code = CurvingFailureCode::no_host_interval;
             continue;
+        }
 
         auto eval_line = [&](T t) -> T
         {
@@ -1544,71 +2312,104 @@ bool try_scalar_line_search(const AdaptCell<T>& ac,
             for (int d = 0; d < tdim; ++d)
                 x[static_cast<std::size_t>(d)] =
                     seed[static_cast<std::size_t>(d)]
-                  + t * unit[static_cast<std::size_t>(d)];
+                  + t * direction[static_cast<std::size_t>(d)];
             return eval_on_point(std::span<const T>(x.data(), static_cast<std::size_t>(tdim)));
         };
 
-        const int samples = 48;
-        T best_a = T(0), best_b = T(0);
-        T best_dist = std::numeric_limits<T>::infinity();
-        bool have_bracket = false;
-        T t_prev = lo;
-        T f_prev = eval_line(t_prev);
-        for (int i = 1; i <= samples; ++i)
+        const T f_seed = eval_line(T(0));
+        if (std::fabs(f_seed) <= options.ftol)
         {
-            const T t_cur = lo + (hi - lo) * T(i) / T(samples);
-            const T f_cur = eval_line(t_cur);
-            if (std::fabs(f_cur) <= options.ftol)
-            {
-                out.assign(seed.begin(), seed.end());
-                for (int d = 0; d < tdim; ++d)
-                    out[static_cast<std::size_t>(d)] += t_cur * unit[static_cast<std::size_t>(d)];
-                stats.iterations = i;
-                stats.status = CurvingStatus::curved;
-                stats.failure_code = CurvingFailureCode::none;
-                stats.residual = std::fabs(f_cur);
-                return true;
-            }
-            if (f_prev * f_cur <= T(0))
-            {
-                const T dist = std::min(std::fabs(t_prev), std::fabs(t_cur));
-                if (dist < best_dist)
-                {
-                    best_a = t_prev;
-                    best_b = t_cur;
-                    best_dist = dist;
-                    have_bracket = true;
-                }
-            }
-            t_prev = t_cur;
-            f_prev = f_cur;
+            out.assign(seed.begin(), seed.end());
+            stats.iterations = 0;
+            stats.status = CurvingStatus::curved;
+            stats.failure_code = CurvingFailureCode::none;
+            stats.residual = std::fabs(f_seed);
+            stats.root_t = T(0);
+            return true;
         }
-        if (!have_bracket)
+
+        T a = T(0);
+        T b = T(0);
+        if (f_seed > T(0))
+        {
+            a = lo;
+            b = T(0);
+        }
+        else
+        {
+            a = T(0);
+            b = hi;
+        }
+        if (!(a < b))
         {
             stats.failure_code = CurvingFailureCode::no_sign_changing_bracket;
             continue;
         }
 
-        const T fa = eval_line(best_a);
-        const T fb = eval_line(best_b);
+        const T fa = eval_line(a);
+        const T fb = (b == T(0)) ? f_seed : eval_line(b);
+        if (!(std::isfinite(fa) && std::isfinite(fb)) || fa * fb > T(0))
+        {
+            stats.failure_code = CurvingFailureCode::no_sign_changing_bracket;
+            continue;
+        }
+
         int iterations = 0;
         bool converged = false;
-        const T root_t = cell::edge_root::brent_solve<T>(
-            eval_line, best_a, best_b, fa, fb,
+        const T linear_guess = cell::edge_root::linear_root_parameter<T>(fa, fb);
+        const T initial_guess = a + (b - a) * std::clamp(linear_guess, T(0), T(1));
+        const T root_t = cell::edge_root::newton_parameter<T>(
+            eval_line, a, b, fa, fb,
+            initial_guess,
             options.max_iter, options.xtol, options.ftol,
             &iterations, &converged);
+        T accepted_root_t = root_t;
         stats.iterations = iterations;
-        const T residual = std::fabs(eval_line(root_t));
+        T residual = std::fabs(eval_line(root_t));
         stats.residual = residual;
         if (!converged && residual > options.ftol)
         {
-            stats.failure_code = CurvingFailureCode::brent_failed;
-            continue;
+            int fallback_iterations = 0;
+            bool fallback_converged = false;
+            try
+            {
+                const T fallback_root_t = cell::edge_root::itp_parameter<T>(
+                    eval_line,
+                    a,
+                    b,
+                    fa,
+                    fb,
+                    initial_guess,
+                    options.max_iter,
+                    options.xtol,
+                    options.ftol,
+                    &fallback_iterations,
+                    &fallback_converged);
+                const T fallback_residual = std::fabs(eval_line(fallback_root_t));
+                if (fallback_converged || fallback_residual <= options.ftol)
+                {
+                    accepted_root_t = fallback_root_t;
+                    iterations += fallback_iterations;
+                    residual = fallback_residual;
+                    stats.iterations = iterations;
+                    stats.residual = residual;
+                    converged = true;
+                }
+            }
+            catch (const std::exception&)
+            {
+            }
+            if (!converged && residual > options.ftol)
+            {
+                stats.failure_code = CurvingFailureCode::brent_failed;
+                stats.root_t = accepted_root_t;
+                continue;
+            }
         }
 
         out.assign(seed.begin(), seed.end());
         for (int d = 0; d < tdim; ++d)
-            out[static_cast<std::size_t>(d)] += root_t * unit[static_cast<std::size_t>(d)];
+            out[static_cast<std::size_t>(d)] += accepted_root_t * direction[static_cast<std::size_t>(d)];
         const bool inside = cell::edge_root::is_inside_reference_domain<T>(
             std::span<const T>(out.data(), out.size()),
             ac.parent_cell_type,
@@ -1617,10 +2418,14 @@ bool try_scalar_line_search(const AdaptCell<T>& ac,
         {
             stats.status = CurvingStatus::failed;
             stats.failure_code = CurvingFailureCode::outside_host_domain;
+            stats.root_t = accepted_root_t;
             return false;
         }
         stats.status = CurvingStatus::curved;
         stats.failure_code = CurvingFailureCode::none;
+        stats.direction = direction;
+        stats.root_t = accepted_root_t;
+        stats.residual = residual;
         return true;
     }
 
@@ -1630,6 +2435,7 @@ bool try_scalar_line_search(const AdaptCell<T>& ac,
 
 template <std::floating_point T, class Eval, class Grad>
 bool constrained_scalar_newton(const AdaptCell<T>& ac,
+                               int local_zero_entity_id,
                                std::span<const T> seed,
                                std::uint32_t active_mask,
                                const CurvingOptions<T>& options,
@@ -1660,6 +2466,10 @@ bool constrained_scalar_newton(const AdaptCell<T>& ac,
             stats.status = CurvingStatus::curved;
             stats.failure_code = CurvingFailureCode::none;
             stats.residual = std::fabs(f);
+            stats.direction = normalized_delta_direction<T>(
+                seed,
+                std::span<const T>(out.data(), out.size()),
+                options.xtol);
             return true;
         }
 
@@ -1686,6 +2496,7 @@ bool constrained_scalar_newton(const AdaptCell<T>& ac,
         T lo = T(0), hi = T(0);
         if (!host_parameter_interval<T>(
                 ac,
+                local_zero_entity_id,
                 std::span<const T>(out.data(), out.size()),
                 std::span<const T>(delta.data(), delta.size()),
                 options.domain_tol,
@@ -1749,6 +2560,10 @@ bool constrained_scalar_newton(const AdaptCell<T>& ac,
     {
         stats.status = CurvingStatus::curved;
         stats.failure_code = CurvingFailureCode::none;
+        stats.direction = normalized_delta_direction<T>(
+            seed,
+            std::span<const T>(out.data(), out.size()),
+            options.xtol);
         return true;
     }
     stats.failure_code = CurvingFailureCode::constrained_newton_failed;
@@ -1927,6 +2742,7 @@ bool scalar_project(const AdaptCell<T>& ac,
     if (std::fabs(seed_value) <= options.ftol)
     {
         out.assign(seed.begin(), seed.end());
+        stats.seed.assign(seed.begin(), seed.end());
         stats.status = CurvingStatus::curved;
         stats.failure_code = CurvingFailureCode::none;
         stats.residual = std::fabs(seed_value);
@@ -1957,7 +2773,7 @@ bool scalar_project(const AdaptCell<T>& ac,
     };
     auto grad_on_point = [&](std::span<const T> x, std::span<T> out_grad)
     {
-        ls_cell.grad(x, out_grad);
+        curving_level_set_grad<T, I>(ls_cell, x, out_grad);
     };
 
     std::uint32_t active_mask = structural_active_face_mask<T>(ac, local_zero_entity_id);
@@ -1977,8 +2793,11 @@ bool scalar_project(const AdaptCell<T>& ac,
         active_mask,
         options);
     if (try_scalar_line_search<T>(
-            ac, seed,
+            ac,
+            local_zero_entity_id,
+            seed,
             std::span<const std::vector<T>>(directions.data(), directions.size()),
+            std::span<const T>(grad.data(), grad.size()),
             options,
             eval_on_point,
             out,
@@ -2012,8 +2831,11 @@ bool scalar_project(const AdaptCell<T>& ac,
             retry_mask,
             options);
         if (try_scalar_line_search<T>(
-                ac, seed,
+                ac,
+                local_zero_entity_id,
+                seed,
                 std::span<const std::vector<T>>(directions.data(), directions.size()),
+                std::span<const T>(grad.data(), grad.size()),
                 options,
                 eval_on_point,
                 out,
@@ -2046,6 +2868,7 @@ bool scalar_project(const AdaptCell<T>& ac,
         newton_stats.retry_count = (retry_mask != active_mask) ? 2 + attempt : 1 + attempt;
         if (constrained_scalar_newton<T>(
                 ac,
+                local_zero_entity_id,
                 seed,
                 newton_mask,
                 options,
@@ -2089,6 +2912,7 @@ bool fixed_ray_scalar_project(const AdaptCell<T>& ac,
     if (std::fabs(seed_value) <= options.ftol)
     {
         out.assign(seed.begin(), seed.end());
+        stats.seed.assign(seed.begin(), seed.end());
         stats.status = CurvingStatus::curved;
         stats.failure_code = CurvingFailureCode::none;
         stats.residual = std::fabs(seed_value);
@@ -2112,47 +2936,102 @@ bool fixed_ray_scalar_project(const AdaptCell<T>& ac,
     std::vector<std::vector<T>> directions;
     const T direction_tol =
         std::max(options.ftol, T(64) * std::numeric_limits<T>::epsilon());
-    append_unique_direction<T>(directions, direction, direction_tol);
 
-    auto normal = zero_entity_face_normal<T>(ac, local_zero_entity_id);
-    append_unique_direction<T>(
-        directions,
-        project_to_active_face_space<T>(
-            ac, std::span<const T>(normal.data(), normal.size()), host_mask),
-        direction_tol);
-    append_unique_direction<T>(
-        directions,
-        project_to_active_face_space<T>(
-            ac, std::span<const T>(grad.data(), grad.size()), host_mask),
-        direction_tol);
-    append_unique_direction<T>(
-        directions,
-        project_to_active_face_space<T>(
-            ac, std::span<const T>(metric_grad.data(), metric_grad.size()), host_mask),
-        direction_tol);
-
-    const auto parent_vertices = cell::reference_vertices<T>(ac.parent_cell_type);
-    const int nv = cell::get_num_vertices(ac.parent_cell_type);
-    for (int v = 0; v < nv; ++v)
+    auto append_gradient_direction = [&]()
     {
-        std::vector<T> ray(static_cast<std::size_t>(tdim), T(0));
-        for (int d = 0; d < tdim; ++d)
-            ray[static_cast<std::size_t>(d)] =
-                seed[static_cast<std::size_t>(d)]
-              - parent_vertices[static_cast<std::size_t>(v * tdim + d)];
-        append_unique_direction<T>(
+        append_admissible_unique_direction<T>(
             directions,
-            project_to_active_face_space<T>(
-                ac, std::span<const T>(ray.data(), ray.size()), host_mask),
+            ac,
+            local_zero_entity_id,
+            std::span<const T>(direction.data(), direction.size()),
             direction_tol);
-    }
+    };
+    auto append_normal_direction = [&]() -> bool
+    {
+        const auto normal = straight_zero_entity_normal_direction<T>(
+            ac, local_zero_entity_id, direction_tol);
+        if (!normal.degenerate())
+        {
+            auto oriented = normal.value;
+            orient_with_level_set_gradient<T>(oriented, std::span<const T>(grad.data(), grad.size()));
+            append_admissible_unique_direction<T>(
+                directions,
+                ac,
+                local_zero_entity_id,
+                std::span<const T>(oriented.data(), oriented.size()),
+                direction_tol);
+            return true;
+        }
+        return false;
+    };
+    auto append_gradient_fallback_directions = [&]()
+    {
+        {
+            auto d = project_to_active_face_space<T>(
+                ac, std::span<const T>(grad.data(), grad.size()), host_mask);
+            append_admissible_unique_direction<T>(
+                directions,
+                ac,
+                local_zero_entity_id,
+                std::span<const T>(d.data(), d.size()),
+                direction_tol);
+        }
+        {
+            auto d = project_to_active_face_space<T>(
+                ac, std::span<const T>(metric_grad.data(), metric_grad.size()), host_mask);
+            append_admissible_unique_direction<T>(
+                directions,
+                ac,
+                local_zero_entity_id,
+                std::span<const T>(d.data(), d.size()),
+                direction_tol);
+        }
 
-    const auto basis = active_nullspace_basis<T>(ac, host_mask);
-    for (const auto& b : basis)
-        append_unique_direction<T>(directions, b, direction_tol);
+        const auto parent_vertices = cell::reference_vertices<T>(ac.parent_cell_type);
+        const int nv = cell::get_num_vertices(ac.parent_cell_type);
+        for (int v = 0; v < nv; ++v)
+        {
+            std::vector<T> ray(static_cast<std::size_t>(tdim), T(0));
+            for (int d = 0; d < tdim; ++d)
+                ray[static_cast<std::size_t>(d)] =
+                    seed[static_cast<std::size_t>(d)]
+                  - parent_vertices[static_cast<std::size_t>(v * tdim + d)];
+            auto d = project_to_active_face_space<T>(
+                ac, std::span<const T>(ray.data(), ray.size()), host_mask);
+            append_admissible_unique_direction<T>(
+                directions,
+                ac,
+                local_zero_entity_id,
+                std::span<const T>(d.data(), d.size()),
+                direction_tol);
+        }
+
+        const auto basis = active_nullspace_basis<T>(ac, host_mask);
+        for (const auto& b : basis)
+            append_admissible_unique_direction<T>(
+                directions,
+                ac,
+                local_zero_entity_id,
+                std::span<const T>(b.data(), b.size()),
+                direction_tol);
+    };
+
+    if (options.direction_mode == CurvingDirectionMode::straight_zero_entity_normal)
+    {
+        append_normal_direction();
+        append_gradient_direction();
+        append_gradient_fallback_directions();
+    }
+    else
+    {
+        append_gradient_direction();
+        append_gradient_fallback_directions();
+        append_normal_direction();
+    }
 
     if (directions.empty())
     {
+        stats.status = CurvingStatus::failed;
         stats.failure_code = CurvingFailureCode::singular_gradient_system;
         return false;
     }
@@ -2162,9 +3041,6 @@ bool fixed_ray_scalar_project(const AdaptCell<T>& ac,
         return curving_level_set_value<T, I>(ls_cell, x);
     };
 
-    bool found = false;
-    T best_step2 = std::numeric_limits<T>::infinity();
-    std::vector<T> best_point;
     ProjectionStats<T> best_stats = stats;
     for (const auto& unit : directions)
     {
@@ -2172,47 +3048,35 @@ bool fixed_ray_scalar_project(const AdaptCell<T>& ac,
         ProjectionStats<T> candidate_stats = stats;
         if (!try_scalar_line_search<T>(
                 ac,
+                local_zero_entity_id,
                 seed,
                 std::span<const std::vector<T>>(&unit, 1),
+                std::span<const T>(grad.data(), grad.size()),
                 options,
                 eval_on_point,
                 candidate,
                 candidate_stats))
         {
-            if (!found)
-                best_stats = candidate_stats;
+            best_stats = candidate_stats;
             continue;
         }
 
-        T step2 = T(0);
-        for (int d = 0; d < tdim; ++d)
-        {
-            const T delta = candidate[static_cast<std::size_t>(d)]
-                          - seed[static_cast<std::size_t>(d)];
-            step2 += delta * delta;
-        }
-        if (!found || step2 < best_step2)
-        {
-            found = true;
-            best_step2 = step2;
-            best_point = std::move(candidate);
-            best_stats = candidate_stats;
-        }
+        out = std::move(candidate);
+        stats = candidate_stats;
+        stats.active_face_mask = host_mask;
+        stats.safe_subspace_dim = active_subspace_dim<T>(ac, host_mask);
+        stats.projection_mode = CurvingProjectionMode::safe_line;
+        return true;
     }
 
-    if (found)
-    {
-        out = std::move(best_point);
-        stats = best_stats;
-    }
-    else
-    {
-        stats = best_stats;
-    }
+    stats = best_stats;
     stats.active_face_mask = host_mask;
     stats.safe_subspace_dim = active_subspace_dim<T>(ac, host_mask);
     stats.projection_mode = CurvingProjectionMode::safe_line;
-    return found;
+    stats.status = CurvingStatus::failed;
+    if (stats.failure_code == CurvingFailureCode::none)
+        stats.failure_code = CurvingFailureCode::projection_failed;
+    return false;
 }
 
 template <std::floating_point T, std::integral I>
@@ -2275,6 +3139,10 @@ bool vector_project(const AdaptCell<T>& ac,
             stats.projection_mode =
                 (iter == 0) ? CurvingProjectionMode::none : CurvingProjectionMode::vector_newton;
             stats.retry_count = retry_count;
+            stats.direction = normalized_delta_direction<T>(
+                seed,
+                std::span<const T>(out.data(), out.size()),
+                options.xtol);
             return true;
         }
 
@@ -2387,6 +3255,7 @@ bool vector_project(const AdaptCell<T>& ac,
         T lo = T(0), hi = T(0);
         if (!host_parameter_interval<T>(
                 ac,
+                local_zero_entity_id,
                 std::span<const T>(out.data(), out.size()),
                 std::span<const T>(delta.data(), delta.size()),
                 options.domain_tol,
@@ -2483,6 +3352,10 @@ bool vector_project(const AdaptCell<T>& ac,
     {
         stats.status = CurvingStatus::curved;
         stats.failure_code = CurvingFailureCode::none;
+        stats.direction = normalized_delta_direction<T>(
+            seed,
+            std::span<const T>(out.data(), out.size()),
+            options.xtol);
         return true;
     }
     stats.status = CurvingStatus::failed;
@@ -2506,6 +3379,51 @@ bool project_seed_to_zero_entity(const AdaptCell<T>& ac,
     }
     return vector_project<T, I>(
         ac, local_zero_entity_id, active_cells, seed, options, projected, stats);
+}
+
+template <std::floating_point T, std::integral I>
+std::vector<T> preferred_scalar_projection_direction(
+    const AdaptCell<T>& ac,
+    int local_zero_entity_id,
+    const LevelSetCell<T, I>& ls_cell,
+    std::span<const T> seed,
+    const CurvingOptions<T>& options)
+{
+    if (local_zero_entity_id < 0
+        || local_zero_entity_id >= ac.n_zero_entities())
+    {
+        return {};
+    }
+
+    std::vector<T> grad(static_cast<std::size_t>(ac.tdim), T(0));
+    curving_level_set_grad<T, I>(
+        ls_cell, seed, std::span<T>(grad.data(), grad.size()));
+    const auto metric_grad = physical_normal_reference_direction<T, I>(
+        ls_cell, std::span<const T>(grad.data(), grad.size()));
+    const auto host_metric_grad = physical_host_gradient_reference_direction<T, I>(
+        ls_cell,
+        ac,
+        local_zero_entity_id,
+        std::span<const T>(grad.data(), grad.size()),
+        std::span<const T>(metric_grad.data(), metric_grad.size()));
+
+    std::uint32_t active_mask = structural_active_face_mask<T>(
+        ac, local_zero_entity_id);
+    active_mask = add_near_active_faces<T>(
+        ac, seed, active_mask, options.active_face_tol);
+
+    auto directions = scalar_candidate_directions<T>(
+        ac,
+        local_zero_entity_id,
+        seed,
+        std::span<const T>(grad.data(), grad.size()),
+        std::span<const T>(metric_grad.data(), metric_grad.size()),
+        std::span<const T>(host_metric_grad.data(), host_metric_grad.size()),
+        active_mask,
+        options);
+    if (directions.empty())
+        return {};
+    return directions.front();
 }
 
 template <std::floating_point T, std::integral I>
@@ -2536,7 +3454,7 @@ bool build_hierarchical_face_nodes(
             state.ref_nodes.push_back(
                 ac.vertex_coords[static_cast<std::size_t>(vertex_id * ac.tdim + d)]);
         append_node_stats<T>(
-            state, accepted_node_stats<T>(CurvingFailureCode::exact_vertex));
+            state, accepted_node_stats<T>(CurvingFailureCode::exact_vertex), ac.tdim);
     };
 
     auto straight_seed = [&](std::span<const T> weights)
@@ -2588,11 +3506,11 @@ bool build_hierarchical_face_nodes(
                 projected,
                 stats))
         {
-            append_node_stats<T>(state, stats);
+            append_node_stats<T>(state, stats, ac.tdim);
             return false;
         }
         state.ref_nodes.insert(state.ref_nodes.end(), projected.begin(), projected.end());
-        append_node_stats<T>(state, stats);
+        append_node_stats<T>(state, stats, ac.tdim);
         return true;
     };
 
@@ -2605,7 +3523,7 @@ bool build_hierarchical_face_nodes(
             state.ref_nodes.push_back((T(1) - t) * x0 + t * x1);
         }
         append_node_stats<T>(
-            state, accepted_node_stats<T>(CurvingFailureCode::boundary_from_edge));
+            state, accepted_node_stats<T>(CurvingFailureCode::boundary_from_edge), ac.tdim);
     };
 
     auto eval_curved_edge = [&](int v0, int v1, T t, std::vector<T>& x) -> bool
@@ -2652,7 +3570,7 @@ bool build_hierarchical_face_nodes(
                 state.ref_nodes.end(),
                 transfinite_projected.begin(),
                 transfinite_projected.end());
-            append_node_stats<T>(state, transfinite_stats);
+            append_node_stats<T>(state, transfinite_stats, ac.tdim);
             return true;
         }
 
@@ -2665,14 +3583,14 @@ bool build_hierarchical_face_nodes(
                 fallback_projected,
                 fallback_stats))
         {
-            append_node_stats<T>(state, fallback_stats);
+            append_node_stats<T>(state, fallback_stats, ac.tdim);
             return false;
         }
         state.ref_nodes.insert(
             state.ref_nodes.end(),
             fallback_projected.begin(),
             fallback_projected.end());
-        append_node_stats<T>(state, fallback_stats);
+        append_node_stats<T>(state, fallback_stats, ac.tdim);
         return true;
     };
 
@@ -2778,7 +3696,7 @@ bool build_hierarchical_face_nodes(
             {
                 ProjectionStats<T> stats;
                 stats.failure_code = CurvingFailureCode::missing_boundary_edge;
-                append_node_stats<T>(state, stats);
+                append_node_stats<T>(state, stats, ac.tdim);
                 return false;
             }
             if (!edge->use_curved_state)
@@ -2789,7 +3707,7 @@ bool build_hierarchical_face_nodes(
             const auto x = eval_edge_state_at<T>(*edge, options, v0, v1, t);
             state.ref_nodes.insert(state.ref_nodes.end(), x.begin(), x.end());
             append_node_stats<T>(
-                state, accepted_node_stats<T>(CurvingFailureCode::boundary_from_edge));
+                state, accepted_node_stats<T>(CurvingFailureCode::boundary_from_edge), ac.tdim);
             return true;
         }
         return append_triangle_interior_node(w);
@@ -2871,7 +3789,7 @@ bool build_hierarchical_face_nodes(
                     {
                         ProjectionStats<T> stats;
                         stats.failure_code = CurvingFailureCode::missing_boundary_edge;
-                        append_node_stats<T>(state, stats);
+                        append_node_stats<T>(state, stats, ac.tdim);
                         state.failure_reason = "missing or failed hierarchical curved face boundary edge";
                         return false;
                     }
@@ -2883,7 +3801,7 @@ bool build_hierarchical_face_nodes(
                     const auto x = eval_edge_state_at<T>(*edge, options, v0, v1, t);
                     state.ref_nodes.insert(state.ref_nodes.end(), x.begin(), x.end());
                     append_node_stats<T>(
-                        state, accepted_node_stats<T>(CurvingFailureCode::boundary_from_edge));
+                        state, accepted_node_stats<T>(CurvingFailureCode::boundary_from_edge), ac.tdim);
                     continue;
                 }
 
@@ -2915,6 +3833,7 @@ void build_curved_state(CurvedZeroEntityState<T>& state,
     state.failure_reason.clear();
     state.geometry_order = options.geometry_order;
     state.node_family = options.node_family;
+    state.direction_mode = options.direction_mode;
     state.small_entity_tol = options.small_entity_tol;
     state.zero_entity_version = ac.zero_entity_version;
     state.zero_mask = ac.zero_entity_zero_mask[static_cast<std::size_t>(local_zero_entity_id)];
@@ -2928,6 +3847,11 @@ void build_curved_state(CurvedZeroEntityState<T>& state,
     state.node_safe_subspace_dim.clear();
     state.node_projection_mode.clear();
     state.node_retry_count.clear();
+    state.node_seed.clear();
+    state.node_direction.clear();
+    state.node_clip_lo.clear();
+    state.node_clip_hi.clear();
+    state.node_root_t.clear();
 
     std::vector<T> seeds;
     const int zdim = ac.zero_entity_dim[static_cast<std::size_t>(local_zero_entity_id)];
@@ -2935,7 +3859,7 @@ void build_curved_state(CurvedZeroEntityState<T>& state,
     {
         state.ref_nodes = zero_entity_vertices<T>(ac, local_zero_entity_id);
         append_node_stats<T>(
-            state, accepted_node_stats<T>(CurvingFailureCode::exact_vertex));
+            state, accepted_node_stats<T>(CurvingFailureCode::exact_vertex), ac.tdim);
         state.status = CurvingStatus::curved;
         return;
     }
@@ -2954,7 +3878,7 @@ void build_curved_state(CurvedZeroEntityState<T>& state,
         state.failure_reason = "unsupported zero-entity dimension";
         ProjectionStats<T> stats;
         stats.failure_code = CurvingFailureCode::unsupported_entity;
-        append_node_stats<T>(state, stats);
+        append_node_stats<T>(state, stats, ac.tdim);
         return;
     }
 
@@ -2982,7 +3906,7 @@ void build_curved_state(CurvedZeroEntityState<T>& state,
             seeds.size() / static_cast<std::size_t>(std::max(ac.tdim, 1)));
         for (int i = 0; i < n_nodes; ++i)
             append_node_stats<T>(
-                state, accepted_node_stats<T>(CurvingFailureCode::none));
+                state, accepted_node_stats<T>(CurvingFailureCode::none), ac.tdim);
         state.status = CurvingStatus::curved;
         return;
     }
@@ -3001,7 +3925,7 @@ void build_curved_state(CurvedZeroEntityState<T>& state,
         state.failure_reason = e.what();
         ProjectionStats<T> stats;
         stats.failure_code = CurvingFailureCode::missing_level_set_cell;
-        append_node_stats<T>(state, stats);
+        append_node_stats<T>(state, stats, ac.tdim);
         return;
     }
 
@@ -3045,7 +3969,7 @@ void build_curved_state(CurvedZeroEntityState<T>& state,
             options,
             projected,
             stats);
-        append_node_stats<T>(state, stats);
+        append_node_stats<T>(state, stats, ac.tdim);
 
         if (!ok)
         {
@@ -3083,6 +4007,128 @@ std::string_view node_family_name(NodeFamily family)
     case NodeFamily::lagrange: return "lagrange";
     }
     return "unknown";
+}
+
+CurvingDirectionMode direction_mode_from_string(std::string_view name)
+{
+    if (name == "straight_zero_entity_normal"
+        || name == "straight-zero-entity-normal"
+        || name == "zero_entity_normal"
+        || name == "zero-entity-normal"
+        || name == "straight_normal"
+        || name == "straight-normal"
+        || name == "normal")
+    {
+        return CurvingDirectionMode::straight_zero_entity_normal;
+    }
+    if (name == "level_set_gradient"
+        || name == "level-set-gradient"
+        || name == "gradient")
+    {
+        return CurvingDirectionMode::level_set_gradient;
+    }
+    throw std::invalid_argument("unknown curving direction mode");
+}
+
+std::string_view direction_mode_name(CurvingDirectionMode mode)
+{
+    switch (mode)
+    {
+    case CurvingDirectionMode::straight_zero_entity_normal:
+        return "straight_zero_entity_normal";
+    case CurvingDirectionMode::level_set_gradient:
+        return "level_set_gradient";
+    }
+    return "unknown";
+}
+
+template <std::floating_point T, std::integral I>
+T reference_level_set_value(const LevelSetCell<T, I>& ls_cell,
+                            std::span<const T> ref)
+{
+    return curving_level_set_value<T, I>(ls_cell, ref);
+}
+
+template <std::floating_point T, std::integral I>
+void reference_level_set_gradient(const LevelSetCell<T, I>& ls_cell,
+                                  std::span<const T> ref,
+                                  std::span<T> grad_ref)
+{
+    curving_level_set_grad<T, I>(ls_cell, ref, grad_ref);
+}
+
+template <std::floating_point T>
+ProjectionDiagnostic<T> make_projection_diagnostic(
+    bool accepted,
+    const std::vector<T>& projected,
+    const ProjectionStats<T>& stats)
+{
+    ProjectionDiagnostic<T> diagnostic;
+    diagnostic.accepted = accepted;
+    diagnostic.status = stats.status;
+    diagnostic.failure_code = stats.failure_code;
+    diagnostic.projection_mode = stats.projection_mode;
+    diagnostic.iterations = stats.iterations;
+    diagnostic.residual = stats.residual;
+    diagnostic.active_face_mask = stats.active_face_mask;
+    diagnostic.closest_face_id = stats.closest_face_id;
+    diagnostic.safe_subspace_dim = stats.safe_subspace_dim;
+    diagnostic.retry_count = stats.retry_count;
+    diagnostic.projected = projected;
+    diagnostic.seed = stats.seed;
+    diagnostic.direction = stats.direction;
+    diagnostic.clip_lo = stats.clip_lo;
+    diagnostic.clip_hi = stats.clip_hi;
+    diagnostic.root_t = stats.root_t;
+    return diagnostic;
+}
+
+template <std::floating_point T, std::integral I>
+ProjectionDiagnostic<T> project_seed_to_zero_entity_diagnostic(
+    const AdaptCell<T>& ac,
+    int local_zero_entity_id,
+    const LevelSetCell<T, I>& ls_cell,
+    std::span<const T> seed,
+    const CurvingOptions<T>& options)
+{
+    std::array<const LevelSetCell<T, I>*, 1> active_cells = {&ls_cell};
+    std::vector<T> projected;
+    ProjectionStats<T> stats;
+    bool accepted = false;
+    try
+    {
+        accepted = project_seed_to_zero_entity<T, I>(
+            ac,
+            local_zero_entity_id,
+            std::span<const LevelSetCell<T, I>* const>(
+                active_cells.data(), active_cells.size()),
+            seed,
+            options,
+            projected,
+            stats);
+    }
+    catch (const std::exception&)
+    {
+        accepted = false;
+        if (stats.failure_code == CurvingFailureCode::none)
+            stats.failure_code = CurvingFailureCode::projection_failed;
+        stats.status = CurvingStatus::failed;
+    }
+
+    if (accepted && stats.direction.empty())
+    {
+        stats.direction = normalized_delta_direction<T>(
+            seed,
+            std::span<const T>(projected.data(), projected.size()),
+            options.xtol);
+    }
+    if (stats.direction.empty())
+    {
+        stats.direction = preferred_scalar_projection_direction<T, I>(
+            ac, local_zero_entity_id, ls_cell, seed, options);
+    }
+
+    return make_projection_diagnostic<T>(accepted, projected, stats);
 }
 
 template <std::floating_point T, std::integral I>
@@ -3203,12 +4249,14 @@ const CurvedZeroEntityState<T>& ensure_curved(
         state.status == CurvingStatus::curved
         && state.geometry_order == options.geometry_order
         && state.node_family == options.node_family
+        && state.direction_mode == options.direction_mode
         && state.small_entity_tol == options.small_entity_tol
         && state.zero_entity_version == ac.zero_entity_version;
     const bool failed =
         state.status == CurvingStatus::failed
         && state.geometry_order == options.geometry_order
         && state.node_family == options.node_family
+        && state.direction_mode == options.direction_mode
         && state.small_entity_tol == options.small_entity_tol
         && state.zero_entity_version == ac.zero_entity_version;
     if (!valid && !failed)
@@ -3225,6 +4273,7 @@ const CurvedZeroEntityState<T>& ensure_curved(
                 state.failure_reason = "hierarchical zero-face curving requires boundary zero edges";
                 state.geometry_order = options.geometry_order;
                 state.node_family = options.node_family;
+                state.direction_mode = options.direction_mode;
                 state.small_entity_tol = options.small_entity_tol;
                 state.zero_entity_version = ac.zero_entity_version;
                 state.zero_mask = ac.zero_entity_zero_mask[
@@ -3239,9 +4288,14 @@ const CurvedZeroEntityState<T>& ensure_curved(
                 state.node_safe_subspace_dim.clear();
                 state.node_projection_mode.clear();
                 state.node_retry_count.clear();
+                state.node_seed.clear();
+                state.node_direction.clear();
+                state.node_clip_lo.clear();
+                state.node_clip_hi.clear();
+                state.node_root_t.clear();
                 ProjectionStats<T> stats;
                 stats.failure_code = CurvingFailureCode::missing_boundary_edge;
-                append_node_stats<T>(state, stats);
+                append_node_stats<T>(state, stats, ac.tdim);
                 return state;
             }
 
@@ -3266,6 +4320,7 @@ const CurvedZeroEntityState<T>& ensure_curved(
                         state.failure_reason = "hierarchical zero-face boundary edge curving failed";
                         state.geometry_order = options.geometry_order;
                         state.node_family = options.node_family;
+                        state.direction_mode = options.direction_mode;
                         state.small_entity_tol = options.small_entity_tol;
                         state.zero_entity_version = ac.zero_entity_version;
                         state.zero_mask = ac.zero_entity_zero_mask[
@@ -3280,9 +4335,14 @@ const CurvedZeroEntityState<T>& ensure_curved(
                         state.node_safe_subspace_dim.clear();
                         state.node_projection_mode.clear();
                         state.node_retry_count.clear();
+                        state.node_seed.clear();
+                        state.node_direction.clear();
+                        state.node_clip_lo.clear();
+                        state.node_clip_hi.clear();
+                        state.node_root_t.clear();
                         ProjectionStats<T> stats;
                         stats.failure_code = CurvingFailureCode::boundary_edge_failed;
-                        append_node_stats<T>(state, stats);
+                        append_node_stats<T>(state, stats, ac.tdim);
                         return state;
                     }
                 }
@@ -3327,6 +4387,37 @@ void ensure_all_curved(CurvingData<T, I>& curving,
                 c, z, options);
     }
 }
+
+template double reference_level_set_value(
+    const LevelSetCell<double, int>&, std::span<const double>);
+template float reference_level_set_value(
+    const LevelSetCell<float, int>&, std::span<const float>);
+template double reference_level_set_value(
+    const LevelSetCell<double, long>&, std::span<const double>);
+template float reference_level_set_value(
+    const LevelSetCell<float, long>&, std::span<const float>);
+
+template void reference_level_set_gradient(
+    const LevelSetCell<double, int>&, std::span<const double>, std::span<double>);
+template void reference_level_set_gradient(
+    const LevelSetCell<float, int>&, std::span<const float>, std::span<float>);
+template void reference_level_set_gradient(
+    const LevelSetCell<double, long>&, std::span<const double>, std::span<double>);
+template void reference_level_set_gradient(
+    const LevelSetCell<float, long>&, std::span<const float>, std::span<float>);
+
+template ProjectionDiagnostic<double> project_seed_to_zero_entity_diagnostic(
+    const AdaptCell<double>&, int, const LevelSetCell<double, int>&,
+    std::span<const double>, const CurvingOptions<double>&);
+template ProjectionDiagnostic<float> project_seed_to_zero_entity_diagnostic(
+    const AdaptCell<float>&, int, const LevelSetCell<float, int>&,
+    std::span<const float>, const CurvingOptions<float>&);
+template ProjectionDiagnostic<double> project_seed_to_zero_entity_diagnostic(
+    const AdaptCell<double>&, int, const LevelSetCell<double, long>&,
+    std::span<const double>, const CurvingOptions<double>&);
+template ProjectionDiagnostic<float> project_seed_to_zero_entity_diagnostic(
+    const AdaptCell<float>&, int, const LevelSetCell<float, long>&,
+    std::span<const float>, const CurvingOptions<float>&);
 
 template void rebuild_identity(CurvingData<double, int>&, std::span<const int>, std::span<const AdaptCell<double>>);
 template void rebuild_identity(CurvingData<float, int>&, std::span<const int>, std::span<const AdaptCell<float>>);

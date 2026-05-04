@@ -39,6 +39,8 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/selection_expr.h
   ${CMAKE_CURRENT_SOURCE_DIR}/edge_certification.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_certification.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/geometric_quantity.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/tangent_shift.h
   ${CMAKE_CURRENT_SOURCE_DIR}/refine_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature_tables.h

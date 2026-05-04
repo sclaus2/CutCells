@@ -67,11 +67,19 @@ enum class CurvingProjectionMode : std::uint8_t
     vector_newton = 4
 };
 
+enum class CurvingDirectionMode : std::uint8_t
+{
+    straight_zero_entity_normal = 0,
+    level_set_gradient = 1
+};
+
 template <std::floating_point T>
 struct CurvingOptions
 {
     int geometry_order = 2;
     NodeFamily node_family = NodeFamily::gll;
+    CurvingDirectionMode direction_mode =
+        CurvingDirectionMode::level_set_gradient;
     int max_iter = 32;
     T xtol = T(1e-12);
     T ftol = std::sqrt(std::numeric_limits<T>::epsilon());
@@ -91,6 +99,8 @@ struct CurvedZeroEntityState
     CurvingStatus status = CurvingStatus::not_built;
     int geometry_order = -1;
     NodeFamily node_family = NodeFamily::gll;
+    CurvingDirectionMode direction_mode =
+        CurvingDirectionMode::level_set_gradient;
     T small_entity_tol = T(0);
     std::uint32_t zero_entity_version = 0;
     std::uint64_t zero_mask = 0;
@@ -112,6 +122,11 @@ struct CurvedZeroEntityState
     std::vector<std::int32_t> node_safe_subspace_dim;
     std::vector<std::uint8_t> node_projection_mode;
     std::vector<std::int32_t> node_retry_count;
+    std::vector<T> node_seed;
+    std::vector<T> node_direction;
+    std::vector<T> node_clip_lo;
+    std::vector<T> node_clip_hi;
+    std::vector<T> node_root_t;
 };
 
 struct CurvingIdentity
@@ -122,6 +137,27 @@ struct CurvingIdentity
     std::int8_t parent_dim = -1;
     std::int32_t parent_id = -1;
     std::uint64_t zero_mask = 0;
+};
+
+template <std::floating_point T>
+struct ProjectionDiagnostic
+{
+    bool accepted = false;
+    CurvingStatus status = CurvingStatus::failed;
+    CurvingFailureCode failure_code = CurvingFailureCode::projection_failed;
+    CurvingProjectionMode projection_mode = CurvingProjectionMode::none;
+    int iterations = 0;
+    T residual = std::numeric_limits<T>::infinity();
+    std::uint32_t active_face_mask = 0;
+    int closest_face_id = -1;
+    int safe_subspace_dim = -1;
+    int retry_count = 0;
+    std::vector<T> projected;
+    std::vector<T> seed;
+    std::vector<T> direction;
+    T clip_lo = std::numeric_limits<T>::quiet_NaN();
+    T clip_hi = std::numeric_limits<T>::quiet_NaN();
+    T root_t = std::numeric_limits<T>::quiet_NaN();
 };
 
 template <std::floating_point T, std::integral I = int>
@@ -151,6 +187,25 @@ struct CurvingData
 
 NodeFamily node_family_from_string(std::string_view name);
 std::string_view node_family_name(NodeFamily family);
+CurvingDirectionMode direction_mode_from_string(std::string_view name);
+std::string_view direction_mode_name(CurvingDirectionMode mode);
+
+template <std::floating_point T, std::integral I>
+T reference_level_set_value(const LevelSetCell<T, I>& ls_cell,
+                            std::span<const T> ref);
+
+template <std::floating_point T, std::integral I>
+void reference_level_set_gradient(const LevelSetCell<T, I>& ls_cell,
+                                  std::span<const T> ref,
+                                  std::span<T> grad_ref);
+
+template <std::floating_point T, std::integral I>
+ProjectionDiagnostic<T> project_seed_to_zero_entity_diagnostic(
+    const AdaptCell<T>& ac,
+    int local_zero_entity_id,
+    const LevelSetCell<T, I>& ls_cell,
+    std::span<const T> seed,
+    const CurvingOptions<T>& options);
 
 template <std::floating_point T, std::integral I>
 void rebuild_identity(CurvingData<T, I>& curving,

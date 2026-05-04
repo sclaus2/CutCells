@@ -281,6 +281,54 @@ void refresh_adapt_cell_semantics(
     recompute_active_level_set_masks(ac, total_num_level_sets);
 }
 
+template <std::floating_point T>
+void merge_graph_diagnostics(ReadyCellGraphDiagnostics<T>& dst,
+                             const ReadyCellGraphDiagnostics<T>& src)
+{
+    dst.accepted = dst.accepted && src.accepted;
+    dst.checked_cells += src.checked_cells;
+    dst.checked_edges += src.checked_edges;
+    dst.checked_faces += src.checked_faces;
+    dst.failed_checks += src.failed_checks;
+    dst.graph_refinements += src.graph_refinements;
+    if (dst.first_failed_cell < 0 && src.first_failed_cell >= 0)
+    {
+        dst.first_failed_cell = src.first_failed_cell;
+        dst.first_failure_reason = src.first_failure_reason;
+    }
+    if (dst.first_failed_projection_seed.empty()
+        && !src.first_failed_projection_seed.empty())
+    {
+        dst.first_failed_projection_seed = src.first_failed_projection_seed;
+        dst.first_failed_projection_direction =
+            src.first_failed_projection_direction;
+        dst.first_failed_projection_clip_lo =
+            src.first_failed_projection_clip_lo;
+        dst.first_failed_projection_clip_hi =
+            src.first_failed_projection_clip_hi;
+        dst.first_failed_projection_root_t =
+            src.first_failed_projection_root_t;
+    }
+    dst.min_true_transversality =
+        std::min(dst.min_true_transversality, src.min_true_transversality);
+    dst.min_host_normal_alignment =
+        std::min(dst.min_host_normal_alignment, src.min_host_normal_alignment);
+    dst.max_drift_amplification =
+        std::max(dst.max_drift_amplification, src.max_drift_amplification);
+    dst.max_relative_correction_distance =
+        std::max(dst.max_relative_correction_distance,
+                 src.max_relative_correction_distance);
+    dst.max_relative_tangential_shift =
+        std::max(dst.max_relative_tangential_shift,
+                 src.max_relative_tangential_shift);
+    dst.min_edge_gap_ratio =
+        std::min(dst.min_edge_gap_ratio, src.min_edge_gap_ratio);
+    dst.min_face_area_ratio =
+        std::min(dst.min_face_area_ratio, src.min_face_area_ratio);
+    dst.zero_entities.insert(
+        dst.zero_entities.end(), src.zero_entities.begin(), src.zero_entities.end());
+}
+
 } // anonymous namespace
 
 // =====================================================================
@@ -291,7 +339,8 @@ template <std::floating_point T, std::integral I>
 std::pair<HOCutCells<T, I>, BackgroundMeshData<T, I>>
 cut(const MeshView<T, I>& mesh,
     const LevelSetFunction<T, I>& ls,
-    bool triangulate_cut_parts)
+    bool triangulate_cut_parts,
+    const ReadyCellGraphOptions<T>& graph_options)
 {
     if (!mesh.has_cell_types())
         throw std::runtime_error("cut: MeshView must have cell types");
@@ -344,10 +393,11 @@ cut(const MeshView<T, I>& mesh,
         // AdaptCell
         AdaptCell<T> ac = make_adapt_cell(mesh, ci);
 
-        certify_refine_and_process_ready_cells(
+        ReadyCellGraphDiagnostics<T> graph_diag =
+            certify_refine_graph_check_and_process_ready_cells(
             ac, hc.level_set_cells.back(), /*level_set_id=*/0,
             /*max_iterations=*/8, T(1e-12), T(1e-12), /*edge_max_depth=*/20,
-            triangulate_cut_parts);
+            triangulate_cut_parts, graph_options);
         {
             const std::array<int, 1> processed_ids = {0};
             const auto* processed_cell = &hc.level_set_cells.back();
@@ -364,10 +414,17 @@ cut(const MeshView<T, I>& mesh,
         if (ac.tdim == 3)
             build_faces(ac);
         rebuild_zero_entity_inventory(ac);
+        populate_committed_zero_entity_graph_diagnostics(
+            ac,
+            hc.level_set_cells.back(),
+            /*level_set_id=*/0,
+            graph_options,
+            graph_diag);
         hc.adapt_cells.push_back(std::move(ac));
 
         // Single LS: bit 0 is always set.
         hc.active_level_set_mask.push_back(std::uint64_t(1));
+        hc.graph_diagnostics.push_back(graph_diag);
 
         hc.parent_cell_ids.push_back(ci);
     }
@@ -383,7 +440,8 @@ template <std::floating_point T, std::integral I>
 std::pair<HOCutCells<T, I>, BackgroundMeshData<T, I>>
 cut(const MeshView<T, I>& mesh,
     const std::vector<LevelSetFunction<T, I>>& level_sets,
-    bool triangulate_cut_parts)
+    bool triangulate_cut_parts,
+    const ReadyCellGraphOptions<T>& graph_options)
 {
     if (!mesh.has_cell_types())
         throw std::runtime_error("cut: MeshView must have cell types");
@@ -479,13 +537,16 @@ cut(const MeshView<T, I>& mesh,
         // Process intersecting level sets recursively (input order).
         //
         std::uint64_t cell_active_mask = 0;
+        ReadyCellGraphDiagnostics<T> graph_diag;
         for (std::size_t k = 0; k < intersected_ls_indices.size(); ++k)
         {
             const int li = intersected_ls_indices[k];
-            certify_refine_and_process_ready_cells(
-                ac, intersected_ls_cells[k], li,
-                /*max_iterations=*/8, T(1e-12), T(1e-12),
-                /*edge_max_depth=*/20, triangulate_cut_parts);
+            const ReadyCellGraphDiagnostics<T> one_ls_graph =
+                certify_refine_graph_check_and_process_ready_cells(
+                    ac, intersected_ls_cells[k], li,
+                    /*max_iterations=*/8, T(1e-12), T(1e-12),
+                    /*edge_max_depth=*/20, triangulate_cut_parts, graph_options);
+            merge_graph_diagnostics(graph_diag, one_ls_graph);
 
             // New vertices created while processing level set li must be
             // reclassified for all already-processed level sets.
@@ -511,6 +572,21 @@ cut(const MeshView<T, I>& mesh,
             nls,
             T(1e-12));
         rebuild_zero_entity_inventory(ac);
+        graph_diag.zero_entities.clear();
+        for (std::size_t k = 0; k < intersected_ls_indices.size(); ++k)
+        {
+            ReadyCellGraphDiagnostics<T> zero_entity_graph;
+            populate_committed_zero_entity_graph_diagnostics(
+                ac,
+                intersected_ls_cells[k],
+                intersected_ls_indices[k],
+                graph_options,
+                zero_entity_graph);
+            graph_diag.zero_entities.insert(
+                graph_diag.zero_entities.end(),
+                zero_entity_graph.zero_entities.begin(),
+                zero_entity_graph.zero_entities.end());
+        }
 
         // Persist only level sets actively changing sign in this parent cell.
         // Non-active level sets may still touch a vertex/face, but they are not
@@ -520,6 +596,7 @@ cut(const MeshView<T, I>& mesh,
         hc.ls_offsets.push_back(
             static_cast<int>(hc.level_set_cells.size()));
         hc.active_level_set_mask.push_back(cell_active_mask);
+        hc.graph_diagnostics.push_back(graph_diag);
 
         hc.adapt_cells.push_back(std::move(ac));
         hc.parent_cell_ids.push_back(ci);
@@ -644,29 +721,37 @@ HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
 
 // cut() single LS
 template std::pair<HOCutCells<double, int>, BackgroundMeshData<double, int>>
-cut(const MeshView<double, int>&, const LevelSetFunction<double, int>&, bool);
+cut(const MeshView<double, int>&, const LevelSetFunction<double, int>&, bool,
+    const ReadyCellGraphOptions<double>&);
 
 template std::pair<HOCutCells<float, int>, BackgroundMeshData<float, int>>
-cut(const MeshView<float, int>&, const LevelSetFunction<float, int>&, bool);
+cut(const MeshView<float, int>&, const LevelSetFunction<float, int>&, bool,
+    const ReadyCellGraphOptions<float>&);
 
 template std::pair<HOCutCells<double, long>, BackgroundMeshData<double, long>>
-cut(const MeshView<double, long>&, const LevelSetFunction<double, long>&, bool);
+cut(const MeshView<double, long>&, const LevelSetFunction<double, long>&, bool,
+    const ReadyCellGraphOptions<double>&);
 
 template std::pair<HOCutCells<float, long>, BackgroundMeshData<float, long>>
-cut(const MeshView<float, long>&, const LevelSetFunction<float, long>&, bool);
+cut(const MeshView<float, long>&, const LevelSetFunction<float, long>&, bool,
+    const ReadyCellGraphOptions<float>&);
 
 // cut() multi LS
 template std::pair<HOCutCells<double, int>, BackgroundMeshData<double, int>>
-cut(const MeshView<double, int>&, const std::vector<LevelSetFunction<double, int>>&, bool);
+cut(const MeshView<double, int>&, const std::vector<LevelSetFunction<double, int>>&,
+    bool, const ReadyCellGraphOptions<double>&);
 
 template std::pair<HOCutCells<float, int>, BackgroundMeshData<float, int>>
-cut(const MeshView<float, int>&, const std::vector<LevelSetFunction<float, int>>&, bool);
+cut(const MeshView<float, int>&, const std::vector<LevelSetFunction<float, int>>&,
+    bool, const ReadyCellGraphOptions<float>&);
 
 template std::pair<HOCutCells<double, long>, BackgroundMeshData<double, long>>
-cut(const MeshView<double, long>&, const std::vector<LevelSetFunction<double, long>>&, bool);
+cut(const MeshView<double, long>&, const std::vector<LevelSetFunction<double, long>>&,
+    bool, const ReadyCellGraphOptions<double>&);
 
 template std::pair<HOCutCells<float, long>, BackgroundMeshData<float, long>>
-cut(const MeshView<float, long>&, const std::vector<LevelSetFunction<float, long>>&, bool);
+cut(const MeshView<float, long>&, const std::vector<LevelSetFunction<float, long>>&,
+    bool, const ReadyCellGraphOptions<float>&);
 
 // select_part()
 template HOMeshPart<double, int>

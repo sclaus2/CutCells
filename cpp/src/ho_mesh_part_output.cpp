@@ -1430,12 +1430,56 @@ void vertex_state_for_level_set(const AdaptCell<T>& ac,
 }
 
 template <std::floating_point T, std::integral I>
+bool graph_checks_allow_curving(const HOMeshPart<T, I>& part, int cut_cell_id)
+{
+    if (!part.cut_cells)
+        return true;
+
+    const auto& diagnostics = part.cut_cells->graph_diagnostics;
+    if (cut_cell_id < 0
+        || cut_cell_id >= static_cast<int>(diagnostics.size()))
+    {
+        return true;
+    }
+    return diagnostics[static_cast<std::size_t>(cut_cell_id)].accepted;
+}
+
+template <std::floating_point T, std::integral I>
+bool graph_checks_allow_zero_entity_curving(const HOMeshPart<T, I>& part,
+                                            int cut_cell_id,
+                                            int local_zero_entity_id)
+{
+    if (!part.cut_cells)
+        return true;
+
+    const auto& diagnostics = part.cut_cells->graph_diagnostics;
+    if (cut_cell_id < 0
+        || cut_cell_id >= static_cast<int>(diagnostics.size()))
+    {
+        return true;
+    }
+
+    const auto& cell_diag = diagnostics[static_cast<std::size_t>(cut_cell_id)];
+    for (const auto& record : cell_diag.zero_entities)
+    {
+        if (record.local_zero_entity_id == local_zero_entity_id)
+            return record.accepted;
+    }
+
+    return true;
+}
+
+template <std::floating_point T, std::integral I>
 const curving::CurvedZeroEntityState<T>* accepted_curved_state(
     const HOMeshPart<T, I>& part,
     int cut_cell_id,
     int local_zero_entity_id,
     const curving::CurvingOptions<T>& options)
 {
+    if (!graph_checks_allow_zero_entity_curving<T, I>(
+            part, cut_cell_id, local_zero_entity_id))
+        return nullptr;
+
     const auto& state = curving::ensure_curved<T, I>(
         part.cut_cells->curving,
         std::span<const I>(part.cut_cells->parent_cell_ids),
@@ -1793,6 +1837,51 @@ std::vector<SelectedEntity> selected_entities(const HOMeshPart<T, I>& part,
 
     return entities;
 }
+
+} // namespace
+
+template <std::floating_point T, std::integral I>
+std::vector<SelectedZeroEntityInfo> selected_zero_entity_infos(
+    const HOMeshPart<T, I>& part)
+{
+    if (!part.cut_cells)
+        throw std::runtime_error("HOMeshPart is not attached to cut-cell storage");
+
+    std::vector<SelectedZeroEntityInfo> out;
+    for (std::int32_t cut_id : part.cut_cell_ids)
+    {
+        if (cut_id < 0
+            || cut_id >= static_cast<std::int32_t>(part.cut_cells->adapt_cells.size()))
+        {
+            continue;
+        }
+
+        const auto& adapt_cell =
+            part.cut_cells->adapt_cells[static_cast<std::size_t>(cut_id)];
+        const auto entities = selected_entities(part, adapt_cell, cut_id);
+        const auto parent_cell_id =
+            part.cut_cells->parent_cell_ids[static_cast<std::size_t>(cut_id)];
+        for (const auto& entity : entities)
+        {
+            if (entity.zero_entity_index < 0)
+                continue;
+
+            SelectedZeroEntityInfo info;
+            info.cut_cell_id = cut_id;
+            info.parent_cell_id = static_cast<std::int32_t>(parent_cell_id);
+            info.local_zero_entity_id =
+                static_cast<std::int32_t>(entity.zero_entity_index);
+            info.dimension = static_cast<std::int32_t>(
+                adapt_cell.zero_entity_dim[
+                    static_cast<std::size_t>(entity.zero_entity_index)]);
+            out.push_back(info);
+        }
+    }
+    return out;
+}
+
+namespace
+{
 
 template <std::floating_point T>
 std::vector<T> entity_reference_coords(const AdaptCell<T>& adapt_cell,
@@ -2705,16 +2794,24 @@ void append_curved_entity(CurvedVTUGrid<T>& out,
         int status = 0;
         if (entity.zero_entity_index >= 0)
         {
-            const auto& state = curving::ensure_curved<T, I>(
-                part.cut_cells->curving,
-                std::span<const I>(part.cut_cells->parent_cell_ids),
-                std::span<const AdaptCell<T>>(part.cut_cells->adapt_cells),
-                std::span<const LevelSetCell<T, I>>(part.cut_cells->level_set_cells),
-                std::span<const int>(part.cut_cells->ls_offsets),
-                cut_cell_id,
-                entity.zero_entity_index,
-                options);
-            status = static_cast<int>(state.status);
+            if (graph_checks_allow_zero_entity_curving<T, I>(
+                    part, cut_cell_id, entity.zero_entity_index))
+            {
+                const auto& state = curving::ensure_curved<T, I>(
+                    part.cut_cells->curving,
+                    std::span<const I>(part.cut_cells->parent_cell_ids),
+                    std::span<const AdaptCell<T>>(part.cut_cells->adapt_cells),
+                    std::span<const LevelSetCell<T, I>>(part.cut_cells->level_set_cells),
+                    std::span<const int>(part.cut_cells->ls_offsets),
+                    cut_cell_id,
+                    entity.zero_entity_index,
+                    options);
+                status = static_cast<int>(state.status);
+            }
+            else
+            {
+                status = static_cast<int>(curving::CurvingStatus::failed);
+            }
         }
         else if (!map.curved_faces.empty() || !map.curved_edges.empty())
         {
@@ -2985,23 +3082,11 @@ template <std::floating_point T, std::integral I>
 mesh::CutMesh<T> visualization_mesh(const HOMeshPart<T, I>& part,
                                     bool include_uncut_cells,
                                     int geometry_order,
-                                    curving::NodeFamily node_family)
+                                    curving::NodeFamily node_family,
+                                    curving::CurvingDirectionMode direction_mode)
 {
     if (!part.cut_cells || !part.bg || !part.bg->mesh)
         throw std::runtime_error("HOMeshPart is not attached to cut-cell storage");
-    if (geometry_order > 1)
-    {
-        curving::CurvingOptions<T> options;
-        options.geometry_order = geometry_order;
-        options.node_family = node_family;
-        curving::ensure_all_curved<T, I>(
-            part.cut_cells->curving,
-            std::span<const I>(part.cut_cells->parent_cell_ids),
-            std::span<const AdaptCell<T>>(part.cut_cells->adapt_cells),
-            std::span<const LevelSetCell<T, I>>(part.cut_cells->level_set_cells),
-            std::span<const int>(part.cut_cells->ls_offsets),
-            options);
-    }
 
     mesh::CutMesh<T> out;
     out._gdim = part.bg->mesh->gdim;
@@ -3030,7 +3115,8 @@ quadrature::QuadratureRules<T> quadrature_rules(const HOMeshPart<T, I>& part,
                                                 int order,
                                                 bool include_uncut_cells,
                                                 int geometry_order,
-                                                curving::NodeFamily node_family)
+                                                curving::NodeFamily node_family,
+                                                curving::CurvingDirectionMode direction_mode)
 {
     if (!part.cut_cells || !part.bg || !part.bg->mesh)
         throw std::runtime_error("HOMeshPart is not attached to cut-cell storage");
@@ -3040,13 +3126,7 @@ quadrature::QuadratureRules<T> quadrature_rules(const HOMeshPart<T, I>& part,
     {
         options.geometry_order = geometry_order;
         options.node_family = construction_node_family(geometry_order, node_family);
-        curving::ensure_all_curved<T, I>(
-            part.cut_cells->curving,
-            std::span<const I>(part.cut_cells->parent_cell_ids),
-            std::span<const AdaptCell<T>>(part.cut_cells->adapt_cells),
-            std::span<const LevelSetCell<T, I>>(part.cut_cells->level_set_cells),
-            std::span<const int>(part.cut_cells->ls_offsets),
-            options);
+        options.direction_mode = direction_mode;
     }
 
     mesh::CutMesh<T> unused_mesh;
@@ -3072,7 +3152,8 @@ template <std::floating_point T, std::integral I>
 CurvedVTUGrid<T> curved_lagrange_grid(const HOMeshPart<T, I>& part,
                                       bool include_uncut_cells,
                                       int geometry_order,
-                                      curving::NodeFamily node_family)
+                                      curving::NodeFamily node_family,
+                                      curving::CurvingDirectionMode direction_mode)
 {
     if (!part.cut_cells || !part.bg || !part.bg->mesh)
         throw std::runtime_error("HOMeshPart is not attached to cut-cell storage");
@@ -3082,13 +3163,7 @@ CurvedVTUGrid<T> curved_lagrange_grid(const HOMeshPart<T, I>& part,
     curving::CurvingOptions<T> options;
     options.geometry_order = geometry_order;
     options.node_family = construction_node_family(geometry_order, node_family);
-    curving::ensure_all_curved<T, I>(
-        part.cut_cells->curving,
-        std::span<const I>(part.cut_cells->parent_cell_ids),
-        std::span<const AdaptCell<T>>(part.cut_cells->adapt_cells),
-        std::span<const LevelSetCell<T, I>>(part.cut_cells->level_set_cells),
-        std::span<const int>(part.cut_cells->ls_offsets),
-        options);
+    options.direction_mode = direction_mode;
 
     CurvedVTUGrid<T> out;
     out.gdim = part.bg->mesh->gdim;
@@ -3128,30 +3203,51 @@ CurvedVTUGrid<T> curved_lagrange_grid(const HOMeshPart<T, I>& part,
 }
 
 template mesh::CutMesh<double> visualization_mesh(
-    const HOMeshPart<double, int>&, bool, int, curving::NodeFamily);
+    const HOMeshPart<double, int>&, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
 template mesh::CutMesh<float> visualization_mesh(
-    const HOMeshPart<float, int>&, bool, int, curving::NodeFamily);
+    const HOMeshPart<float, int>&, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
 template mesh::CutMesh<double> visualization_mesh(
-    const HOMeshPart<double, long>&, bool, int, curving::NodeFamily);
+    const HOMeshPart<double, long>&, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
 template mesh::CutMesh<float> visualization_mesh(
-    const HOMeshPart<float, long>&, bool, int, curving::NodeFamily);
+    const HOMeshPart<float, long>&, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
+
+template std::vector<SelectedZeroEntityInfo> selected_zero_entity_infos(
+    const HOMeshPart<double, int>&);
+template std::vector<SelectedZeroEntityInfo> selected_zero_entity_infos(
+    const HOMeshPart<float, int>&);
+template std::vector<SelectedZeroEntityInfo> selected_zero_entity_infos(
+    const HOMeshPart<double, long>&);
+template std::vector<SelectedZeroEntityInfo> selected_zero_entity_infos(
+    const HOMeshPart<float, long>&);
 
 template quadrature::QuadratureRules<double> quadrature_rules(
-    const HOMeshPart<double, int>&, int, bool, int, curving::NodeFamily);
+    const HOMeshPart<double, int>&, int, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
 template quadrature::QuadratureRules<float> quadrature_rules(
-    const HOMeshPart<float, int>&, int, bool, int, curving::NodeFamily);
+    const HOMeshPart<float, int>&, int, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
 template quadrature::QuadratureRules<double> quadrature_rules(
-    const HOMeshPart<double, long>&, int, bool, int, curving::NodeFamily);
+    const HOMeshPart<double, long>&, int, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
 template quadrature::QuadratureRules<float> quadrature_rules(
-    const HOMeshPart<float, long>&, int, bool, int, curving::NodeFamily);
+    const HOMeshPart<float, long>&, int, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
 
 template CurvedVTUGrid<double> curved_lagrange_grid(
-    const HOMeshPart<double, int>&, bool, int, curving::NodeFamily);
+    const HOMeshPart<double, int>&, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
 template CurvedVTUGrid<float> curved_lagrange_grid(
-    const HOMeshPart<float, int>&, bool, int, curving::NodeFamily);
+    const HOMeshPart<float, int>&, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
 template CurvedVTUGrid<double> curved_lagrange_grid(
-    const HOMeshPart<double, long>&, bool, int, curving::NodeFamily);
+    const HOMeshPart<double, long>&, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
 template CurvedVTUGrid<float> curved_lagrange_grid(
-    const HOMeshPart<float, long>&, bool, int, curving::NodeFamily);
+    const HOMeshPart<float, long>&, bool, int, curving::NodeFamily,
+    curving::CurvingDirectionMode);
 
 } // namespace cutcells::output
