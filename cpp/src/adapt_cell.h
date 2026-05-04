@@ -54,6 +54,17 @@ enum class FaceCertTag : std::uint8_t
     ambiguous      = 5
 };
 
+/// Why a leaf cell was created from an earlier leaf cell.
+enum class CellRefinementReason : std::uint8_t
+{
+    none             = 0,
+    green_edge       = 1,
+    red_cell         = 2,
+    graph_green_edge = 3,
+    graph_red_cell   = 4,
+    cut_level_set    = 5
+};
+
 /// Compact Sparse Row (CSR) adjacency map between entities.
 ///
 /// Stores a variable-length list of adjacent entity indices for each source entity.
@@ -117,6 +128,14 @@ struct AdaptCell
     /// bit i set ↔ level set i intersects that leaf cell.
     std::vector<std::uint64_t> cell_active_level_set_mask;
 
+    /// Persistent leaf-cell provenance. These arrays are parallel to the
+    /// top-dimensional entity pool and are preserved through repeated
+    /// adaptcell refinements.
+    std::vector<std::int32_t> cell_source_cell_id;
+    std::vector<std::int32_t> cell_refinement_generation;
+    std::vector<CellRefinementReason> cell_refinement_reason;
+    std::vector<std::int32_t> cell_host_parent_cell_id;
+
     // ---------------------------------------------------------------
     // Vertices (dimension 0)
     //
@@ -179,6 +198,16 @@ struct AdaptCell
     /// This is CSR-style: offsets + flat indices.
     std::array<EntityAdjacency, max_dim> entity_to_vertex;
 
+    /// Structured host provenance for entities. For zero faces this stores
+    /// the uncut adaptcell leaf cell that produced the extracted surface
+    /// element. For zero edges on a zero face boundary, host_face_id is filled
+    /// by the face context when available.
+    std::array<std::vector<std::int32_t>, max_dim> entity_host_cell_id;
+    std::array<std::vector<cell::type>, max_dim> entity_host_cell_type;
+    std::array<std::vector<std::int32_t>, max_dim> entity_host_face_id;
+    std::array<std::vector<std::int32_t>, max_dim> entity_source_level_set;
+    std::array<EntityAdjacency, max_dim> entity_host_cell_vertices;
+
     // ---------------------------------------------------------------
     // Connectivity cache (d0 → d1)
     //
@@ -212,6 +241,16 @@ struct AdaptCell
     /// This enables global stitching of interface meshes.
     std::vector<std::int8_t>  zero_entity_parent_dim;    ///< -1 if not on a shared parent entity
     std::vector<std::int32_t> zero_entity_parent_id;     ///< -1 if not on a shared parent entity
+
+    /// Provenance back to the uncut adaptcell leaf cell used to generate the
+    /// zero entity. These arrays mirror entity_host_* for the zero-entity
+    /// inventory and survive inventory rebuilds as long as the underlying
+    /// entity provenance is available.
+    std::vector<std::int32_t> zero_entity_host_cell_id;
+    std::vector<cell::type> zero_entity_host_cell_type;
+    std::vector<std::int32_t> zero_entity_host_face_id;
+    std::vector<std::int32_t> zero_entity_source_level_set;
+    EntityAdjacency zero_entity_host_cell_vertices;
 
     std::uint32_t zero_entity_version = 0;  ///< bumped when zero-entity inventory changes
 
