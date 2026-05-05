@@ -4576,6 +4576,27 @@ bool point_in_triangle_ref(const AdaptCell<T>& ac,
 }
 
 template <std::floating_point T>
+bool point_in_face_ref(const AdaptCell<T>& ac,
+                       std::span<const int> face_vertices,
+                       std::span<const T> point,
+                       T tol)
+{
+    if (face_vertices.size() == 3)
+        return point_in_triangle_ref<T>(ac, face_vertices, point, tol);
+    if (face_vertices.size() != 4)
+        return false;
+
+    const std::array<int, 3> tri0 = {
+        face_vertices[0], face_vertices[1], face_vertices[3]};
+    const std::array<int, 3> tri1 = {
+        face_vertices[0], face_vertices[3], face_vertices[2]};
+    return point_in_triangle_ref<T>(
+               ac, std::span<const int>(tri0.data(), tri0.size()), point, tol)
+        || point_in_triangle_ref<T>(
+               ac, std::span<const int>(tri1.data(), tri1.size()), point, tol);
+}
+
+template <std::floating_point T>
 int host_face_for_zero_face_boundary_edge(const AdaptCell<T>& ac,
                                           int zero_face_id,
                                           int zero_edge_id,
@@ -4606,23 +4627,17 @@ int host_face_for_zero_face_boundary_edge(const AdaptCell<T>& ac,
     for (int f = 0; f < cell::num_faces(host_type); ++f)
     {
         auto local_face = cell::face_vertices(host_type, f);
-        if (local_face.size() != 3)
+        if (local_face.size() != 3 && local_face.size() != 4)
             continue;
-        std::array<int, 3> face_vertices = {
-            host_cell_vertices[static_cast<std::size_t>(local_face[0])],
-            host_cell_vertices[static_cast<std::size_t>(local_face[1])],
-            host_cell_vertices[static_cast<std::size_t>(local_face[2])]
-        };
-        if (point_in_triangle_ref<T>(
-                ac,
-                std::span<const int>(face_vertices.data(), face_vertices.size()),
-                p0,
-                tol)
-            && point_in_triangle_ref<T>(
-                ac,
-                std::span<const int>(face_vertices.data(), face_vertices.size()),
-                p1,
-                tol))
+        std::array<int, 4> face_vertices = {-1, -1, -1, -1};
+        for (std::size_t i = 0; i < local_face.size(); ++i)
+            face_vertices[i] =
+                host_cell_vertices[static_cast<std::size_t>(local_face[i])];
+
+        const std::span<const int> face_span(
+            face_vertices.data(), local_face.size());
+        if (point_in_face_ref<T>(ac, face_span, p0, tol)
+            && point_in_face_ref<T>(ac, face_span, p1, tol))
         {
             return f;
         }

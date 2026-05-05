@@ -135,6 +135,22 @@ def test_cut_tet_physical_points():
     assert phys.reshape(-1, 3).shape[1] == 3
 
 
+def test_physical_points_rejects_non_vtk_parent_type_ids():
+    """physical_points expects VTK parent ids, not internal CutCells type ids."""
+    pts_arr = np.array(TET_PTS, dtype=np.float64).flatten()
+    ls = np.full(4, -1.0, dtype=np.float64)
+    conn = np.array([0, 1, 2, 3], dtype=np.int32)
+    offs = np.array([0, 4], dtype=np.int32)
+    vtk_tetra = np.array([10], dtype=np.int32)
+    internal_tetra = np.array([3], dtype=np.int32)
+    rules = cutcells.runtime_quadrature(
+        ls, pts_arr, conn, offs, vtk_tetra, "phi<0", False, 2
+    )
+
+    with pytest.raises(ValueError, match="dimension does not match"):
+        cutcells.physical_points(rules, pts_arr, conn, offs, internal_tetra)
+
+
 # ---------------------------------------------------------------------------
 # Fully outside → empty result
 # ---------------------------------------------------------------------------

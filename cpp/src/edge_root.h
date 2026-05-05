@@ -22,7 +22,7 @@ namespace cutcells::cell::edge_root
 template <std::floating_point T>
 inline T default_value_tolerance()
 {
-    return std::sqrt(std::numeric_limits<T>::epsilon());
+    return T(64) * std::numeric_limits<T>::epsilon();
 }
 
 enum class method

@@ -458,6 +458,46 @@ std::vector<T> cell_vertex_shape_weights(cell::type cell_type,
 }
 
 template <std::floating_point T>
+std::vector<T> cell_vertex_shape_gradients(cell::type cell_type,
+                                           std::span<const T> xi)
+{
+    if (cell_type == cell::type::interval)
+        return {T(-1), T(1)};
+    if (cell_type == cell::type::triangle)
+        return {T(-1), T(-1),
+                T(1), T(0),
+                T(0), T(1)};
+    if (cell_type == cell::type::quadrilateral)
+    {
+        const T u = xi[0];
+        const T v = xi[1];
+        return {-(T(1) - v), -(T(1) - u),
+                 (T(1) - v), -u,
+                 -v,           T(1) - u,
+                 v,            u};
+    }
+    if (cell_type == cell::type::tetrahedron)
+        return {T(-1), T(-1), T(-1),
+                T(1), T(0), T(0),
+                T(0), T(1), T(0),
+                T(0), T(0), T(1)};
+    if (cell_type == cell::type::prism)
+    {
+        const T u = xi[0];
+        const T v = xi[1];
+        const T z = xi[2];
+        const T w0 = T(1) - u - v;
+        return {-(T(1) - z), -(T(1) - z), -w0,
+                 (T(1) - z),  T(0),        -u,
+                 T(0),         (T(1) - z), -v,
+                -z,           -z,           w0,
+                 z,            T(0),        u,
+                 T(0),         z,           v};
+    }
+    throw std::runtime_error("cell_vertex_shape_gradients: unsupported cell type");
+}
+
+template <std::floating_point T>
 std::vector<T> affine_ref_from_bary(const LocalCurvedSimplexMap<T>& map,
                                     std::span<const T> bary)
 {
@@ -491,6 +531,30 @@ std::vector<T> straight_ref_from_cell_point(const LocalCurvedSimplexMap<T>& map,
 }
 
 template <std::floating_point T>
+std::vector<T> straight_ref_jacobian_from_cell_point(
+    const LocalCurvedSimplexMap<T>& map,
+    std::span<const T> xi)
+{
+    const auto gradients = cell_vertex_shape_gradients<T>(map.simplex_type, xi);
+    const int nv = cell::get_num_vertices(map.simplex_type);
+    std::vector<T> J(static_cast<std::size_t>(map.dim * map.parent_tdim), T(0));
+    for (int c = 0; c < map.dim; ++c)
+    {
+        for (int v = 0; v < nv; ++v)
+        {
+            const T dNv = gradients[static_cast<std::size_t>(v * map.dim + c)];
+            for (int d = 0; d < map.parent_tdim; ++d)
+            {
+                J[static_cast<std::size_t>(c * map.parent_tdim + d)] +=
+                    dNv * map.ref_vertex_coords[
+                        static_cast<std::size_t>(v * map.parent_tdim + d)];
+            }
+        }
+    }
+    return J;
+}
+
+template <std::floating_point T>
 std::vector<T> push_parent_ref_to_physical(const LocalCurvedSimplexMap<T>& map,
                                            std::span<const T> ref_point)
 {
@@ -500,6 +564,89 @@ std::vector<T> push_parent_ref_to_physical(const LocalCurvedSimplexMap<T>& map,
         map.gdim,
         ref_point);
     return phys;
+}
+
+template <std::floating_point T>
+std::vector<T> parent_ref_to_physical_jacobian(
+    const LocalCurvedSimplexMap<T>& map)
+{
+    const auto cols = cell::jacobian_col_indices(map.parent_cell_type);
+    const T* x0 = map.parent_physical_coords.data();
+    std::vector<T> J(
+        static_cast<std::size_t>(map.parent_tdim * map.gdim), T(0));
+    for (int c = 0; c < map.parent_tdim; ++c)
+    {
+        const T* xc =
+            map.parent_physical_coords.data()
+            + static_cast<std::size_t>(cols[c] * map.gdim);
+        for (int r = 0; r < map.gdim; ++r)
+            J[static_cast<std::size_t>(c * map.gdim + r)] = xc[r] - x0[r];
+    }
+    return J;
+}
+
+template <std::floating_point T>
+std::vector<T> compose_ref_to_physical_jacobian(
+    const LocalCurvedSimplexMap<T>& map,
+    std::span<const T> ref_jacobian)
+{
+    const auto parent_J = parent_ref_to_physical_jacobian<T>(map);
+    std::vector<T> J(static_cast<std::size_t>(map.dim * map.gdim), T(0));
+    for (int c = 0; c < map.dim; ++c)
+    {
+        for (int p = 0; p < map.parent_tdim; ++p)
+        {
+            const T dref =
+                ref_jacobian[static_cast<std::size_t>(c * map.parent_tdim + p)];
+            for (int r = 0; r < map.gdim; ++r)
+            {
+                J[static_cast<std::size_t>(c * map.gdim + r)] +=
+                    dref * parent_J[static_cast<std::size_t>(p * map.gdim + r)];
+            }
+        }
+    }
+    return J;
+}
+
+template <std::floating_point T>
+T measure_from_jacobian(int dim, int gdim, std::span<const T> J)
+{
+    if (dim == 1)
+    {
+        T n2 = T(0);
+        for (int r = 0; r < gdim; ++r)
+            n2 += J[static_cast<std::size_t>(r)]
+                * J[static_cast<std::size_t>(r)];
+        return std::sqrt(n2);
+    }
+
+    if (dim == gdim)
+    {
+        if (dim == 2)
+            return J[0] * J[3] - J[2] * J[1];
+        if (dim == 3)
+        {
+            return J[0] * (J[4] * J[8] - J[7] * J[5])
+                 - J[3] * (J[1] * J[8] - J[7] * J[2])
+                 + J[6] * (J[1] * J[5] - J[4] * J[2]);
+        }
+    }
+
+    T G[9] = {};
+    for (int i = 0; i < dim; ++i)
+    {
+        for (int j = 0; j < dim; ++j)
+        {
+            for (int r = 0; r < gdim; ++r)
+            {
+                G[i * dim + j] += J[static_cast<std::size_t>(i * gdim + r)]
+                                 * J[static_cast<std::size_t>(j * gdim + r)];
+            }
+        }
+    }
+    if (dim == 2)
+        return std::sqrt(std::max(T(0), G[0] * G[3] - G[1] * G[2]));
+    return T(0);
 }
 
 inline bool same_unordered(std::span<const int> a, std::span<const int> b)
@@ -545,6 +692,28 @@ T lagrange_basis_1d(int i, std::span<const T> params, T x)
                / (xi - params[static_cast<std::size_t>(j)]);
     }
     return value;
+}
+
+template <std::floating_point T>
+T lagrange_basis_1d_derivative(int i, std::span<const T> params, T x)
+{
+    const T xi = params[static_cast<std::size_t>(i)];
+    T derivative = T(0);
+    for (int m = 0; m < static_cast<int>(params.size()); ++m)
+    {
+        if (m == i)
+            continue;
+        T term = T(1) / (xi - params[static_cast<std::size_t>(m)]);
+        for (int j = 0; j < static_cast<int>(params.size()); ++j)
+        {
+            if (j == i || j == m)
+                continue;
+            term *= (x - params[static_cast<std::size_t>(j)])
+                  / (xi - params[static_cast<std::size_t>(j)]);
+        }
+        derivative += term;
+    }
+    return derivative;
 }
 
 template <std::floating_point T>
@@ -688,6 +857,31 @@ std::vector<T> triangle_monomials(int order, std::span<const T> bary)
 }
 
 template <std::floating_point T>
+std::pair<std::vector<T>, std::vector<T>> triangle_monomial_gradients(
+    int order,
+    std::span<const T> bary)
+{
+    const T u = bary[1];
+    const T v = bary[2];
+    std::vector<T> du;
+    std::vector<T> dv;
+    du.reserve(static_cast<std::size_t>((order + 1) * (order + 2) / 2));
+    dv.reserve(static_cast<std::size_t>((order + 1) * (order + 2) / 2));
+    for (int total = 0; total <= order; ++total)
+    {
+        for (int j = 0; j <= total; ++j)
+        {
+            const int i = total - j;
+            du.push_back(i == 0 ? T(0)
+                                : T(i) * std::pow(u, i - 1) * std::pow(v, j));
+            dv.push_back(j == 0 ? T(0)
+                                : T(j) * std::pow(u, i) * std::pow(v, j - 1));
+        }
+    }
+    return {std::move(du), std::move(dv)};
+}
+
+template <std::floating_point T>
 bool solve_dense(std::vector<T> A, std::vector<T> b, int n, std::vector<T>& x)
 {
     x.assign(static_cast<std::size_t>(n), T(0));
@@ -737,9 +931,18 @@ bool solve_dense(std::vector<T> A, std::vector<T> b, int n, std::vector<T>& x)
 }
 
 template <std::floating_point T>
-std::vector<T> triangle_lagrange_basis(int order,
-                                       curving::NodeFamily node_family,
-                                       std::span<const T> bary)
+struct TriangleLagrangeBasisData
+{
+    std::vector<T> values;
+    std::vector<T> du;
+    std::vector<T> dv;
+};
+
+template <std::floating_point T>
+TriangleLagrangeBasisData<T> triangle_lagrange_basis_data(
+    int order,
+    curving::NodeFamily node_family,
+    std::span<const T> bary)
 {
     const auto nodes =
         triangle_interpolation_barycentric_nodes<T>(order, node_family);
@@ -756,10 +959,24 @@ std::vector<T> triangle_lagrange_basis(int order,
     }
 
     const auto rhs = triangle_monomials<T>(order, bary);
-    std::vector<T> basis;
-    if (!solve_dense<T>(std::move(matrix), rhs, n, basis))
+    const auto [rhs_du, rhs_dv] = triangle_monomial_gradients<T>(order, bary);
+
+    TriangleLagrangeBasisData<T> out;
+    if (!solve_dense<T>(matrix, rhs, n, out.values)
+        || !solve_dense<T>(matrix, rhs_du, n, out.du)
+        || !solve_dense<T>(std::move(matrix), rhs_dv, n, out.dv))
+    {
         throw std::runtime_error("triangle_lagrange_basis: singular interpolation matrix");
-    return basis;
+    }
+    return out;
+}
+
+template <std::floating_point T>
+std::vector<T> triangle_lagrange_basis(int order,
+                                       curving::NodeFamily node_family,
+                                       std::span<const T> bary)
+{
+    return triangle_lagrange_basis_data<T>(order, node_family, bary).values;
 }
 
 template <std::floating_point T>
@@ -800,17 +1017,59 @@ std::vector<T> eval_curved_edge_ref(const CurvedBoundaryEdge<T>& edge,
 }
 
 template <std::floating_point T>
-std::vector<T> eval_curved_face_ref(const CurvedBoundaryFace<T>& face,
-                                    int order,
-                                    curving::NodeFamily node_family,
-                                    std::span<const T> coordinates)
+std::vector<T> eval_curved_edge_ref_derivative(const CurvedBoundaryEdge<T>& edge,
+                                               int order,
+                                               curving::NodeFamily family,
+                                               T t_local)
+{
+    const bool same_orientation =
+        edge.zero_vertices[0] == edge.local_global_vertices[0]
+        && edge.zero_vertices[1] == edge.local_global_vertices[1];
+    const bool reverse_orientation =
+        edge.zero_vertices[0] == edge.local_global_vertices[1]
+        && edge.zero_vertices[1] == edge.local_global_vertices[0];
+    if (!same_orientation && !reverse_orientation)
+        throw std::runtime_error("eval_curved_edge_ref_derivative: edge orientation mismatch");
+    const T sign = same_orientation ? T(1) : T(-1);
+    const T t = same_orientation ? t_local : T(1) - t_local;
+    const auto params = interpolation_parameters<T>(order, family);
+    const int tdim = static_cast<int>(edge.state->ref_nodes.size()) / (order + 1);
+    std::vector<T> dx(static_cast<std::size_t>(tdim), T(0));
+    for (int i = 0; i <= order; ++i)
+    {
+        const T dLi =
+            sign * lagrange_basis_1d_derivative<T>(
+                i, std::span<const T>(params.data(), params.size()), t);
+        for (int d = 0; d < tdim; ++d)
+            dx[static_cast<std::size_t>(d)] += dLi * edge.state->ref_nodes[
+                static_cast<std::size_t>(i * tdim + d)];
+    }
+    return dx;
+}
+
+template <std::floating_point T>
+struct CurvedFaceEval
+{
+    std::vector<T> point;
+    // Derivatives are stored column-major: du column, then dv column.
+    std::vector<T> jacobian;
+};
+
+template <std::floating_point T>
+CurvedFaceEval<T> eval_curved_face_ref_with_jacobian(
+    const CurvedBoundaryFace<T>& face,
+    int order,
+    curving::NodeFamily node_family,
+    std::span<const T> coordinates)
 {
     const int nodes_per_face =
         (face.zero_face_type == cell::type::quadrilateral)
             ? (order + 1) * (order + 1)
             : (order + 1) * (order + 2) / 2;
     const int tdim = static_cast<int>(face.state->ref_nodes.size()) / nodes_per_face;
-    std::vector<T> x(static_cast<std::size_t>(tdim), T(0));
+    CurvedFaceEval<T> out;
+    out.point.assign(static_cast<std::size_t>(tdim), T(0));
+    out.jacobian.assign(static_cast<std::size_t>(2 * tdim), T(0));
 
     if (face.zero_face_type == cell::type::quadrilateral)
     {
@@ -822,29 +1081,55 @@ std::vector<T> eval_curved_face_ref(const CurvedBoundaryFace<T>& face,
         {
             const T Lj = lagrange_basis_1d<T>(
                 j, std::span<const T>(params.data(), params.size()), v);
+            const T dLj = lagrange_basis_1d_derivative<T>(
+                j, std::span<const T>(params.data(), params.size()), v);
             for (int i = 0; i <= order; ++i)
             {
                 const T Li = lagrange_basis_1d<T>(
                     i, std::span<const T>(params.data(), params.size()), u);
+                const T dLi = lagrange_basis_1d_derivative<T>(
+                    i, std::span<const T>(params.data(), params.size()), u);
                 const T L = Li * Lj;
                 for (int d = 0; d < tdim; ++d)
-                    x[static_cast<std::size_t>(d)] += L * face.state->ref_nodes[
+                {
+                    const T node_value = face.state->ref_nodes[
                         static_cast<std::size_t>(node * tdim + d)];
+                    out.point[static_cast<std::size_t>(d)] += L * node_value;
+                    out.jacobian[static_cast<std::size_t>(d)] += dLi * Lj * node_value;
+                    out.jacobian[static_cast<std::size_t>(tdim + d)] += Li * dLj * node_value;
+                }
                 ++node;
             }
         }
-        return x;
+        return out;
     }
 
-    const auto basis = triangle_lagrange_basis<T>(order, node_family, coordinates);
-    for (int node = 0; node < static_cast<int>(basis.size()); ++node)
+    const auto basis = triangle_lagrange_basis_data<T>(order, node_family, coordinates);
+    for (int node = 0; node < static_cast<int>(basis.values.size()); ++node)
     {
-        const T L = basis[static_cast<std::size_t>(node)];
+        const T L = basis.values[static_cast<std::size_t>(node)];
+        const T dLdu = basis.du[static_cast<std::size_t>(node)];
+        const T dLdv = basis.dv[static_cast<std::size_t>(node)];
         for (int d = 0; d < tdim; ++d)
-            x[static_cast<std::size_t>(d)] += L * face.state->ref_nodes[
+        {
+            const T node_value = face.state->ref_nodes[
                 static_cast<std::size_t>(node * tdim + d)];
+            out.point[static_cast<std::size_t>(d)] += L * node_value;
+            out.jacobian[static_cast<std::size_t>(d)] += dLdu * node_value;
+            out.jacobian[static_cast<std::size_t>(tdim + d)] += dLdv * node_value;
+        }
     }
-    return x;
+    return out;
+}
+
+template <std::floating_point T>
+std::vector<T> eval_curved_face_ref(const CurvedBoundaryFace<T>& face,
+                                    int order,
+                                    curving::NodeFamily node_family,
+                                    std::span<const T> coordinates)
+{
+    return eval_curved_face_ref_with_jacobian<T>(
+        face, order, node_family, coordinates).point;
 }
 
 template <std::floating_point T>
@@ -868,41 +1153,83 @@ bool edge_is_in_any_curved_face(const CurvedBoundaryEdge<T>& edge,
 }
 
 template <std::floating_point T>
-std::vector<T> curved_map_ref_point(const LocalCurvedSimplexMap<T>& map,
-                                    std::span<const T> xi)
+struct CurvedMapRefEval
+{
+    std::vector<T> point;
+    // Derivatives d(point) / d(xi_c), column-major in local coordinates.
+    std::vector<T> jacobian;
+};
+
+template <std::floating_point T>
+CurvedMapRefEval<T> curved_map_ref_point_with_jacobian(
+    const LocalCurvedSimplexMap<T>& map,
+    std::span<const T> xi)
 {
     const auto vertex_weights = cell_vertex_shape_weights<T>(map.simplex_type, xi);
-    std::vector<T> ref = straight_ref_from_cell_point<T>(map, xi);
+    const auto vertex_gradients = cell_vertex_shape_gradients<T>(map.simplex_type, xi);
+    CurvedMapRefEval<T> out;
+    out.point = straight_ref_from_cell_point<T>(map, xi);
+    out.jacobian = straight_ref_jacobian_from_cell_point<T>(map, xi);
     constexpr T eps = T(64) * std::numeric_limits<T>::epsilon();
 
     if (map.dim == 1)
     {
         for (const auto& edge : map.curved_edges)
         {
-            const auto curved = eval_curved_edge_ref<T>(
+            out.point = eval_curved_edge_ref<T>(
+                edge, map.geometry_order, map.node_family, xi[0]);
+            const auto dcurved = eval_curved_edge_ref_derivative<T>(
                 edge, map.geometry_order, map.node_family, xi[0]);
             for (int d = 0; d < map.parent_tdim; ++d)
-                ref[static_cast<std::size_t>(d)] = curved[static_cast<std::size_t>(d)];
+                out.jacobian[static_cast<std::size_t>(d)] =
+                    dcurved[static_cast<std::size_t>(d)];
         }
-        return ref;
+        return out;
     }
 
     for (const auto& face : map.curved_faces)
     {
         T s = T(0);
         std::array<T, 4> local_w = {};
+        std::array<T, 12> local_dw = {};
+        std::array<T, 3> ds = {};
         for (int i = 0; i < face.num_local_vertices; ++i)
         {
+            const int lv = face.local_vertices[static_cast<std::size_t>(i)];
             local_w[static_cast<std::size_t>(i)] =
-                vertex_weights[static_cast<std::size_t>(
-                    face.local_vertices[static_cast<std::size_t>(i)])];
+                vertex_weights[static_cast<std::size_t>(lv)];
             s += local_w[static_cast<std::size_t>(i)];
+            for (int c = 0; c < map.dim; ++c)
+            {
+                const T value =
+                    vertex_gradients[static_cast<std::size_t>(lv * map.dim + c)];
+                local_dw[static_cast<std::size_t>(i * map.dim + c)] = value;
+                ds[static_cast<std::size_t>(c)] += value;
+            }
         }
         if (s <= eps)
             continue;
 
+        std::array<T, 4> normalized_w = {};
+        std::array<T, 12> normalized_dw = {};
+        for (int i = 0; i < face.num_local_vertices; ++i)
+        {
+            normalized_w[static_cast<std::size_t>(i)] =
+                local_w[static_cast<std::size_t>(i)] / s;
+            for (int c = 0; c < map.dim; ++c)
+            {
+                normalized_dw[static_cast<std::size_t>(i * map.dim + c)] =
+                    (local_dw[static_cast<std::size_t>(i * map.dim + c)] * s
+                     - local_w[static_cast<std::size_t>(i)]
+                           * ds[static_cast<std::size_t>(c)])
+                    / (s * s);
+            }
+        }
+
         std::array<T, 3> zero_w = {};
+        std::array<T, 9> zero_dw = {};
         std::array<T, 2> zero_uv = {};
+        std::array<T, 6> zero_duv = {};
         for (int zi = 0; zi < face.num_zero_vertices; ++zi)
         {
             for (int li = 0; li < face.num_local_vertices; ++li)
@@ -911,17 +1238,29 @@ std::vector<T> curved_map_ref_point(const LocalCurvedSimplexMap<T>& map,
                     == map.vertices[static_cast<std::size_t>(
                         face.local_vertices[static_cast<std::size_t>(li)])])
                 {
-                    const T w = local_w[static_cast<std::size_t>(li)] / s;
                     if (face.zero_face_type == cell::type::quadrilateral)
                     {
                         const T u = (zi == 1 || zi == 3) ? T(1) : T(0);
                         const T v = (zi == 2 || zi == 3) ? T(1) : T(0);
-                        zero_uv[0] += w * u;
-                        zero_uv[1] += w * v;
+                        zero_uv[0] += normalized_w[static_cast<std::size_t>(li)] * u;
+                        zero_uv[1] += normalized_w[static_cast<std::size_t>(li)] * v;
+                        for (int c = 0; c < map.dim; ++c)
+                        {
+                            zero_duv[static_cast<std::size_t>(c)] +=
+                                normalized_dw[static_cast<std::size_t>(li * map.dim + c)] * u;
+                            zero_duv[static_cast<std::size_t>(map.dim + c)] +=
+                                normalized_dw[static_cast<std::size_t>(li * map.dim + c)] * v;
+                        }
                     }
                     else
                     {
-                        zero_w[static_cast<std::size_t>(zi)] = w;
+                        zero_w[static_cast<std::size_t>(zi)] =
+                            normalized_w[static_cast<std::size_t>(li)];
+                        for (int c = 0; c < map.dim; ++c)
+                        {
+                            zero_dw[static_cast<std::size_t>(zi * map.dim + c)] =
+                                normalized_dw[static_cast<std::size_t>(li * map.dim + c)];
+                        }
                     }
                 }
             }
@@ -931,20 +1270,61 @@ std::vector<T> curved_map_ref_point(const LocalCurvedSimplexMap<T>& map,
             (face.zero_face_type == cell::type::quadrilateral)
                 ? std::span<const T>(zero_uv.data(), zero_uv.size())
                 : std::span<const T>(zero_w.data(), zero_w.size());
-        const auto curved = eval_curved_face_ref<T>(
+        const auto curved = eval_curved_face_ref_with_jacobian<T>(
             face, map.geometry_order, map.node_family, face_coordinates);
         std::vector<T> straight(static_cast<std::size_t>(map.parent_tdim), T(0));
+        std::vector<T> straight_jacobian(
+            static_cast<std::size_t>(map.dim * map.parent_tdim), T(0));
         for (int li = 0; li < face.num_local_vertices; ++li)
         {
             const int lv = face.local_vertices[static_cast<std::size_t>(li)];
-            const T w = local_w[static_cast<std::size_t>(li)] / s;
+            const T w = normalized_w[static_cast<std::size_t>(li)];
             for (int d = 0; d < map.parent_tdim; ++d)
+            {
                 straight[static_cast<std::size_t>(d)] += w * map.ref_vertex_coords[
                     static_cast<std::size_t>(lv * map.parent_tdim + d)];
+                for (int c = 0; c < map.dim; ++c)
+                {
+                    straight_jacobian[static_cast<std::size_t>(
+                        c * map.parent_tdim + d)] +=
+                        normalized_dw[static_cast<std::size_t>(li * map.dim + c)]
+                        * map.ref_vertex_coords[
+                            static_cast<std::size_t>(lv * map.parent_tdim + d)];
+                }
+            }
         }
         for (int d = 0; d < map.parent_tdim; ++d)
-            ref[static_cast<std::size_t>(d)] += s * (curved[static_cast<std::size_t>(d)]
-                                                   - straight[static_cast<std::size_t>(d)]);
+        {
+            const T diff =
+                curved.point[static_cast<std::size_t>(d)]
+                - straight[static_cast<std::size_t>(d)];
+            out.point[static_cast<std::size_t>(d)] += s * diff;
+            for (int c = 0; c < map.dim; ++c)
+            {
+                T dcurved = T(0);
+                if (face.zero_face_type == cell::type::quadrilateral)
+                {
+                    dcurved =
+                        curved.jacobian[static_cast<std::size_t>(d)]
+                            * zero_duv[static_cast<std::size_t>(c)]
+                      + curved.jacobian[static_cast<std::size_t>(map.parent_tdim + d)]
+                            * zero_duv[static_cast<std::size_t>(map.dim + c)];
+                }
+                else
+                {
+                    dcurved =
+                        curved.jacobian[static_cast<std::size_t>(d)]
+                            * zero_dw[static_cast<std::size_t>(map.dim + c)]
+                      + curved.jacobian[static_cast<std::size_t>(map.parent_tdim + d)]
+                            * zero_dw[static_cast<std::size_t>(2 * map.dim + c)];
+                }
+                const std::size_t jd =
+                    static_cast<std::size_t>(c * map.parent_tdim + d);
+                out.jacobian[jd] +=
+                    ds[static_cast<std::size_t>(c)] * diff
+                  + s * (dcurved - straight_jacobian[jd]);
+            }
+        }
     }
 
     for (const auto& edge : map.curved_edges)
@@ -962,7 +1342,10 @@ std::vector<T> curved_map_ref_point(const LocalCurvedSimplexMap<T>& map,
         const T t = b / s;
         const auto curved = eval_curved_edge_ref<T>(
             edge, map.geometry_order, map.node_family, t);
+        const auto curved_dt = eval_curved_edge_ref_derivative<T>(
+            edge, map.geometry_order, map.node_family, t);
         std::vector<T> straight(static_cast<std::size_t>(map.parent_tdim), T(0));
+        std::vector<T> straight_dt(static_cast<std::size_t>(map.parent_tdim), T(0));
         for (int d = 0; d < map.parent_tdim; ++d)
         {
             const T x0 = map.ref_vertex_coords[
@@ -970,12 +1353,37 @@ std::vector<T> curved_map_ref_point(const LocalCurvedSimplexMap<T>& map,
             const T x1 = map.ref_vertex_coords[
                 static_cast<std::size_t>(edge.local_vertices[1] * map.parent_tdim + d)];
             straight[static_cast<std::size_t>(d)] = (T(1) - t) * x0 + t * x1;
-            ref[static_cast<std::size_t>(d)] += s * (curved[static_cast<std::size_t>(d)]
-                                                   - straight[static_cast<std::size_t>(d)]);
+            straight_dt[static_cast<std::size_t>(d)] = x1 - x0;
+            const T diff =
+                curved[static_cast<std::size_t>(d)]
+                - straight[static_cast<std::size_t>(d)];
+            out.point[static_cast<std::size_t>(d)] += s * diff;
+            for (int c = 0; c < map.dim; ++c)
+            {
+                const T da =
+                    vertex_gradients[static_cast<std::size_t>(
+                        edge.local_vertices[0] * map.dim + c)];
+                const T db =
+                    vertex_gradients[static_cast<std::size_t>(
+                        edge.local_vertices[1] * map.dim + c)];
+                const T ds_edge = da + db;
+                const T dt = (db * s - b * ds_edge) / (s * s);
+                out.jacobian[static_cast<std::size_t>(c * map.parent_tdim + d)] +=
+                    ds_edge * diff
+                  + s * (curved_dt[static_cast<std::size_t>(d)]
+                         - straight_dt[static_cast<std::size_t>(d)]) * dt;
+            }
         }
     }
 
-    return ref;
+    return out;
+}
+
+template <std::floating_point T>
+std::vector<T> curved_map_ref_point(const LocalCurvedSimplexMap<T>& map,
+                                    std::span<const T> xi)
+{
+    return curved_map_ref_point_with_jacobian<T>(map, xi).point;
 }
 
 template <std::floating_point T>
@@ -1158,136 +1566,57 @@ std::vector<std::vector<T>> subdivide_child_simplex(cell::type simplex_type,
 }
 
 template <std::floating_point T>
-T finite_difference_measure(const LocalCurvedSimplexMap<T>& map,
-                            std::span<const T> xi)
+T curved_map_measure(const LocalCurvedSimplexMap<T>& map,
+                     std::span<const T> xi)
 {
-    const int d = map.dim;
-    constexpr T h = T(1e-6);
-    std::vector<T> J(static_cast<std::size_t>(map.gdim * d), T(0));
-    for (int c = 0; c < d; ++c)
-    {
-        std::vector<T> xp(xi.begin(), xi.end());
-        std::vector<T> xm(xi.begin(), xi.end());
-        xp[static_cast<std::size_t>(c)] += h;
-        xm[static_cast<std::size_t>(c)] -= h;
-        const auto pp = curved_map_physical_point<T>(map, std::span<const T>(xp.data(), xp.size()));
-        const auto pm = curved_map_physical_point<T>(map, std::span<const T>(xm.data(), xm.size()));
-        for (int r = 0; r < map.gdim; ++r)
-            J[static_cast<std::size_t>(c * map.gdim + r)] =
-                (pp[static_cast<std::size_t>(r)] - pm[static_cast<std::size_t>(r)]) / (T(2) * h);
-    }
-
-    if (d == 1)
-    {
-        T n2 = T(0);
-        for (int r = 0; r < map.gdim; ++r)
-            n2 += J[static_cast<std::size_t>(r)] * J[static_cast<std::size_t>(r)];
-        return std::sqrt(n2);
-    }
-    if (d == map.gdim)
-    {
-        if (d == 2)
-            return J[0] * J[3] - J[2] * J[1];
-        return J[0] * (J[4] * J[8] - J[7] * J[5])
-             - J[3] * (J[1] * J[8] - J[7] * J[2])
-             + J[6] * (J[1] * J[5] - J[4] * J[2]);
-    }
-
-    T G[9] = {};
-    for (int i = 0; i < d; ++i)
-        for (int j = 0; j < d; ++j)
-            for (int r = 0; r < map.gdim; ++r)
-                G[i * d + j] += J[static_cast<std::size_t>(i * map.gdim + r)]
-                              * J[static_cast<std::size_t>(j * map.gdim + r)];
-    if (d == 2)
-        return std::sqrt(std::max(T(0), G[0] * G[3] - G[1] * G[2]));
-    return T(0);
+    const auto ref_eval = curved_map_ref_point_with_jacobian<T>(map, xi);
+    const auto physical_J = compose_ref_to_physical_jacobian<T>(
+        map,
+        std::span<const T>(ref_eval.jacobian.data(), ref_eval.jacobian.size()));
+    return measure_from_jacobian<T>(
+        map.dim,
+        map.gdim,
+        std::span<const T>(physical_J.data(), physical_J.size()));
 }
 
 template <std::floating_point T>
-T finite_difference_straight_measure(const LocalCurvedSimplexMap<T>& map,
-                                     std::span<const T> xi)
+T straight_map_measure(const LocalCurvedSimplexMap<T>& map,
+                       std::span<const T> xi)
 {
-    const int d = map.dim;
-    constexpr T h = T(1e-6);
-    std::vector<T> J(static_cast<std::size_t>(map.gdim * d), T(0));
-    auto straight_physical = [&](std::span<const T> xref)
-    {
-        const auto ref = straight_ref_from_cell_point<T>(map, xref);
-        return push_parent_ref_to_physical<T>(
-            map, std::span<const T>(ref.data(), ref.size()));
-    };
-
-    for (int c = 0; c < d; ++c)
-    {
-        std::vector<T> xp(xi.begin(), xi.end());
-        std::vector<T> xm(xi.begin(), xi.end());
-        xp[static_cast<std::size_t>(c)] += h;
-        xm[static_cast<std::size_t>(c)] -= h;
-        const auto pp = straight_physical(std::span<const T>(xp.data(), xp.size()));
-        const auto pm = straight_physical(std::span<const T>(xm.data(), xm.size()));
-        for (int r = 0; r < map.gdim; ++r)
-            J[static_cast<std::size_t>(c * map.gdim + r)] =
-                (pp[static_cast<std::size_t>(r)] - pm[static_cast<std::size_t>(r)]) / (T(2) * h);
-    }
-
-    if (d == 1)
-    {
-        T n2 = T(0);
-        for (int r = 0; r < map.gdim; ++r)
-            n2 += J[static_cast<std::size_t>(r)] * J[static_cast<std::size_t>(r)];
-        return std::sqrt(n2);
-    }
-    if (d == map.gdim)
-    {
-        if (d == 2)
-            return std::abs(J[0] * J[3] - J[2] * J[1]);
-        return std::abs(J[0] * (J[4] * J[8] - J[7] * J[5])
-                      - J[3] * (J[1] * J[8] - J[7] * J[2])
-                      + J[6] * (J[1] * J[5] - J[4] * J[2]));
-    }
-
-    T G[9] = {};
-    for (int i = 0; i < d; ++i)
-        for (int j = 0; j < d; ++j)
-            for (int r = 0; r < map.gdim; ++r)
-                G[i * d + j] += J[static_cast<std::size_t>(i * map.gdim + r)]
-                              * J[static_cast<std::size_t>(j * map.gdim + r)];
-    if (d == 2)
-        return std::sqrt(std::max(T(0), G[0] * G[3] - G[1] * G[2]));
-    return T(0);
+    const auto ref_J = straight_ref_jacobian_from_cell_point<T>(map, xi);
+    const auto physical_J = compose_ref_to_physical_jacobian<T>(
+        map,
+        std::span<const T>(ref_J.data(), ref_J.size()));
+    return std::abs(measure_from_jacobian<T>(
+        map.dim,
+        map.gdim,
+        std::span<const T>(physical_J.data(), physical_J.size())));
 }
 
 template <std::floating_point T>
-T finite_difference_child_measure(cell::type cell_type,
-                                  std::span<const T> child_vertices,
-                                  std::span<const T> xi)
+T child_map_measure(cell::type cell_type,
+                    std::span<const T> child_vertices,
+                    std::span<const T> xi)
 {
     const int d = cell::get_tdim(cell_type);
-    constexpr T h = T(1e-6);
+    const int nv = cell::get_num_vertices(cell_type);
+    const auto gradients = cell_vertex_shape_gradients<T>(cell_type, xi);
     std::vector<T> J(static_cast<std::size_t>(d * d), T(0));
     for (int c = 0; c < d; ++c)
     {
-        std::vector<T> xp(xi.begin(), xi.end());
-        std::vector<T> xm(xi.begin(), xi.end());
-        xp[static_cast<std::size_t>(c)] += h;
-        xm[static_cast<std::size_t>(c)] -= h;
-        const auto pp = map_child_xi_to_parent_xi<T>(
-            cell_type, child_vertices, std::span<const T>(xp.data(), xp.size()));
-        const auto pm = map_child_xi_to_parent_xi<T>(
-            cell_type, child_vertices, std::span<const T>(xm.data(), xm.size()));
-        for (int r = 0; r < d; ++r)
-            J[static_cast<std::size_t>(c * d + r)] =
-                (pp[static_cast<std::size_t>(r)] - pm[static_cast<std::size_t>(r)]) / (T(2) * h);
+        for (int v = 0; v < nv; ++v)
+        {
+            const T dNv = gradients[static_cast<std::size_t>(v * d + c)];
+            for (int r = 0; r < d; ++r)
+            {
+                J[static_cast<std::size_t>(c * d + r)] +=
+                    dNv * child_vertices[static_cast<std::size_t>(v * d + r)];
+            }
+        }
     }
 
-    if (d == 1)
-        return std::abs(J[0]);
-    if (d == 2)
-        return std::abs(J[0] * J[3] - J[2] * J[1]);
-    return std::abs(J[0] * (J[4] * J[8] - J[7] * J[5])
-                  - J[3] * (J[1] * J[8] - J[7] * J[2])
-                  + J[6] * (J[1] * J[5] - J[4] * J[2]));
+    return std::abs(measure_from_jacobian<T>(
+        d, d, std::span<const T>(J.data(), J.size())));
 }
 
 template <std::floating_point T>
@@ -1324,7 +1653,7 @@ bool curved_map_valid(const LocalCurvedSimplexMap<T>& map)
     constexpr T tol = T(1e-12);
     for (const auto& sample : samples)
     {
-        const T measure = finite_difference_measure<T>(
+        const T measure = curved_map_measure<T>(
             map, std::span<const T>(sample.data(), sample.size()));
         if (!(std::abs(measure) > tol))
             return false;
@@ -1374,7 +1703,7 @@ bool curved_child_map_valid(const LocalCurvedSimplexMap<T>& map,
             map.simplex_type,
             child_vertices,
             std::span<const T>(sample.data(), sample.size()));
-        const T measure = finite_difference_measure<T>(
+        const T measure = curved_map_measure<T>(
             map, std::span<const T>(xi_parent.data(), xi_parent.size()));
         if (!(std::abs(measure) > tol))
             return false;
@@ -2674,17 +3003,17 @@ void append_curved_child_simplex_quadrature(quadrature::QuadratureRules<T>& rule
         }
         rules._points.insert(rules._points.end(), ref.begin(), ref.end());
 
-        const T child_measure = finite_difference_child_measure<T>(
+        const T child_measure = child_map_measure<T>(
             map.simplex_type, child_vertices, xi_child);
         T measure = T(0);
         if (valid)
         {
-            measure = std::abs(finite_difference_measure<T>(
+            measure = std::abs(curved_map_measure<T>(
                 map, std::span<const T>(xi.data(), xi.size()))) * child_measure;
         }
         else
         {
-            measure = finite_difference_straight_measure<T>(
+            measure = straight_map_measure<T>(
                 map, std::span<const T>(xi.data(), xi.size())) * child_measure;
         }
         rules._weights.push_back(ref_rule._weights[static_cast<std::size_t>(q)] * measure);

@@ -3318,6 +3318,46 @@ void declare_certification(nb::module_& m, const std::string& suffix)
             },
             nb::rv_policy::reference_internal)
         .def_prop_ro(
+            "face_to_cell_connectivity",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.connectivity[2][self.tdim].indices.data(),
+                    {self.connectivity[2][self.tdim].indices.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "face_to_cell_offsets",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.connectivity[2][self.tdim].offsets.data(),
+                    {self.connectivity[2][self.tdim].offsets.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "cell_to_face_connectivity",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.connectivity[self.tdim][2].indices.data(),
+                    {self.connectivity[self.tdim][2].indices.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
+            "cell_to_face_offsets",
+            [](const AdaptCellT& self)
+            {
+                return nb::ndarray<const std::int32_t, nb::numpy>(
+                    self.connectivity[self.tdim][2].offsets.data(),
+                    {self.connectivity[self.tdim][2].offsets.size()},
+                    nb::cast(self, nb::rv_policy::reference));
+            },
+            nb::rv_policy::reference_internal)
+        .def_prop_ro(
             "cell_types",
             [](const AdaptCellT& self)
             {

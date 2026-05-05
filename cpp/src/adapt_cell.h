@@ -198,10 +198,12 @@ struct AdaptCell
     /// This is CSR-style: offsets + flat indices.
     std::array<EntityAdjacency, max_dim> entity_to_vertex;
 
-    /// Structured host provenance for entities. For zero faces this stores
-    /// the uncut adaptcell leaf cell that produced the extracted surface
-    /// element. For zero edges on a zero face boundary, host_face_id is filled
-    /// by the face context when available.
+    /// Structured embedding-host provenance for entities. For zero entities
+    /// created by a cut, this is the uncut AdaptCell leaf that embeds the
+    /// interface and bounds curving/projection. It is deliberately not the
+    /// accepted cut output cell that happens to contain the entity.
+    /// For zero edges on a zero face boundary, host_face_id is filled by the
+    /// face context when available.
     std::array<std::vector<std::int32_t>, max_dim> entity_host_cell_id;
     std::array<std::vector<cell::type>, max_dim> entity_host_cell_type;
     std::array<std::vector<std::int32_t>, max_dim> entity_host_face_id;
@@ -242,10 +244,9 @@ struct AdaptCell
     std::vector<std::int8_t>  zero_entity_parent_dim;    ///< -1 if not on a shared parent entity
     std::vector<std::int32_t> zero_entity_parent_id;     ///< -1 if not on a shared parent entity
 
-    /// Provenance back to the uncut adaptcell leaf cell used to generate the
-    /// zero entity. These arrays mirror entity_host_* for the zero-entity
-    /// inventory and survive inventory rebuilds as long as the underlying
-    /// entity provenance is available.
+    /// Embedding-host provenance for the zero entity. These arrays mirror
+    /// entity_host_* for the zero-entity inventory and survive inventory
+    /// rebuilds as long as the underlying entity provenance is available.
     std::vector<std::int32_t> zero_entity_host_cell_id;
     std::vector<cell::type> zero_entity_host_cell_type;
     std::vector<std::int32_t> zero_entity_host_face_id;

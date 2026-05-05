@@ -618,11 +618,42 @@ class CertificationRefinementTests(unittest.TestCase):
             np.asarray(graph_nodes["node_index"], dtype=np.int32)[face_interior_nodes] > 0
         ))
 
+    def test_zero_face_final_incidence_uses_face_to_cell_connectivity(self):
+        mesh = _single_tetra_mesh()
+        ls = cutcells.create_level_set(
+            mesh,
+            lambda X: X[0] + X[1] - 0.5,
+            degree=1,
+            name="phi",
+        )
+
+        result = cutcells.ho_cut(
+            mesh,
+            ls,
+            graph_max_refinements=0,
+            min_level_set_gradient_host_alignment=0.0,
+        )
+        adapt = result.adapt_cell(0)
+
+        zero_dims = np.asarray(adapt.zero_entity_dim, dtype=np.int32)
+        zero_ids = np.asarray(adapt.zero_entity_id, dtype=np.int32)
+        zero_face_ids = zero_ids[zero_dims == 2]
+        self.assertEqual(zero_face_ids.size, 1)
+
+        face_id = int(zero_face_ids[0])
+        face_to_cell = np.asarray(adapt.face_to_cell_connectivity, dtype=np.int32)
+        face_offsets = np.asarray(adapt.face_to_cell_offsets, dtype=np.int32)
+        incident_cells = face_to_cell[face_offsets[face_id]:face_offsets[face_id + 1]]
+        self.assertEqual(incident_cells.size, 2)
+
+        cell_types = np.asarray(adapt.cell_types, dtype=np.int32)
+        self.assertEqual(cell_types[incident_cells].tolist(), [6, 6])
+
     def test_curving_accepts_near_zero_multi_level_set_node_without_projection(self):
         mesh = _single_triangle_mesh()
 
         def phi(X):
-            return X[0] + X[1] - 0.25 + 5.12e-11 * X[0] * X[1]
+            return X[0] + X[1] - 0.25 + 5.12e-13 * X[0] * X[1]
 
         ls0 = cutcells.create_level_set(mesh, phi, degree=2, name="phi")
         ls1 = cutcells.create_level_set(mesh, phi, degree=2, name="psi")

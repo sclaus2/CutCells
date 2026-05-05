@@ -82,7 +82,7 @@ struct CurvingOptions
         CurvingDirectionMode::level_set_gradient;
     int max_iter = 32;
     T xtol = T(1e-12);
-    T ftol = std::sqrt(std::numeric_limits<T>::epsilon());
+    T ftol = T(64) * std::numeric_limits<T>::epsilon();
     T domain_tol = T(1e-10);
     T active_face_tol = T(1e-9);
     // Length-scale threshold in parent reference coordinates. Zero edges

@@ -522,12 +522,18 @@ void rebuild_leaf_cell_provenance(
 
         adapt_cell.entity_host_cell_id[tdim].push_back(
             static_cast<std::int32_t>(source_c));
-        const cell::type host_type =
-            (meta_c >= 0 && meta_c < static_cast<int>(old_host_cell_types.size()))
-                ? old_host_cell_types[static_cast<std::size_t>(meta_c)]
-                : ((meta_c >= 0 && meta_c < static_cast<int>(old_cell_types.size()))
-                ? old_cell_types[static_cast<std::size_t>(meta_c)]
-                : adapt_cell.entity_types[tdim][static_cast<std::size_t>(c)]);
+        cell::type host_type =
+            adapt_cell.entity_types[tdim][static_cast<std::size_t>(c)];
+        if (meta_c >= 0
+            && meta_c < static_cast<int>(old_host_cell_types.size()))
+        {
+            host_type = old_host_cell_types[static_cast<std::size_t>(meta_c)];
+        }
+        else if (meta_c >= 0
+                 && meta_c < static_cast<int>(old_cell_types.size()))
+        {
+            host_type = old_cell_types[static_cast<std::size_t>(meta_c)];
+        }
         adapt_cell.entity_host_cell_type[tdim].push_back(host_type);
         adapt_cell.entity_host_face_id[tdim].push_back(std::int32_t(-1));
         const int source_level_set =
@@ -630,7 +636,6 @@ void apply_topology_update_preserve_certification(
     recompute_active_level_set_masks(adapt_cell, nls);
     rebuild_zero_entity_inventory(adapt_cell);
 }
-
 
 // =====================================================================
 // Invalidation helpers

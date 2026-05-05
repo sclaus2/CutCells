@@ -603,6 +603,10 @@ std::vector<T> physical_points(
         const int coff = offset[ci];
         const type ctype = map_vtk_type_to_cell_type(
             static_cast<vtk_types>(vtk_type[ci]));
+        if (get_tdim(ctype) != tdim)
+            throw std::invalid_argument(
+                "physical_points: quadrature point dimension does not match "
+                "the supplied VTK parent cell type");
         const int nv = get_num_vertices(ctype);
 
         // Gather physical vertices for this cell
@@ -615,22 +619,8 @@ std::vector<T> physical_points(
             tl_phys_verts[j * 3 + 2] = points[vid * 3 + 2];
         }
 
-        // Push ref → phys for all nq quadrature points of this rule.
-        // For tdim == gdim == 3 use the existing square-Jacobian routine;
-        // for tdim < 3 (embedded cells) apply the affine map manually:
-        //   x_phys = v0 + sum_k (v_{col_k} - v0) * X_ref[k]
-        if (tdim == 3)
-        {
-            push_forward_affine<T>(
-                ctype,
-                tl_phys_verts,
-                3,
-                std::span<const T>(rules._points.data() + q_begin * tdim,
-                                   static_cast<std::size_t>(nq) * tdim),
-                std::span<T>(out.data() + q_begin * 3,
-                             static_cast<std::size_t>(nq) * 3));
-        }
-        else
+        // Push parent reference points to physical coordinates with the same
+        // affine column convention used by the cut-cell maps.
         {
             const auto cols  = jacobian_col_indices(ctype);
             const T*   v0    = tl_phys_verts.data();

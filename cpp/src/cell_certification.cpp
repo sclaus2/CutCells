@@ -2433,6 +2433,27 @@ bool point_in_host_triangle(const AdaptCell<T>& ac,
 }
 
 template <std::floating_point T>
+bool point_in_host_face(const AdaptCell<T>& ac,
+                        std::span<const int> face_vertices,
+                        std::span<const T> point,
+                        T tol)
+{
+    if (face_vertices.size() == 3)
+        return point_in_host_triangle<T>(ac, face_vertices, point, tol);
+    if (face_vertices.size() != 4)
+        return false;
+
+    const std::array<int, 3> tri0 = {
+        face_vertices[0], face_vertices[1], face_vertices[3]};
+    const std::array<int, 3> tri1 = {
+        face_vertices[0], face_vertices[3], face_vertices[2]};
+    return point_in_host_triangle<T>(
+               ac, std::span<const int>(tri0.data(), tri0.size()), point, tol)
+        || point_in_host_triangle<T>(
+               ac, std::span<const int>(tri1.data(), tri1.size()), point, tol);
+}
+
+template <std::floating_point T>
 std::vector<T> host_boundary_face_normal_for_zero_face_edge(
     const AdaptCell<T>& ac,
     int zero_face_id,
@@ -2459,23 +2480,17 @@ std::vector<T> host_boundary_face_normal_for_zero_face_edge(
     for (int f = 0; f < cell::num_faces(host_type); ++f)
     {
         const auto local_face = cell::face_vertices(host_type, f);
-        if (local_face.size() != 3)
+        if (local_face.size() != 3 && local_face.size() != 4)
             continue;
-        std::array<int, 3> face_vertices = {
-            host_vertices[static_cast<std::size_t>(local_face[0])],
-            host_vertices[static_cast<std::size_t>(local_face[1])],
-            host_vertices[static_cast<std::size_t>(local_face[2])]
-        };
-        if (!point_in_host_triangle<T>(
-                ac,
-                std::span<const int>(face_vertices.data(), face_vertices.size()),
-                edge_a,
-                tol)
-            || !point_in_host_triangle<T>(
-                ac,
-                std::span<const int>(face_vertices.data(), face_vertices.size()),
-                edge_b,
-                tol))
+        std::array<int, 4> face_vertices = {-1, -1, -1, -1};
+        for (std::size_t i = 0; i < local_face.size(); ++i)
+            face_vertices[i] =
+                host_vertices[static_cast<std::size_t>(local_face[i])];
+
+        const std::span<const int> face_span(
+            face_vertices.data(), local_face.size());
+        if (!point_in_host_face<T>(ac, face_span, edge_a, tol)
+            || !point_in_host_face<T>(ac, face_span, edge_b, tol))
         {
             continue;
         }
@@ -2483,7 +2498,10 @@ std::vector<T> host_boundary_face_normal_for_zero_face_edge(
         const auto normal = geom::face_normal<T>(
             point_span<T>(ac.vertex_coords, face_vertices[0], 3),
             point_span<T>(ac.vertex_coords, face_vertices[1], 3),
-            point_span<T>(ac.vertex_coords, face_vertices[2], 3),
+            point_span<T>(
+                ac.vertex_coords,
+                face_vertices[local_face.size() == 4 ? 3 : 2],
+                3),
             true,
             tol);
         if (!normal.degenerate())
