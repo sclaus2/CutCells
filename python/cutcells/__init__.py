@@ -4,6 +4,7 @@
 #
 # SPDX-License-Identifier:    MIT
 
+import importlib as _importlib
 from importlib import util as _importlib_util
 from pathlib import Path as _Path
 import ctypes as _ctypes
@@ -121,13 +122,7 @@ def _load_cpp_module():
             except Exception:
                 pass
 
-        spec = _importlib_util.spec_from_file_location("cutcells._cutcellscpp", so_path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Could not load installed extension from {so_path}")
-        module = _importlib_util.module_from_spec(spec)
-        _sys.modules["cutcells._cutcellscpp"] = module
-        spec.loader.exec_module(module)
-        return module
+        return _importlib.import_module("cutcells._cutcellscpp")
 
     # Fall back to an installed extension (e.g. site-packages) when running from
     # a source tree without an up-to-date in-tree build.
@@ -221,7 +216,6 @@ classify_new_edges = _cutcellscpp.classify_new_edges
 fill_all_vertex_signs_from_level_set = _cutcellscpp.fill_all_vertex_signs_from_level_set
 classify_leaf_cells = _cutcellscpp.classify_leaf_cells
 process_ready_to_cut_cells = _cutcellscpp.process_ready_to_cut_cells
-check_ready_to_cut_cell_graphs = _cutcellscpp.check_ready_to_cut_cell_graphs
 refine_ready_cell_on_largest_midpoint_value = (
     _cutcellscpp.refine_ready_cell_on_largest_midpoint_value
 )
@@ -230,9 +224,6 @@ refine_red_on_ambiguous_cells = _cutcellscpp.refine_red_on_ambiguous_cells
 certify_and_refine = _cutcellscpp.certify_and_refine
 certify_refine_and_process_ready_cells = (
     _cutcellscpp.certify_refine_and_process_ready_cells
-)
-certify_refine_graph_check_and_process_ready_cells = (
-    _cutcellscpp.certify_refine_graph_check_and_process_ready_cells
 )
 cut = _cutcellscpp.cut
 higher_order_cut = _cutcellscpp.higher_order_cut
@@ -276,6 +267,6 @@ try:
         single_cell_mesh,
         summarize_analysis,
     )
-except ModuleNotFoundError as exc:
-    if exc.name != f"{__name__}.triangulation_analysis":
+except (ModuleNotFoundError, ImportError) as exc:
+    if isinstance(exc, ModuleNotFoundError) and exc.name != f"{__name__}.triangulation_analysis":
         raise

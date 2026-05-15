@@ -329,6 +329,41 @@ void merge_root_intervals(std::vector<EdgeRootInterval<T>>& intervals,
     intervals = std::move(merged);
 }
 
+template <std::floating_point T>
+bool linear_one_root_parameter_from_endpoint_values(T phi0,
+                                                    T phi1,
+                                                    T zero_tol,
+                                                    T& root_t)
+{
+    const bool left_zero = std::fabs(phi0) <= zero_tol;
+    const bool right_zero = std::fabs(phi1) <= zero_tol;
+
+    root_t = T(0);
+    if (left_zero && right_zero)
+        return false;
+    if (left_zero)
+        return true;
+    if (right_zero)
+    {
+        root_t = T(1);
+        return true;
+    }
+
+    const bool brackets_zero = (phi0 < T(0) && phi1 > T(0))
+                            || (phi0 > T(0) && phi1 < T(0));
+    if (!brackets_zero)
+        return false;
+
+    const T denom = phi0 - phi1;
+    const T denom_tol =
+        std::max(zero_tol, T(64) * std::numeric_limits<T>::epsilon());
+    if (std::fabs(denom) <= denom_tol)
+        return false;
+
+    root_t = std::clamp(phi0 / denom, T(0), T(1));
+    return true;
+}
+
 } // anonymous namespace
 
 // =====================================================================
@@ -843,117 +878,6 @@ EdgeRootTag classify_edge_roots(std::span<const T> edge_coeffs,
     return EdgeRootTag::multiple_roots;
 }
 
-template <std::floating_point T>
-bool locate_one_root_parameter(std::span<const T> edge_coeffs,
-                               T zero_tol, T sign_tol,
-                               int max_depth,
-                               T& root_t)
-{
-    root_t = T(0);
-
-    if (edge_coeffs.empty())
-        return false;
-
-    if (bernstein_all_zero(edge_coeffs, zero_tol))
-        return false;
-
-    const bool left_zero = std::fabs(edge_coeffs.front()) <= zero_tol;
-    const bool right_zero = std::fabs(edge_coeffs.back()) <= zero_tol;
-
-    if (left_zero && !right_zero)
-    {
-        root_t = T(0);
-        return true;
-    }
-    if (right_zero && !left_zero)
-    {
-        root_t = T(1);
-        return true;
-    }
-
-    std::vector<EdgeRootInterval<T>> intervals;
-    bool has_zero_segment = false;
-    find_root_intervals_1d<T>(edge_coeffs, T(0), T(1),
-                              zero_tol, sign_tol, 0, max_depth,
-                              intervals, has_zero_segment);
-    if (has_zero_segment)
-        return false;
-
-    T merge_tol = T(4) * std::numeric_limits<T>::epsilon();
-    if (max_depth > 0)
-    {
-        T width = T(1);
-        for (int i = 0; i < max_depth; ++i)
-            width *= T(0.5);
-        merge_tol = std::max(merge_tol, T(2) * width);
-    }
-    merge_root_intervals(intervals, merge_tol);
-
-    std::vector<EdgeRootInterval<T>> clusters = intervals;
-    bool left_covered = false;
-    bool right_covered = false;
-    for (const auto& interval : clusters)
-    {
-        if (interval.t0 <= merge_tol)
-            left_covered = true;
-        if (interval.t1 >= T(1) - merge_tol)
-            right_covered = true;
-    }
-
-    if (left_zero && !left_covered)
-        clusters.push_back({T(0), T(0)});
-    if (right_zero && !right_covered)
-        clusters.push_back({T(1), T(1)});
-
-    if (clusters.empty())
-        return false;
-
-    std::sort(clusters.begin(), clusters.end(),
-              [](const EdgeRootInterval<T>& a, const EdgeRootInterval<T>& b)
-              { return a.t0 < b.t0; });
-    merge_root_intervals(clusters, merge_tol);
-
-    if (clusters.size() != 1)
-        return false;
-
-    const T a = clusters[0].t0;
-    const T b = clusters[0].t1;
-    root_t = (a + b) * T(0.5);
-
-    if (std::fabs(b - a) <= zero_tol)
-        return true;
-
-    const int degree = static_cast<int>(edge_coeffs.size()) - 1;
-    std::array<T, 1> xi = {root_t};
-    std::array<T, 1> grad = {T(0)};
-
-    const T eval_tol = std::max(zero_tol, T(32) * std::numeric_limits<T>::epsilon());
-    for (int iter = 0; iter < 12; ++iter)
-    {
-        xi[0] = root_t;
-        const T value = bernstein::evaluate(
-            cell::type::interval, degree,
-            edge_coeffs, std::span<const T>(xi.data(), 1));
-        if (std::fabs(value) <= eval_tol)
-            break;
-
-        bernstein::gradient(
-            cell::type::interval, degree,
-            edge_coeffs, std::span<const T>(xi.data(), 1),
-            std::span<T>(grad.data(), 1));
-        if (std::fabs(grad[0]) <= eval_tol)
-            break;
-
-        const T next = root_t - value / grad[0];
-        if (next <= a || next >= b)
-            break;
-        root_t = next;
-    }
-
-    root_t = std::clamp(root_t, a, b);
-    return true;
-}
-
 // =====================================================================
 // classify_new_edges
 // =====================================================================
@@ -989,8 +913,9 @@ void classify_new_edges(AdaptCell<T>& adapt_cell,
         // Extract edge Bernstein coefficients on the actual adaptive edge segment.
         //
         // Even if an adaptive edge lies on a parent edge, using the parent-edge
-        // fast-path can be incorrect for subsegments (root localization would be
-        // in the wrong parameterization). Restrict by endpoints for robustness.
+        // fast-path can be incorrect for subsegments. Restrict by endpoints so
+        // the endpoint coefficients and green split parameter use this edge's
+        // local parameterization.
         auto verts = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(e)];
         const int tdim = adapt_cell.tdim;
         std::span<const T> xi_a(
@@ -1015,12 +940,27 @@ void classify_new_edges(AdaptCell<T>& adapt_cell,
             zero_tol, sign_tol, max_depth,
             green_split_t, has_green);
 
+        T linear_root_t = T(0);
+        const bool has_linear_root =
+            tag == EdgeRootTag::one_root
+            && edge_coeffs.size() >= 2
+            && linear_one_root_parameter_from_endpoint_values<T>(
+                edge_coeffs.front(), edge_coeffs.back(), zero_tol, linear_root_t);
+        if (tag == EdgeRootTag::one_root && !has_linear_root)
+            tag = EdgeRootTag::no_root;
+
         adapt_cell.set_edge_root_tag(level_set_id, e, tag);
 
         const auto idx = static_cast<std::size_t>(level_set_id * n_edges + e);
         adapt_cell.edge_green_split_param[idx] = green_split_t;
         adapt_cell.edge_green_split_has_value[idx] = has_green ? 1 : 0;
-        if (tag != EdgeRootTag::one_root)
+        if (tag == EdgeRootTag::one_root)
+        {
+            adapt_cell.edge_one_root_param[idx] = linear_root_t;
+            adapt_cell.edge_one_root_vertex_id[idx] = -1;
+            adapt_cell.edge_one_root_has_value[idx] = 1;
+        }
+        else
         {
             adapt_cell.edge_one_root_param[idx] = T(0);
             adapt_cell.edge_one_root_vertex_id[idx] = -1;
@@ -1077,10 +1017,6 @@ template EdgeRootTag classify_edge_roots(std::span<const double>, double, double
                                          int, double&, bool&);
 template EdgeRootTag classify_edge_roots(std::span<const float>, float, float,
                                          int, float&, bool&);
-template bool locate_one_root_parameter(std::span<const double>, double, double,
-                                        int, double&);
-template bool locate_one_root_parameter(std::span<const float>, float, float,
-                                        int, float&);
 
 template void classify_new_edges(AdaptCell<double>&, const LevelSetCell<double, int>&,
                                  int, double, double, int);

@@ -626,9 +626,7 @@ namespace cutcells::io
                             const std::span<const int> vtk_types,
                             int gdim,
                             const std::span<const std::int32_t> parent_map,
-                            const std::span<const std::int32_t> curved_valid,
-                            const std::span<const std::int32_t> subdivision_depth,
-                            const std::span<const std::int32_t> curving_status)
+                            const std::span<const std::int32_t> subdivision_depth)
     {
         if (gdim < 1 || gdim > 3)
             throw std::runtime_error("write_lagrange_vtk: gdim must be 1, 2, or 3");
@@ -645,9 +643,7 @@ namespace cutcells::io
                 throw std::runtime_error(std::string("write_lagrange_vtk: cell data size mismatch for ") + name);
         };
         check_cell_data(parent_map, "parent_map");
-        check_cell_data(curved_valid, "curved_valid");
         check_cell_data(subdivision_depth, "subdivision_depth");
-        check_cell_data(curving_status, "curving_status");
 
         std::ofstream ofs(filename.c_str(), std::ios::out);
         if (!ofs)
@@ -673,8 +669,7 @@ namespace cutcells::io
         ofs << "</DataArray>\n"
             << "\t\t\t</Points>\n";
 
-        if (!parent_map.empty() || !curved_valid.empty()
-            || !subdivision_depth.empty() || !curving_status.empty())
+        if (!parent_map.empty() || !subdivision_depth.empty())
         {
             ofs << "\t\t\t<CellData>\n";
             auto write_i32_data = [&ofs](std::span<const std::int32_t> data,
@@ -689,9 +684,7 @@ namespace cutcells::io
                 ofs << "</DataArray>\n";
             };
             write_i32_data(parent_map, "parent_id");
-            write_i32_data(curved_valid, "curved_valid");
             write_i32_data(subdivision_depth, "subdivision_depth");
-            write_i32_data(curving_status, "curving_status");
             ofs << "\t\t\t</CellData>\n";
         }
 

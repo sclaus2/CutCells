@@ -60,8 +60,8 @@ enum class CellRefinementReason : std::uint8_t
     none             = 0,
     green_edge       = 1,
     red_cell         = 2,
-    graph_green_edge = 3,
-    graph_red_cell   = 4,
+    targeted_green_edge = 3,
+    targeted_red_cell   = 4,
     cut_level_set    = 5
 };
 
@@ -200,7 +200,7 @@ struct AdaptCell
 
     /// Structured embedding-host provenance for entities. For zero entities
     /// created by a cut, this is the uncut AdaptCell leaf that embeds the
-    /// interface and bounds curving/projection. It is deliberately not the
+    /// interface. It is deliberately not the
     /// accepted cut output cell that happens to contain the entity.
     /// For zero edges on a zero face boundary, host_face_id is filled by the
     /// face context when available.

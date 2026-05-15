@@ -74,6 +74,10 @@ bool bernstein_all_zero(std::span<const T> coeffs, T tol);
 /// Bernstein polynomial, using convex-hull exclusion and de Casteljau
 /// subdivision.
 ///
+/// This is used only for edge topology classification, not for placing the
+/// cut vertex. The committed cut point is placed by linear interpolation of
+/// the endpoint level-set values.
+///
 /// @param coeffs    Bernstein coefficients on the sub-interval [t0, t1].
 /// @param t0, t1    Current parameter bounds (start with 0, 1).
 /// @param zero_tol  Tolerance for the all-zero test.
@@ -150,10 +154,15 @@ bool edge_is_on_single_parent_edge(const AdaptCell<T>& adapt_cell,
 
 /// Classify a 1D Bernstein polynomial for root structure.
 ///
+/// This classification may use Bernstein sign-hull subdivision to detect
+/// edge topology, but it does not determine the final cut-vertex location.
+/// Cut vertices on one-root edges are placed later by linear interpolation
+/// of the two endpoint level-set values.
+///
 /// @param edge_coeffs      Bernstein coefficients (degree+1 entries).
 /// @param zero_tol         Tolerance for all-zero.
 /// @param sign_tol         Tolerance for all-positive / all-negative.
-/// @param max_depth        Maximum subdivision depth for root search.
+/// @param max_depth        Maximum subdivision depth for topology classification.
 /// @param[out] green_split_t      Parameter between two distinct root intervals
 ///                                (valid only if tag == multiple_roots).
 /// @param[out] has_green_split_t  True if green_split_t was computed.
@@ -165,21 +174,11 @@ EdgeRootTag classify_edge_roots(std::span<const T> edge_coeffs,
                                 T& green_split_t,
                                 bool& has_green_split_t);
 
-/// Localize the unique root on a 1D Bernstein polynomial already known to
-/// have exactly one isolated root.
-///
-/// Returns false if the polynomial does not represent a unique isolated root.
-template <std::floating_point T>
-bool locate_one_root_parameter(std::span<const T> edge_coeffs,
-                               T zero_tol, T sign_tol,
-                               int max_depth,
-                               T& root_t);
-
 /// Classify all not-yet-classified edges of an AdaptCell for one level set.
 ///
 /// For each edge with tag == not_classified:
 ///   1. extract exact edge Bernstein from the LevelSetCell
-///   2. classify root structure
+///   2. classify root topology using Bernstein sign information
 ///   3. store tag and optional green-split parameter
 ///
 /// @param adapt_cell   The AdaptCell (modified in place).
@@ -187,7 +186,7 @@ bool locate_one_root_parameter(std::span<const T> edge_coeffs,
 /// @param level_set_id Which level set (bit position / name index).
 /// @param zero_tol     Tolerance for all-zero.
 /// @param sign_tol     Tolerance for all-positive / all-negative.
-/// @param max_depth    Maximum subdivision depth for root search.
+/// @param max_depth    Maximum subdivision depth for topology classification.
 template <std::floating_point T, std::integral I>
 void classify_new_edges(AdaptCell<T>& adapt_cell,
                         const LevelSetCell<T, I>& ls_cell,

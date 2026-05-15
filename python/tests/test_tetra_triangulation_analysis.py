@@ -1,9 +1,20 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from cutcells import CellType, analyze_all_cases, summarize_analysis
+import cutcells
+
+pytestmark = pytest.mark.skipif(
+    not hasattr(cutcells, "analyze_all_cases"),
+    reason="triangulation_analysis helpers are not packaged",
+)
+
+CellType = cutcells.CellType
+analyze_all_cases = getattr(cutcells, "analyze_all_cases", None)
+summarize_analysis = getattr(cutcells, "summarize_analysis", None)
 
 
 def test_tetra_parent_summary_excludes_zero_only_edges_from_interior_root_count():

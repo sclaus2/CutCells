@@ -91,9 +91,7 @@ namespace cutcells::io
                             const std::span<const int> vtk_types,
                             int gdim,
                             const std::span<const std::int32_t> parent_map = {},
-                            const std::span<const std::int32_t> curved_valid = {},
-                            const std::span<const std::int32_t> subdivision_depth = {},
-                            const std::span<const std::int32_t> curving_status = {});
+                            const std::span<const std::int32_t> subdivision_depth = {});
 
     template <std::floating_point T>
     void write_lagrange_vtk(std::string filename,
@@ -103,9 +101,7 @@ namespace cutcells::io
                             const std::span<const int> vtk_types,
                             int gdim,
                             const std::span<const std::int32_t> parent_map = {},
-                            const std::span<const std::int32_t> curved_valid = {},
-                            const std::span<const std::int32_t> subdivision_depth = {},
-                            const std::span<const std::int32_t> curving_status = {})
+                            const std::span<const std::int32_t> subdivision_depth = {})
     {
         std::vector<double> coords_d(point_coords.begin(), point_coords.end());
         write_lagrange_vtk(
@@ -116,8 +112,6 @@ namespace cutcells::io
             vtk_types,
             gdim,
             parent_map,
-            curved_valid,
-            subdivision_depth,
-            curving_status);
+            subdivision_depth);
     }
 }
