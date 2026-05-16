@@ -83,23 +83,87 @@ Clause parse_clause(std::string_view text)
     return c;
 }
 
-/// Case-insensitive check for " and " delimiter between clauses.
-/// Returns the position of the 'a' in " and ", or npos.
-std::size_t find_and_delimiter(std::string_view text, std::size_t start = 0)
+/// Case-insensitive check for a space-delimited keyword between clauses/terms.
+/// Returns the position of the leading whitespace before the keyword, or npos.
+std::size_t find_keyword_delimiter(std::string_view text,
+                                   std::string_view keyword,
+                                   std::size_t start = 0)
 {
-    // Search for " and " (space-delimited, case-insensitive)
-    for (std::size_t i = start; i + 4 < text.size(); ++i)
+    for (std::size_t i = start; i + keyword.size() + 1 < text.size(); ++i)
     {
-        if (std::isspace(static_cast<unsigned char>(text[i]))
-            && (text[i + 1] == 'a' || text[i + 1] == 'A')
-            && (text[i + 2] == 'n' || text[i + 2] == 'N')
-            && (text[i + 3] == 'd' || text[i + 3] == 'D')
-            && std::isspace(static_cast<unsigned char>(text[i + 4])))
+        if (!std::isspace(static_cast<unsigned char>(text[i])))
+            continue;
+
+        bool match = true;
+        for (std::size_t k = 0; k < keyword.size(); ++k)
+        {
+            const char a = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(text[i + 1 + k])));
+            const char b = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(keyword[k])));
+            if (a != b)
+            {
+                match = false;
+                break;
+            }
+        }
+
+        if (match
+            && std::isspace(static_cast<unsigned char>(
+                text[i + 1 + keyword.size()])))
         {
             return i;
         }
     }
     return std::string_view::npos;
+}
+
+SelectionTerm parse_term(std::string_view text)
+{
+    text = trim(text);
+    if (text.empty())
+        throw std::runtime_error("parse_selection_expr: empty term");
+
+    SelectionTerm term;
+    std::size_t pos = 0;
+    while (pos < text.size())
+    {
+        const std::size_t and_pos = find_keyword_delimiter(text, "and", pos);
+        std::string_view clause_text;
+        if (and_pos == std::string_view::npos)
+        {
+            clause_text = text.substr(pos);
+            pos = text.size();
+        }
+        else
+        {
+            clause_text = text.substr(pos, and_pos - pos);
+            pos = and_pos + 5; // skip " and "
+        }
+
+        term.clauses.push_back(parse_clause(clause_text));
+    }
+
+    if (term.clauses.empty())
+        throw std::runtime_error("parse_selection_expr: no clauses found in term");
+    return term;
+}
+
+void mirror_first_term(SelectionExpr& expr)
+{
+    if (expr.terms.empty())
+    {
+        expr.clauses.clear();
+        expr.zero_required = 0;
+        expr.negative_required = 0;
+        expr.positive_required = 0;
+        return;
+    }
+
+    expr.clauses = expr.terms.front().clauses;
+    expr.zero_required = expr.terms.front().zero_required;
+    expr.negative_required = expr.terms.front().negative_required;
+    expr.positive_required = expr.terms.front().positive_required;
 }
 
 } // anonymous namespace
@@ -119,24 +183,26 @@ SelectionExpr parse_selection_expr(std::string_view text)
     std::size_t pos = 0;
     while (pos < text.size())
     {
-        std::size_t and_pos = find_and_delimiter(text, pos);
-        std::string_view clause_text;
-        if (and_pos == std::string_view::npos)
+        const std::size_t or_pos = find_keyword_delimiter(text, "or", pos);
+        std::string_view term_text;
+        if (or_pos == std::string_view::npos)
         {
-            clause_text = text.substr(pos);
+            term_text = text.substr(pos);
             pos = text.size();
         }
         else
         {
-            clause_text = text.substr(pos, and_pos - pos);
-            pos = and_pos + 5; // skip " and "
+            term_text = text.substr(pos, or_pos - pos);
+            pos = or_pos + 4; // skip " or "
         }
 
-        expr.clauses.push_back(parse_clause(clause_text));
+        expr.terms.push_back(parse_term(term_text));
     }
 
-    if (expr.clauses.empty())
-        throw std::runtime_error("parse_selection_expr: no clauses found");
+    if (expr.terms.empty())
+        throw std::runtime_error("parse_selection_expr: no terms found");
+
+    mirror_first_term(expr);
 
     return expr;
 }
@@ -148,36 +214,47 @@ SelectionExpr parse_selection_expr(std::string_view text)
 void compile_selection_expr(SelectionExpr& expr,
                             const std::vector<std::string>& level_set_names)
 {
-    expr.zero_required     = 0;
-    expr.negative_required = 0;
-    expr.positive_required = 0;
-
-    for (auto& clause : expr.clauses)
+    for (auto& term : expr.terms)
     {
-        auto it = std::find(level_set_names.begin(), level_set_names.end(),
-                            clause.name);
-        if (it == level_set_names.end())
+        term.zero_required     = 0;
+        term.negative_required = 0;
+        term.positive_required = 0;
+
+        for (auto& clause : term.clauses)
         {
-            throw std::runtime_error(
-                "compile_selection_expr: unknown level-set name '"
-                + clause.name + "'");
-        }
+            auto it = std::find(level_set_names.begin(), level_set_names.end(),
+                                clause.name);
+            if (it == level_set_names.end())
+            {
+                throw std::runtime_error(
+                    "compile_selection_expr: unknown level-set name '"
+                    + clause.name + "'");
+            }
 
-        int idx = static_cast<int>(std::distance(level_set_names.begin(), it));
-        if (idx >= 64)
-            throw std::runtime_error(
-                "compile_selection_expr: level-set index >= 64 not supported");
+            int idx = static_cast<int>(std::distance(level_set_names.begin(), it));
+            if (idx >= 64)
+                throw std::runtime_error(
+                    "compile_selection_expr: level-set index >= 64 not supported");
 
-        clause.level_set_index = idx;
-        const std::uint64_t bit = std::uint64_t(1) << idx;
+            clause.level_set_index = idx;
+            const std::uint64_t bit = std::uint64_t(1) << idx;
 
-        switch (clause.relation)
-        {
-            case Relation::LessThan:    expr.negative_required |= bit; break;
-            case Relation::GreaterThan: expr.positive_required |= bit; break;
-            case Relation::EqualTo:     expr.zero_required     |= bit; break;
+            switch (clause.relation)
+            {
+                case Relation::LessThan:
+                    term.negative_required |= bit;
+                    break;
+                case Relation::GreaterThan:
+                    term.positive_required |= bit;
+                    break;
+                case Relation::EqualTo:
+                    term.zero_required |= bit;
+                    break;
+            }
         }
     }
+
+    mirror_first_term(expr);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,11 +263,28 @@ void compile_selection_expr(SelectionExpr& expr,
 
 int infer_selection_dim(const SelectionExpr& expr, int tdim)
 {
-    int n_eq = 0;
-    for (const auto& clause : expr.clauses)
-        if (clause.relation == Relation::EqualTo)
-            ++n_eq;
-    return std::max(0, tdim - n_eq);
+    if (expr.terms.empty())
+        throw std::runtime_error("infer_selection_dim: empty selection expression");
+
+    auto infer_term_dim = [tdim](const SelectionTerm& term)
+    {
+        int n_eq = 0;
+        for (const auto& clause : term.clauses)
+            if (clause.relation == Relation::EqualTo)
+                ++n_eq;
+        return std::max(0, tdim - n_eq);
+    };
+
+    const int dim = infer_term_dim(expr.terms.front());
+    for (std::size_t i = 1; i < expr.terms.size(); ++i)
+    {
+        if (infer_term_dim(expr.terms[i]) != dim)
+        {
+            throw std::runtime_error(
+                "infer_selection_dim: 'or' terms must select the same entity dimension");
+        }
+    }
+    return dim;
 }
 
 } // namespace cutcells

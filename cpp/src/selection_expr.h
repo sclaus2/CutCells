@@ -29,16 +29,16 @@ struct Clause
     Relation    relation;          ///< the comparison operator
 };
 
-/// A compiled selection expression.
+/// One conjunction term in a selection expression.
 ///
-/// The expression is a conjunction (AND) of clauses:
-///   "phi1 < 0 and phi2 = 0" → two clauses.
+/// A term is an AND of clauses:
+///   "phi1 < 0 and phi2 = 0" -> two clauses in one term.
 ///
 /// After compilation against a name registry, bitmasks are populated:
 ///   - bit i set in zero_required     → φ_i = 0
 ///   - bit i set in negative_required → φ_i < 0
 ///   - bit i set in positive_required → φ_i > 0
-struct SelectionExpr
+struct SelectionTerm
 {
     std::vector<Clause> clauses;          ///< implicitly AND-connected
 
@@ -48,9 +48,28 @@ struct SelectionExpr
     std::uint64_t positive_required = 0;
 };
 
+/// A compiled selection expression.
+///
+/// The expression is a union (OR) of terms:
+///   "phi1 < 0 or phi2 < 0" -> two terms.
+///   "phi1 < 0 and phi2 > 0" -> one term with two clauses.
+struct SelectionExpr
+{
+    std::vector<SelectionTerm> terms;
+
+    // Legacy single-term view. These fields mirror terms.front() after
+    // parsing/compilation so existing single-term code can be migrated
+    // incrementally. New selection code should use terms.
+    std::vector<Clause> clauses;
+    std::uint64_t zero_required     = 0;
+    std::uint64_t negative_required = 0;
+    std::uint64_t positive_required = 0;
+};
+
 /// Parse a selection expression string.
 ///
-/// Grammar:  clause ('and' clause)*
+/// Grammar:  term ('or' term)*
+/// term:     clause ('and' clause)*
 /// clause:   name ('<'|'>'|'=') '0'
 ///
 /// @throws std::runtime_error on syntax error.
@@ -67,8 +86,9 @@ void compile_selection_expr(SelectionExpr& expr,
 
 /// Infer the entity dimension selected by a compiled expression.
 ///
-/// If no clause is EqualTo → volume (tdim).
-/// Each EqualTo clause reduces the dimension by one.
+/// Each OR term must select the same dimension. Within a term, each EqualTo
+/// clause reduces the dimension by one; a term with no EqualTo clauses selects
+/// volume (tdim).
 ///
 /// @param tdim  topological dimension of the background cells.
 /// @return inferred entity dimension.

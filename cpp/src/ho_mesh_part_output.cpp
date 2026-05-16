@@ -116,7 +116,7 @@ template <std::floating_point T, std::integral I>
 bool leaf_cell_matches_sign_requirements(
     const AdaptCell<T>& ac,
     std::span<const std::int32_t> cell_verts,
-    const SelectionExpr& expr,
+    const SelectionTerm& term,
     std::uint64_t cut_cell_active_mask,
     const BackgroundMeshData<T, I>& bg,
     I parent_cell_id)
@@ -125,8 +125,8 @@ bool leaf_cell_matches_sign_requirements(
     for (int li = 0; li < nls; ++li)
     {
         const std::uint64_t bit = std::uint64_t(1) << li;
-        const bool require_neg = (expr.negative_required & bit) != 0;
-        const bool require_pos = (expr.positive_required & bit) != 0;
+        const bool require_neg = (term.negative_required & bit) != 0;
+        const bool require_pos = (term.positive_required & bit) != 0;
         if (!require_neg && !require_pos)
             continue;
 
@@ -164,11 +164,31 @@ bool leaf_cell_matches_sign_requirements(
 }
 
 template <std::floating_point T, std::integral I>
+bool leaf_cell_matches_selection_expr(
+    const AdaptCell<T>& ac,
+    std::span<const std::int32_t> cell_verts,
+    const SelectionExpr& expr,
+    std::uint64_t cut_cell_active_mask,
+    const BackgroundMeshData<T, I>& bg,
+    I parent_cell_id)
+{
+    for (const auto& term : expr.terms)
+    {
+        if (leaf_cell_matches_sign_requirements(
+                ac, cell_verts, term, cut_cell_active_mask, bg, parent_cell_id))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <std::floating_point T, std::integral I>
 bool zero_entity_matches(
     const AdaptCell<T>& ac,
     int zero_entity_index,
     int target_dim,
-    const SelectionExpr& expr,
+    const SelectionTerm& term,
     std::uint64_t cut_cell_active_mask,
     const BackgroundMeshData<T, I>& bg,
     I parent_cell_id)
@@ -181,10 +201,13 @@ bool zero_entity_matches(
 
     const auto zero_mask =
         ac.zero_entity_zero_mask[static_cast<std::size_t>(zero_entity_index)];
-    if ((zero_mask & expr.zero_required) != expr.zero_required)
+    if ((cut_cell_active_mask & term.zero_required) != term.zero_required)
         return false;
 
-    if (expr.negative_required == 0 && expr.positive_required == 0)
+    if ((zero_mask & term.zero_required) != term.zero_required)
+        return false;
+
+    if (term.negative_required == 0 && term.positive_required == 0)
         return true;
 
     std::vector<int> zero_verts;
@@ -215,12 +238,34 @@ bool zero_entity_matches(
         }
 
         if (leaf_cell_matches_sign_requirements(
-                ac, cell_verts, expr, cut_cell_active_mask, bg, parent_cell_id))
+                ac, cell_verts, term, cut_cell_active_mask, bg, parent_cell_id))
         {
             return true;
         }
     }
 
+    return false;
+}
+
+template <std::floating_point T, std::integral I>
+bool zero_entity_matches_selection_expr(
+    const AdaptCell<T>& ac,
+    int zero_entity_index,
+    int target_dim,
+    const SelectionExpr& expr,
+    std::uint64_t cut_cell_active_mask,
+    const BackgroundMeshData<T, I>& bg,
+    I parent_cell_id)
+{
+    for (const auto& term : expr.terms)
+    {
+        if (zero_entity_matches(
+                ac, zero_entity_index, target_dim, term,
+                cut_cell_active_mask, bg, parent_cell_id))
+        {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -250,7 +295,7 @@ std::vector<SelectedEntity> selected_entities(const HOMeshPart<T, I>& part,
         {
             auto verts = adapt_cell.entity_to_vertex[adapt_cell.tdim][
                 static_cast<std::int32_t>(c)];
-            if (!leaf_cell_matches_sign_requirements(
+            if (!leaf_cell_matches_selection_expr(
                     adapt_cell, verts, part.expr, cut_active_mask,
                     *part.bg, parent_cell_id))
             {
@@ -270,7 +315,7 @@ std::vector<SelectedEntity> selected_entities(const HOMeshPart<T, I>& part,
     entities.reserve(static_cast<std::size_t>(n_zero));
     for (int z = 0; z < n_zero; ++z)
     {
-        if (!zero_entity_matches(
+        if (!zero_entity_matches_selection_expr(
                 adapt_cell, z, part.dim, part.expr, cut_active_mask,
                 *part.bg, parent_cell_id))
         {
@@ -683,7 +728,7 @@ std::vector<SelectedZeroEntityInfo> selected_zero_entity_infos(
         const int n_zero = ac.n_zero_entities();
         for (int z = 0; z < n_zero; ++z)
         {
-            if (!zero_entity_matches(
+            if (!zero_entity_matches_selection_expr(
                     ac, z, part.dim, part.expr, cut_active_mask,
                     *part.bg, parent_cell_id))
             {

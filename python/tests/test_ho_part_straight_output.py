@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 import cutcells
 
@@ -34,6 +35,26 @@ def _single_triangle_mesh():
     offsets = np.array([0, 3], dtype=np.int32)
     cell_types = np.array([5], dtype=np.int32)
     return cutcells.MeshView(coords, connectivity, offsets, cell_types, tdim=2)
+
+
+def _two_tetra_mesh():
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [0.0, 0.2, 0.0],
+            [0.0, 0.0, 0.2],
+            [1.0, 0.0, 0.0],
+            [1.2, 0.0, 0.0],
+            [1.0, 0.2, 0.0],
+            [1.0, 0.0, 0.2],
+        ],
+        dtype=np.float64,
+    )
+    connectivity = np.array([0, 1, 2, 3, 4, 5, 6, 7], dtype=np.int32)
+    offsets = np.array([0, 4, 8], dtype=np.int32)
+    cell_types = np.array([10, 10], dtype=np.int32)
+    return cutcells.MeshView(coords, connectivity, offsets, cell_types, tdim=3)
 
 
 def _edge_key(xa: np.ndarray, xb: np.ndarray, digits: int = 12):
@@ -184,6 +205,74 @@ def test_homeshpart_straight_output_bridge(tmp_path: Path):
     assert interface_path.exists()
     assert "Name=\"types\" format=\"ascii\">13 " in negative_path.read_text()
     assert "Name=\"types\" format=\"ascii\">9 " in interface_path.read_text()
+
+
+def test_mesh_part_string_selection_supports_volume_or():
+    mesh = _two_tetra_mesh()
+    left = cutcells.create_level_set(
+        mesh,
+        lambda X: X[0] - 0.5,
+        degree=1,
+        name="left",
+    )
+    right = cutcells.create_level_set(
+        mesh,
+        lambda X: 0.5 - X[0],
+        degree=1,
+        name="right",
+    )
+
+    result = cutcells.cut(mesh, [left, right])
+
+    left_part = result["left < 0"]
+    right_part = result["right < 0"]
+    union_part = result["left < 0 or right < 0"]
+
+    np.testing.assert_array_equal(np.asarray(left_part.uncut_cell_ids), np.array([0]))
+    np.testing.assert_array_equal(np.asarray(right_part.uncut_cell_ids), np.array([1]))
+    np.testing.assert_array_equal(
+        np.asarray(union_part.uncut_cell_ids),
+        np.array([0, 1]),
+    )
+    assert union_part.num_cut_cells == 0
+
+
+def test_mesh_part_string_selection_rejects_mixed_dimension_or():
+    mesh = _single_tetra_mesh()
+    ls = cutcells.create_level_set(
+        mesh,
+        lambda X: X[0] + X[1] - 0.6,
+        degree=1,
+        name="phi",
+    )
+
+    result = cutcells.cut(mesh, ls)
+    with pytest.raises(RuntimeError, match="same entity dimension"):
+        result["phi < 0 or phi = 0"]
+
+
+def test_mesh_part_string_selection_supports_surface_or():
+    mesh = _single_tetra_mesh()
+    phi = cutcells.create_level_set(
+        mesh,
+        lambda X: X[0] + X[1] - 0.6,
+        degree=1,
+        name="phi",
+    )
+    psi = cutcells.create_level_set(
+        mesh,
+        lambda X: X[0] + X[2] - 0.6,
+        degree=1,
+        name="psi",
+    )
+
+    result = cutcells.cut(mesh, [phi, psi])
+    union_part = result["phi = 0 or psi = 0"]
+    union_mesh = union_part.visualization_mesh(mode="cut_only")
+
+    assert union_part.dim == 2
+    np.testing.assert_array_equal(np.asarray(union_part.cut_cell_ids), np.array([0]))
+    assert len(np.asarray(union_mesh.types)) > 0
 
 
 def test_triangulated_tetra_prism_midpoints_keep_masks_and_source_edges():

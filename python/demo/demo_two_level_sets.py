@@ -127,6 +127,7 @@ def main() -> None:
         ("sphere = 0 and plane = 0", "sphere_plane_intersection_curve.vtu", "cut_only"),
         ("sphere < 0 and plane < 0", "inside_sphere_plane_negative.vtu", "cut_only"),
         ("sphere < 0 and plane > 0", "inside_sphere_plane_positive.vtu", "cut_only"),
+        ("sphere < 0 or plane < 0", "inside_sphere_or_plane_negative.vtu", "cut_only"),
     ]
 
     print("Writing selected mesh parts ...")

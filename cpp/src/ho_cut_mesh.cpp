@@ -156,7 +156,7 @@ template <std::floating_point T, std::integral I>
 bool leaf_cell_matches_sign_requirements(
     const AdaptCell<T>& ac,
     std::span<const std::int32_t> cell_verts,
-    const SelectionExpr& expr,
+    const SelectionTerm& term,
     std::uint64_t cut_cell_active_mask,
     const BackgroundMeshData<T, I>& bg,
     I parent_cell_id)
@@ -165,8 +165,8 @@ bool leaf_cell_matches_sign_requirements(
     for (int li = 0; li < nls; ++li)
     {
         const std::uint64_t bit = std::uint64_t(1) << li;
-        const bool require_neg = (expr.negative_required & bit) != 0;
-        const bool require_pos = (expr.positive_required & bit) != 0;
+        const bool require_neg = (term.negative_required & bit) != 0;
+        const bool require_pos = (term.positive_required & bit) != 0;
         if (!require_neg && !require_pos)
             continue;
 
@@ -209,11 +209,31 @@ bool leaf_cell_matches_sign_requirements(
 }
 
 template <std::floating_point T, std::integral I>
+bool leaf_cell_matches_selection_expr(
+    const AdaptCell<T>& ac,
+    std::span<const std::int32_t> cell_verts,
+    const SelectionExpr& expr,
+    std::uint64_t cut_cell_active_mask,
+    const BackgroundMeshData<T, I>& bg,
+    I parent_cell_id)
+{
+    for (const auto& term : expr.terms)
+    {
+        if (leaf_cell_matches_sign_requirements(
+                ac, cell_verts, term, cut_cell_active_mask, bg, parent_cell_id))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <std::floating_point T, std::integral I>
 bool zero_entity_matches(
     const AdaptCell<T>& ac,
     int zero_entity_index,
     int target_dim,
-    const SelectionExpr& expr,
+    const SelectionTerm& term,
     std::uint64_t cut_cell_active_mask,
     const BackgroundMeshData<T, I>& bg,
     I parent_cell_id)
@@ -222,10 +242,13 @@ bool zero_entity_matches(
         return false;
 
     const auto zero_mask = ac.zero_entity_zero_mask[static_cast<std::size_t>(zero_entity_index)];
-    if ((zero_mask & expr.zero_required) != expr.zero_required)
+    if ((cut_cell_active_mask & term.zero_required) != term.zero_required)
         return false;
 
-    if (expr.negative_required == 0 && expr.positive_required == 0)
+    if ((zero_mask & term.zero_required) != term.zero_required)
+        return false;
+
+    if (term.negative_required == 0 && term.positive_required == 0)
         return true;
 
     std::vector<int> zero_verts;
@@ -252,12 +275,34 @@ bool zero_entity_matches(
             continue;
 
         if (leaf_cell_matches_sign_requirements(
-                ac, cell_verts, expr, cut_cell_active_mask, bg, parent_cell_id))
+                ac, cell_verts, term, cut_cell_active_mask, bg, parent_cell_id))
         {
             return true;
         }
     }
 
+    return false;
+}
+
+template <std::floating_point T, std::integral I>
+bool zero_entity_matches_selection_expr(
+    const AdaptCell<T>& ac,
+    int zero_entity_index,
+    int target_dim,
+    const SelectionExpr& expr,
+    std::uint64_t cut_cell_active_mask,
+    const BackgroundMeshData<T, I>& bg,
+    I parent_cell_id)
+{
+    for (const auto& term : expr.terms)
+    {
+        if (zero_entity_matches(
+                ac, zero_entity_index, target_dim, term,
+                cut_cell_active_mask, bg, parent_cell_id))
+        {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -557,26 +602,35 @@ HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
 
         // For an uncut cell, every vertex has the same sign for each LS.
         // Check if the cell domain is compatible with the expression.
-        bool match = true;
-        for (const auto& clause : part.expr.clauses)
+        bool match = false;
+        for (const auto& term : part.expr.terms)
         {
-            const int li = clause.level_set_index;
-            const cell::domain dom = bg.domain(li, ci);
-
-            switch (clause.relation)
+            bool term_match = true;
+            for (const auto& clause : term.clauses)
             {
-                case Relation::LessThan:
-                    if (dom != cell::domain::inside) match = false;
-                    break;
-                case Relation::GreaterThan:
-                    if (dom != cell::domain::outside) match = false;
-                    break;
-                case Relation::EqualTo:
-                    // An uncut (non-intersected) cell has no zero interface.
-                    match = false;
-                    break;
+                const int li = clause.level_set_index;
+                const cell::domain dom = bg.domain(li, ci);
+
+                switch (clause.relation)
+                {
+                    case Relation::LessThan:
+                        if (dom != cell::domain::inside) term_match = false;
+                        break;
+                    case Relation::GreaterThan:
+                        if (dom != cell::domain::outside) term_match = false;
+                        break;
+                    case Relation::EqualTo:
+                        // An uncut (non-intersected) cell has no zero interface.
+                        term_match = false;
+                        break;
+                }
+                if (!term_match) break;
             }
-            if (!match) break;
+            if (term_match)
+            {
+                match = true;
+                break;
+            }
         }
 
         if (match)
@@ -600,7 +654,7 @@ HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
             for (int c = 0; c < n_leaf; ++c)
             {
                 auto cell_verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
-                if (leaf_cell_matches_sign_requirements(
+                if (leaf_cell_matches_selection_expr(
                         ac, cell_verts, part.expr, cut_active_mask, bg, bg_cell))
                 {
                     has_matching_leaf = true;
@@ -613,14 +667,11 @@ HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
         }
         else
         {
-            if ((cut_active_mask & part.expr.zero_required) != part.expr.zero_required)
-                continue;
-
             bool has_matching_zero_entity = false;
             const int n_zero = ac.n_zero_entities();
             for (int z = 0; z < n_zero; ++z)
             {
-                if (zero_entity_matches(
+                if (zero_entity_matches_selection_expr(
                         ac, z, part.dim, part.expr, cut_active_mask, bg, bg_cell))
                 {
                     has_matching_zero_entity = true;
