@@ -30,7 +30,7 @@ from cutcells import box_tetrahedron_mesh, mesh_from_pyvista
 DEFAULT_CENTER = np.array([0.1, -0.08, 0.05], dtype=np.float64)
 DEFAULT_RADIUS = 0.58
 DEFAULT_PLANE_NORMAL = np.array([1.0, -0.35, 0.2], dtype=np.float64)
-DEFAULT_PLANE_OFFSET = 0.07
+DEFAULT_PLANE_OFFSET = 0.0
 TRIANGULATE = True
 OUTPUT_DIR = Path("demo_two_level_sets_output")
 

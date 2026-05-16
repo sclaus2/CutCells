@@ -500,6 +500,40 @@ class CertificationRefinementTests(unittest.TestCase):
             ]),
         )
 
+    def test_zero_vertex_tetra_ready_to_cut_is_replaced_by_valid_tetrahedra(self):
+        mesh = _single_tetra_mesh()
+        ls = cutcells.create_level_set(
+            mesh,
+            lambda X: X[0] + X[1] - X[2],
+            degree=1,
+        )
+        adapt = cutcells.make_adapt_cell(mesh, 0)
+        cutcells.build_edges(adapt)
+        ls_cell = cutcells.make_cell_level_set(ls, 0)
+
+        cutcells.certify_refine_and_process_ready_cells(adapt, ls_cell, 0)
+
+        self.assertEqual(adapt.num_cells(), 3)
+        np.testing.assert_array_equal(
+            np.asarray(adapt.cell_types),
+            np.full(3, cutcells.CellType.tetrahedron.value, dtype=np.int32),
+        )
+
+        tags = np.asarray(adapt.cell_cert_tags(0))
+        self.assertEqual(
+            sorted(np.unique(tags).tolist()),
+            sorted([
+                cutcells.CellCertTag.negative.value,
+                cutcells.CellCertTag.positive.value,
+            ]),
+        )
+
+        connectivity = np.asarray(adapt.cell_connectivity, dtype=np.int32)
+        offsets = np.asarray(adapt.cell_offsets, dtype=np.int32)
+        for c in range(adapt.num_cells()):
+            cell_vertices = connectivity[offsets[c]:offsets[c + 1]]
+            self.assertEqual(len(set(cell_vertices.tolist())), 4)
+
     def test_certify_and_refine_recursively_splits_tetra_multiple_root_edges(self):
         mesh = _single_tetra_mesh()
         ls = cutcells.create_level_set(
