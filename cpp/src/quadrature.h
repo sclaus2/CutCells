@@ -52,6 +52,26 @@ struct QuadratureRules
     /// Parent cell index for each rule.
     /// Size: num_rules
     std::vector<int32_t> _parent_map;
+
+    /// Optional diagnostic metadata, one entry per rule when populated.
+    /// Values are producer-specific; implicit quadrature uses:
+    ///   chart_path: 0 unknown/full, 1 sign-oriented Duffy, 2 height recovery,
+    ///               3 straight interface fallback
+    ///   local_cell_id: leaf id in the AdaptCell used by the accepted rule
+    ///   refinement_depth: chart-refinement recursion depth
+    ///   chart_plan_hash: q-independent signature of the accepted geometry path
+    ///   candidate_mask: accepted candidate bits, producer-specific
+    ///   rejection_reason: 0 for accepted/unknown, non-zero producer-specific reason
+    ///   measure_probe: q-independent geometric measure probe used for validation
+    ///   validation_weight_sum: fixed-inspection-order weight sum used for validation
+    std::vector<int32_t> _debug_local_cell_id;
+    std::vector<int32_t> _debug_chart_path;
+    std::vector<int32_t> _debug_refinement_depth;
+    std::vector<int64_t> _debug_chart_plan_hash;
+    std::vector<int32_t> _debug_candidate_mask;
+    std::vector<int32_t> _debug_rejection_reason;
+    std::vector<T> _debug_measure_probe;
+    std::vector<T> _debug_validation_weight_sum;
 };
 
 /// Append the quadrature contribution of one cut cell.

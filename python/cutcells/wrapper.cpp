@@ -44,6 +44,7 @@
 #include "../../cpp/src/refine_cell.h"
 #include "../../cpp/src/ho_cut_mesh.h"
 #include "../../cpp/src/ho_mesh_part_output.h"
+#include "../../cpp/src/implicit_quadrature.h"
 
 namespace nb = nanobind;
 
@@ -748,6 +749,20 @@ cutcells::quadrature::QuadratureRules<T> part_quadrature(
   const bool cut_only = part_mode_is_cut_only(mode);
   return cutcells::output::quadrature_rules(
       part, order, /*include_uncut_cells=*/!cut_only);
+}
+
+template <typename T>
+cutcells::quadrature::QuadratureRules<T> part_implicit_quadrature(
+    const cutcells::HOMeshPart<T, int>& part,
+    int order,
+    std::string_view mode,
+    const cutcells::implicit_quadrature::ImplicitQuadratureOptions& options)
+{
+  const bool cut_only = part_mode_is_cut_only(mode);
+  auto opts = options;
+  opts.order = order;
+  return cutcells::implicit_quadrature::quadrature_rules_implicit(
+      part, order, /*include_uncut_cells=*/!cut_only, opts);
 }
 
 template <typename T>
@@ -1654,7 +1669,71 @@ void declare_float(nb::module_& m, std::string type)
             nb::cast(self, nb::rv_policy::reference));
         },
         nb::rv_policy::reference_internal,
-        "Index of the originating cut-cell in the input list, shape (num_rules,).");
+        "Index of the originating cut-cell in the input list, shape (num_rules,).")
+      .def_prop_ro("debug_local_cell_id",
+        [](const quadrature::QuadratureRules<T>& self) {
+          return nb::ndarray<const int32_t, nb::numpy>(
+            self._debug_local_cell_id.data(), {self._debug_local_cell_id.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Optional diagnostic local leaf id for each emitted rule.")
+      .def_prop_ro("debug_chart_path",
+        [](const quadrature::QuadratureRules<T>& self) {
+          return nb::ndarray<const int32_t, nb::numpy>(
+            self._debug_chart_path.data(), {self._debug_chart_path.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Optional diagnostic chart path for each emitted rule: 0 unknown/full, 1 Duffy, 2 height recovery, 3 straight fallback.")
+      .def_prop_ro("debug_refinement_depth",
+        [](const quadrature::QuadratureRules<T>& self) {
+          return nb::ndarray<const int32_t, nb::numpy>(
+            self._debug_refinement_depth.data(), {self._debug_refinement_depth.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Optional diagnostic chart-refinement recursion depth for each emitted rule.")
+      .def_prop_ro("debug_chart_plan_hash",
+        [](const quadrature::QuadratureRules<T>& self) {
+          return nb::ndarray<const int64_t, nb::numpy>(
+            self._debug_chart_plan_hash.data(), {self._debug_chart_plan_hash.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Optional q-independent diagnostic chart-plan signature for each emitted rule.")
+      .def_prop_ro("debug_candidate_mask",
+        [](const quadrature::QuadratureRules<T>& self) {
+          return nb::ndarray<const int32_t, nb::numpy>(
+            self._debug_candidate_mask.data(), {self._debug_candidate_mask.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Optional diagnostic accepted-candidate bit mask for each emitted rule.")
+      .def_prop_ro("debug_rejection_reason",
+        [](const quadrature::QuadratureRules<T>& self) {
+          return nb::ndarray<const int32_t, nb::numpy>(
+            self._debug_rejection_reason.data(), {self._debug_rejection_reason.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Optional diagnostic rejection/status code for each emitted rule.")
+      .def_prop_ro("debug_measure_probe",
+        [](const quadrature::QuadratureRules<T>& self) {
+          return nb::ndarray<const T, nb::numpy>(
+            self._debug_measure_probe.data(), {self._debug_measure_probe.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Optional q-independent geometric measure probe for each emitted rule.")
+      .def_prop_ro("debug_validation_weight_sum",
+        [](const quadrature::QuadratureRules<T>& self) {
+          return nb::ndarray<const T, nb::numpy>(
+            self._debug_validation_weight_sum.data(), {self._debug_validation_weight_sum.size()},
+            nb::cast(self, nb::rv_policy::reference));
+        },
+        nb::rv_policy::reference_internal,
+        "Optional fixed-inspection-order validation weight sum for each emitted rule.");
   }
 
   // ---- make_quadrature ----
@@ -1931,6 +2010,19 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             nb::arg("order") = 3,
             nb::arg("mode") = "full",
             "Return quadrature rules for an HOMeshPart, preserving AdaptCell topology.")
+        .def(
+            "implicit_quadrature",
+            [](const PartT& self,
+               int order,
+               const std::string& mode,
+               const cutcells::implicit_quadrature::ImplicitQuadratureOptions& options) {
+                nb::gil_scoped_release release;
+                return part_implicit_quadrature(self, order, mode, options);
+            },
+            nb::arg("order") = 6,
+            nb::arg("mode") = "full",
+            nb::arg("options") = cutcells::implicit_quadrature::ImplicitQuadratureOptions{},
+            "Return high-order implicit quadrature rules for a single-level-set HOMeshPart.")
         .def(
             "write_vtu",
             [](const PartT& self,
@@ -2712,6 +2804,45 @@ NB_MODULE(_cutcellscpp, m)
     .value("cut", cutcells::FaceCertTag::cut)
     .value("zero", cutcells::FaceCertTag::zero)
     .value("ambiguous", cutcells::FaceCertTag::ambiguous);
+
+  nb::enum_<cutcells::cell::edge_root::method>(m, "EdgeRootMethod")
+    .value("linear", cutcells::cell::edge_root::method::linear)
+    .value("brent", cutcells::cell::edge_root::method::brent)
+    .value("itp", cutcells::cell::edge_root::method::itp)
+    .value("newton", cutcells::cell::edge_root::method::newton);
+
+  nb::enum_<cutcells::implicit_quadrature::IntegrationDomain>(m, "IntegrationDomain")
+    .value("negative_volume", cutcells::implicit_quadrature::IntegrationDomain::negative_volume)
+    .value("positive_volume", cutcells::implicit_quadrature::IntegrationDomain::positive_volume)
+    .value("interface_surface", cutcells::implicit_quadrature::IntegrationDomain::interface_surface);
+
+  nb::class_<cutcells::implicit_quadrature::ImplicitQuadratureOptions>(
+      m, "ImplicitQuadratureOptions")
+    .def(nb::init<>())
+    .def_rw("order", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::order)
+    .def_rw("inspection_order", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::inspection_order)
+    .def_rw("max_refinement_iterations", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::max_refinement_iterations)
+    .def_rw("edge_root_max_depth", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::edge_root_max_depth)
+    .def_rw("zero_tol", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::zero_tol)
+    .def_rw("sign_tol", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::sign_tol)
+    .def_rw("root_tol", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::root_tol)
+    .def_rw("min_transversality", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::min_transversality)
+    .def_rw("max_root_slope", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::max_root_slope)
+    .def_rw("max_geometry_q_error", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::max_geometry_q_error)
+    .def_rw("max_surface_q_rel_error", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::max_surface_q_rel_error)
+    .def_rw("min_surface_area_ratio", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::min_surface_area_ratio)
+    .def_rw("max_surface_area_ratio", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::max_surface_area_ratio)
+    .def_rw("max_base_split_depth", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::max_base_split_depth)
+    .def_rw("max_diagnostic_refinement_depth", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::max_diagnostic_refinement_depth)
+    .def_rw("max_height_direction_candidates", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::max_height_direction_candidates)
+    .def_rw("root_method", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::root_method)
+    .def_rw("enable_chart_refinement", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::enable_chart_refinement)
+    .def_rw("enable_q_error_estimator", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::enable_q_error_estimator)
+    .def_rw("enable_height_direction_recovery", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::enable_height_direction_recovery)
+    .def_rw("min_height_transversality", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::min_height_transversality)
+    .def_rw("max_face_trace_alpha", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::max_face_trace_alpha)
+    .def_rw("min_height_area_ratio", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::min_height_area_ratio)
+    .def_rw("max_height_area_ratio", &cutcells::implicit_quadrature::ImplicitQuadratureOptions::max_height_area_ratio);
 
   declare_float<float>(m, "float32");
   declare_float<double>(m, "float64");

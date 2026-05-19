@@ -316,6 +316,14 @@ void append_quadrature(const cutcells::cell::CutCell<T>& cut_cell,
 
     // One rule entry per CutCell: record how many new points were added
     rules._parent_map.push_back(cut_cell._parent_cell_index);
+    rules._debug_local_cell_id.push_back(std::int32_t(-1));
+    rules._debug_chart_path.push_back(std::int32_t(0));
+    rules._debug_refinement_depth.push_back(std::int32_t(0));
+    rules._debug_chart_plan_hash.push_back(std::int64_t(0));
+    rules._debug_candidate_mask.push_back(std::int32_t(0));
+    rules._debug_rejection_reason.push_back(std::int32_t(0));
+    rules._debug_measure_probe.push_back(T(0));
+    rules._debug_validation_weight_sum.push_back(T(0));
     rules._offset.push_back(static_cast<int32_t>(rules._weights.size()));
 }
 
@@ -332,6 +340,14 @@ void make_quadrature(const std::vector<cutcells::cell::CutCell<T>>& cut_cells,
     rules._weights.clear();
     rules._offset.clear();
     rules._parent_map.clear();
+    rules._debug_local_cell_id.clear();
+    rules._debug_chart_path.clear();
+    rules._debug_refinement_depth.clear();
+    rules._debug_chart_plan_hash.clear();
+    rules._debug_candidate_mask.clear();
+    rules._debug_rejection_reason.clear();
+    rules._debug_measure_probe.clear();
+    rules._debug_validation_weight_sum.clear();
 
     for (std::size_t i = 0; i < cut_cells.size(); ++i)
     {
@@ -505,6 +521,14 @@ QuadratureRules<T> runtime_quadrature(
             }
 
             rules._parent_map.push_back(static_cast<int32_t>(ci));
+            rules._debug_local_cell_id.push_back(std::int32_t(-1));
+            rules._debug_chart_path.push_back(std::int32_t(0));
+            rules._debug_refinement_depth.push_back(std::int32_t(0));
+            rules._debug_chart_plan_hash.push_back(std::int64_t(0));
+            rules._debug_candidate_mask.push_back(std::int32_t(0));
+            rules._debug_rejection_reason.push_back(std::int32_t(0));
+            rules._debug_measure_probe.push_back(T(0));
+            rules._debug_validation_weight_sum.push_back(T(0));
             rules._offset.push_back(static_cast<int32_t>(rules._weights.size()));
         }
         // ------------------------------------------------------------------

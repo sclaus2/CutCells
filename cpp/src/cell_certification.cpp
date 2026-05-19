@@ -1857,7 +1857,7 @@ bool refine_ready_cell_on_largest_midpoint_value(
     const auto ledges = cell::edges(ctype);
 
     int selected_edge = -1;
-    T selected_value = -std::numeric_limits<T>::infinity();
+    T selected_score = std::numeric_limits<T>::infinity();
     for (const auto& le : ledges)
     {
         const int a = verts[static_cast<std::size_t>(le[0])];
@@ -1877,10 +1877,11 @@ bool refine_ready_cell_on_largest_midpoint_value(
         }
         const T value = ls_cell.value(
             std::span<const T>(midpoint.data(), midpoint.size()));
-        if (selected_edge < 0 || value > selected_value)
+        const T score = std::abs(value);
+        if (selected_edge < 0 || score < selected_score)
         {
             selected_edge = it->second;
-            selected_value = value;
+            selected_score = score;
         }
     }
 

@@ -508,6 +508,14 @@ void append_entity_quadrature(quadrature::QuadratureRules<T>& rules,
             ref_vertices.begin() + parent_tdim);
         rules._weights.push_back(T(1));
         rules._parent_map.push_back(parent_cell_id);
+        rules._debug_local_cell_id.push_back(std::int32_t(-1));
+        rules._debug_chart_path.push_back(std::int32_t(0));
+        rules._debug_refinement_depth.push_back(std::int32_t(0));
+        rules._debug_chart_plan_hash.push_back(std::int64_t(0));
+        rules._debug_candidate_mask.push_back(std::int32_t(0));
+        rules._debug_rejection_reason.push_back(std::int32_t(0));
+        rules._debug_measure_probe.push_back(T(0));
+        rules._debug_validation_weight_sum.push_back(T(0));
         rules._offset.push_back(static_cast<std::int32_t>(rules._weights.size()));
         return;
     }
@@ -562,6 +570,14 @@ void append_entity_quadrature(quadrature::QuadratureRules<T>& rules,
     }
 
     rules._parent_map.push_back(parent_cell_id);
+    rules._debug_local_cell_id.push_back(std::int32_t(-1));
+    rules._debug_chart_path.push_back(std::int32_t(0));
+    rules._debug_refinement_depth.push_back(std::int32_t(0));
+    rules._debug_chart_plan_hash.push_back(std::int64_t(0));
+    rules._debug_candidate_mask.push_back(std::int32_t(0));
+    rules._debug_rejection_reason.push_back(std::int32_t(0));
+    rules._debug_measure_probe.push_back(T(0));
+    rules._debug_validation_weight_sum.push_back(T(0));
     rules._offset.push_back(static_cast<std::int32_t>(rules._weights.size()));
 }
 
