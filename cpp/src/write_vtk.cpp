@@ -365,9 +365,9 @@ std::vector<int> basix_to_vtk_tetrahedron(const int num_nodes)
 HOCellFamily infer_cell_family(const cutcells::LevelSetMeshData<double, int>& mesh_data,
                                const int cell_id)
 {
-  if (!mesh_data.cell_types.empty())
+  if (mesh_data.has_cell_types())
   {
-    const cutcells::cell::type ct = mesh_data.cell_types[static_cast<std::size_t>(cell_id)];
+    const cutcells::cell::type ct = mesh_data.cell_type(cell_id);
     if (ct == cutcells::cell::type::triangle)
     {
       return HOCellFamily::triangle;
@@ -523,7 +523,7 @@ namespace cutcells::io
         if (!ls.has_dof_values())
             throw std::runtime_error("write_level_set_vtu: level set has no dof_values");
 
-        const auto& mesh_data = *ls.mesh_data;
+        const auto& mesh_data = ls.mesh_data;
         if (mesh_data.gdim < 2 || mesh_data.gdim > 3)
         {
             throw std::runtime_error(
@@ -539,15 +539,17 @@ namespace cutcells::io
 
         const int num_cells = mesh_data.num_cells();
         std::vector<int> connectivity;
-        connectivity.reserve(mesh_data.cell_dofs.size());
+        connectivity.reserve(mesh_data.cell_dofs_storage_span().size());
         std::vector<int> offsets;
         offsets.reserve(static_cast<std::size_t>(num_cells));
         std::vector<int> types;
         types.reserve(static_cast<std::size_t>(num_cells));
+        std::vector<int> cell_dof_scratch;
 
         for (int cell_id = 0; cell_id < num_cells; ++cell_id)
         {
-            const std::span<const int> cell_dofs = mesh_data.cell_dofs_span(cell_id);
+            const std::span<const int> cell_dofs =
+                mesh_data.cell_dofs_span(cell_id, cell_dof_scratch);
             const HOCellFamily family = infer_cell_family(mesh_data, cell_id);
             const std::vector<int> perm = basix_to_vtk_lagrange_permutation_impl(
                 family,

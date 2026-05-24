@@ -41,6 +41,7 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/refine_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature_tables.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/row_view.h
   ${CMAKE_CURRENT_SOURCE_DIR}/span_math.h
   ${CMAKE_CURRENT_SOURCE_DIR}/utils.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_tikz.h

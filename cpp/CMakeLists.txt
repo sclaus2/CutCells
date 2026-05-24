@@ -13,6 +13,17 @@ include(CheckIPOSupported)
 
 add_subdirectory(src)
 
+set(CUTCELLS_BUILD_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
+file(MAKE_DIRECTORY "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells")
+foreach(_cutcells_header IN LISTS HEADERS)
+  get_filename_component(_cutcells_header_name "${_cutcells_header}" NAME)
+  file(WRITE "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells/${_cutcells_header_name}"
+       "#pragma once\n#include \"${_cutcells_header}\"\n")
+endforeach()
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/src/generated"
+  DESTINATION "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells"
+  FILES_MATCHING PATTERN "*.h")
+
 find_package(OpenMP QUIET COMPONENTS CXX)
 if(OpenMP_CXX_FOUND AND TARGET OpenMP::OpenMP_CXX)
   target_link_libraries(cutcells PUBLIC OpenMP::OpenMP_CXX)
@@ -24,6 +35,7 @@ if(CUTCELLS_IPO_SUPPORTED)
 endif()
 
 target_include_directories(cutcells PUBLIC
+  $<BUILD_INTERFACE:${CUTCELLS_BUILD_INCLUDE_DIR}>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 

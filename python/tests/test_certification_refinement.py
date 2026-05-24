@@ -13,6 +13,14 @@ def _single_triangle_mesh():
     return cutcells.MeshView(coords, connectivity, offsets, cell_types, tdim=2)
 
 
+def _single_interval_mesh():
+    coords = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)
+    connectivity = np.array([0, 1], dtype=np.int32)
+    offsets = np.array([0, 2], dtype=np.int32)
+    cell_types = np.array([3], dtype=np.int32)  # VTK_LINE
+    return cutcells.MeshView(coords, connectivity, offsets, cell_types, tdim=1)
+
+
 def _single_tetra_mesh():
     coords = np.array(
         [[0.0, 0.0, 0.0],
@@ -30,6 +38,39 @@ def _single_tetra_mesh():
 
 
 class CertificationRefinementTests(unittest.TestCase):
+    def test_interval_ready_to_cut_cell_produces_subintervals(self):
+        mesh = _single_interval_mesh()
+        mesh_data = cutcells.create_level_set_mesh_data(
+            np.array(mesh.coordinates),
+            np.array(mesh.connectivity),
+            np.array(mesh.offsets),
+            degree=1,
+            tdim=1,
+            cell_types=np.array([3], dtype=np.int32),
+        )
+        ls = cutcells.create_level_set_function(
+            mesh_data,
+            np.array(mesh.coordinates)[:, 0] - 0.51,
+            name="phi",
+        )
+
+        result = cutcells.cut(mesh, ls)
+        negative = result["phi < 0"]
+        interface = result["phi = 0"]
+
+        q_negative = negative.quadrature(order=2, mode="cut_only")
+        q_interface = interface.quadrature(order=2, mode="cut_only")
+
+        self.assertEqual(q_negative.tdim, 1)
+        self.assertEqual(q_interface.tdim, 1)
+        self.assertAlmostEqual(float(q_negative.weights.sum()), 0.51)
+        self.assertEqual(q_negative.parent_map.tolist(), [0])
+        self.assertEqual(q_interface.parent_map.tolist(), [0])
+        np.testing.assert_allclose(
+            np.asarray(q_interface.points).reshape(-1, 1),
+            [[0.51]],
+        )
+
     def test_restrict_edge_bernstein_exact_matches_parent_evaluation(self):
         mesh = _single_triangle_mesh()
         ls = cutcells.create_level_set(

@@ -23,21 +23,18 @@ namespace cutcells
 {
 
 // =====================================================================
-// BackgroundMeshData — mesh-wide metadata produced during cutting
+// ParentCellClassification — mesh-wide metadata produced during cutting
 // =====================================================================
 
-/// Mesh-wide metadata produced during cutting.
+/// Parent-cell classification produced during cutting.
 ///
-/// Holds a non-owning reference to the background mesh plus:
+/// Holds:
 ///   - level-set name registry
 ///   - per-cell, per-level-set domain classification
 ///   - cell_to_cut_index lookup
 template <std::floating_point T, std::integral I = int>
-struct BackgroundMeshData
+struct ParentCellClassification
 {
-    /// Non-owning reference to the background mesh.
-    const MeshView<T, I>* mesh = nullptr;
-
     /// Level-set name registry.
     /// Index in this vector = bit position in AdaptCell bitmasks.
     std::vector<std::string> level_set_names;
@@ -97,18 +94,19 @@ struct HOCutCells
 };
 
 // =====================================================================
-// HOMeshPart — pure view/extraction layer over HOCutCells + BackgroundMeshData
+// HOMeshPart — pure view/extraction layer over HOCutCells + ParentCellClassification
 // =====================================================================
 
-/// View over HOCutCells + BackgroundMeshData, filtered by a SelectionExpr.
+/// View over HOCutCells + ParentCellClassification, filtered by a SelectionExpr.
 ///
 /// Stores no data of its own beyond the selection results.
 template <std::floating_point T, std::integral I = int>
 struct HOMeshPart
 {
     /// Non-owning references.
+    const MeshView<T, I>* mesh = nullptr;
     const HOCutCells<T, I>* cut_cells = nullptr;
-    const BackgroundMeshData<T, I>* bg = nullptr;
+    const ParentCellClassification<T, I>* parent_cells = nullptr;
 
     /// The selection expression (compiled).
     SelectionExpr expr;
@@ -128,10 +126,10 @@ struct HOMeshPart
 };
 
 // =====================================================================
-// Factory: cut() — produces both HOCutCells + BackgroundMeshData
+// Factory: cut() — produces both HOCutCells + ParentCellClassification
 // =====================================================================
 
-/// Build HOCutCells and BackgroundMeshData from a mesh and a single level set.
+/// Build HOCutCells and ParentCellClassification from a mesh and a single level set.
 ///
 /// Iterates all background cells, classifies each by a cheap Bernstein-cell
 /// sign test when available (falling back to vertex signs otherwise), and
@@ -139,20 +137,20 @@ struct HOMeshPart
 ///
 /// @param mesh  Background mesh. Must have cell types.
 /// @param ls    Level-set function.
-/// @return pair of (HOCutCells, BackgroundMeshData).
+/// @return pair of (HOCutCells, ParentCellClassification).
 template <std::floating_point T, std::integral I = int>
-std::pair<HOCutCells<T, I>, BackgroundMeshData<T, I>>
+std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
 cut(const MeshView<T, I>& mesh,
     const LevelSetFunction<T, I>& ls,
     bool triangulate_cut_parts = false);
 
-/// Build HOCutCells and BackgroundMeshData from a mesh and multiple level sets.
+/// Build HOCutCells and ParentCellClassification from a mesh and multiple level sets.
 ///
 /// @param mesh        Background mesh.
 /// @param level_sets  Vector of level-set functions.
-/// @return pair of (HOCutCells, BackgroundMeshData).
+/// @return pair of (HOCutCells, ParentCellClassification).
 template <std::floating_point T, std::integral I = int>
-std::pair<HOCutCells<T, I>, BackgroundMeshData<T, I>>
+std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
 cut(const MeshView<T, I>& mesh,
     const std::vector<LevelSetFunction<T, I>>& level_sets,
     bool triangulate_cut_parts = true);
@@ -161,16 +159,17 @@ cut(const MeshView<T, I>& mesh,
 // select_part() — builds HOMeshPart
 // =====================================================================
 
-/// Build an HOMeshPart by filtering HOCutCells + BackgroundMeshData
+/// Build an HOMeshPart by filtering HOCutCells + ParentCellClassification
 /// with a selection expression string.
 ///
 /// @param cut_cells  Intersected cell storage.
-/// @param bg         Mesh-wide metadata.
+/// @param parent_cells         Mesh-wide metadata.
 /// @param expr_str   Selection expression, e.g. "phi < 0", "phi1 = 0 and phi2 < 0".
 /// @return populated HOMeshPart.
 template <std::floating_point T, std::integral I = int>
-HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
-                              const BackgroundMeshData<T, I>& bg,
+HOMeshPart<T, I> select_part(const MeshView<T, I>& mesh,
+                              const HOCutCells<T, I>& cut_cells,
+                              const ParentCellClassification<T, I>& parent_cells,
                               std::string_view expr_str);
 
 } // namespace cutcells

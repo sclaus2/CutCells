@@ -8,6 +8,7 @@
 #include <cassert>
 #include <stdexcept>
 #include <unordered_map>
+#include <vector>
 
 #include "bernstein.h"
 #include "cell_topology.h"
@@ -379,10 +380,8 @@ const std::vector<T>& cached_reference_lagrange_points(cell::type ctype, int deg
 template <std::floating_point T, std::integral I>
 cell::type infer_ls_cell_type(const LevelSetMeshData<T, I>& md, I cell_id)
 {
-    if (!md.cell_types.empty())
-    {
-        return md.cell_types[static_cast<std::size_t>(cell_id)];
-    }
+    if (md.has_cell_types())
+        return md.cell_type(cell_id);
 
     // Infer from tdim and number of DOFs per cell
     const I ndofs = md.cell_num_dofs(cell_id);
@@ -446,7 +445,7 @@ make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
         && global_ls.has_mesh_data()
         && global_ls.has_dof_values())
     {
-        const auto& md = *global_ls.mesh_data;
+        const auto& md = global_ls.mesh_data;
         const int degree = md.degree;
         const int gdim = md.gdim;
 
@@ -456,8 +455,10 @@ make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
         cell_ls.gdim = gdim;
         cell_ls.tdim = cell::get_tdim(ctype);
 
-        // Get the cell's DOF indices
-        auto cell_dofs = md.cell_dofs_span(cell_id);
+        // Get the cell's DOF indices. Direct layouts return a view; callback
+        // layouts use the scratch buffer.
+        std::vector<I> cell_dof_scratch;
+        auto cell_dofs = md.cell_dofs_span(cell_id, cell_dof_scratch);
         const int ndofs = static_cast<int>(cell_dofs.size());
         const int nv = cell::get_num_vertices(ctype);
         if (ndofs < nv)

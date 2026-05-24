@@ -111,8 +111,19 @@ I append_dof(LevelSetMeshData<T, I>& out, std::span<const T> x,
 template <std::floating_point T, std::integral I>
 void initialize_vertex_dofs(const MeshView<T, I>& mesh, LevelSetMeshData<T, I>& out)
 {
-  out.dof_coordinates.assign(mesh.coordinates.begin(), mesh.coordinates.end());
   const I ndofs = mesh.num_nodes();
+  out.dof_coordinates.resize(static_cast<std::size_t>(ndofs)
+                             * static_cast<std::size_t>(mesh.gdim));
+  for (I i = 0; i < ndofs; ++i)
+  {
+    const T* x = mesh.node(i);
+    for (int d = 0; d < mesh.gdim; ++d)
+    {
+      out.dof_coordinates[static_cast<std::size_t>(i)
+                              * static_cast<std::size_t>(mesh.gdim)
+                          + static_cast<std::size_t>(d)] = x[d];
+    }
+  }
   out.dof_parent_dim.assign(static_cast<std::size_t>(ndofs), 0);
   out.dof_parent_id.resize(static_cast<std::size_t>(ndofs));
   for (I i = 0; i < ndofs; ++i)
@@ -160,7 +171,8 @@ template <std::floating_point T, std::integral I>
 std::vector<I> cell_vertices_in_basix_order(const MeshView<T, I>& mesh, I cell_id,
                                             cell::type ctype)
 {
-  const std::span<const I> nodes = mesh.cell_nodes(cell_id);
+  std::vector<I> node_scratch;
+  const std::span<const I> nodes = mesh.cell_nodes(cell_id, node_scratch);
   const int nverts = cell::get_num_vertices(ctype);
   if (static_cast<int>(nodes.size()) != nverts)
   {
@@ -914,6 +926,135 @@ void validate_mesh_data_args(int gdim, int tdim, int degree,
     throw std::runtime_error("create_level_set_mesh_data: cell_types size must equal number of cells");
 }
 
+template <std::floating_point T, std::integral I>
+void validate_mesh_data_view_args(int gdim, int tdim, int degree,
+                                  std::span<const T> dof_coordinates,
+                                  std::span<const I> cell_dofs,
+                                  I num_cells,
+                                  I dofs_per_cell,
+                                  I dof_stride,
+                                  std::span<const cell::type> cell_types)
+{
+  if (gdim <= 0)
+    throw std::runtime_error("create_level_set_mesh_data_view: gdim must be positive");
+  if (tdim <= 0)
+    throw std::runtime_error("create_level_set_mesh_data_view: tdim must be positive");
+  if (degree < 1)
+    throw std::runtime_error("create_level_set_mesh_data_view: degree must be >= 1");
+  if (dof_coordinates.size() % static_cast<std::size_t>(gdim) != 0)
+    throw std::runtime_error("create_level_set_mesh_data_view: dof_coordinates size must be divisible by gdim");
+  if (num_cells < 0)
+    throw std::runtime_error("create_level_set_mesh_data_view: num_cells must be non-negative");
+  if (dofs_per_cell <= 0)
+    throw std::runtime_error("create_level_set_mesh_data_view: dofs_per_cell must be positive");
+  if (dof_stride < dofs_per_cell)
+    throw std::runtime_error("create_level_set_mesh_data_view: dof_stride must be at least dofs_per_cell");
+  if (cell_dofs.size()
+      < static_cast<std::size_t>(num_cells) * static_cast<std::size_t>(dof_stride))
+  {
+    throw std::runtime_error(
+        "create_level_set_mesh_data_view: cell_dofs view is too small for the requested layout");
+  }
+  if (!cell_types.empty()
+      && cell_types.size() != static_cast<std::size_t>(num_cells))
+  {
+    throw std::runtime_error(
+        "create_level_set_mesh_data_view: cell_types size must equal number of cells");
+  }
+}
+
+template <std::floating_point T, std::integral I>
+void validate_mesh_data_block_view_args(
+    int gdim, int tdim, int degree,
+    std::span<const T> dof_coordinates,
+    std::span<const StridedRowBlock<I>> cell_dof_blocks,
+    I num_cells,
+    std::span<const cell::type> cell_types)
+{
+  if (gdim <= 0)
+    throw std::runtime_error("create_level_set_mesh_data_view: gdim must be positive");
+  if (tdim <= 0)
+    throw std::runtime_error("create_level_set_mesh_data_view: tdim must be positive");
+  if (degree < 1)
+    throw std::runtime_error("create_level_set_mesh_data_view: degree must be >= 1");
+  if (dof_coordinates.size() % static_cast<std::size_t>(gdim) != 0)
+    throw std::runtime_error("create_level_set_mesh_data_view: dof_coordinates size must be divisible by gdim");
+  if (num_cells < 0)
+    throw std::runtime_error("create_level_set_mesh_data_view: num_cells must be non-negative");
+  if (cell_dof_blocks.empty() && num_cells > 0)
+    throw std::runtime_error("create_level_set_mesh_data_view: cell_dof_blocks must not be empty");
+
+  std::vector<std::uint8_t> covered(static_cast<std::size_t>(num_cells), 0);
+  for (const auto& block : cell_dof_blocks)
+  {
+    if (block.first_row < 0)
+      throw std::runtime_error("create_level_set_mesh_data_view: block first_row must be non-negative");
+    if (block.row_count < 0)
+      throw std::runtime_error("create_level_set_mesh_data_view: block row_count must be non-negative");
+    if (block.row_width <= 0)
+      throw std::runtime_error("create_level_set_mesh_data_view: block row_width must be positive");
+    const I stride = block.row_stride > 0 ? block.row_stride : block.row_width;
+    if (stride < block.row_width)
+      throw std::runtime_error("create_level_set_mesh_data_view: block row_stride must be at least row_width");
+    const std::size_t required = static_cast<std::size_t>(block.row_count)
+                               * static_cast<std::size_t>(stride);
+    if (block.values.size() < required)
+      throw std::runtime_error("create_level_set_mesh_data_view: block values view is too small");
+    if (block.first_row + block.row_count > num_cells)
+      throw std::runtime_error("create_level_set_mesh_data_view: block exceeds num_cells");
+    for (I i = 0; i < block.row_count; ++i)
+    {
+      const std::size_t row = static_cast<std::size_t>(block.first_row + i);
+      if (covered[row] != 0)
+        throw std::runtime_error("create_level_set_mesh_data_view: overlapping blocks");
+      covered[row] = 1;
+    }
+  }
+  for (std::uint8_t row_is_covered : covered)
+  {
+    if (row_is_covered == 0)
+      throw std::runtime_error("create_level_set_mesh_data_view: blocks must cover all cells");
+  }
+
+  if (!cell_types.empty()
+      && cell_types.size() != static_cast<std::size_t>(num_cells))
+  {
+    throw std::runtime_error(
+        "create_level_set_mesh_data_view: cell_types size must equal number of cells");
+  }
+}
+
+template <std::integral I>
+void validate_cell_type_blocks(std::span<const CellTypeBlock<I>> cell_type_blocks,
+                               I num_cells)
+{
+  if (cell_type_blocks.empty() && num_cells > 0)
+    throw std::runtime_error("create_level_set_mesh_data_view: cell_type_blocks must not be empty");
+
+  std::vector<std::uint8_t> covered(static_cast<std::size_t>(num_cells), 0);
+  for (const auto& block : cell_type_blocks)
+  {
+    if (block.first_cell < 0)
+      throw std::runtime_error("create_level_set_mesh_data_view: cell type block first_cell must be non-negative");
+    if (block.cell_count < 0)
+      throw std::runtime_error("create_level_set_mesh_data_view: cell type block cell_count must be non-negative");
+    if (block.first_cell + block.cell_count > num_cells)
+      throw std::runtime_error("create_level_set_mesh_data_view: cell type block exceeds num_cells");
+    for (I i = 0; i < block.cell_count; ++i)
+    {
+      const std::size_t row = static_cast<std::size_t>(block.first_cell + i);
+      if (covered[row] != 0)
+        throw std::runtime_error("create_level_set_mesh_data_view: overlapping cell type blocks");
+      covered[row] = 1;
+    }
+  }
+  for (std::uint8_t row_is_covered : covered)
+  {
+    if (row_is_covered == 0)
+      throw std::runtime_error("create_level_set_mesh_data_view: cell type blocks must cover all cells");
+  }
+}
+
 } // namespace
 
 template <std::floating_point T, std::integral I>
@@ -980,15 +1121,97 @@ LevelSetMeshData<T, I> create_level_set_mesh_data(
 }
 
 template <std::floating_point T, std::integral I>
+LevelSetMeshData<T, I> create_level_set_mesh_data_view(
+    int gdim,
+    int tdim,
+    int degree,
+    std::vector<T>&& dof_coordinates,
+    std::span<const I> cell_dofs,
+    I num_cells,
+    I dofs_per_cell,
+    I dof_stride,
+    std::span<const cell::type> cell_types)
+{
+  validate_mesh_data_view_args(gdim, tdim, degree,
+                               std::span<const T>(dof_coordinates.data(),
+                                                  dof_coordinates.size()),
+                               cell_dofs, num_cells, dofs_per_cell,
+                               dof_stride, cell_types);
+
+  LevelSetMeshData<T, I> out;
+  out.gdim = gdim;
+  out.tdim = tdim;
+  out.degree = degree;
+  out.dof_coordinates = std::move(dof_coordinates);
+  out.cell_dofs_view = cell_dofs;
+  out.cell_count = num_cells;
+  out.cell_dofs_per_cell = dofs_per_cell;
+  out.cell_dof_stride = dof_stride;
+  out.cell_types.assign(cell_types.begin(), cell_types.end());
+  return out;
+}
+
+template <std::floating_point T, std::integral I>
+LevelSetMeshData<T, I> create_level_set_mesh_data_view(
+    int gdim,
+    int tdim,
+    int degree,
+    std::vector<T>&& dof_coordinates,
+    std::span<const StridedRowBlock<I>> cell_dof_blocks,
+    I num_cells,
+    std::span<const cell::type> cell_types)
+{
+  validate_mesh_data_block_view_args(gdim, tdim, degree,
+                                     std::span<const T>(dof_coordinates.data(),
+                                                        dof_coordinates.size()),
+                                     cell_dof_blocks, num_cells, cell_types);
+
+  LevelSetMeshData<T, I> out;
+  out.gdim = gdim;
+  out.tdim = tdim;
+  out.degree = degree;
+  out.dof_coordinates = std::move(dof_coordinates);
+  out.cell_dof_blocks = cell_dof_blocks;
+  out.cell_count = num_cells;
+  out.cell_types.assign(cell_types.begin(), cell_types.end());
+  return out;
+}
+
+template <std::floating_point T, std::integral I>
+LevelSetMeshData<T, I> create_level_set_mesh_data_view(
+    int gdim,
+    int tdim,
+    int degree,
+    std::vector<T>&& dof_coordinates,
+    std::span<const StridedRowBlock<I>> cell_dof_blocks,
+    I num_cells,
+    std::span<const CellTypeBlock<I>> cell_type_blocks)
+{
+  validate_mesh_data_block_view_args(gdim, tdim, degree,
+                                     std::span<const T>(dof_coordinates.data(),
+                                                        dof_coordinates.size()),
+                                     cell_dof_blocks, num_cells,
+                                     std::span<const cell::type>());
+  validate_cell_type_blocks(cell_type_blocks, num_cells);
+
+  LevelSetMeshData<T, I> out;
+  out.gdim = gdim;
+  out.tdim = tdim;
+  out.degree = degree;
+  out.dof_coordinates = std::move(dof_coordinates);
+  out.cell_dof_blocks = cell_dof_blocks;
+  out.cell_count = num_cells;
+  out.cell_type_blocks = cell_type_blocks;
+  return out;
+}
+
+template <std::floating_point T, std::integral I>
 LevelSetFunction<T, I> create_level_set_function(
-    std::shared_ptr<LevelSetMeshData<T, I>> mesh_data,
+    LevelSetMeshData<T, I> mesh_data,
     std::span<const T> dof_values,
     std::string name)
 {
-  if (!mesh_data)
-    throw std::runtime_error("create_level_set_function: mesh_data must not be null");
-
-  const std::size_t expected = static_cast<std::size_t>(mesh_data->num_dofs());
+  const std::size_t expected = static_cast<std::size_t>(mesh_data.num_dofs());
   if (dof_values.size() != expected)
   {
     throw std::runtime_error(
@@ -1002,10 +1225,38 @@ LevelSetFunction<T, I> create_level_set_function(
   LevelSetFunction<T, I> ls;
   ls.name = std::move(name);
   ls.type = LevelSetType::Polynomial;
-  ls.gdim = mesh_data->gdim;
+  ls.gdim = mesh_data.gdim;
   ls.mesh_data = std::move(mesh_data);
+  ls.has_mesh_data_storage = true;
   ls.dof_values = std::span<const T>(owned_values->data(), owned_values->size());
-  ls.owner = std::static_pointer_cast<void>(owned_values);
+  ls.owner = std::static_pointer_cast<const void>(owned_values);
+  return ls;
+}
+
+template <std::floating_point T, std::integral I>
+LevelSetFunction<T, I> create_level_set_function_view(
+    LevelSetMeshData<T, I> mesh_data,
+    std::span<const T> dof_values,
+    std::string name,
+    std::shared_ptr<const void> owner)
+{
+  const std::size_t expected = static_cast<std::size_t>(mesh_data.num_dofs());
+  if (dof_values.size() != expected)
+  {
+    throw std::runtime_error(
+        "create_level_set_function_view: dof_values size mismatch (got "
+        + std::to_string(dof_values.size()) + ", expected "
+        + std::to_string(expected) + ")");
+  }
+
+  LevelSetFunction<T, I> ls;
+  ls.name = std::move(name);
+  ls.type = LevelSetType::Polynomial;
+  ls.gdim = mesh_data.gdim;
+  ls.mesh_data = std::move(mesh_data);
+  ls.has_mesh_data_storage = true;
+  ls.dof_values = dof_values;
+  ls.owner = std::move(owner);
   return ls;
 }
 
@@ -1027,13 +1278,67 @@ template LevelSetMeshData<double, int> create_level_set_mesh_data(
     std::span<const int> cell_offsets,
     std::span<const cell::type> cell_types);
 
+template LevelSetMeshData<float, int> create_level_set_mesh_data_view(
+    int gdim, int tdim, int degree,
+    std::vector<float>&& dof_coordinates,
+    std::span<const int> cell_dofs,
+    int num_cells,
+    int dofs_per_cell,
+    int dof_stride,
+    std::span<const cell::type> cell_types);
+template LevelSetMeshData<double, int> create_level_set_mesh_data_view(
+    int gdim, int tdim, int degree,
+    std::vector<double>&& dof_coordinates,
+    std::span<const int> cell_dofs,
+    int num_cells,
+    int dofs_per_cell,
+    int dof_stride,
+    std::span<const cell::type> cell_types);
+
+template LevelSetMeshData<float, int> create_level_set_mesh_data_view(
+    int gdim, int tdim, int degree,
+    std::vector<float>&& dof_coordinates,
+    std::span<const StridedRowBlock<int>> cell_dof_blocks,
+    int num_cells,
+    std::span<const cell::type> cell_types);
+template LevelSetMeshData<double, int> create_level_set_mesh_data_view(
+    int gdim, int tdim, int degree,
+    std::vector<double>&& dof_coordinates,
+    std::span<const StridedRowBlock<int>> cell_dof_blocks,
+    int num_cells,
+    std::span<const cell::type> cell_types);
+
+template LevelSetMeshData<float, int> create_level_set_mesh_data_view(
+    int gdim, int tdim, int degree,
+    std::vector<float>&& dof_coordinates,
+    std::span<const StridedRowBlock<int>> cell_dof_blocks,
+    int num_cells,
+    std::span<const CellTypeBlock<int>> cell_type_blocks);
+template LevelSetMeshData<double, int> create_level_set_mesh_data_view(
+    int gdim, int tdim, int degree,
+    std::vector<double>&& dof_coordinates,
+    std::span<const StridedRowBlock<int>> cell_dof_blocks,
+    int num_cells,
+    std::span<const CellTypeBlock<int>> cell_type_blocks);
+
 template LevelSetFunction<float, int> create_level_set_function(
-    std::shared_ptr<LevelSetMeshData<float, int>> mesh_data,
+    LevelSetMeshData<float, int> mesh_data,
     std::span<const float> dof_values,
     std::string name);
 template LevelSetFunction<double, int> create_level_set_function(
-    std::shared_ptr<LevelSetMeshData<double, int>> mesh_data,
+    LevelSetMeshData<double, int> mesh_data,
     std::span<const double> dof_values,
     std::string name);
+
+template LevelSetFunction<float, int> create_level_set_function_view(
+    LevelSetMeshData<float, int> mesh_data,
+    std::span<const float> dof_values,
+    std::string name,
+    std::shared_ptr<const void> owner);
+template LevelSetFunction<double, int> create_level_set_function_view(
+    LevelSetMeshData<double, int> mesh_data,
+    std::span<const double> dof_values,
+    std::string name,
+    std::shared_ptr<const void> owner);
 
 } // namespace cutcells

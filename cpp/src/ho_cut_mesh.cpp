@@ -25,13 +25,15 @@ template <std::floating_point T, std::integral I>
 void gather_vertex_ls_values(const MeshView<T, I>& mesh,
                              const LevelSetFunction<T, I>& ls,
                              I cell_id, int nv,
-                             std::vector<T>& out)
+                             std::vector<T>& out,
+                             std::vector<I>& mesh_cell_scratch,
+                             std::vector<I>& ls_dof_scratch)
 {
     out.resize(static_cast<std::size_t>(nv));
 
     if (ls.has_dof_values() && ls.has_mesh_data())
     {
-        auto dofs = ls.mesh_data->cell_dofs_span(cell_id);
+        auto dofs = ls.mesh_data.cell_dofs_span(cell_id, ls_dof_scratch);
         for (int v = 0; v < nv; ++v)
             out[static_cast<std::size_t>(v)] =
                 ls.dof_values[static_cast<std::size_t>(
@@ -39,9 +41,10 @@ void gather_vertex_ls_values(const MeshView<T, I>& mesh,
     }
     else if (ls.has_value())
     {
+        auto nodes = mesh.cell_nodes(cell_id, mesh_cell_scratch);
         for (int v = 0; v < nv; ++v)
         {
-            const I node_id = mesh.cell_node(cell_id, static_cast<I>(v));
+            const I node_id = nodes[static_cast<std::size_t>(v)];
             out[static_cast<std::size_t>(v)] =
                 ls.value(mesh.node(node_id), cell_id);
         }
@@ -86,6 +89,8 @@ cell::domain classify_cell_domain_fast(const MeshView<T, I>& mesh,
                                        I cell_id, int nv,
                                        bool use_bernstein_classification,
                                        std::vector<T>& vertex_ls_values,
+                                       std::vector<I>& mesh_cell_scratch,
+                                       std::vector<I>& ls_dof_scratch,
                                        LevelSetCell<T, I>* intersected_ls_cell)
 {
     if (use_bernstein_classification)
@@ -105,7 +110,8 @@ cell::domain classify_cell_domain_fast(const MeshView<T, I>& mesh,
         }
     }
 
-    gather_vertex_ls_values(mesh, ls, cell_id, nv, vertex_ls_values);
+    gather_vertex_ls_values(mesh, ls, cell_id, nv, vertex_ls_values,
+                            mesh_cell_scratch, ls_dof_scratch);
     return cell::classify_cell_domain<T>(
         std::span<const T>(vertex_ls_values.data(),
                            static_cast<std::size_t>(nv)));
@@ -158,10 +164,10 @@ bool leaf_cell_matches_sign_requirements(
     std::span<const std::int32_t> cell_verts,
     const SelectionTerm& term,
     std::uint64_t cut_cell_active_mask,
-    const BackgroundMeshData<T, I>& bg,
+    const ParentCellClassification<T, I>& parent_cells,
     I parent_cell_id)
 {
-    const int nls = std::min(bg.num_level_sets, 64);
+    const int nls = std::min(parent_cells.num_level_sets, 64);
     for (int li = 0; li < nls; ++li)
     {
         const std::uint64_t bit = std::uint64_t(1) << li;
@@ -173,7 +179,7 @@ bool leaf_cell_matches_sign_requirements(
         const bool ls_is_active = (cut_cell_active_mask & bit) != 0;
         if (!ls_is_active)
         {
-            const auto dom = bg.domain(li, parent_cell_id);
+            const auto dom = parent_cells.domain(li, parent_cell_id);
             if (require_neg && dom != cell::domain::inside)
                 return false;
             if (require_pos && dom != cell::domain::outside)
@@ -214,13 +220,13 @@ bool leaf_cell_matches_selection_expr(
     std::span<const std::int32_t> cell_verts,
     const SelectionExpr& expr,
     std::uint64_t cut_cell_active_mask,
-    const BackgroundMeshData<T, I>& bg,
+    const ParentCellClassification<T, I>& parent_cells,
     I parent_cell_id)
 {
     for (const auto& term : expr.terms)
     {
         if (leaf_cell_matches_sign_requirements(
-                ac, cell_verts, term, cut_cell_active_mask, bg, parent_cell_id))
+                ac, cell_verts, term, cut_cell_active_mask, parent_cells, parent_cell_id))
         {
             return true;
         }
@@ -235,7 +241,7 @@ bool zero_entity_matches(
     int target_dim,
     const SelectionTerm& term,
     std::uint64_t cut_cell_active_mask,
-    const BackgroundMeshData<T, I>& bg,
+    const ParentCellClassification<T, I>& parent_cells,
     I parent_cell_id)
 {
     if (ac.zero_entity_dim[static_cast<std::size_t>(zero_entity_index)] != target_dim)
@@ -275,7 +281,7 @@ bool zero_entity_matches(
             continue;
 
         if (leaf_cell_matches_sign_requirements(
-                ac, cell_verts, term, cut_cell_active_mask, bg, parent_cell_id))
+                ac, cell_verts, term, cut_cell_active_mask, parent_cells, parent_cell_id))
         {
             return true;
         }
@@ -291,14 +297,14 @@ bool zero_entity_matches_selection_expr(
     int target_dim,
     const SelectionExpr& expr,
     std::uint64_t cut_cell_active_mask,
-    const BackgroundMeshData<T, I>& bg,
+    const ParentCellClassification<T, I>& parent_cells,
     I parent_cell_id)
 {
     for (const auto& term : expr.terms)
     {
         if (zero_entity_matches(
                 ac, zero_entity_index, target_dim, term,
-                cut_cell_active_mask, bg, parent_cell_id))
+                cut_cell_active_mask, parent_cells, parent_cell_id))
         {
             return true;
         }
@@ -333,7 +339,7 @@ void refresh_adapt_cell_semantics(
 // =====================================================================
 
 template <std::floating_point T, std::integral I>
-std::pair<HOCutCells<T, I>, BackgroundMeshData<T, I>>
+std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
 cut(const MeshView<T, I>& mesh,
     const LevelSetFunction<T, I>& ls,
     bool triangulate_cut_parts)
@@ -343,15 +349,14 @@ cut(const MeshView<T, I>& mesh,
 
     const I ncells = mesh.num_cells();
 
-    // --- BackgroundMeshData ---
-    BackgroundMeshData<T, I> bg;
-    bg.mesh = &mesh;
-    bg.level_set_names.push_back(ls.name);
-    bg.num_cells = static_cast<int>(ncells);
-    bg.num_level_sets = 1;
-    bg.cell_domains.assign(static_cast<std::size_t>(ncells),
+    // --- ParentCellClassification ---
+    ParentCellClassification<T, I> parent_cells;
+    parent_cells.level_set_names.push_back(ls.name);
+    parent_cells.num_cells = static_cast<int>(ncells);
+    parent_cells.num_level_sets = 1;
+    parent_cells.cell_domains.assign(static_cast<std::size_t>(ncells),
                             cell::domain::unset);
-    bg.cell_to_cut_index.assign(static_cast<std::size_t>(ncells), -1);
+    parent_cells.cell_to_cut_index.assign(static_cast<std::size_t>(ncells), -1);
 
     // --- HOCutCells ---
     HOCutCells<T, I> hc;
@@ -364,6 +369,8 @@ cut(const MeshView<T, I>& mesh,
         && ls.has_mesh_data()
         && ls.has_dof_values();
     std::vector<T> ls_vertex_vals;
+    std::vector<I> mesh_cell_scratch;
+    std::vector<I> ls_dof_scratch;
 
     for (I ci = 0; ci < ncells; ++ci)
     {
@@ -372,14 +379,15 @@ cut(const MeshView<T, I>& mesh,
         LevelSetCell<T, I> ls_cell;
         const cell::domain dom = classify_cell_domain_fast(
             mesh, ls, ci, nv, use_bernstein_classification, ls_vertex_vals,
+            mesh_cell_scratch, ls_dof_scratch,
             &ls_cell);
-        bg.cell_domains[static_cast<std::size_t>(ci)] = dom;
+        parent_cells.cell_domains[static_cast<std::size_t>(ci)] = dom;
 
         if (dom != cell::domain::intersected)
             continue;
 
         const int cut_idx = hc.num_cut_cells();
-        bg.cell_to_cut_index[static_cast<std::size_t>(ci)] = cut_idx;
+        parent_cells.cell_to_cut_index[static_cast<std::size_t>(ci)] = cut_idx;
 
         // LevelSetCell
         hc.level_set_cells.push_back(std::move(ls_cell));
@@ -417,7 +425,7 @@ cut(const MeshView<T, I>& mesh,
         hc.parent_cell_ids.push_back(ci);
     }
 
-    return {std::move(hc), std::move(bg)};
+    return {std::move(hc), std::move(parent_cells)};
 }
 
 // =====================================================================
@@ -425,7 +433,7 @@ cut(const MeshView<T, I>& mesh,
 // =====================================================================
 
 template <std::floating_point T, std::integral I>
-std::pair<HOCutCells<T, I>, BackgroundMeshData<T, I>>
+std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
 cut(const MeshView<T, I>& mesh,
     const std::vector<LevelSetFunction<T, I>>& level_sets,
     bool triangulate_cut_parts)
@@ -440,17 +448,16 @@ cut(const MeshView<T, I>& mesh,
     const I ncells = mesh.num_cells();
     const int nls = static_cast<int>(level_sets.size());
 
-    // --- BackgroundMeshData ---
-    BackgroundMeshData<T, I> bg;
-    bg.mesh = &mesh;
-    bg.num_cells = static_cast<int>(ncells);
-    bg.num_level_sets = nls;
-    bg.cell_domains.assign(
+    // --- ParentCellClassification ---
+    ParentCellClassification<T, I> parent_cells;
+    parent_cells.num_cells = static_cast<int>(ncells);
+    parent_cells.num_level_sets = nls;
+    parent_cells.cell_domains.assign(
         static_cast<std::size_t>(nls) * static_cast<std::size_t>(ncells),
         cell::domain::unset);
-    bg.cell_to_cut_index.assign(static_cast<std::size_t>(ncells), -1);
+    parent_cells.cell_to_cut_index.assign(static_cast<std::size_t>(ncells), -1);
     for (const auto& ls : level_sets)
-        bg.level_set_names.push_back(ls.name);
+        parent_cells.level_set_names.push_back(ls.name);
 
     // --- HOCutCells ---
     HOCutCells<T, I> hc;
@@ -469,6 +476,8 @@ cut(const MeshView<T, I>& mesh,
             && ls.has_dof_values();
     }
     std::vector<T> ls_vertex_vals;
+    std::vector<I> mesh_cell_scratch;
+    std::vector<I> ls_dof_scratch;
 
     for (I ci = 0; ci < ncells; ++ci)
     {
@@ -487,9 +496,9 @@ cut(const MeshView<T, I>& mesh,
             const cell::domain dom = classify_cell_domain_fast(
                 mesh, level_sets[static_cast<std::size_t>(li)], ci, nv,
                 use_bernstein_classification[static_cast<std::size_t>(li)],
-                ls_vertex_vals, &ls_cell);
+                ls_vertex_vals, mesh_cell_scratch, ls_dof_scratch, &ls_cell);
 
-            bg.cell_domains[static_cast<std::size_t>(
+            parent_cells.cell_domains[static_cast<std::size_t>(
                 li * static_cast<int>(ncells) + static_cast<int>(ci))] = dom;
 
             if (dom == cell::domain::intersected)
@@ -516,7 +525,7 @@ cut(const MeshView<T, I>& mesh,
         }
 
         const int cut_idx = hc.num_cut_cells();
-        bg.cell_to_cut_index[static_cast<std::size_t>(ci)] = cut_idx;
+        parent_cells.cell_to_cut_index[static_cast<std::size_t>(ci)] = cut_idx;
 
         // Build AdaptCell once per cell.
         AdaptCell<T> ac = make_adapt_cell(mesh, ci);
@@ -570,7 +579,7 @@ cut(const MeshView<T, I>& mesh,
         hc.parent_cell_ids.push_back(ci);
     }
 
-    return {std::move(hc), std::move(bg)};
+    return {std::move(hc), std::move(parent_cells)};
 }
 
 // =====================================================================
@@ -578,26 +587,28 @@ cut(const MeshView<T, I>& mesh,
 // =====================================================================
 
 template <std::floating_point T, std::integral I>
-HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
-                              const BackgroundMeshData<T, I>& bg,
+HOMeshPart<T, I> select_part(const MeshView<T, I>& mesh,
+                              const HOCutCells<T, I>& cut_cells,
+                              const ParentCellClassification<T, I>& parent_cells,
                               std::string_view expr_str)
 {
     HOMeshPart<T, I> part;
+    part.mesh = &mesh;
     part.cut_cells = &cut_cells;
-    part.bg        = &bg;
+    part.parent_cells        = &parent_cells;
 
     // Parse and compile the expression.
     part.expr = parse_selection_expr(expr_str);
-    compile_selection_expr(part.expr, bg.level_set_names);
+    compile_selection_expr(part.expr, parent_cells.level_set_names);
     part.dim = infer_selection_dim(part.expr, cut_cells.tdim);
 
     const bool is_volume = (part.dim == cut_cells.tdim);
 
     // --- Uncut cells: scan cell_domains ---
-    const int ncells = bg.num_cells;
+    const int ncells = parent_cells.num_cells;
     for (I ci = 0; ci < static_cast<I>(ncells); ++ci)
     {
-        if (bg.cell_to_cut_index[static_cast<std::size_t>(ci)] >= 0)
+        if (parent_cells.cell_to_cut_index[static_cast<std::size_t>(ci)] >= 0)
             continue; // cut cell, handled below
 
         // For an uncut cell, every vertex has the same sign for each LS.
@@ -609,7 +620,7 @@ HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
             for (const auto& clause : term.clauses)
             {
                 const int li = clause.level_set_index;
-                const cell::domain dom = bg.domain(li, ci);
+                const cell::domain dom = parent_cells.domain(li, ci);
 
                 switch (clause.relation)
                 {
@@ -655,7 +666,7 @@ HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
             {
                 auto cell_verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
                 if (leaf_cell_matches_selection_expr(
-                        ac, cell_verts, part.expr, cut_active_mask, bg, bg_cell))
+                        ac, cell_verts, part.expr, cut_active_mask, parent_cells, bg_cell))
                 {
                     has_matching_leaf = true;
                     break;
@@ -672,7 +683,7 @@ HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
             for (int z = 0; z < n_zero; ++z)
             {
                 if (zero_entity_matches_selection_expr(
-                        ac, z, part.dim, part.expr, cut_active_mask, bg, bg_cell))
+                        ac, z, part.dim, part.expr, cut_active_mask, parent_cells, bg_cell))
                 {
                     has_matching_zero_entity = true;
                     break;
@@ -694,50 +705,50 @@ HOMeshPart<T, I> select_part(const HOCutCells<T, I>& cut_cells,
 // ---------------------------------------------------------------------------
 
 // cut() single LS
-template std::pair<HOCutCells<double, int>, BackgroundMeshData<double, int>>
+template std::pair<HOCutCells<double, int>, ParentCellClassification<double, int>>
 cut(const MeshView<double, int>&, const LevelSetFunction<double, int>&, bool);
 
-template std::pair<HOCutCells<float, int>, BackgroundMeshData<float, int>>
+template std::pair<HOCutCells<float, int>, ParentCellClassification<float, int>>
 cut(const MeshView<float, int>&, const LevelSetFunction<float, int>&, bool);
 
-template std::pair<HOCutCells<double, long>, BackgroundMeshData<double, long>>
+template std::pair<HOCutCells<double, long>, ParentCellClassification<double, long>>
 cut(const MeshView<double, long>&, const LevelSetFunction<double, long>&, bool);
 
-template std::pair<HOCutCells<float, long>, BackgroundMeshData<float, long>>
+template std::pair<HOCutCells<float, long>, ParentCellClassification<float, long>>
 cut(const MeshView<float, long>&, const LevelSetFunction<float, long>&, bool);
 
 // cut() multi LS
-template std::pair<HOCutCells<double, int>, BackgroundMeshData<double, int>>
+template std::pair<HOCutCells<double, int>, ParentCellClassification<double, int>>
 cut(const MeshView<double, int>&, const std::vector<LevelSetFunction<double, int>>&,
     bool);
 
-template std::pair<HOCutCells<float, int>, BackgroundMeshData<float, int>>
+template std::pair<HOCutCells<float, int>, ParentCellClassification<float, int>>
 cut(const MeshView<float, int>&, const std::vector<LevelSetFunction<float, int>>&,
     bool);
 
-template std::pair<HOCutCells<double, long>, BackgroundMeshData<double, long>>
+template std::pair<HOCutCells<double, long>, ParentCellClassification<double, long>>
 cut(const MeshView<double, long>&, const std::vector<LevelSetFunction<double, long>>&,
     bool);
 
-template std::pair<HOCutCells<float, long>, BackgroundMeshData<float, long>>
+template std::pair<HOCutCells<float, long>, ParentCellClassification<float, long>>
 cut(const MeshView<float, long>&, const std::vector<LevelSetFunction<float, long>>&,
     bool);
 
 // select_part()
 template HOMeshPart<double, int>
-select_part(const HOCutCells<double, int>&, const BackgroundMeshData<double, int>&,
-            std::string_view);
+select_part(const MeshView<double, int>&, const HOCutCells<double, int>&,
+            const ParentCellClassification<double, int>&, std::string_view);
 
 template HOMeshPart<float, int>
-select_part(const HOCutCells<float, int>&, const BackgroundMeshData<float, int>&,
-            std::string_view);
+select_part(const MeshView<float, int>&, const HOCutCells<float, int>&,
+            const ParentCellClassification<float, int>&, std::string_view);
 
 template HOMeshPart<double, long>
-select_part(const HOCutCells<double, long>&, const BackgroundMeshData<double, long>&,
-            std::string_view);
+select_part(const MeshView<double, long>&, const HOCutCells<double, long>&,
+            const ParentCellClassification<double, long>&, std::string_view);
 
 template HOMeshPart<float, long>
-select_part(const HOCutCells<float, long>&, const BackgroundMeshData<float, long>&,
-            std::string_view);
+select_part(const MeshView<float, long>&, const HOCutCells<float, long>&,
+            const ParentCellClassification<float, long>&, std::string_view);
 
 } // namespace cutcells

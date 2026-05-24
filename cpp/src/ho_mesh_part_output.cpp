@@ -31,13 +31,15 @@ std::vector<T> parent_cell_vertex_coords_vtk(const MeshView<T, I>& mesh,
     const auto ctype = mesh.cell_type(cell_id);
     const int nv = cell::get_num_vertices(ctype);
     std::vector<T> coords(static_cast<std::size_t>(nv * mesh.gdim), T(0));
+    std::vector<I> cell_node_scratch;
+    const auto parent_nodes = mesh.cell_nodes(cell_id, cell_node_scratch);
 
     for (int vtk_v = 0; vtk_v < nv; ++vtk_v)
     {
         const int local_v = mesh.vtk_vertex_order
                                 ? vtk_v
                                 : cell::vtk_to_basix_vertex(ctype, vtk_v);
-        const I node_id = mesh.cell_node(cell_id, static_cast<I>(local_v));
+        const I node_id = parent_nodes[static_cast<std::size_t>(local_v)];
         const T* x = mesh.node(node_id);
         for (int d = 0; d < mesh.gdim; ++d)
             coords[static_cast<std::size_t>(vtk_v * mesh.gdim + d)] = x[d];
@@ -118,10 +120,10 @@ bool leaf_cell_matches_sign_requirements(
     std::span<const std::int32_t> cell_verts,
     const SelectionTerm& term,
     std::uint64_t cut_cell_active_mask,
-    const BackgroundMeshData<T, I>& bg,
+    const ParentCellClassification<T, I>& parent_cells,
     I parent_cell_id)
 {
-    const int nls = std::min(bg.num_level_sets, 64);
+    const int nls = std::min(parent_cells.num_level_sets, 64);
     for (int li = 0; li < nls; ++li)
     {
         const std::uint64_t bit = std::uint64_t(1) << li;
@@ -133,7 +135,7 @@ bool leaf_cell_matches_sign_requirements(
         const bool ls_is_active = (cut_cell_active_mask & bit) != 0;
         if (!ls_is_active)
         {
-            const auto dom = bg.domain(li, parent_cell_id);
+            const auto dom = parent_cells.domain(li, parent_cell_id);
             if (require_neg && dom != cell::domain::inside)
                 return false;
             if (require_pos && dom != cell::domain::outside)
@@ -169,13 +171,13 @@ bool leaf_cell_matches_selection_expr(
     std::span<const std::int32_t> cell_verts,
     const SelectionExpr& expr,
     std::uint64_t cut_cell_active_mask,
-    const BackgroundMeshData<T, I>& bg,
+    const ParentCellClassification<T, I>& parent_cells,
     I parent_cell_id)
 {
     for (const auto& term : expr.terms)
     {
         if (leaf_cell_matches_sign_requirements(
-                ac, cell_verts, term, cut_cell_active_mask, bg, parent_cell_id))
+                ac, cell_verts, term, cut_cell_active_mask, parent_cells, parent_cell_id))
         {
             return true;
         }
@@ -190,7 +192,7 @@ bool zero_entity_matches(
     int target_dim,
     const SelectionTerm& term,
     std::uint64_t cut_cell_active_mask,
-    const BackgroundMeshData<T, I>& bg,
+    const ParentCellClassification<T, I>& parent_cells,
     I parent_cell_id)
 {
     if (ac.zero_entity_dim[static_cast<std::size_t>(zero_entity_index)]
@@ -238,7 +240,7 @@ bool zero_entity_matches(
         }
 
         if (leaf_cell_matches_sign_requirements(
-                ac, cell_verts, term, cut_cell_active_mask, bg, parent_cell_id))
+                ac, cell_verts, term, cut_cell_active_mask, parent_cells, parent_cell_id))
         {
             return true;
         }
@@ -254,14 +256,14 @@ bool zero_entity_matches_selection_expr(
     int target_dim,
     const SelectionExpr& expr,
     std::uint64_t cut_cell_active_mask,
-    const BackgroundMeshData<T, I>& bg,
+    const ParentCellClassification<T, I>& parent_cells,
     I parent_cell_id)
 {
     for (const auto& term : expr.terms)
     {
         if (zero_entity_matches(
                 ac, zero_entity_index, target_dim, term,
-                cut_cell_active_mask, bg, parent_cell_id))
+                cut_cell_active_mask, parent_cells, parent_cell_id))
         {
             return true;
         }
@@ -297,7 +299,7 @@ std::vector<SelectedEntity> selected_entities(const HOMeshPart<T, I>& part,
                 static_cast<std::int32_t>(c)];
             if (!leaf_cell_matches_selection_expr(
                     adapt_cell, verts, part.expr, cut_active_mask,
-                    *part.bg, parent_cell_id))
+                    *part.parent_cells, parent_cell_id))
             {
                 continue;
             }
@@ -317,7 +319,7 @@ std::vector<SelectedEntity> selected_entities(const HOMeshPart<T, I>& part,
     {
         if (!zero_entity_matches_selection_expr(
                 adapt_cell, z, part.dim, part.expr, cut_active_mask,
-                *part.bg, parent_cell_id))
+                *part.parent_cells, parent_cell_id))
         {
             continue;
         }
@@ -616,7 +618,7 @@ void append_cut_entities(mesh::CutMesh<T>& out,
                          const HOMeshPart<T, I>& part,
                          int quadrature_order)
 {
-    const auto& mesh = *part.bg->mesh;
+    const auto& mesh = *part.mesh;
     for (std::int32_t cut_id : part.cut_cell_ids)
     {
         const auto& adapt_cell =
@@ -671,7 +673,7 @@ void append_uncut_volume_cells(mesh::CutMesh<T>& out,
                                const HOMeshPart<T, I>& part,
                                int quadrature_order)
 {
-    const auto& mesh = *part.bg->mesh;
+    const auto& mesh = *part.mesh;
     if (part.dim != mesh.tdim)
         return;
 
@@ -709,7 +711,7 @@ template <std::floating_point T, std::integral I>
 std::vector<SelectedZeroEntityInfo> selected_zero_entity_infos(
     const HOMeshPart<T, I>& part)
 {
-    if (!part.cut_cells || !part.bg)
+    if (!part.cut_cells || !part.parent_cells)
         throw std::runtime_error("HOMeshPart is not attached to cut-cell storage");
 
     std::vector<SelectedZeroEntityInfo> infos;
@@ -730,7 +732,7 @@ std::vector<SelectedZeroEntityInfo> selected_zero_entity_infos(
         {
             if (!zero_entity_matches_selection_expr(
                     ac, z, part.dim, part.expr, cut_active_mask,
-                    *part.bg, parent_cell_id))
+                    *part.parent_cells, parent_cell_id))
             {
                 continue;
             }
@@ -750,11 +752,11 @@ template <std::floating_point T, std::integral I>
 mesh::CutMesh<T> visualization_mesh(const HOMeshPart<T, I>& part,
                                     bool include_uncut_cells)
 {
-    if (!part.cut_cells || !part.bg || !part.bg->mesh)
+    if (!part.cut_cells || !part.parent_cells || !part.mesh)
         throw std::runtime_error("HOMeshPart is not attached to cut-cell storage");
 
     mesh::CutMesh<T> out;
-    out._gdim = part.bg->mesh->gdim;
+    out._gdim = part.mesh->gdim;
     out._tdim = part.dim;
     out._offset.push_back(0);
 
@@ -780,8 +782,10 @@ quadrature::QuadratureRules<T> quadrature_rules(const HOMeshPart<T, I>& part,
                                                 int order,
                                                 bool include_uncut_cells)
 {
-    if (!part.cut_cells || !part.bg || !part.bg->mesh)
-        throw std::runtime_error("HOMeshPart is not attached to cut-cell storage");
+    if (!part.mesh)
+        throw std::runtime_error("HOMeshPart is not attached to a mesh");
+    if ((!part.cut_cells || !part.parent_cells) && !part.cut_cell_ids.empty())
+        throw std::runtime_error("HOMeshPart cut entities require cut-cell storage");
 
     mesh::CutMesh<T> unused_mesh;
     quadrature::QuadratureRules<T> rules;

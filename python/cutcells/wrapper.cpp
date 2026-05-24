@@ -241,13 +241,15 @@ std::vector<T> parent_cell_vertex_coords_vtk(
   const auto ctype = mesh.cell_type(cell_id);
   const int nv = cutcells::cell::get_num_vertices(ctype);
   std::vector<T> coords(static_cast<std::size_t>(nv * mesh.gdim), T(0));
+  std::vector<int> cell_node_scratch;
+  const auto parent_nodes = mesh.cell_nodes(cell_id, cell_node_scratch);
 
   for (int vtk_v = 0; vtk_v < nv; ++vtk_v)
   {
     const int local_v = mesh.vtk_vertex_order
                             ? vtk_v
                             : cutcells::cell::vtk_to_basix_vertex(ctype, vtk_v);
-    const int node_id = mesh.cell_node(cell_id, local_v);
+    const int node_id = parent_nodes[static_cast<std::size_t>(local_v)];
     const T* x = mesh.node(node_id);
     for (int d = 0; d < mesh.gdim; ++d)
       coords[static_cast<std::size_t>(vtk_v * mesh.gdim + d)] = x[d];
@@ -878,9 +880,10 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
           "cell_dofs",
           [](const LevelSetMeshDataT& self)
           {
+            const std::span<const int> cell_dofs = self.cell_dofs_storage_span();
             return nb::ndarray<const int, nb::numpy>(
-                self.cell_dofs.data(),
-                {self.cell_dofs.size()},
+                cell_dofs.data(),
+                {cell_dofs.size()},
                 nb::cast(self, nb::rv_policy::reference));
           },
           nb::rv_policy::reference_internal)
@@ -888,9 +891,10 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
           "cell_offsets",
           [](const LevelSetMeshDataT& self)
           {
+            const std::span<const int> cell_offsets = self.cell_offsets_span();
             return nb::ndarray<const int, nb::numpy>(
-                self.cell_offsets.data(),
-                {self.cell_offsets.size()},
+                cell_offsets.data(),
+                {cell_offsets.size()},
                 nb::cast(self, nb::rv_policy::reference));
           },
           nb::rv_policy::reference_internal)
@@ -1151,11 +1155,11 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
           nb::rv_policy::reference_internal)
       .def_prop_ro(
           "mesh_data",
-          [](const LevelSetT& self) -> nb::object
+          [](const LevelSetT& self) -> const LevelSetMeshDataT*
           {
-            if (!self.mesh_data)
-              return nb::none();
-            return nb::cast(self.mesh_data);
+            if (!self.has_mesh_data())
+              return nullptr;
+            return &self.mesh_data;
           },
           nb::rv_policy::reference_internal);
 
@@ -1164,9 +1168,8 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
       [](const LevelSetMeshDataT& mesh_data, const ndarray1<T>& dof_values,
          const std::string& name)
       {
-        auto mesh_data_ptr = std::make_shared<LevelSetMeshDataT>(mesh_data);
         return cutcells::create_level_set_function<T, int>(
-            std::move(mesh_data_ptr),
+            mesh_data,
             std::span<const T>(
                 dof_values.data(),
                 static_cast<std::size_t>(dof_values.size())),
@@ -1211,9 +1214,8 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
               "create_level_set: callback must return a 1D array with length num_dofs");
         }
 
-        auto mesh_data_ptr = std::make_shared<LevelSetMeshDataT>(std::move(mesh_data));
         return cutcells::create_level_set_function<T, int>(
-            std::move(mesh_data_ptr),
+            std::move(mesh_data),
             std::span<const T>(
                 values.data(),
                 static_cast<std::size_t>(values.size())),
@@ -1236,17 +1238,14 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
           mesh_data = cutcells::create_level_set_mesh_data<T, int>(mesh, degree, T(-1));
         }
 
-        auto mesh_data_ptr = std::make_shared<LevelSetMeshDataT>(std::move(mesh_data));
-        const std::size_t num_dofs = static_cast<std::size_t>(mesh_data_ptr->num_dofs());
-        const std::size_t gdim = static_cast<std::size_t>(mesh_data_ptr->gdim);
+        const std::size_t num_dofs = static_cast<std::size_t>(mesh_data.num_dofs());
+        const std::size_t gdim = static_cast<std::size_t>(mesh_data.gdim);
 
         // Expose as (num_dofs, gdim), i.e. one point per row (matches tests + docs).
-        // Keep `mesh_data_ptr` alive via `owner` in case the callback holds onto X.
-        nb::object owner = nb::cast(mesh_data_ptr);
         nb::ndarray<const T, nb::numpy> X(
-            mesh_data_ptr->dof_coordinates.data(),
+            mesh_data.dof_coordinates.data(),
             {num_dofs, gdim},
-            owner);
+            nb::handle());
 
         // Intentional single batched callback invocation.
         nb::object values_obj = phi(X);
@@ -1258,7 +1257,7 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
         }
 
         return cutcells::create_level_set_function<T, int>(
-            std::move(mesh_data_ptr),
+            std::move(mesh_data),
             std::span<const T>(
                 values.data(),
                 static_cast<std::size_t>(values.size())),
@@ -1309,10 +1308,13 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
         // Cut mesh with GIL released
         // Convert cell::type back to VTK int codes for the legacy cut_vtk_mesh API.
         std::vector<int> vtk_types_vec;
-        vtk_types_vec.reserve(mesh.cell_types.size());
-        for (auto ct : mesh.cell_types)
-            vtk_types_vec.push_back(
-                static_cast<int>(cutcells::cell::map_cell_type_to_vtk(ct)));
+        vtk_types_vec.reserve(static_cast<std::size_t>(mesh.num_cells()));
+        for (int c = 0; c < mesh.num_cells(); ++c)
+        {
+          const auto ct = mesh.cell_type(c);
+          vtk_types_vec.push_back(
+              static_cast<int>(cutcells::cell::map_cell_type_to_vtk(ct)));
+        }
 
         nb::gil_scoped_release release;
         return mesh::cut_vtk_mesh<T>(
@@ -1795,38 +1797,39 @@ void declare_float(nb::module_& m, std::string type)
       "Returns a flat numpy array of shape (total_num_points * 3,).");
 }
 
-// ---- HO cut types (BackgroundMeshData, HOCutCells, HOMeshPart) ----
+// ---- HO cut types (ParentCellClassification, HOCutCells, HOMeshPart) ----
 
 template <typename T>
 void declare_ho_cut(nb::module_& m, const std::string& type)
 {
     using MeshViewT = cutcells::MeshView<T, int>;
     using LevelSetT = cutcells::LevelSetFunction<T, int>;
-    using BGDataT = cutcells::BackgroundMeshData<T, int>;
+    using BGDataT = cutcells::ParentCellClassification<T, int>;
     using HOCutT = cutcells::HOCutCells<T, int>;
     using PartT = cutcells::HOMeshPart<T, int>;
 
-    // --- Wrapper that owns both HOCutCells + BackgroundMeshData ---
+    // --- Wrapper that owns both HOCutCells + ParentCellClassification ---
     struct HOCutResult
     {
+        MeshViewT mesh;
         HOCutT cut_cells;
-        BGDataT bg;
+        BGDataT parent_cells;
         std::shared_ptr<void> level_set_owner;
     };
 
     std::string result_name = "HOCutResult_" + type;
     auto py_result = nb::class_<HOCutResult>(m, result_name.c_str(),
-        "Result of ho cut(): holds HOCutCells and BackgroundMeshData.");
+        "Result of ho cut(): holds HOCutCells and ParentCellClassification.");
 
     py_result
         .def_prop_ro("num_cut_cells",
             [](const HOCutResult& self) { return self.cut_cells.num_cut_cells(); })
         .def_prop_ro("num_cells",
-            [](const HOCutResult& self) { return self.bg.num_cells; })
+            [](const HOCutResult& self) { return self.parent_cells.num_cells; })
         .def_prop_ro("num_level_sets",
-            [](const HOCutResult& self) { return self.bg.num_level_sets; })
+            [](const HOCutResult& self) { return self.parent_cells.num_level_sets; })
         .def_prop_ro("level_set_names",
-            [](const HOCutResult& self) { return self.bg.level_set_names; })
+            [](const HOCutResult& self) { return self.parent_cells.level_set_names; })
         .def_prop_ro("parent_cell_ids",
             [](const HOCutResult& self) {
                 return nb::ndarray<const int, nb::numpy>(
@@ -1847,11 +1850,11 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         .def_prop_ro("cell_domains",
             [](const HOCutResult& self) {
                 const int* data = reinterpret_cast<const int*>(
-                    self.bg.cell_domains.data());
+                    self.parent_cells.cell_domains.data());
                 return nb::ndarray<const int, nb::numpy>(
                     data,
-                    {static_cast<std::size_t>(self.bg.num_level_sets),
-                     static_cast<std::size_t>(self.bg.num_cells)},
+                    {static_cast<std::size_t>(self.parent_cells.num_level_sets),
+                     static_cast<std::size_t>(self.parent_cells.num_cells)},
                     nb::handle());
             },
             nb::rv_policy::reference_internal,
@@ -1859,8 +1862,9 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         .def("__getitem__",
             [](const HOCutResult& self, const std::string& expr_str) {
                 return cutcells::select_part(
+                    self.mesh,
                     self.cut_cells,
-                    self.bg,
+                    self.parent_cells,
                     std::string_view(expr_str));
             },
             nb::arg("expr"),
@@ -1948,8 +1952,8 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<LevelSetT>(ls);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
-            return HOCutResult{std::move(hc), std::move(bg), owned_ls};
+            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, triangulate);
+            return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_set"), nb::arg("triangulate") = false,
         "Cut a MeshView with a single LevelSetFunction.\n"
@@ -1960,8 +1964,8 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
            bool triangulate) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
-            return HOCutResult{std::move(hc), std::move(bg), owned_ls};
+            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, triangulate);
+            return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_sets"), nb::arg("triangulate") = true,
         "Cut a MeshView with multiple LevelSetFunctions.\n"
@@ -1971,8 +1975,8 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<LevelSetT>(ls);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
-            return HOCutResult{std::move(hc), std::move(bg), owned_ls};
+            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, triangulate);
+            return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_set"), nb::arg("triangulate") = false,
         "Cut a MeshView with a single LevelSetFunction.\n"
@@ -1983,8 +1987,8 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
            bool triangulate) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
-            auto [hc, bg] = cutcells::cut(mesh, *owned_ls, triangulate);
-            return HOCutResult{std::move(hc), std::move(bg), owned_ls};
+            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, triangulate);
+            return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_sets"), nb::arg("triangulate") = true,
         "Cut a MeshView with multiple LevelSetFunctions.\n"

@@ -12,6 +12,7 @@
 #include <cmath>
 #include <map>
 #include <stdexcept>
+#include <vector>
 
 namespace cutcells
 {
@@ -312,6 +313,8 @@ template <std::floating_point T>
 void build_edges(AdaptCell<T>& ac)
 {
     const int tdim = ac.tdim;
+    if (tdim == 1)
+        return;
 
     // Clear existing 1D entity pool.
     ac.entity_types[1].clear();
@@ -403,9 +406,11 @@ AdaptCell<T> make_adapt_cell(const MeshView<T, I>& mesh, I cell_id)
     // Vertex provenance: all vertices coincide with parent-mesh vertices (dim 0).
     ac.vertex_parent_dim.assign(static_cast<std::size_t>(nv), std::int8_t(0));
     ac.vertex_parent_id.resize(static_cast<std::size_t>(nv));
+    std::vector<I> cell_node_scratch;
+    const auto parent_nodes = mesh.cell_nodes(cell_id, cell_node_scratch);
     for (int v = 0; v < nv; ++v)
         ac.vertex_parent_id[static_cast<std::size_t>(v)] =
-            static_cast<std::int32_t>(mesh.cell_node(cell_id, static_cast<I>(v)));
+            static_cast<std::int32_t>(parent_nodes[static_cast<std::size_t>(v)]);
 
     // No parametric coordinates for parent vertices (empty param per vertex).
     ac.vertex_parent_param_offset.assign(static_cast<std::size_t>(nv + 1),

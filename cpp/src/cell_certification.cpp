@@ -8,6 +8,7 @@
 #include "cell_flags.h"
 #include "cell_topology.h"
 #include "cut_cell.h"
+#include "cut_interval.h"
 #include "cut_tetrahedron.h"
 #include "cut_triangle.h"
 #include "edge_certification.h"
@@ -809,6 +810,9 @@ CellCertTag classify_ready_to_cut_topology(const AdaptCell<T>& adapt_cell,
     if (has_multiple_roots)
         return CellCertTag::cut;
 
+    if (subcell_type == cell::type::interval && cut_point_tokens.size() == 1)
+        return CellCertTag::ready_to_cut;
+
     if (subcell_type == cell::type::triangle && cut_point_tokens.size() == 2)
         return CellCertTag::ready_to_cut;
 
@@ -1456,11 +1460,12 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
             continue;
         }
 
-        if (leaf_cell_type != cell::type::triangle
+        if (leaf_cell_type != cell::type::interval
+            && leaf_cell_type != cell::type::triangle
             && leaf_cell_type != cell::type::tetrahedron)
         {
             throw std::runtime_error(
-                "process_ready_to_cut_cells: ready_to_cut only implemented for triangle and tetrahedron leaves");
+                "process_ready_to_cut_cells: ready_to_cut only implemented for interval, triangle, and tetrahedron leaves");
         }
 
         std::vector<T> vertex_coords(
@@ -1552,7 +1557,39 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
                 token_to_vertex[static_cast<int>(le)] = root_vertex_id;
         }
 
-        if (leaf_cell_type == cell::type::triangle)
+        if (leaf_cell_type == cell::type::interval)
+        {
+            cell::CutCell<T> negative_part;
+            cell::CutCell<T> positive_part;
+            cell::interval::cut(
+                std::span<const T>(vertex_coords),
+                tdim,
+                std::span<const T>(ls_values),
+                "phi<0",
+                negative_part);
+            cell::interval::cut(
+                std::span<const T>(vertex_coords),
+                tdim,
+                std::span<const T>(ls_values),
+                "phi>0",
+                positive_part);
+
+            append_ready_cut_part_cells(
+                adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
+                old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 1),
+                new_types, new_cells, old_cell_ids_for_new_cells,
+                source_cell_ids_for_new_cells, refinement_reasons_for_new_cells,
+                explicit_current_ls_tags,
+                token_to_vertex, zero_tol, CellCertTag::negative);
+            append_ready_cut_part_cells(
+                adapt_cell, ls_cell, level_set_id, c, positive_part, leaf_cell_type,
+                old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 1),
+                new_types, new_cells, old_cell_ids_for_new_cells,
+                source_cell_ids_for_new_cells, refinement_reasons_for_new_cells,
+                explicit_current_ls_tags,
+                token_to_vertex, zero_tol, CellCertTag::positive);
+        }
+        else if (leaf_cell_type == cell::type::triangle)
         {
             if (has_zero)
             {
