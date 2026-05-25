@@ -625,9 +625,11 @@ HOMeshPart<T, I> select_part(const MeshView<T, I>& mesh,
                 switch (clause.relation)
                 {
                     case Relation::LessThan:
+                    case Relation::LessEqual:
                         if (dom != cell::domain::inside) term_match = false;
                         break;
                     case Relation::GreaterThan:
+                    case Relation::GreaterEqual:
                         if (dom != cell::domain::outside) term_match = false;
                         break;
                     case Relation::EqualTo:

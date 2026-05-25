@@ -24,19 +24,21 @@ std::string_view trim(std::string_view s)
     return s;
 }
 
-/// Parse a single clause: "name < 0", "name > 0", or "name = 0".
+/// Parse a single clause: "name < 0", "name <= 0", "name > 0",
+/// "name >= 0", or "name = 0".
 Clause parse_clause(std::string_view text)
 {
     text = trim(text);
     if (text.empty())
         throw std::runtime_error("parse_selection_expr: empty clause");
 
-    // Find the relation operator: '<', '>', or '='
+    // Find the relation operator: '<', '<=', '>', '>=', or '='
     auto pos_lt = text.find('<');
     auto pos_gt = text.find('>');
     auto pos_eq = text.find('=');
 
     std::size_t op_pos = std::string_view::npos;
+    std::size_t op_len = 1;
     Relation rel{};
 
     if (pos_lt != std::string_view::npos
@@ -44,13 +46,29 @@ Clause parse_clause(std::string_view text)
         && (pos_lt < pos_eq || pos_eq == std::string_view::npos))
     {
         op_pos = pos_lt;
-        rel = Relation::LessThan;
+        if (pos_lt + 1 < text.size() && text[pos_lt + 1] == '=')
+        {
+            op_len = 2;
+            rel = Relation::LessEqual;
+        }
+        else
+        {
+            rel = Relation::LessThan;
+        }
     }
     else if (pos_gt != std::string_view::npos
              && (pos_gt < pos_eq || pos_eq == std::string_view::npos))
     {
         op_pos = pos_gt;
-        rel = Relation::GreaterThan;
+        if (pos_gt + 1 < text.size() && text[pos_gt + 1] == '=')
+        {
+            op_len = 2;
+            rel = Relation::GreaterEqual;
+        }
+        else
+        {
+            rel = Relation::GreaterThan;
+        }
     }
     else if (pos_eq != std::string_view::npos)
     {
@@ -60,12 +78,12 @@ Clause parse_clause(std::string_view text)
     else
     {
         throw std::runtime_error(
-            "parse_selection_expr: no operator (<, >, =) in clause: '"
+            "parse_selection_expr: no operator (<, <=, >, >=, =) in clause: '"
             + std::string(text) + "'");
     }
 
     std::string_view name_part = trim(text.substr(0, op_pos));
-    std::string_view rhs_part  = trim(text.substr(op_pos + 1));
+    std::string_view rhs_part  = trim(text.substr(op_pos + op_len));
 
     if (name_part.empty())
         throw std::runtime_error(
@@ -242,9 +260,11 @@ void compile_selection_expr(SelectionExpr& expr,
             switch (clause.relation)
             {
                 case Relation::LessThan:
+                case Relation::LessEqual:
                     term.negative_required |= bit;
                     break;
                 case Relation::GreaterThan:
+                case Relation::GreaterEqual:
                     term.positive_required |= bit;
                     break;
                 case Relation::EqualTo:

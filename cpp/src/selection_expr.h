@@ -13,11 +13,13 @@
 namespace cutcells
 {
 
-/// Relation in a selection clause: φ < 0, φ > 0, or φ = 0.
+/// Relation in a selection clause: φ < 0, φ <= 0, φ > 0, φ >= 0, or φ = 0.
 enum class Relation
 {
     LessThan,
+    LessEqual,
     GreaterThan,
+    GreaterEqual,
     EqualTo
 };
 
@@ -70,7 +72,7 @@ struct SelectionExpr
 ///
 /// Grammar:  term ('or' term)*
 /// term:     clause ('and' clause)*
-/// clause:   name ('<'|'>'|'=') '0'
+/// clause:   name ('<'|'<='|'>'|'>='|'=') '0'
 ///
 /// @throws std::runtime_error on syntax error.
 SelectionExpr parse_selection_expr(std::string_view text);
