@@ -71,6 +71,28 @@ const std::string& cell_domain_to_str(cell::domain domain_id)
   return it->second;
 }
 
+cutcells::CutOptions make_cut_options(bool triangulate,
+                                      const std::string& triangulation,
+                                      const std::string& cut_approximation,
+                                      int cut_approximation_order)
+{
+  cutcells::CutOptions options;
+  options.triangulate_cut_parts = triangulate;
+  options.triangulation_strategy = triangulate
+      ? cell::triangulation_strategy_from_string(triangulation)
+      : cell::TriangulationStrategy::none;
+  options.cut_approximation = cut_approximation;
+  options.cut_approximation_order = cut_approximation_order;
+  return options;
+}
+
+cell::TriangulationStrategy make_triangulation_strategy(
+    bool triangulate, const std::string& triangulation)
+{
+  return triangulate ? cell::triangulation_strategy_from_string(triangulation)
+                     : cell::TriangulationStrategy::none;
+}
+
 template <typename V>
 auto as_nbarray(V&& x, std::size_t ndim, const std::size_t* shape)
 {
@@ -1277,7 +1299,8 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
   m.def(
       "cut_mesh_view",
       [](const MeshViewT& mesh, const LevelSetT& ls,
-         const std::string& cut_type_str, bool triangulate)
+         const std::string& cut_type_str, bool triangulate,
+         const std::string& triangulation)
       {
         if (!mesh.has_cell_types())
           throw std::runtime_error(
@@ -1316,6 +1339,7 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
               static_cast<int>(cutcells::cell::map_cell_type_to_vtk(ct)));
         }
 
+        const auto strategy = make_triangulation_strategy(triangulate, triangulation);
         nb::gil_scoped_release release;
         return mesh::cut_vtk_mesh<T>(
             std::span<const T>(ls_vals.data(), ls_vals.size()),
@@ -1324,12 +1348,13 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
             mesh.offsets,
             std::span<const int>(vtk_types_vec.data(), vtk_types_vec.size()),
             cut_type_str,
-            triangulate);
+            strategy);
       },
       nb::arg("mesh"),
       nb::arg("level_set"),
       nb::arg("cut_type"),
       nb::arg("triangulate") = true,
+      nb::arg("triangulation") = "classical",
       "Cut a MeshView with a LevelSetFunction.\n"
       "Returns a CutMesh containing cells classified by cut_type (\"phi<0\", \"phi=0\", \"phi>0\").\n"
       "Level-set values are taken from nodal_values if set, otherwise evaluated via value().");
@@ -1680,25 +1705,37 @@ void declare_float(nb::module_& m, std::string type)
                    const int gdim,
                    const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& ls_values,
                    const std::string& cut_type_str,
-                   bool triangulate){
+                   bool triangulate,
+                   const std::string& triangulation){
               cell::CutCell<T> cut_cell;
+              const auto strategy = make_triangulation_strategy(triangulate, triangulation);
               nb::gil_scoped_release release;
-              cell::cut<T>(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, cut_cell, triangulate);
+              cell::cut<T>(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, cut_cell, strategy);
               return cut_cell;
              }
-             , "cut a cell");
+             , nb::arg("cell_type"), nb::arg("vertex_coordinates"), nb::arg("gdim"),
+             nb::arg("ls_values"), nb::arg("cut_type_str"),
+             nb::arg("triangulate") = false,
+             nb::arg("triangulation") = "classical",
+             "cut a cell");
 
   m.def("higher_order_cut", [](cell::type cell_type,
              const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& vertex_coordinates,
              const int gdim,
              const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& ls_values,
              const std::string& cut_type_str,
-             bool triangulate){
+             bool triangulate,
+             const std::string& triangulation){
+              const auto strategy = make_triangulation_strategy(triangulate, triangulation);
               nb::gil_scoped_release release;
-              cell::CutCell<T> cut_cell = cell::higher_order_cut<T>(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, triangulate);
+              cell::CutCell<T> cut_cell = cell::higher_order_cut<T>(cell_type, std::span{vertex_coordinates.data(),static_cast<unsigned long>(vertex_coordinates.size())}, gdim, std::span{ls_values.data(),static_cast<unsigned long>(ls_values.size())}, cut_type_str, strategy);
               return cut_cell;
              }
-             , "cut a second order cell");
+             , nb::arg("cell_type"), nb::arg("vertex_coordinates"), nb::arg("gdim"),
+             nb::arg("ls_values"), nb::arg("cut_type_str"),
+             nb::arg("triangulate") = false,
+             nb::arg("triangulation") = "classical",
+             "cut a second order cell");
 
     m.def("locate_cells", [](const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& ls_vals,
                              const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& points,
@@ -1726,7 +1763,9 @@ void declare_float(nb::module_& m, std::string type)
                              const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offset,
                              const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& vtk_type,
                              const std::string& cut_type_str,
-                             bool triangulate){
+                             bool triangulate,
+                             const std::string& triangulation){
+              const auto strategy = make_triangulation_strategy(triangulate, triangulation);
               nb::gil_scoped_release release;
               return  mesh::cut_vtk_mesh<T>(std::span(ls_vals.data(),ls_vals.size()),
                             std::span(points.data(),points.size()),
@@ -1734,10 +1773,11 @@ void declare_float(nb::module_& m, std::string type)
                             std::span(offset.data(),offset.size()),
                             std::span(vtk_type.data(),vtk_type.size()),
                             cut_type_str,
-                            triangulate);
+                            strategy);
              }
              , nb::arg("ls_vals"), nb::arg("points"), nb::arg("connectivity"), nb::arg("offset"), nb::arg("vtk_type"),
-               nb::arg("cut_type_str"), nb::arg("triangulate") = true
+               nb::arg("cut_type_str"), nb::arg("triangulate") = true,
+               nb::arg("triangulation") = "classical"
              , "cut vtk mesh");
 
     m.def("runtime_quadrature",
@@ -1949,48 +1989,74 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
 
     // --- ho_cut() factory ---
     m.def("ho_cut",
-        [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate) {
+        [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate,
+           const std::string& cut_approximation, int cut_approximation_order,
+           const std::string& triangulation) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<LevelSetT>(ls);
-            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, triangulate);
+            auto options = make_cut_options(
+                triangulate, triangulation, cut_approximation, cut_approximation_order);
+            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, options);
             return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_set"), nb::arg("triangulate") = false,
+        nb::arg("cut_approximation") = "auto",
+        nb::arg("cut_approximation_order") = 1,
+        nb::arg("triangulation") = "classical",
         "Cut a MeshView with a single LevelSetFunction.\n"
         "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
 
     m.def("ho_cut",
         [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets,
-           bool triangulate) {
+           bool triangulate, const std::string& cut_approximation,
+           int cut_approximation_order, const std::string& triangulation) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
-            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, triangulate);
+            auto options = make_cut_options(
+                triangulate, triangulation, cut_approximation, cut_approximation_order);
+            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, options);
             return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_sets"), nb::arg("triangulate") = true,
+        nb::arg("cut_approximation") = "auto",
+        nb::arg("cut_approximation_order") = 1,
+        nb::arg("triangulation") = "classical",
         "Cut a MeshView with multiple LevelSetFunctions.\n"
         "Returns an HOCutResult; use result[\"phi1 < 0 and phi2 = 0\"] to select parts.");
 
     m.def("cut",
-        [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate) {
+        [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate,
+           const std::string& cut_approximation, int cut_approximation_order,
+           const std::string& triangulation) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<LevelSetT>(ls);
-            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, triangulate);
+            auto options = make_cut_options(
+                triangulate, triangulation, cut_approximation, cut_approximation_order);
+            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, options);
             return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_set"), nb::arg("triangulate") = false,
+        nb::arg("cut_approximation") = "auto",
+        nb::arg("cut_approximation_order") = 1,
+        nb::arg("triangulation") = "classical",
         "Cut a MeshView with a single LevelSetFunction.\n"
         "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
 
     m.def("cut",
         [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets,
-           bool triangulate) {
+           bool triangulate, const std::string& cut_approximation,
+           int cut_approximation_order, const std::string& triangulation) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
-            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, triangulate);
+            auto options = make_cut_options(
+                triangulate, triangulation, cut_approximation, cut_approximation_order);
+            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, options);
             return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
         nb::arg("mesh"), nb::arg("level_sets"), nb::arg("triangulate") = true,
+        nb::arg("cut_approximation") = "auto",
+        nb::arg("cut_approximation_order") = 1,
+        nb::arg("triangulation") = "classical",
         "Cut a MeshView with multiple LevelSetFunctions.\n"
         "Returns an HOCutResult; use result[\"phi1 < 0 and phi2 = 0\"] to select parts.");
 
@@ -2400,13 +2466,43 @@ void declare_certification(nb::module_& m, const std::string& suffix)
 
     m.def(
         "make_adapt_cell",
-        [](const MeshViewT& mesh, int cell_id)
+        [](const MeshViewT& mesh, int cell_id,
+           const std::string& cut_approximation,
+           int cut_approximation_order)
         {
             nb::gil_scoped_release release;
-            return cutcells::make_adapt_cell(mesh, cell_id);
+            auto ac = cutcells::make_adapt_cell(mesh, cell_id);
+            if (cut_approximation == "iso_p1" && cut_approximation_order > 1)
+            {
+                cutcells::apply_iso_refine(
+                    ac,
+                    cutcells::iso_p1_template(ac.parent_cell_type,
+                                               cut_approximation_order));
+            }
+            else if (cut_approximation != "linear"
+                     && cut_approximation != "iso_p1")
+            {
+                throw std::invalid_argument(
+                    "make_adapt_cell: cut_approximation must be 'linear' or 'iso_p1'");
+            }
+            else if (cut_approximation_order < 1 || cut_approximation_order > 4)
+            {
+                throw std::invalid_argument(
+                    "make_adapt_cell: cut_approximation_order must be 1, 2, 3, or 4");
+            }
+            else if (cut_approximation == "linear"
+                     && cut_approximation_order != 1)
+            {
+                throw std::invalid_argument(
+                    "make_adapt_cell: cut_approximation='linear' requires "
+                    "cut_approximation_order=1");
+            }
+            return ac;
         },
         nb::arg("mesh"),
-        nb::arg("cell_id"));
+        nb::arg("cell_id"),
+        nb::arg("cut_approximation") = "linear",
+        nb::arg("cut_approximation_order") = 1);
 
     m.def(
         "build_edges",
@@ -2692,6 +2788,84 @@ NB_MODULE(_cutcellscpp, m)
     .value("hexahedron", cell::type::hexahedron)
     .value("prism", cell::type::prism)
     .value("pyramid", cell::type::pyramid);
+
+  nb::class_<cutcells::IsoRefineTemplate>(
+      m, "IsoRefineTemplate", "Topology-only Pk-iso-P1 refinement template.")
+      .def_prop_ro("n_vertices",
+                   [](const cutcells::IsoRefineTemplate& self) { return self.n_vertices; })
+      .def_prop_ro("n_cells",
+                   [](const cutcells::IsoRefineTemplate& self) { return self.n_cells; })
+      .def_prop_ro("tdim",
+                   [](const cutcells::IsoRefineTemplate& self) { return self.tdim; })
+      .def_prop_ro("vertices_per_cell",
+                   [](const cutcells::IsoRefineTemplate& self) { return self.vertices_per_cell; })
+      .def_prop_ro("parent_cell_type",
+                   [](const cutcells::IsoRefineTemplate& self) { return self.parent_cell_type; })
+      .def_prop_ro("child_cell_type",
+                   [](const cutcells::IsoRefineTemplate& self) { return self.child_cell_type; })
+      .def_prop_ro(
+          "ref_vertex_coords",
+          [](const cutcells::IsoRefineTemplate& self)
+          {
+            return nb::ndarray<const double, nb::numpy>(
+                self.ref_vertex_coords.data(),
+                {self.ref_vertex_coords.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "vertex_parent_dim",
+          [](const cutcells::IsoRefineTemplate& self)
+          {
+            return nb::ndarray<const int, nb::numpy>(
+                self.vertex_parent_dim.data(),
+                {self.vertex_parent_dim.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "vertex_parent_id",
+          [](const cutcells::IsoRefineTemplate& self)
+          {
+            return nb::ndarray<const int, nb::numpy>(
+                self.vertex_parent_id.data(),
+                {self.vertex_parent_id.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "cell_connectivity",
+          [](const cutcells::IsoRefineTemplate& self)
+          {
+            return nb::ndarray<const int, nb::numpy>(
+                self.cell_connectivity.data(),
+                {self.cell_connectivity.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal);
+
+  m.attr("RefinementTemplate") = m.attr("IsoRefineTemplate");
+
+  m.def("iso_p1_template",
+        [](cell::type cell_type, int order) -> const cutcells::IsoRefineTemplate&
+        {
+          return cutcells::iso_p1_template(cell_type, order);
+        },
+        nb::arg("cell_type"),
+        nb::arg("order"),
+        nb::rv_policy::reference,
+        "Return a topology-only Pk-iso-P1 refinement template.");
+
+  m.def("iso_p1_ref_coords",
+        [](cell::type cell_type, int order)
+        {
+          auto x = cutcells::iso_p1_ref_coords(cell_type, order);
+          return nb::ndarray<const double, nb::numpy>(
+              x.data(), {x.size()}, nb::handle());
+        },
+        nb::arg("cell_type"),
+        nb::arg("order"),
+        "Return flat reference coordinates for a Pk-iso-P1 template.");
 
   nb::enum_<cutcells::EdgeRootTag>(m, "EdgeRootTag")
     .value("not_classified", cutcells::EdgeRootTag::not_classified)

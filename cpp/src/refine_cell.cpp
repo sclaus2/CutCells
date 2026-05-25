@@ -1062,6 +1062,68 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
             }
             break;
         }
+        case cell::type::hexahedron:
+        {
+            std::array<int, 27> local_to_global = {
+                static_cast<int>(verts[0]), static_cast<int>(verts[1]),
+                static_cast<int>(verts[2]), static_cast<int>(verts[3]),
+                static_cast<int>(verts[4]), static_cast<int>(verts[5]),
+                static_cast<int>(verts[6]), static_cast<int>(verts[7]),
+                -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                -1, -1, -1, -1, -1, -1, -1};
+            const auto ledges = cell::edges(cell::type::hexahedron);
+            for (int le = 0; le < 12; ++le)
+            {
+                const int a = verts[static_cast<std::size_t>(ledges[static_cast<std::size_t>(le)][0])];
+                const int b = verts[static_cast<std::size_t>(ledges[static_cast<std::size_t>(le)][1])];
+                const std::pair<int, int> key = {std::min(a, b), std::max(a, b)};
+                auto it = edge_lookup.find(key);
+                if (it == edge_lookup.end())
+                {
+                    throw std::runtime_error(
+                        "refine_red_on_ambiguous_cells: missing hexahedron edge key=("
+                        + std::to_string(key.first) + "," + std::to_string(key.second)
+                        + ") for cell " + std::to_string(c) + " local_edge="
+                        + std::to_string(le));
+                }
+                local_to_global[static_cast<std::size_t>(8 + le)] =
+                    get_midpoint_vertex(it->second);
+            }
+
+            for (int lf = 0; lf < 6; ++lf)
+            {
+                const auto face = cell::face_vertices(cell::type::hexahedron, lf);
+                std::array<std::int32_t, 4> face_vertices = {
+                    verts[static_cast<std::size_t>(face[0])],
+                    verts[static_cast<std::size_t>(face[1])],
+                    verts[static_cast<std::size_t>(face[2])],
+                    verts[static_cast<std::size_t>(face[3])]};
+                local_to_global[static_cast<std::size_t>(20 + lf)] =
+                    append_cell_center_vertex(
+                        adapt_cell,
+                        std::span<const std::int32_t>(face_vertices.data(),
+                                                      face_vertices.size()));
+            }
+            local_to_global[26] = append_cell_center_vertex(adapt_cell, verts);
+
+            for (const auto& child : cell::hexahedron_subdivision_table)
+            {
+                const std::array<int, 8> g = {
+                    local_to_global[static_cast<std::size_t>(child[0])],
+                    local_to_global[static_cast<std::size_t>(child[1])],
+                    local_to_global[static_cast<std::size_t>(child[2])],
+                    local_to_global[static_cast<std::size_t>(child[3])],
+                    local_to_global[static_cast<std::size_t>(child[4])],
+                    local_to_global[static_cast<std::size_t>(child[5])],
+                    local_to_global[static_cast<std::size_t>(child[6])],
+                    local_to_global[static_cast<std::size_t>(child[7])]};
+                append_top_cell(new_types, new_cells, cell::type::hexahedron, std::span<const int>(g));
+                old_cell_ids_for_new_cells.push_back(-1);
+                source_cell_ids_for_new_cells.push_back(c);
+                refinement_reasons_for_new_cells.push_back(CellRefinementReason::red_cell);
+            }
+            break;
+        }
         default:
             throw std::runtime_error(
                 "refine_red_on_ambiguous_cells: unsupported cell type");

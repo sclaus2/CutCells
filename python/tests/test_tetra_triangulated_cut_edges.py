@@ -127,11 +127,14 @@ def test_triangulated_tetra_cut_edges_are_classified_against_zero_level_set():
     expected = {
         "phi<0": {
             "base_types": [13],
-            "triangulated_types": [10, 10, 10, 10],
-            "new_edge_count": 7,
+            "triangulated_types": [10, 10, 10],
+            "new_edge_count": 3,
             "zero_tag_count": 1,
-            "zero_endpoint_count": 5,
+            "zero_endpoint_count": 3,
             "interior_root_count": 0,
+            "midpoint_types": [10, 10, 10, 10],
+            "midpoint_new_edge_count": 7,
+            "midpoint_zero_endpoint_count": 5,
         },
         "phi=0": {
             "base_types": [9],
@@ -140,14 +143,20 @@ def test_triangulated_tetra_cut_edges_are_classified_against_zero_level_set():
             "zero_tag_count": 1,
             "zero_endpoint_count": 1,
             "interior_root_count": 0,
+            "midpoint_types": [5, 5],
+            "midpoint_new_edge_count": 1,
+            "midpoint_zero_endpoint_count": 1,
         },
         "phi>0": {
             "base_types": [13],
-            "triangulated_types": [10, 10, 10, 10],
-            "new_edge_count": 7,
+            "triangulated_types": [10, 10, 10],
+            "new_edge_count": 3,
             "zero_tag_count": 1,
-            "zero_endpoint_count": 5,
+            "zero_endpoint_count": 3,
             "interior_root_count": 0,
+            "midpoint_types": [10, 10, 10, 10],
+            "midpoint_new_edge_count": 7,
+            "midpoint_zero_endpoint_count": 5,
         },
     }
 
@@ -181,5 +190,28 @@ def test_triangulated_tetra_cut_edges_are_classified_against_zero_level_set():
             "zero_endpoint_count"
         ]
         assert sum(record["has_interior_root"] for record in edge_records) == exp[
+            "interior_root_count"
+        ]
+
+        midpoint_cut = cutcells.cut(
+            cutcells.CellType.tetrahedron,
+            coords.ravel(),
+            3,
+            nodal_phi,
+            expr,
+            True,
+            triangulation="midpoint",
+        )
+        assert np.asarray(midpoint_cut.vtk_types).tolist() == exp["midpoint_types"]
+
+        midpoint_edge_records = _classify_new_edges(ls_cell, base_cut, midpoint_cut)
+        assert len(midpoint_edge_records) == exp["midpoint_new_edge_count"]
+        assert sum(record["tag"] == cutcells.EdgeRootTag.zero for record in midpoint_edge_records) == exp[
+            "zero_tag_count"
+        ]
+        assert sum(record["has_zero_endpoint"] for record in midpoint_edge_records) == exp[
+            "midpoint_zero_endpoint_count"
+        ]
+        assert sum(record["has_interior_root"] for record in midpoint_edge_records) == exp[
             "interior_root_count"
         ]

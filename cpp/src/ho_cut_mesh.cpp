@@ -332,6 +332,113 @@ void refresh_adapt_cell_semantics(
     recompute_active_level_set_masks(ac, total_num_level_sets);
 }
 
+inline void validate_resolved_cut_options(const CutOptions& options)
+{
+    if (options.cut_approximation == "linear")
+    {
+        if (options.cut_approximation_order != 1)
+        {
+            throw std::invalid_argument(
+                "cut: cut_approximation='linear' requires "
+                "cut_approximation_order=1");
+        }
+        return;
+    }
+
+    if (options.cut_approximation != "iso_p1")
+    {
+        throw std::invalid_argument(
+            "cut: cut_approximation must be 'auto', 'linear', or 'iso_p1'");
+    }
+
+    if (options.cut_approximation_order < 1
+        || options.cut_approximation_order > 4)
+    {
+        throw std::invalid_argument(
+            "cut: cut_approximation_order must be 1, 2, 3, or 4");
+    }
+}
+
+inline void validate_cut_options(const CutOptions& options)
+{
+    if (options.cut_approximation == "auto")
+        return;
+
+    validate_resolved_cut_options(options);
+}
+
+template <std::floating_point T, std::integral I>
+int level_set_space_order(const LevelSetFunction<T, I>& ls)
+{
+    return ls.has_mesh_data() ? ls.mesh_data.degree : 1;
+}
+
+template <std::floating_point T, std::integral I>
+CutOptions resolve_cut_options(const CutOptions& options,
+                               const LevelSetFunction<T, I>& ls)
+{
+    validate_cut_options(options);
+    if (options.cut_approximation != "auto")
+        return options;
+
+    CutOptions resolved = options;
+    const int order = level_set_space_order(ls);
+    if (order > 1)
+    {
+        resolved.cut_approximation = "iso_p1";
+        resolved.cut_approximation_order = order;
+    }
+    else
+    {
+        resolved.cut_approximation = "linear";
+        resolved.cut_approximation_order = 1;
+    }
+    validate_resolved_cut_options(resolved);
+    return resolved;
+}
+
+template <std::floating_point T, std::integral I>
+CutOptions resolve_cut_options(
+    const CutOptions& options,
+    const std::vector<LevelSetFunction<T, I>>& level_sets)
+{
+    validate_cut_options(options);
+    if (options.cut_approximation != "auto")
+        return options;
+
+    int order = 1;
+    for (const auto& ls : level_sets)
+        order = std::max(order, level_set_space_order(ls));
+
+    CutOptions resolved = options;
+    if (order > 1)
+    {
+        resolved.cut_approximation = "iso_p1";
+        resolved.cut_approximation_order = order;
+    }
+    else
+    {
+        resolved.cut_approximation = "linear";
+        resolved.cut_approximation_order = 1;
+    }
+    validate_resolved_cut_options(resolved);
+    return resolved;
+}
+
+template <std::floating_point T>
+void apply_cut_approximation(AdaptCell<T>& ac, const CutOptions& options)
+{
+    validate_resolved_cut_options(options);
+    if (options.cut_approximation != "iso_p1"
+        || options.cut_approximation_order == 1)
+    {
+        return;
+    }
+
+    apply_iso_refine(
+        ac, iso_p1_template(ac.parent_cell_type, options.cut_approximation_order));
+}
+
 } // anonymous namespace
 
 // =====================================================================
@@ -342,8 +449,9 @@ template <std::floating_point T, std::integral I>
 std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
 cut(const MeshView<T, I>& mesh,
     const LevelSetFunction<T, I>& ls,
-    bool triangulate_cut_parts)
+    const CutOptions& options)
 {
+    const CutOptions resolved_options = resolve_cut_options(options, ls);
     if (!mesh.has_cell_types())
         throw std::runtime_error("cut: MeshView must have cell types");
 
@@ -396,11 +504,14 @@ cut(const MeshView<T, I>& mesh,
 
         // AdaptCell
         AdaptCell<T> ac = make_adapt_cell(mesh, ci);
+        apply_cut_approximation(ac, resolved_options);
 
         certify_refine_and_process_ready_cells(
             ac, hc.level_set_cells.back(), /*level_set_id=*/0,
             /*max_iterations=*/8, T(1e-12), T(1e-12), /*edge_max_depth=*/20,
-            triangulate_cut_parts);
+            resolved_options.triangulate_cut_parts
+                ? resolved_options.triangulation_strategy
+                : cell::TriangulationStrategy::none);
         {
             const std::array<int, 1> processed_ids = {0};
             const auto* processed_cell = &hc.level_set_cells.back();
@@ -428,6 +539,20 @@ cut(const MeshView<T, I>& mesh,
     return {std::move(hc), std::move(parent_cells)};
 }
 
+template <std::floating_point T, std::integral I>
+std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
+cut(const MeshView<T, I>& mesh,
+    const LevelSetFunction<T, I>& ls,
+    bool triangulate_cut_parts)
+{
+    CutOptions options;
+    options.triangulate_cut_parts = triangulate_cut_parts;
+    options.triangulation_strategy = cell::TriangulationStrategy::classical;
+    options.cut_approximation = "auto";
+    options.cut_approximation_order = 1;
+    return cut(mesh, ls, options);
+}
+
 // =====================================================================
 // cut() — multiple level sets
 // =====================================================================
@@ -436,8 +561,9 @@ template <std::floating_point T, std::integral I>
 std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
 cut(const MeshView<T, I>& mesh,
     const std::vector<LevelSetFunction<T, I>>& level_sets,
-    bool triangulate_cut_parts)
+    const CutOptions& options)
 {
+    const CutOptions resolved_options = resolve_cut_options(options, level_sets);
     if (!mesh.has_cell_types())
         throw std::runtime_error("cut: MeshView must have cell types");
     if (level_sets.empty())
@@ -529,6 +655,7 @@ cut(const MeshView<T, I>& mesh,
 
         // Build AdaptCell once per cell.
         AdaptCell<T> ac = make_adapt_cell(mesh, ci);
+        apply_cut_approximation(ac, resolved_options);
 
         // Process intersecting level sets recursively (input order).
         //
@@ -539,7 +666,10 @@ cut(const MeshView<T, I>& mesh,
             certify_refine_and_process_ready_cells(
                     ac, intersected_ls_cells[k], li,
                     /*max_iterations=*/8, T(1e-12), T(1e-12),
-                    /*edge_max_depth=*/20, triangulate_cut_parts);
+                    /*edge_max_depth=*/20,
+                    resolved_options.triangulate_cut_parts
+                        ? resolved_options.triangulation_strategy
+                        : cell::TriangulationStrategy::none);
 
             // New vertices created while processing level set li must be
             // reclassified for all already-processed level sets.
@@ -580,6 +710,20 @@ cut(const MeshView<T, I>& mesh,
     }
 
     return {std::move(hc), std::move(parent_cells)};
+}
+
+template <std::floating_point T, std::integral I>
+std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
+cut(const MeshView<T, I>& mesh,
+    const std::vector<LevelSetFunction<T, I>>& level_sets,
+    bool triangulate_cut_parts)
+{
+    CutOptions options;
+    options.triangulate_cut_parts = triangulate_cut_parts;
+    options.triangulation_strategy = cell::TriangulationStrategy::classical;
+    options.cut_approximation = "auto";
+    options.cut_approximation_order = 1;
+    return cut(mesh, level_sets, options);
 }
 
 // =====================================================================
@@ -708,6 +852,22 @@ HOMeshPart<T, I> select_part(const MeshView<T, I>& mesh,
 
 // cut() single LS
 template std::pair<HOCutCells<double, int>, ParentCellClassification<double, int>>
+cut(const MeshView<double, int>&, const LevelSetFunction<double, int>&,
+    const CutOptions&);
+
+template std::pair<HOCutCells<float, int>, ParentCellClassification<float, int>>
+cut(const MeshView<float, int>&, const LevelSetFunction<float, int>&,
+    const CutOptions&);
+
+template std::pair<HOCutCells<double, long>, ParentCellClassification<double, long>>
+cut(const MeshView<double, long>&, const LevelSetFunction<double, long>&,
+    const CutOptions&);
+
+template std::pair<HOCutCells<float, long>, ParentCellClassification<float, long>>
+cut(const MeshView<float, long>&, const LevelSetFunction<float, long>&,
+    const CutOptions&);
+
+template std::pair<HOCutCells<double, int>, ParentCellClassification<double, int>>
 cut(const MeshView<double, int>&, const LevelSetFunction<double, int>&, bool);
 
 template std::pair<HOCutCells<float, int>, ParentCellClassification<float, int>>
@@ -720,6 +880,22 @@ template std::pair<HOCutCells<float, long>, ParentCellClassification<float, long
 cut(const MeshView<float, long>&, const LevelSetFunction<float, long>&, bool);
 
 // cut() multi LS
+template std::pair<HOCutCells<double, int>, ParentCellClassification<double, int>>
+cut(const MeshView<double, int>&, const std::vector<LevelSetFunction<double, int>>&,
+    const CutOptions&);
+
+template std::pair<HOCutCells<float, int>, ParentCellClassification<float, int>>
+cut(const MeshView<float, int>&, const std::vector<LevelSetFunction<float, int>>&,
+    const CutOptions&);
+
+template std::pair<HOCutCells<double, long>, ParentCellClassification<double, long>>
+cut(const MeshView<double, long>&, const std::vector<LevelSetFunction<double, long>>&,
+    const CutOptions&);
+
+template std::pair<HOCutCells<float, long>, ParentCellClassification<float, long>>
+cut(const MeshView<float, long>&, const std::vector<LevelSetFunction<float, long>>&,
+    const CutOptions&);
+
 template std::pair<HOCutCells<double, int>, ParentCellClassification<double, int>>
 cut(const MeshView<double, int>&, const std::vector<LevelSetFunction<double, int>>&,
     bool);

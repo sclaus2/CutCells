@@ -152,6 +152,7 @@ def test_triangle_lut_triangulated_quad_connects_uncut_edge_vertices_to_adjacent
         level_set_values,
         "phi>0",
         True,
+        triangulation="midpoint",
     )
 
     parent_tokens = np.asarray(cut.vertex_parent_entity, dtype=np.int32)
@@ -284,7 +285,7 @@ def test_triangulated_tetra_prism_midpoints_keep_masks_and_source_edges():
         name="phi",
     )
 
-    result = cutcells.cut(mesh, ls, triangulate=True)
+    result = cutcells.cut(mesh, ls, triangulate=True, triangulation="midpoint")
     adapt_cell = result.adapt_cell(0)
     parent_cell_id = int(np.asarray(result.parent_cell_ids, dtype=np.int32)[0])
 
@@ -319,7 +320,7 @@ def test_triangulated_triangle_quad_midpoint_keeps_masks_and_parent_edge():
         name="phi",
     )
 
-    result = cutcells.cut(mesh, ls, triangulate=True)
+    result = cutcells.cut(mesh, ls, triangulate=True, triangulation="midpoint")
     adapt_cell = result.adapt_cell(0)
     parent_cell_id = int(np.asarray(result.parent_cell_ids, dtype=np.int32)[0])
 

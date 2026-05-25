@@ -13,6 +13,7 @@
 #include "adapt_cell.h"
 #include "cell_types.h"
 #include "level_set_cell.h"
+#include "triangulation.h"
 
 namespace cutcells
 {
@@ -151,6 +152,15 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
                                 T zero_tol,
                                 T sign_tol,
                                 int edge_max_depth,
+                                cell::TriangulationStrategy triangulation_strategy);
+
+template <std::floating_point T, std::integral I>
+void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
+                                const LevelSetCell<T, I>& ls_cell,
+                                int level_set_id,
+                                T zero_tol,
+                                T sign_tol,
+                                int edge_max_depth,
                                 bool triangulate_cut_parts = false);
 
 /// Green-refine a ready leaf cell through the midpoint of the cell edge whose
@@ -195,6 +205,15 @@ void certify_and_refine(AdaptCell<T>& adapt_cell,
 ///   2. certify + green/red refine until stable
 ///   3. replace ready_to_cut cells by the LUT decomposition
 ///   4. restamp vertex signs on the final leaf mesh
+template <std::floating_point T, std::integral I>
+void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
+                                            const LevelSetCell<T, I>& ls_cell,
+                                            int level_set_id,
+                                            int max_iterations,
+                                            T zero_tol, T sign_tol,
+                                            int edge_max_depth,
+                                            cell::TriangulationStrategy triangulation_strategy);
+
 template <std::floating_point T, std::integral I>
 void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
                                             const LevelSetCell<T, I>& ls_cell,

@@ -175,23 +175,23 @@ namespace cutcells::cell{
     template <std::floating_point T>
     void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
              const std::span<const T> ls_values, const std::string& cut_type_str,
-             CutCell<T>& cut_cell, bool triangulate)
+             CutCell<T>& cut_cell, TriangulationStrategy strategy)
     {
         switch(cell_type)
         {
             case type::interval: interval::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell);
                                  break;
-            case type::triangle: triangle::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+            case type::triangle: triangle::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, strategy);
                                  break;
-            case type::quadrilateral: quadrilateral::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+            case type::quadrilateral: quadrilateral::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulates(strategy));
                                  break;
-            case type::tetrahedron: tetrahedron::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+            case type::tetrahedron: tetrahedron::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, strategy);
                                  break;
-          case type::hexahedron: hexahedron::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+          case type::hexahedron: hexahedron::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulates(strategy));
                       break;
-          case type::prism: prism::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+          case type::prism: prism::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulates(strategy));
                     break;
-            case type::pyramid: pyramid::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+            case type::pyramid: pyramid::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulates(strategy));
                 break;
             default: throw std::invalid_argument("Only intervals, triangles, quadrilaterals, tetrahedra, hexahedra, prisms and pyramids are implemented for cutting so far.");
                                 break;
@@ -205,11 +205,20 @@ namespace cutcells::cell{
         }
     }
 
+    template <std::floating_point T>
+    void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::string& cut_type_str,
+             CutCell<T>& cut_cell, bool triangulate)
+    {
+        cut(cell_type, vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell,
+            triangulation_strategy_from_bool(triangulate));
+    }
+
     //Cutting of 2nd order triangles (6-node) and tetrahedra (10-node)
     template <std::floating_point T>
     CutCell<T> higher_order_cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
              const std::span<const T> ls_values, const std::string& cut_type_str,
-             bool triangulate)
+             TriangulationStrategy strategy)
     {
       switch(cell_type)
       {
@@ -280,7 +289,7 @@ namespace cutcells::cell{
             case cutcells::cell::domain::intersected:
             {
               cutcells::cell::CutCell<T> tmp_cut_cell;
-              cutcells::cell::cut<T>(cell_type, sub_vertex_coordinates, gdim, sub_ls_values, cut_type_str, tmp_cut_cell, triangulate);
+              cutcells::cell::cut<T>(cell_type, sub_vertex_coordinates, gdim, sub_ls_values, cut_type_str, tmp_cut_cell, strategy);
               sub_cut_cells.push_back(tmp_cut_cell);
               sub_cut_cell_id++;
               break;
@@ -314,6 +323,16 @@ namespace cutcells::cell{
       {
         throw std::invalid_argument("cell is not intersected and therefore cannot be cut");
       }
+    }
+
+    template <std::floating_point T>
+    CutCell<T> higher_order_cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::string& cut_type_str,
+             bool triangulate)
+    {
+      return higher_order_cut(cell_type, vertex_coordinates, gdim, ls_values,
+                              cut_type_str,
+                              triangulation_strategy_from_bool(triangulate));
     }
 
     /// Merge vector of CutCell objects into one CutCell
@@ -532,7 +551,7 @@ namespace cutcells::cell{
   void recursive_cut(cutcells::cell::CutCell<T> &cut_cell,
                     std::span<const T> ls_vals_all,
                     const std::string& cut_type_str,
-                    bool triangulate)
+                    TriangulationStrategy strategy)
   {
     int total_num_cells = cutcells::cell::num_cells(cut_cell);
     int gdim = cut_cell._gdim;
@@ -570,7 +589,7 @@ namespace cutcells::cell{
       // std::cout << "ready to cut cell" << std::endl;
       if(cell_domain == cutcells::cell::domain::intersected)
       {
-        cutcells::cell::cut<T>(cut_cell_type, vertex_coords, gdim, ls_vals, cut_type_str, cut_cells[cut_cell_id], triangulate);
+        cutcells::cell::cut<T>(cut_cell_type, vertex_coords, gdim, ls_vals, cut_type_str, cut_cells[cut_cell_id], strategy);
         cut_cell_id++;
       }
       // cell is completely inside
@@ -616,6 +635,16 @@ namespace cutcells::cell{
     }
   }
 
+  template <std::floating_point T>
+  void recursive_cut(cutcells::cell::CutCell<T> &cut_cell,
+                    std::span<const T> ls_vals_all,
+                    const std::string& cut_type_str,
+                    bool triangulate)
+  {
+    recursive_cut(cut_cell, ls_vals_all, cut_type_str,
+                  triangulation_strategy_from_bool(triangulate));
+  }
+
 //-----------------------------------------------------------------------------
   template CutCell<double> merge(std::vector<CutCell<double>> cut_cell_vec);
   template CutCell<float> merge(std::vector<CutCell<float>> cut_cell_vec);
@@ -634,10 +663,27 @@ namespace cutcells::cell{
 
   template void cut(const type cell_type, const std::span<const double> vertex_coordinates,
               const int gdim, const std::span<const double> ls_values,
+              const std::string& cut_type_str, CutCell<double>& cut_cell,
+              TriangulationStrategy strategy);
+  template void cut(const type cell_type, const std::span<const float> vertex_coordinates, const int gdim,
+             const std::span<const float> ls_values, const std::string& cut_type_str,
+             CutCell<float>& cut_cell, TriangulationStrategy strategy);
+
+  template void cut(const type cell_type, const std::span<const double> vertex_coordinates,
+              const int gdim, const std::span<const double> ls_values,
               const std::string& cut_type_str, CutCell<double>& cut_cell, bool triangulate);
   template void cut(const type cell_type, const std::span<const float> vertex_coordinates, const int gdim,
              const std::span<const float> ls_values, const std::string& cut_type_str,
              CutCell<float>& cut_cell, bool triangulate);
+
+  template CutCell<double> higher_order_cut(const type cell_type,
+            const std::span<const double> vertex_coordinates, const int gdim,
+            const std::span<const double> ls_values, const std::string& cut_type_str,
+            TriangulationStrategy strategy);
+  template CutCell<float> higher_order_cut(const type cell_type,
+            const std::span<const float> vertex_coordinates, const int gdim,
+            const std::span<const float> ls_values, const std::string& cut_type_str,
+            TriangulationStrategy strategy);
 
   template CutCell<double> higher_order_cut(const type cell_type,
             const std::span<const double> vertex_coordinates, const int gdim,
@@ -647,6 +693,15 @@ namespace cutcells::cell{
             const std::span<const float> vertex_coordinates, const int gdim,
             const std::span<const float> ls_values, const std::string& cut_type_str,
             bool triangulate);
+
+  template void recursive_cut(cutcells::cell::CutCell<double> &cut_cell,
+                    std::span<const double> ls_vals_all,
+                    const std::string& cut_type_str,
+                    TriangulationStrategy strategy);
+  template void recursive_cut(cutcells::cell::CutCell<float> &cut_cell,
+                    std::span<const float> ls_vals_all,
+                    const std::string& cut_type_str,
+                    TriangulationStrategy strategy);
 
   template void recursive_cut(cutcells::cell::CutCell<double> &cut_cell,
                     std::span<const double> ls_vals_all,

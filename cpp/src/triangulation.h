@@ -9,10 +9,56 @@
 
 #include <numeric>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 namespace cutcells::cell
 {
+    enum class TriangulationStrategy
+    {
+        none,
+        classical,
+        midpoint
+    };
+
+    inline TriangulationStrategy triangulation_strategy_from_bool(bool triangulate)
+    {
+        return triangulate ? TriangulationStrategy::classical
+                           : TriangulationStrategy::none;
+    }
+
+    inline TriangulationStrategy triangulation_strategy_from_string(std::string_view strategy)
+    {
+        if (strategy == "none")
+            return TriangulationStrategy::none;
+        if (strategy == "classical")
+            return TriangulationStrategy::classical;
+        if (strategy == "midpoint")
+            return TriangulationStrategy::midpoint;
+
+        throw std::invalid_argument(
+            "triangulation strategy must be 'none', 'classical', or 'midpoint'");
+    }
+
+    inline const char* triangulation_strategy_to_string(TriangulationStrategy strategy)
+    {
+        switch (strategy)
+        {
+            case TriangulationStrategy::none:
+                return "none";
+            case TriangulationStrategy::classical:
+                return "classical";
+            case TriangulationStrategy::midpoint:
+                return "midpoint";
+        }
+        throw std::invalid_argument("unknown triangulation strategy");
+    }
+
+    inline bool triangulates(TriangulationStrategy strategy)
+    {
+        return strategy != TriangulationStrategy::none;
+    }
+
     /// @brief Decompose a non-simplex cell into simplices (triangles or tetrahedra).
     ///
     /// Each entry in @p tris is a list of vertex indices (into the parent vertices[])

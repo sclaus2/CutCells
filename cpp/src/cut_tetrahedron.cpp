@@ -154,12 +154,18 @@ namespace tetrahedron{
     }
 
     // for triangles the number of sub-elements without triangulation is 1
-    int get_num_sub_elements(const int &flag, bool triangulate)
+    int get_num_sub_elements(const int &flag, TriangulationStrategy strategy)
     {
         type cell_type = tetrahedron_sub_element_cell_types[flag];
         int num_sub_elements = 1;
 
-        if(cell_type == type::prism && triangulate == true)
+        if(cell_type == type::prism
+           && strategy == TriangulationStrategy::classical)
+        {
+            num_sub_elements = 3;
+        }
+        else if(cell_type == type::prism
+                && strategy == TriangulationStrategy::midpoint)
         {
             int num_roots = 0;
             for (int i = 0; i < 6; ++i)
@@ -175,16 +181,28 @@ namespace tetrahedron{
         return num_sub_elements;
     }
 
-    int get_num_interface_elements(const int &flag, bool triangulate)
+    int get_num_sub_elements(const int &flag, bool triangulate)
+    {
+        return get_num_sub_elements(
+            flag, triangulation_strategy_from_bool(triangulate));
+    }
+
+    int get_num_interface_elements(const int &flag, TriangulationStrategy strategy)
     {
         type cell_type = interface_sub_element_cell_types[flag];
         int num_sub_elements = 1;
 
-        if(cell_type == type::quadrilateral && triangulate == true)
+        if(cell_type == type::quadrilateral && triangulates(strategy))
         {
             num_sub_elements = 2;
         }
         return num_sub_elements;
+    }
+
+    int get_num_interface_elements(const int &flag, bool triangulate)
+    {
+        return get_num_interface_elements(
+            flag, triangulation_strategy_from_bool(triangulate));
     }
 
     template <std::floating_point T>
@@ -281,7 +299,7 @@ namespace tetrahedron{
     void create_cut_cell(const std::span<const T> vertex_coordinates,
                          const int gdim,  const std::span<const T> ls_values,
                          const std::string& cut_type_str,
-                         CutCell<T>& cut_cell, bool triangulate,
+                         CutCell<T>& cut_cell, TriangulationStrategy strategy,
                          const std::span<const T> intersection_points,
                          VertexCaseMap& vertex_case_map)
     {
@@ -343,6 +361,156 @@ namespace tetrahedron{
             }
         };
 
+        auto append_classical_prism = [&](int flag)
+        {
+            std::array<int, 6> prism_tokens = {};
+            for (int j = 0; j < 6; ++j)
+                prism_tokens[j] = tetrahedron_sub_element[flag][j];
+
+            const auto analysis =
+                cutcells::cell::prism_midpoint::analyze_tetra_derived_prism(
+                    std::span<const int>(prism_tokens.data(), prism_tokens.size()));
+
+            constexpr std::array<std::array<int, 2>, 6> tetra_edges = {{
+                {{0, 1}},
+                {{1, 2}},
+                {{2, 0}},
+                {{0, 3}},
+                {{1, 3}},
+                {{2, 3}},
+            }};
+
+            auto root_local_for_original_local = [&](int non_root_local_id) -> int
+            {
+                const int original_token =
+                    prism_tokens[static_cast<std::size_t>(non_root_local_id)];
+                if (cutcells::cell::prism_midpoint::is_root_token(original_token))
+                {
+                    throw std::runtime_error(
+                        "tetrahedron::create_cut_cell expected original tetra "
+                        "vertex token for non-root prism vertex");
+                }
+
+                const int original_vertex = original_token - 100;
+                for (int i = 0; i < analysis.num_roots; ++i)
+                {
+                    const int root_local_id =
+                        analysis.root_local_ids[static_cast<std::size_t>(i)];
+                    const int root_token =
+                        prism_tokens[static_cast<std::size_t>(root_local_id)];
+                    const auto& edge = tetra_edges[static_cast<std::size_t>(root_token)];
+                    if (edge[0] == original_vertex || edge[1] == original_vertex)
+                        return root_local_id;
+                }
+
+                throw std::runtime_error(
+                    "tetrahedron::create_cut_cell failed to canonicalize prism");
+            };
+
+            std::array<int, 6> canonical_to_actual = {0, 1, 2, 3, 4, 5};
+            if (analysis.split_family
+                == cutcells::cell::prism_midpoint::family::roots3)
+            {
+                const bool bottom_non_roots
+                    = analysis.num_non_roots == 3
+                   && analysis.non_root_local_ids[0] == 0
+                   && analysis.non_root_local_ids[1] == 1
+                   && analysis.non_root_local_ids[2] == 2;
+                const bool top_non_roots
+                    = analysis.num_non_roots == 3
+                   && analysis.non_root_local_ids[0] == 3
+                   && analysis.non_root_local_ids[1] == 4
+                   && analysis.non_root_local_ids[2] == 5;
+
+                if (bottom_non_roots)
+                {
+                    canonical_to_actual = {
+                        0,
+                        1,
+                        2,
+                        root_local_for_original_local(0),
+                        root_local_for_original_local(1),
+                        root_local_for_original_local(2),
+                    };
+                }
+                else if (top_non_roots)
+                {
+                    canonical_to_actual = {
+                        3,
+                        4,
+                        5,
+                        root_local_for_original_local(3),
+                        root_local_for_original_local(4),
+                        root_local_for_original_local(5),
+                    };
+                }
+                else
+                {
+                    throw std::runtime_error(
+                        "tetrahedron::create_cut_cell roots3 prism "
+                        "canonicalization failed");
+                }
+            }
+            else
+            {
+                const int a = analysis.non_root_local_ids[0];
+                const int b = analysis.non_root_local_ids[1];
+
+                int k = -1;
+                if ((a == 0 && b == 3) || (a == 3 && b == 0))
+                    k = 0;
+                else if ((a == 1 && b == 4) || (a == 4 && b == 1))
+                    k = 1;
+                else if ((a == 2 && b == 5) || (a == 5 && b == 2))
+                    k = 2;
+
+                if (k < 0)
+                {
+                    throw std::runtime_error(
+                        "tetrahedron::create_cut_cell roots4 prism "
+                        "canonicalization failed");
+                }
+
+                canonical_to_actual = {
+                    k,
+                    (k + 1) % 3,
+                    (k + 2) % 3,
+                    k + 3,
+                    ((k + 1) % 3) + 3,
+                    ((k + 2) % 3) + 3,
+                };
+            }
+
+            std::array<int, 6> canonical_prism_tokens = {};
+            for (int j = 0; j < 6; ++j)
+            {
+                canonical_prism_tokens[static_cast<std::size_t>(j)] =
+                    prism_tokens[static_cast<std::size_t>(
+                        canonical_to_actual[static_cast<std::size_t>(j)])];
+            }
+
+            std::vector<std::vector<int>> tets;
+            triangulation(type::prism, canonical_prism_tokens.data(), tets);
+            for (const auto& tet_tokens : tets)
+            {
+                std::array<int, 4> t = {
+                    vertex_case_map[tet_tokens[0]],
+                    vertex_case_map[tet_tokens[1]],
+                    vertex_case_map[tet_tokens[2]],
+                    vertex_case_map[tet_tokens[3]],
+                };
+                cutcells::cell::append_cell(cut_cell, type::tetrahedron, t, 4);
+            }
+        };
+
+        auto append_triangulated_prism = [&](int flag)
+        {
+            if (strategy == TriangulationStrategy::midpoint)
+                append_midpoint_split_prism(flag);
+            else
+                append_classical_prism(flag);
+        };
+
         if(cut_kind == cut_type::phieq0)
         {
             cut_cell._tdim = 2;
@@ -356,7 +524,7 @@ namespace tetrahedron{
             }
             // Append interface cells directly
             type iface_type = interface_sub_element_cell_types[flag_interior];
-            if(iface_type == type::quadrilateral && triangulate)
+            if(iface_type == type::quadrilateral && triangulates(strategy))
             {
                 std::array<int, 4> iface_tokens;
                 for (int i = 0; i < 4; ++i)
@@ -391,9 +559,9 @@ namespace tetrahedron{
                         cut_cell._vertex_coords, vertex_case_map);
             // Append sub-cells directly
             type sub_cell_type = tetrahedron_sub_element_cell_types[flag_interior];
-            if(sub_cell_type == type::prism && triangulate)
+            if(sub_cell_type == type::prism && triangulates(strategy))
             {
-                append_midpoint_split_prism(flag_interior);
+                append_triangulated_prism(flag_interior);
             }
             else
             {
@@ -412,9 +580,9 @@ namespace tetrahedron{
                         cut_cell._vertex_coords, vertex_case_map);
             // Append sub-cells directly
             type sub_cell_type = tetrahedron_sub_element_cell_types[flag_exterior];
-            if(sub_cell_type == type::prism && triangulate)
+            if(sub_cell_type == type::prism && triangulates(strategy))
             {
-                append_midpoint_split_prism(flag_exterior);
+                append_triangulated_prism(flag_exterior);
             }
             else
             {
@@ -468,7 +636,7 @@ namespace tetrahedron{
     template <std::floating_point T>
     void cut(const std::span<const T> vertex_coordinates, const int gdim,
              const std::span<const T> ls_values, const std::string& cut_type_str,
-             CutCell<T>& cut_cell, bool triangulate)
+             CutCell<T>& cut_cell, TriangulationStrategy strategy)
     {
         int flag_interior = get_entity_flag(ls_values, false);
 
@@ -496,11 +664,20 @@ namespace tetrahedron{
         cutcells::cell::reserve_cell_topology(cut_cell, reserve_connectivity, reserve_types);
 
         create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell,
-                        triangulate, intersection_points, vertex_case_map);
+                        strategy, intersection_points, vertex_case_map);
 
         cutcells::utils::create_vertex_parent_entity_map<T>(
             vertex_case_map, cut_cell._vertex_parent_entity,
             /*n_edges=*/6, /*n_vertices=*/4);
+    }
+
+    template <std::floating_point T>
+    void cut(const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::string& cut_type_str,
+             CutCell<T>& cut_cell, bool triangulate)
+    {
+        cut(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell,
+            triangulation_strategy_from_bool(triangulate));
     }
 
     template <std::floating_point T>
@@ -522,6 +699,13 @@ namespace tetrahedron{
     }
 
     //-----------------------------------------------------------------------------
+    template void cut(const std::span<const double> vertex_coordinates, const int gdim,
+            const std::span<const double> ls_values, const std::string& cut_type_str,
+            CutCell<double>& cut_cell, TriangulationStrategy strategy);
+    template void cut(const std::span<const float> vertex_coordinates, const int gdim,
+              const std::span<const float> ls_values, const std::string& cut_type_str,
+              CutCell<float>& cut_cell, TriangulationStrategy strategy);
+
     template void cut(const std::span<const double> vertex_coordinates, const int gdim,
             const std::span<const double> ls_values, const std::string& cut_type_str,
             CutCell<double>& cut_cell, bool triangulate);

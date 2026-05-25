@@ -62,7 +62,8 @@ enum class CellRefinementReason : std::uint8_t
     red_cell         = 2,
     targeted_green_edge = 3,
     targeted_red_cell   = 4,
-    cut_level_set    = 5
+    cut_level_set    = 5,
+    iso_refine       = 6
 };
 
 /// Compact Sparse Row (CSR) adjacency map between entities.

@@ -10,6 +10,7 @@
 
 #include "cell_types.h"
 #include "cut_cell.h"
+#include "triangulation.h"
 
 namespace cutcells::cell
 {
@@ -17,9 +18,20 @@ namespace cutcells::cell
     {
         int get_num_intersection_points(const int &flag);
 
+        int get_num_sub_elements(const int &flag, TriangulationStrategy strategy);
+
         int get_num_sub_elements(const int &flag, bool triangulate);
 
+        int get_num_interface_elements(const int &flag, TriangulationStrategy strategy);
+
+        int get_num_interface_elements(const int &flag, bool triangulate);
+
         // get interface cut
+        template <std::floating_point T>
+        void cut(const std::span<const T> vertex_coordinates, const int gdim,
+                 const std::span<const T> ls_values, const std::string& cut_type_str,
+                 CutCell<T>& cut_cell, TriangulationStrategy strategy);
+
         template <std::floating_point T>
         void cut(const std::span<const T> vertex_coordinates, const int gdim,
                  const std::span<const T> ls_values, const std::string& cut_type_str,
@@ -28,4 +40,3 @@ namespace cutcells::cell
         T volume(const std::span<const T> vertex_coordinates, const int gdim);
     }
 }
-

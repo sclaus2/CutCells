@@ -1417,6 +1417,20 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
                                 int edge_max_depth,
                                 bool triangulate_cut_parts)
 {
+    process_ready_to_cut_cells(
+        adapt_cell, ls_cell, level_set_id, zero_tol, sign_tol, edge_max_depth,
+        cell::triangulation_strategy_from_bool(triangulate_cut_parts));
+}
+
+template <std::floating_point T, std::integral I>
+void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
+                                const LevelSetCell<T, I>& ls_cell,
+                                int level_set_id,
+                                T zero_tol,
+                                T sign_tol,
+                                int edge_max_depth,
+                                cell::TriangulationStrategy triangulation_strategy)
+{
     const int tdim = adapt_cell.tdim;
     const int n_cells = adapt_cell.n_entities(tdim);
 
@@ -1674,14 +1688,14 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
                 std::span<const T>(ls_values),
                 "phi<0",
                 negative_part,
-                triangulate_cut_parts);
+                triangulation_strategy);
             cell::triangle::cut(
                 std::span<const T>(vertex_coords),
                 tdim,
                 std::span<const T>(ls_values),
                 "phi>0",
                 positive_part,
-                triangulate_cut_parts);
+                triangulation_strategy);
 
             append_ready_cut_part_cells(
                 adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
@@ -1825,11 +1839,11 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
             cell::tetrahedron::cut(
                 std::span<const T>(vertex_coords), tdim,
                 std::span<const T>(ls_values), "phi<0",
-                negative_part, triangulate_cut_parts);
+                negative_part, triangulation_strategy);
             cell::tetrahedron::cut(
                 std::span<const T>(vertex_coords), tdim,
                 std::span<const T>(ls_values), "phi>0",
-                positive_part, triangulate_cut_parts);
+                positive_part, triangulation_strategy);
 
             append_ready_cut_part_cells(
                 adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
@@ -2034,13 +2048,28 @@ void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
                                             int edge_max_depth,
                                             bool triangulate_cut_parts)
 {
+    certify_refine_and_process_ready_cells(
+        adapt_cell, ls_cell, level_set_id, max_iterations, zero_tol, sign_tol,
+        edge_max_depth,
+        cell::triangulation_strategy_from_bool(triangulate_cut_parts));
+}
+
+template <std::floating_point T, std::integral I>
+void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
+                                            const LevelSetCell<T, I>& ls_cell,
+                                            int level_set_id,
+                                            int max_iterations,
+                                            T zero_tol, T sign_tol,
+                                            int edge_max_depth,
+                                            cell::TriangulationStrategy triangulation_strategy)
+{
     fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
     certify_and_refine(adapt_cell, ls_cell, level_set_id,
                        max_iterations, zero_tol, sign_tol, edge_max_depth);
     fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
     process_ready_to_cut_cells(adapt_cell, ls_cell, level_set_id,
                                zero_tol, sign_tol, edge_max_depth,
-                               triangulate_cut_parts);
+                               triangulation_strategy);
     fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
     build_edges(adapt_cell);
     if (adapt_cell.tdim == 3)
@@ -2119,6 +2148,23 @@ template void fill_all_vertex_signs_from_level_set(AdaptCell<float>&,
 
 template void process_ready_to_cut_cells(AdaptCell<double>&,
                                          const LevelSetCell<double, int>&,
+                                         int, double, double, int,
+                                         cell::TriangulationStrategy);
+template void process_ready_to_cut_cells(AdaptCell<float>&,
+                                         const LevelSetCell<float, int>&,
+                                         int, float, float, int,
+                                         cell::TriangulationStrategy);
+template void process_ready_to_cut_cells(AdaptCell<double>&,
+                                         const LevelSetCell<double, long>&,
+                                         int, double, double, int,
+                                         cell::TriangulationStrategy);
+template void process_ready_to_cut_cells(AdaptCell<float>&,
+                                         const LevelSetCell<float, long>&,
+                                         int, float, float, int,
+                                         cell::TriangulationStrategy);
+
+template void process_ready_to_cut_cells(AdaptCell<double>&,
+                                         const LevelSetCell<double, int>&,
                                          int, double, double, int, bool);
 template void process_ready_to_cut_cells(AdaptCell<float>&,
                                          const LevelSetCell<float, int>&,
@@ -2160,6 +2206,23 @@ template void certify_and_refine(AdaptCell<float>&,
 template void certify_and_refine(AdaptCell<double>&,
                                  const LevelSetCell<double, long>&,
                                  int, int, double, double, int);
+
+template void certify_refine_and_process_ready_cells(AdaptCell<double>&,
+                                                     const LevelSetCell<double, int>&,
+                                                     int, int, double, double, int,
+                                                     cell::TriangulationStrategy);
+template void certify_refine_and_process_ready_cells(AdaptCell<float>&,
+                                                     const LevelSetCell<float, int>&,
+                                                     int, int, float, float, int,
+                                                     cell::TriangulationStrategy);
+template void certify_refine_and_process_ready_cells(AdaptCell<double>&,
+                                                     const LevelSetCell<double, long>&,
+                                                     int, int, double, double, int,
+                                                     cell::TriangulationStrategy);
+template void certify_refine_and_process_ready_cells(AdaptCell<float>&,
+                                                     const LevelSetCell<float, long>&,
+                                                     int, int, float, float, int,
+                                                     cell::TriangulationStrategy);
 
 template void certify_refine_and_process_ready_cells(AdaptCell<double>&,
                                                      const LevelSetCell<double, int>&,

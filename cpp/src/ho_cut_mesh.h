@@ -14,6 +14,7 @@
 #include "adapt_cell.h"
 #include "cell_flags.h"
 #include "cell_certification.h"
+#include "iso_refine.h"
 #include "level_set.h"
 #include "level_set_cell.h"
 #include "mesh_view.h"
@@ -21,6 +22,15 @@
 
 namespace cutcells
 {
+
+struct CutOptions
+{
+    bool triangulate_cut_parts = true;
+    cell::TriangulationStrategy triangulation_strategy
+        = cell::TriangulationStrategy::classical;
+    std::string cut_approximation = "auto";
+    int cut_approximation_order = 1;
+};
 
 // =====================================================================
 // ParentCellClassification — mesh-wide metadata produced during cutting
@@ -142,6 +152,12 @@ template <std::floating_point T, std::integral I = int>
 std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
 cut(const MeshView<T, I>& mesh,
     const LevelSetFunction<T, I>& ls,
+    const CutOptions& options);
+
+template <std::floating_point T, std::integral I = int>
+std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
+cut(const MeshView<T, I>& mesh,
+    const LevelSetFunction<T, I>& ls,
     bool triangulate_cut_parts = false);
 
 /// Build HOCutCells and ParentCellClassification from a mesh and multiple level sets.
@@ -149,6 +165,12 @@ cut(const MeshView<T, I>& mesh,
 /// @param mesh        Background mesh.
 /// @param level_sets  Vector of level-set functions.
 /// @return pair of (HOCutCells, ParentCellClassification).
+template <std::floating_point T, std::integral I = int>
+std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
+cut(const MeshView<T, I>& mesh,
+    const std::vector<LevelSetFunction<T, I>>& level_sets,
+    const CutOptions& options);
+
 template <std::floating_point T, std::integral I = int>
 std::pair<HOCutCells<T, I>, ParentCellClassification<T, I>>
 cut(const MeshView<T, I>& mesh,

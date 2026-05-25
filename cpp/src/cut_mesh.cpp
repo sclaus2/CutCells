@@ -439,7 +439,7 @@ namespace cutcells::mesh
                              connectivity, offset,
                              vtk_type,
                              cut_type_str,
-                             true);
+                             cell::TriangulationStrategy::classical);
     }
 
     template <std::floating_point T>
@@ -447,7 +447,7 @@ namespace cutcells::mesh
                                             std::span<const int> connectivity, std::span<const int> offset,
                                             std::span<const int> vtk_type,
                                             const std::string& cut_type_str,
-                                            bool triangulate)
+                                            cell::TriangulationStrategy strategy)
     {
       // -----------------------------------------------------------------------
       // Fused single-pass implementation.
@@ -535,7 +535,7 @@ namespace cutcells::mesh
         }
 
         // Cut into scratch — all CutCell fields are reset by the cutter
-        cell::cut<T>(ctype, tl_vtx_buf, 3, tl_ls_buf, cut_type_str, tl_scratch, triangulate);
+        cell::cut<T>(ctype, tl_vtx_buf, 3, tl_ls_buf, cut_type_str, tl_scratch, strategy);
 
         // Override parent vertex IDs with context-global mesh indices
         // (the individual cutters default them to local 0..nv-1)
@@ -658,6 +658,18 @@ namespace cutcells::mesh
       return cm;
     }
 
+    template <std::floating_point T>
+    cutcells::mesh::CutMesh<T> cut_vtk_mesh(std::span<const T> ls_vals, std::span<const T> points,
+                                            std::span<const int> connectivity, std::span<const int> offset,
+                                            std::span<const int> vtk_type,
+                                            const std::string& cut_type_str,
+                                            bool triangulate)
+    {
+      return cut_vtk_mesh<T>(
+          ls_vals, points, connectivity, offset, vtk_type, cut_type_str,
+          cell::triangulation_strategy_from_bool(triangulate));
+    }
+
 //-----------------------------------------------------------------------------
     template void str(const CutCells<double> &cut_mesh);
     template void str(const CutCells<float> &cut_mesh);
@@ -687,6 +699,19 @@ namespace cutcells::mesh
                                             std::span<const int> connectivity, std::span<const int> offset,
                                             std::span<const int> vtk_type,
                                             const std::string& cut_type_str);
+
+    template
+    cutcells::mesh::CutMesh<double> cut_vtk_mesh(std::span<const double> ls_vals, std::span<const double> points,
+                        std::span<const int> connectivity, std::span<const int> offset,
+                        std::span<const int> vtk_type,
+                        const std::string& cut_type_str,
+                        cell::TriangulationStrategy strategy);
+    template
+    cutcells::mesh::CutMesh<float> cut_vtk_mesh(std::span<const float> ls_vals, std::span<const float> points,
+                        std::span<const int> connectivity, std::span<const int> offset,
+                        std::span<const int> vtk_type,
+                        const std::string& cut_type_str,
+                        cell::TriangulationStrategy strategy);
 
     template
     cutcells::mesh::CutMesh<double> cut_vtk_mesh(std::span<const double> ls_vals, std::span<const double> points,

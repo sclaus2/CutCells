@@ -9,6 +9,7 @@
 #include <cstdint>
 
 #include "cell_types.h"
+#include "triangulation.h"
 #include <vector>
 #include <span>
 #include <string>
@@ -87,12 +88,27 @@ namespace cutcells
         template <std::floating_point T>
         void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
                  const std::span<const T> ls_values, const std::string& cut_type_str,
+                CutCell<T>& cut_cell, TriangulationStrategy strategy);
+
+        template <std::floating_point T>
+        void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+                 const std::span<const T> ls_values, const std::string& cut_type_str,
                 CutCell<T>& cut_cell, bool triangulate=false);
 
         template <std::floating_point T>
         void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
              const std::span<const T> ls_values, const std::vector<std::string>& cut_type_str,
+             std::vector<CutCell<T>>& cut_cell, TriangulationStrategy strategy);
+
+        template <std::floating_point T>
+        void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::vector<std::string>& cut_type_str,
              std::vector<CutCell<T>>& cut_cell, bool triangulate=false);
+
+        template <std::floating_point T>
+        CutCell<T> higher_order_cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::string& cut_type_str,
+             TriangulationStrategy strategy);
 
         template <std::floating_point T>
         CutCell<T> higher_order_cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
@@ -104,6 +120,12 @@ namespace cutcells
 
         template <std::floating_point T>
         CutCell<T> create_cut_cell(const type& cell_type, std::span<const T> vertex_coords, const int& gdim);
+
+        template <std::floating_point T>
+        void recursive_cut(cutcells::cell::CutCell<T> &cut_cell,
+                  std::span<const T> ls_vals_all,
+                  const std::string& cut_type_str,
+                  TriangulationStrategy strategy);
 
         template <std::floating_point T>
         void recursive_cut(cutcells::cell::CutCell<T> &cut_cell,

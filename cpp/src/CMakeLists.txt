@@ -33,6 +33,7 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/level_set_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mesh_view.h
   ${CMAKE_CURRENT_SOURCE_DIR}/adapt_cell.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/iso_refine.h
   ${CMAKE_CURRENT_SOURCE_DIR}/ho_cut_mesh.h
   ${CMAKE_CURRENT_SOURCE_DIR}/ho_mesh_part_output.h
   ${CMAKE_CURRENT_SOURCE_DIR}/selection_expr.h
@@ -65,6 +66,7 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/level_set.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/level_set_cell.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/adapt_cell.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/iso_refine.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ho_cut_mesh.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ho_mesh_part_output.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/selection_expr.cpp

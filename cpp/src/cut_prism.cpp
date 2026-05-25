@@ -12,6 +12,7 @@
 #include "generated/cut_prism_inside_tables.h"
 #include "generated/cut_prism_interface_tables.h"
 #include "generated/cut_prism_outside_tables.h"
+#include "triangulation.h"
 #include "utils.h"
 
 #include <array>
@@ -231,10 +232,13 @@ namespace cutcells::cell::prism
 
                 if (triangulate && sub_type == type::quadrilateral && nverts == 4)
                 {
-                    const std::array<int, 3> t0 = {verts_local[0], verts_local[1], verts_local[2]};
-                    const std::array<int, 3> t1 = {verts_local[0], verts_local[2], verts_local[3]};
-                    cutcells::cell::append_cell(cut_cell, type::triangle, t0, 3);
-                    cutcells::cell::append_cell(cut_cell, type::triangle, t1, 3);
+                    std::vector<std::vector<int>> triangles;
+                    triangulation(sub_type, verts_local.data(), triangles);
+                    for (const auto& tri : triangles)
+                    {
+                        const std::array<int, 3> t = {tri[0], tri[1], tri[2]};
+                        cutcells::cell::append_cell(cut_cell, type::triangle, t, 3);
+                    }
                 }
                 else
                 {
