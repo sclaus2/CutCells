@@ -15,6 +15,7 @@ def test_safe_part_name():
 
 
 def test_rectangle_triangle():
+    pytest.importorskip("pyvista")
     grid = cutcells.rectangle_triangle_mesh(-1, -1, 1, 1, 10, 10)
     assert grid.n_points == 100
     assert grid.n_cells > 0
@@ -22,6 +23,7 @@ def test_rectangle_triangle():
 
 
 def test_mesh_from_pyvista_infers_tdim():
+    pytest.importorskip("pyvista")
     grid = cutcells.rectangle_triangle_mesh(-1, -1, 1, 1, 5, 5)
     mesh = cutcells.mesh_from_pyvista(grid)
     assert mesh.tdim == 2
