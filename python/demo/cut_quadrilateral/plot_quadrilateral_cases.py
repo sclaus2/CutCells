@@ -131,8 +131,8 @@ def _plot_runtime_cutcell(
 ):
     coords = np.asarray(cut_cell.vertex_coords)
     pts = [(float(p[0]), float(p[1])) for p in coords]
-    connectivity = list(cut_cell.connectivity)
-    types = list(cut_cell.types)
+    connectivity = list(cut_cell.cells)
+    types = list(cut_cell.vtk_types)
 
     for cell_type, verts in zip(types, _iter_connectivity(connectivity)):
         poly = [pts[v] for v in verts]

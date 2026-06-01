@@ -88,10 +88,14 @@ def main():
     )
 
     ls_values = np.array([level_set(p) for p in points], dtype=float)
+    points_flat = np.asarray(points, dtype=np.float64).reshape(-1)
+    connectivity = np.asarray(connectivity, dtype=np.int32)
+    offset = np.asarray(offset, dtype=np.int32)
+    celltypes = np.asarray(celltypes, dtype=np.int32)
 
     cut_mesh = cutcells.cut_vtk_mesh(
         ls_values,
-        points,
+        points_flat,
         connectivity,
         offset,
         celltypes,
@@ -107,8 +111,8 @@ def main():
     pv_in = pv.UnstructuredGrid(cells, celltypes, points)
     pv_cut = pv.UnstructuredGrid(
         cut_mesh.cells,
-        cut_mesh.types,
-        cut_mesh.vertex_coords,
+        cut_mesh.vtk_types,
+        np.asarray(cut_mesh.vertex_coords),
     )
 
     pl = pv.Plotter()

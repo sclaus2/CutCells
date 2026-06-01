@@ -71,7 +71,11 @@ def create_box_mesh(x0, y0, z0, x1, y1, z1, Nx, Ny, Nz):
 
 
 def create_cut_mesh(grid):
-    points = grid.points
+    points = np.asarray(grid.points, dtype=np.float64)
+    points_flat = points.reshape(-1)
+    connectivity = np.asarray(grid.cell_connectivity, dtype=np.int32)
+    offset = np.asarray(grid.offset, dtype=np.int32)
+    celltypes = np.asarray(grid.celltypes, dtype=np.int32)
     ls_values = np.zeros(len(points))
     j = 0
     for point in points:
@@ -79,16 +83,16 @@ def create_cut_mesh(grid):
         j = j + 1
 
     cut_mesh = cutcells.cut_vtk_mesh(
-        ls_values, points, grid.cell_connectivity, grid.offset, grid.celltypes, "phi<0"
+        ls_values, points_flat, connectivity, offset, celltypes, "phi<0"
     )
     inside_cells = cutcells.locate_cells(
-        ls_values, points, grid.cell_connectivity, grid.offset, grid.celltypes, "phi<0"
+        ls_values, points_flat, connectivity, offset, celltypes, "phi<0"
     )
 
     pv_cut = pv.UnstructuredGrid(
         cut_mesh.cells,
-        cut_mesh.types,
-        cut_mesh.vertex_coords,
+        cut_mesh.vtk_types,
+        np.asarray(cut_mesh.vertex_coords),
     )
     extract = grid.extract_cells(inside_cells)
 

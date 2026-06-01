@@ -14,6 +14,7 @@
 
 #include "cell_types.h"
 #include "cell_flags.h"
+#include "triangulation.h"
 
 /// Structures to represent mesh formed from several local cell meshes
 namespace cutcells::mesh
@@ -40,16 +41,16 @@ namespace cutcells::mesh
     struct CutMesh
     {
       /// Geometric Dimension of Cell
-      int _gdim;
+      int _gdim = 0;
 
       /// Topological Dimension of Cell
-      int _tdim;
+      int _tdim = 0;
 
       /// Number of cells
-      int _num_cells;
+      int _num_cells = 0;
 
       /// Number of vertices
-      int _num_vertices;
+      int _num_vertices = 0;
 
       /// Coordinates of vertices of cut cell
       std::vector<T> _vertex_coords;
@@ -94,6 +95,13 @@ namespace cutcells::mesh
                                             std::span<const int> connectivity, std::span<const int> offset,
                                             std::span<const int> vtk_type,
                                             const std::string& cut_type_str);
+
+    template <std::floating_point T>
+    cutcells::mesh::CutMesh<T> cut_vtk_mesh(std::span<const T> ls_vals, std::span<const T> points,
+                        std::span<const int> connectivity, std::span<const int> offset,
+                        std::span<const int> vtk_type,
+                        const std::string& cut_type_str,
+                        cell::TriangulationStrategy strategy);
 
     template <std::floating_point T>
     cutcells::mesh::CutMesh<T> cut_vtk_mesh(std::span<const T> ls_vals, std::span<const T> points,

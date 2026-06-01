@@ -32,17 +32,17 @@ int main()
         cell::CutCell<double> cut_cell;
         cell::cut<double>(cell_type, vertex_coordinates, gdim, ls_values, "phi=0", cut_cell);
         std::string fname = "interface.tex";
-        io::write_tikz(fname,cut_cell._vertex_coords,cut_cell._connectivity,vertex_coordinates,bg_elements,ls_values,gdim);
+        io::write_tikz(fname,cut_cell,vertex_coordinates,bg_elements,ls_values,gdim);
 
         cell::cut<double>(cell_type, vertex_coordinates, gdim, ls_values, "phi<0", cut_cell);
         fname = "interior.tex";
-        io::write_tikz(fname,cut_cell._vertex_coords,cut_cell._connectivity,vertex_coordinates,bg_elements,ls_values,gdim);
+        io::write_tikz(fname,cut_cell,vertex_coordinates,bg_elements,ls_values,gdim);
         fname = "interior.vtu";
         io::write_vtk(fname,cut_cell);
 
         cell::cut<double>(cell_type, vertex_coordinates, gdim, ls_values, "phi>0", cut_cell, false);
         fname = "exterior.tex";
-        io::write_tikz(fname,cut_cell._vertex_coords,cut_cell._connectivity,vertex_coordinates,bg_elements,ls_values,gdim);
+        io::write_tikz(fname,cut_cell,vertex_coordinates,bg_elements,ls_values,gdim);
         fname = "exterior.vtu";
         io::write_vtk(fname,cut_cell);
     }

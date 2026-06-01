@@ -14,13 +14,40 @@
 #include "cut_interval.h"
 #include "cell_flags.h"
 #include "cell_subdivision.h"
+#include "cell_topology.h"
 #include "utils.h"
 
 #include <cassert>
 #include <set>
 #include <unordered_map>
-#include <map>
+#include <cstdint>
 #include <concepts>
+
+namespace
+{
+  struct MergeVertexKey
+  {
+    uint8_t kind = 0;
+    int32_t a = 0;
+    int32_t b = 0;
+
+    bool operator==(const MergeVertexKey& other) const noexcept
+    {
+      return kind == other.kind && a == other.a && b == other.b;
+    }
+  };
+
+  struct MergeVertexKeyHash
+  {
+    std::size_t operator()(const MergeVertexKey& k) const noexcept
+    {
+      const std::size_t h0 = std::hash<int32_t>{}(k.a);
+      const std::size_t h1 = std::hash<int32_t>{}(k.b);
+      const std::size_t hk = std::hash<uint8_t>{}(k.kind);
+      return h0 ^ (h1 + 0x9e3779b97f4a7c15ULL + (h0 << 6) + (h0 >> 2)) ^ (hk << 1);
+    }
+  };
+}
 
 
 namespace cutcells::cell{
@@ -38,16 +65,18 @@ namespace cutcells::cell{
         std::cout << "]" << std::endl;
 
         std::cout << "connectivity=[";
-        for(int i=0;i<cut_cell._connectivity.size();i++)
+        const int ncells = num_cells(cut_cell);
+        for(int i=0;i<ncells;i++)
         {
+          const auto verts = cell_vertices(cut_cell, i);
             std::cout << i << ": ";
-            for(int j=0;j<cut_cell._connectivity[i].size();j++)
+          for(int j=0;j<verts.size();j++)
             {
-                    std::cout << cut_cell._connectivity[i][j];
-                    if(j<cut_cell._connectivity[i].size()-1)
+              std::cout << verts[j];
+              if(j<verts.size()-1)
                         std::cout << ", ";
             }
-            if(i<cut_cell._connectivity.size()-1)
+          if(i<ncells-1)
                 std::cout << std::endl;
         }
         std::cout << "]" << std::endl;
@@ -75,16 +104,37 @@ namespace cutcells::cell{
     void sub_cell_vertices(const CutCell<T> &cut_cell, const int& id, std::vector<T>& vertex_coordinates)
     {
         int gdim = cut_cell._gdim;
-        int num_vertices = cut_cell._connectivity[id].size();
+        const auto vertices = cell_vertices(cut_cell, id);
+        int num_vertices = vertices.size();
         vertex_coordinates.resize(num_vertices*gdim);
         int local_vertex_id = 0;
 
         for(std::size_t j=0;j<num_vertices;j++)
         {
-          int vertex_id = cut_cell._connectivity[id][j];
+          int vertex_id = vertices[j];
           for(std::size_t k=0;k<gdim;k++)
           {
             vertex_coordinates[local_vertex_id*gdim+k] = cut_cell._vertex_coords[vertex_id*gdim+k];
+          }
+          local_vertex_id++;
+        }
+    }
+
+    template <std::floating_point T>
+    void sub_cell_vertices_phys(const CutCell<T> &cut_cell, const int& id, std::vector<T>& vertex_coordinates)
+    {
+        int gdim = cut_cell._gdim;
+        const auto vertices = cell_vertices(cut_cell, id);
+        int num_vertices = vertices.size();
+        vertex_coordinates.resize(num_vertices*gdim);
+        int local_vertex_id = 0;
+
+        for(std::size_t j=0;j<num_vertices;j++)
+        {
+          int vertex_id = vertices[j];
+          for(std::size_t k=0;k<gdim;k++)
+          {
+            vertex_coordinates[local_vertex_id*gdim+k] = cut_cell._vertex_coords_phys[vertex_id*gdim+k];
           }
           local_vertex_id++;
         }
@@ -95,7 +145,7 @@ namespace cutcells::cell{
     {
       int gdim = cut_cell._gdim;
       T vol = 0;
-      std::size_t num_elements=cut_cell._connectivity.size();
+      std::size_t num_elements=num_cells(cut_cell);
 
       for(std::size_t el = 0; el < num_elements; el++)
       {
@@ -125,34 +175,50 @@ namespace cutcells::cell{
     template <std::floating_point T>
     void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
              const std::span<const T> ls_values, const std::string& cut_type_str,
-             CutCell<T>& cut_cell, bool triangulate)
+             CutCell<T>& cut_cell, TriangulationStrategy strategy)
     {
         switch(cell_type)
         {
             case type::interval: interval::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell);
                                  break;
-            case type::triangle: triangle::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+            case type::triangle: triangle::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, strategy);
                                  break;
-            case type::quadrilateral: quadrilateral::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+            case type::quadrilateral: quadrilateral::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulates(strategy));
                                  break;
-            case type::tetrahedron: tetrahedron::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+            case type::tetrahedron: tetrahedron::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, strategy);
                                  break;
-          case type::hexahedron: hexahedron::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+          case type::hexahedron: hexahedron::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulates(strategy));
                       break;
-          case type::prism: prism::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+          case type::prism: prism::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulates(strategy));
                     break;
-            case type::pyramid: pyramid::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulate);
+            case type::pyramid: pyramid::cut<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, triangulates(strategy));
                 break;
             default: throw std::invalid_argument("Only intervals, triangles, quadrilaterals, tetrahedra, hexahedra, prisms and pyramids are implemented for cutting so far.");
                                 break;
         }
+        // Ensure parent meta-data is always set so mapping functions can use it.
+        cut_cell._parent_cell_type = cell_type;
+        if (cut_cell._parent_vertex_coords.empty())
+        {
+          cut_cell._parent_vertex_coords.assign(
+            vertex_coordinates.begin(), vertex_coordinates.end());
+        }
+    }
+
+    template <std::floating_point T>
+    void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::string& cut_type_str,
+             CutCell<T>& cut_cell, bool triangulate)
+    {
+        cut(cell_type, vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell,
+            triangulation_strategy_from_bool(triangulate));
     }
 
     //Cutting of 2nd order triangles (6-node) and tetrahedra (10-node)
     template <std::floating_point T>
     CutCell<T> higher_order_cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
              const std::span<const T> ls_values, const std::string& cut_type_str,
-             bool triangulate)
+             TriangulationStrategy strategy)
     {
       switch(cell_type)
       {
@@ -191,13 +257,13 @@ namespace cutcells::cell{
         for(std::size_t i=0;i<num_sub_cells;i++)
         {
           const std::size_t num_vertices = cutcells::cell::get_num_vertices(cell_type);
-          std::span<int> sub_tet;
+          std::span<const int> sub_tet;
 
           switch(cell_type)
           {
-            case cutcells::cell::type::triangle: {sub_tet = cutcells::cell::triangle_subdivision_table[i];
+            case cutcells::cell::type::triangle: {sub_tet = std::span<const int>(cutcells::cell::triangle_subdivision_table[i]);
                                           break;}
-            case cutcells::cell::type::tetrahedron: {sub_tet = cutcells::cell::tetrahedron_subdivision_table[i];
+            case cutcells::cell::type::tetrahedron: {sub_tet = std::span<const int>(cutcells::cell::tetrahedron_subdivision_table[i]);
                                           break;}
           }
 
@@ -223,7 +289,7 @@ namespace cutcells::cell{
             case cutcells::cell::domain::intersected:
             {
               cutcells::cell::CutCell<T> tmp_cut_cell;
-              cutcells::cell::cut<T>(cell_type, sub_vertex_coordinates, gdim, sub_ls_values, cut_type_str, tmp_cut_cell, triangulate);
+              cutcells::cell::cut<T>(cell_type, sub_vertex_coordinates, gdim, sub_ls_values, cut_type_str, tmp_cut_cell, strategy);
               sub_cut_cells.push_back(tmp_cut_cell);
               sub_cut_cell_id++;
               break;
@@ -259,6 +325,16 @@ namespace cutcells::cell{
       }
     }
 
+    template <std::floating_point T>
+    CutCell<T> higher_order_cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::string& cut_type_str,
+             bool triangulate)
+    {
+      return higher_order_cut(cell_type, vertex_coordinates, gdim, ls_values,
+                              cut_type_str,
+                              triangulation_strategy_from_bool(triangulate));
+    }
+
     /// Merge vector of CutCell objects into one CutCell
     /// This merging operation is intended to merge several cutcells
     /// with the same parent element
@@ -281,18 +357,24 @@ namespace cutcells::cell{
       merged_cut_cell._tdim=tdim;
 
       //Count the total number of cells in vector
-      int num_cells =0;
+      int total_num_cells =0;
       for(auto & cut_cell : cut_cell_vec)
       {
-        num_cells += cut_cell._connectivity.size();
+        total_num_cells += cutcells::cell::num_cells(cut_cell);
       }
 
-      merged_cut_cell._connectivity.resize(num_cells);
-      merged_cut_cell._types.resize(num_cells);
+      merged_cut_cell._offset.resize(1);
+      merged_cut_cell._offset[0] = 0;
 
       int merged_vertex_id = 0;
-      int sub_cell_offset=0;
       int vertex_counter = 0;
+
+      std::size_t total_cut_vertices = 0;
+      for (const auto& cut_cell : cut_cell_vec)
+        total_cut_vertices += cut_cell._vertex_coords.size() / gdim;
+
+      std::unordered_map<MergeVertexKey, int, MergeVertexKeyHash> merged_vertex_ids;
+      merged_vertex_ids.reserve(total_cut_vertices);
 
       //all cutcells in vector above should have the same gdim and tdim
       for(auto & cut_cell : cut_cell_vec)
@@ -311,47 +393,124 @@ namespace cutcells::cell{
 
         int num_cut_cell_vertices = cut_cell._vertex_coords.size()/gdim;
 
-        int local_num_cells = cut_cell._connectivity.size();
+        int local_num_cells = num_cells(cut_cell);
 
         //Map from vertex id in current cutcell to merged cutcell
-        std::map<int,int> local_merged_vertex_ids;
+        std::vector<int> local_merged_vertex_ids(num_cut_cell_vertices, -1);
+
+        const bool has_tokens = (static_cast<int>(cut_cell._vertex_parent_entity.size()) == num_cut_cell_vertices);
+        const int parent_vertices = get_num_vertices(cut_cell._parent_cell_type);
+        const bool has_parent_ids = (static_cast<int>(cut_cell._parent_vertex_ids.size()) == parent_vertices);
+        const bool can_fast_dedup = has_tokens && has_parent_ids;
+        const int32_t parent_discriminator = has_parent_ids ? static_cast<int32_t>(cut_cell._parent_vertex_ids[0]) : -1;
+        std::span<const std::array<int, 2>> parent_edges;
+        if (can_fast_dedup)
+          parent_edges = edges(cut_cell._parent_cell_type);
 
         for(int local_id=0;local_id<num_cut_cell_vertices;local_id++)
         {
-          //check if vertex already exists to avoid doubling of vertices
-          int id = cutcells::utils::vertex_exists<T>(merged_cut_cell._vertex_coords, cut_cell._vertex_coords, local_id, gdim);
-
-          if(id==-1) //not found
+          if (can_fast_dedup)
           {
-            //add vertex
-            merged_vertex_id=vertex_counter;
-            vertex_counter++;
+            const int32_t token = cut_cell._vertex_parent_entity[local_id];
+            MergeVertexKey key;
 
-            for(int j=0;j<gdim;j++)
+            if (token >= 100 && token < 200)
             {
-              merged_cut_cell._vertex_coords.push_back(cut_cell._vertex_coords[local_id*gdim+j]);
+              const int ref_vid = static_cast<int>(token - 100);
+              if (ref_vid >= 0 && ref_vid < parent_vertices)
+              {
+                key.kind = 0;
+                key.a = static_cast<int32_t>(cut_cell._parent_vertex_ids[ref_vid]);
+                key.b = 0;
+              }
+              else
+              {
+                key.kind = 2;
+                key.a = parent_discriminator;
+                key.b = token;
+              }
+            }
+            else if (token >= 200)
+            {
+              key.kind = 2;
+              key.a = parent_discriminator;
+              key.b = static_cast<int32_t>(token - 200);
+            }
+            else
+            {
+              const int edge_id = static_cast<int>(token);
+              if (edge_id >= 0 && edge_id < static_cast<int>(parent_edges.size()))
+              {
+                const int v0 = parent_edges[edge_id][0];
+                const int v1 = parent_edges[edge_id][1];
+                const int32_t gv0 = static_cast<int32_t>(cut_cell._parent_vertex_ids[v0]);
+                const int32_t gv1 = static_cast<int32_t>(cut_cell._parent_vertex_ids[v1]);
+                key.kind = 1;
+                key.a = std::min(gv0, gv1);
+                key.b = std::max(gv0, gv1);
+              }
+              else
+              {
+                key.kind = 2;
+                key.a = parent_discriminator;
+                key.b = token;
+              }
+            }
+
+            const auto it = merged_vertex_ids.find(key);
+            if (it == merged_vertex_ids.end())
+            {
+              merged_vertex_id=vertex_counter;
+              vertex_counter++;
+
+              for(int j=0;j<gdim;j++)
+                merged_cut_cell._vertex_coords.push_back(cut_cell._vertex_coords[local_id*gdim+j]);
+
+              merged_vertex_ids.emplace(key, merged_vertex_id);
+            }
+            else
+            {
+              merged_vertex_id = it->second;
             }
           }
-          else //found
+          else
           {
-            //take already existing vertex for local mapping
-            merged_vertex_id = id;
+            //check if vertex already exists to avoid doubling of vertices
+            int id = cutcells::utils::vertex_exists<T>(merged_cut_cell._vertex_coords, cut_cell._vertex_coords, local_id, gdim);
+
+            if(id==-1) //not found
+            {
+              //add vertex
+              merged_vertex_id=vertex_counter;
+              vertex_counter++;
+
+              for(int j=0;j<gdim;j++)
+                merged_cut_cell._vertex_coords.push_back(cut_cell._vertex_coords[local_id*gdim+j]);
+            }
+            else //found
+            {
+              //take already existing vertex for local mapping
+              merged_vertex_id = id;
+            }
           }
-          //offset is vertex_id
+
           local_merged_vertex_ids[local_id] = merged_vertex_id;
         }
 
-        for(int i=0;i<cut_cell._connectivity.size();i++)
+        for(int i=0;i<local_num_cells;i++)
         {
-          for(int j=0;j<cut_cell._connectivity[i].size();j++)
+          const auto vertices = cell_vertices(cut_cell, i);
+          // Use a fixed-size scratch array to avoid heap allocation per subcell.
+          // Max connectivity per cell is 8 (hexahedron); scratch is stack-allocated.
+          std::array<int, 8> remapped_scratch;
+          const int nv = static_cast<int>(vertices.size());
+          for(int j=0;j<nv;j++)
           {
-              int64_t index = cut_cell._connectivity[i][j];
-              merged_cut_cell._connectivity[sub_cell_offset+i].push_back(local_merged_vertex_ids[index]);
+              int64_t index = vertices[j];
+              remapped_scratch[j] = local_merged_vertex_ids[index];
           }
-          merged_cut_cell._types[sub_cell_offset+i]=cut_cell._types[i];
+          append_cell(merged_cut_cell, cut_cell._types[i], remapped_scratch.data(), nv);
         }
-
-        sub_cell_offset+=local_num_cells;
       }
 
       return merged_cut_cell;
@@ -371,14 +530,16 @@ namespace cutcells::cell{
       cut_cell._gdim = gdim;
       cut_cell._tdim = get_tdim(cell_type);
 
-      cut_cell._connectivity.resize(1);
+      cut_cell._offset.resize(2);
+      cut_cell._offset[0] = 0;
       int num_vertices = vertex_coords.size()/gdim;
+      cut_cell._offset[1] = num_vertices;
       cut_cell._types.push_back(cell_type);
 
-      cut_cell._connectivity[0].resize(num_vertices);
+      cut_cell._connectivity.resize(num_vertices);
       for(std::size_t i=0;i<num_vertices;i++)
       {
-        cut_cell._connectivity[0][i] = i;
+        cut_cell._connectivity[i] = i;
       }
 
       return cut_cell;
@@ -390,12 +551,12 @@ namespace cutcells::cell{
   void recursive_cut(cutcells::cell::CutCell<T> &cut_cell,
                     std::span<const T> ls_vals_all,
                     const std::string& cut_type_str,
-                    bool triangulate)
+                    TriangulationStrategy strategy)
   {
-    int num_cells = cut_cell._connectivity.size();
+    int total_num_cells = cutcells::cell::num_cells(cut_cell);
     int gdim = cut_cell._gdim;
 
-    std::vector<cutcells::cell::CutCell<T>> cut_cells(num_cells);
+    std::vector<cutcells::cell::CutCell<T>> cut_cells(total_num_cells);
 
     // std::cout << "ls_vals calculated " << ls_vals_all.size() << std::endl;
     // std::cout << "num_cells= " << num_cells << std::endl;
@@ -403,9 +564,10 @@ namespace cutcells::cell{
     int cut_cell_id = 0;
 
     //iterate over cells in cut_cell and cut each one
-    for(std::size_t j=0;j<num_cells;j++)
+    for(std::size_t j=0;j<total_num_cells;j++)
     {
-      int num_vertices = cut_cell._connectivity[j].size();
+      auto vertices = cell_vertices(cut_cell, j);
+      int num_vertices = vertices.size();
       auto cut_cell_type = cut_cell._types[j];
       //std::cout << "num_vertices" << num_vertices << std::endl;
       std::vector<T> vertex_coords(num_vertices*gdim);
@@ -413,7 +575,7 @@ namespace cutcells::cell{
 
       for(std::size_t k=0;k<num_vertices;k++)
       {
-        int vertex_id = cut_cell._connectivity[j][k];
+        int vertex_id = vertices[k];
         for(std::size_t l=0;l<gdim;l++)
         {
           vertex_coords[k*gdim+l] = cut_cell._vertex_coords[vertex_id*gdim+l];
@@ -427,7 +589,7 @@ namespace cutcells::cell{
       // std::cout << "ready to cut cell" << std::endl;
       if(cell_domain == cutcells::cell::domain::intersected)
       {
-        cutcells::cell::cut<T>(cut_cell_type, vertex_coords, gdim, ls_vals, cut_type_str, cut_cells[cut_cell_id], triangulate);
+        cutcells::cell::cut<T>(cut_cell_type, vertex_coords, gdim, ls_vals, cut_type_str, cut_cells[cut_cell_id], strategy);
         cut_cell_id++;
       }
       // cell is completely inside
@@ -473,6 +635,16 @@ namespace cutcells::cell{
     }
   }
 
+  template <std::floating_point T>
+  void recursive_cut(cutcells::cell::CutCell<T> &cut_cell,
+                    std::span<const T> ls_vals_all,
+                    const std::string& cut_type_str,
+                    bool triangulate)
+  {
+    recursive_cut(cut_cell, ls_vals_all, cut_type_str,
+                  triangulation_strategy_from_bool(triangulate));
+  }
+
 //-----------------------------------------------------------------------------
   template CutCell<double> merge(std::vector<CutCell<double>> cut_cell_vec);
   template CutCell<float> merge(std::vector<CutCell<float>> cut_cell_vec);
@@ -480,8 +652,22 @@ namespace cutcells::cell{
   template void str(const CutCell<double> &cut_cell);
   template void str(const CutCell<float> &cut_cell);
 
+  template void sub_cell_vertices(const CutCell<double> &cut_cell, const int& id, std::vector<double>& vertex_coordinates);
+  template void sub_cell_vertices(const CutCell<float>  &cut_cell, const int& id, std::vector<float>&  vertex_coordinates);
+
+  template void sub_cell_vertices_phys(const CutCell<double> &cut_cell, const int& id, std::vector<double>& vertex_coordinates);
+  template void sub_cell_vertices_phys(const CutCell<float>  &cut_cell, const int& id, std::vector<float>&  vertex_coordinates);
+
   template double volume(const CutCell<double> &cut_cell);
   template float volume(const CutCell<float> &cut_cell);
+
+  template void cut(const type cell_type, const std::span<const double> vertex_coordinates,
+              const int gdim, const std::span<const double> ls_values,
+              const std::string& cut_type_str, CutCell<double>& cut_cell,
+              TriangulationStrategy strategy);
+  template void cut(const type cell_type, const std::span<const float> vertex_coordinates, const int gdim,
+             const std::span<const float> ls_values, const std::string& cut_type_str,
+             CutCell<float>& cut_cell, TriangulationStrategy strategy);
 
   template void cut(const type cell_type, const std::span<const double> vertex_coordinates,
               const int gdim, const std::span<const double> ls_values,
@@ -493,11 +679,29 @@ namespace cutcells::cell{
   template CutCell<double> higher_order_cut(const type cell_type,
             const std::span<const double> vertex_coordinates, const int gdim,
             const std::span<const double> ls_values, const std::string& cut_type_str,
+            TriangulationStrategy strategy);
+  template CutCell<float> higher_order_cut(const type cell_type,
+            const std::span<const float> vertex_coordinates, const int gdim,
+            const std::span<const float> ls_values, const std::string& cut_type_str,
+            TriangulationStrategy strategy);
+
+  template CutCell<double> higher_order_cut(const type cell_type,
+            const std::span<const double> vertex_coordinates, const int gdim,
+            const std::span<const double> ls_values, const std::string& cut_type_str,
             bool triangulate);
   template CutCell<float> higher_order_cut(const type cell_type,
             const std::span<const float> vertex_coordinates, const int gdim,
             const std::span<const float> ls_values, const std::string& cut_type_str,
             bool triangulate);
+
+  template void recursive_cut(cutcells::cell::CutCell<double> &cut_cell,
+                    std::span<const double> ls_vals_all,
+                    const std::string& cut_type_str,
+                    TriangulationStrategy strategy);
+  template void recursive_cut(cutcells::cell::CutCell<float> &cut_cell,
+                    std::span<const float> ls_vals_all,
+                    const std::string& cut_type_str,
+                    TriangulationStrategy strategy);
 
   template void recursive_cut(cutcells::cell::CutCell<double> &cut_cell,
                     std::span<const double> ls_vals_all,

@@ -77,7 +77,11 @@ def main() -> None:
     )
 
     points = np.asarray(cut_cell.vertex_coords)
-    grid = pv.UnstructuredGrid(cut_cell.connectivity, cut_cell.types, points)
+    grid = pv.UnstructuredGrid(
+        cut_cell.cells,
+        cut_cell.vtk_types,
+        points,
+    )
 
     interior_mask = np.array(
         [is_strictly_inside_unit_pyramid(p) for p in points], dtype=bool

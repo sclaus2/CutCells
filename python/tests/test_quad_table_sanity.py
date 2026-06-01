@@ -30,13 +30,13 @@ def test_quad_table_sanity():
     ls_values = np.array([-0.5, 0.5, 0.5, -0.5], dtype=float)
 
     cut = cutcells.cut(
-        cutcells.CellType.quadrilateral, vertices, 2, ls_values, "phi<0", False
+        cutcells.CellType.quadrilateral, vertices.ravel(), 2, ls_values, "phi<0", False
     )
 
     # Should produce valid output
-    assert len(cut.types) > 0
+    assert cut.types.size > 0
     assert cut.vertex_coords is not None
 
     # Basic validation passed if we got here
-    print(f"Produced {len(cut.types)} subcells")
+    print(f"Produced {cut.types.size} subcells")
     print("✓ test_quad_table_sanity passed")

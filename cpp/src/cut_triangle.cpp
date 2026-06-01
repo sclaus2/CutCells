@@ -7,6 +7,8 @@
 #include "cut_triangle.h"
 #include "cut_interval.h"
 #include "cell_flags.h"
+#include "quad_midpoint_split.h"
+#include "reference_cell.h"
 #include "triangulation.h"
 #include "span_math.h"
 #include "utils.h"
@@ -14,13 +16,18 @@
 #include <cassert>
 #include <stdexcept>
 #include <iostream>
-#include <unordered_map>
+#include <array>
 #include<cmath>
 
 namespace cutcells::cell
 {
 // Look up tables for intersection
 namespace{
+    using VertexCaseMap = std::array<int, cutcells::utils::MAX_TOKEN_LOOKUP>;
+    constexpr int reserve_vertex_coords = 8;
+    constexpr int reserve_connectivity = 8;
+    constexpr int reserve_types = 8;
+
     // Choose numbering of edges for cutting in accordance with numbering of vtk
     int edges[3][2] = {{0,1}, {1,2}, {2,0}};
 
@@ -81,22 +88,34 @@ namespace triangle{
     }
 
     //for triangles the number of sub-elements without triangulation is 1
-    int get_num_sub_elements(const int &flag, bool triangulate)
+    int get_num_sub_elements(const int &flag, TriangulationStrategy strategy)
     {
         type cell_type = triangle_sub_element_cell_types[flag];
         int num_sub_elements = 1;
 
-        if(cell_type == type::quadrilateral && triangulate == true)
+        if(cell_type == type::quadrilateral
+           && strategy == TriangulationStrategy::classical)
         {
             num_sub_elements = 2;
         }
+        else if(cell_type == type::quadrilateral
+                && strategy == TriangulationStrategy::midpoint)
+        {
+            num_sub_elements = 3;
+        }
         return num_sub_elements;
+    }
+
+    int get_num_sub_elements(const int &flag, bool triangulate)
+    {
+        return get_num_sub_elements(
+            flag, triangulation_strategy_from_bool(triangulate));
     }
 
     template <std::floating_point T>
     void compute_intersection_points(const std::span<const T> vertex_coordinates, const int gdim, 
              const std::span<const T> ls_values, const int flag, std::vector<T>& intersection_points, 
-             std::unordered_map<int,int>& vertex_case_map)
+             VertexCaseMap& vertex_case_map)
     {
         // vertex ids will be edges[edge_0][0] edges[edge_0][1]
         // get vertex coordinates and interpolate 
@@ -104,9 +123,9 @@ namespace triangle{
 
         intersection_points.resize(num_intersection_points*gdim);
 
-        std::vector<T> v0(gdim);
-        std::vector<T> v1(gdim);
-        std::vector<T> intersection_point(gdim);
+        // gdim is at most 3; use stack arrays to avoid heap allocation per intersection point
+        std::array<T, 3> v0 = {};
+        std::array<T, 3> v1 = {};
 
         for(int ip=0; ip<num_intersection_points; ip++)
         {
@@ -125,12 +144,9 @@ namespace triangle{
             T ls0 = ls_values[vertex_id_0];
             T ls1 = ls_values[vertex_id_1];
 
-            interval::compute_intersection_point<T>(0.0, v0, v1,ls0, ls1, intersection_point);
-
-            for(int j=0;j<gdim;j++)
-            {
-                intersection_points[ip*gdim+j] = intersection_point[j];
-            }
+            interval::compute_intersection_point<T>(T(0), std::span<const T>(v0.data(), gdim),
+                                                    std::span<const T>(v1.data(), gdim),
+                                                    ls0, ls1, intersection_points, ip * gdim);
         }
 
         vertex_case_map[triangle_intersected_edges[flag][0]] = 0;
@@ -140,7 +156,7 @@ namespace triangle{
     template <std::floating_point T>
     void create_sub_cell_vertex_coords(const int& flag, const std::span<const T> vertex_coordinates, const int gdim, 
                                        const std::span<const T> intersection_points, 
-                                       std::vector<T>& coords, std::unordered_map<int,int>& vertex_case_map)
+                                       std::vector<T>& coords, VertexCaseMap& vertex_case_map)
     {
         int num_intersection_points = intersection_points.size()/gdim;
         type cell_type = triangle_sub_element_cell_types[flag];
@@ -181,92 +197,102 @@ namespace triangle{
         }
     }
 
-    void create_interface_cells(std::vector<std::vector<int>>& interface_cells, std::vector<type>& interface_cell_types)
-    {
-        interface_cells.resize(1);
-        interface_cells[0].resize(2);
-        interface_cells[0][0] = 0;
-        interface_cells[0][1] = 1;
-
-        interface_cell_types.resize(1);
-        interface_cell_types[0] = type::interval;
-    }
-
-    void create_sub_cells(const int& flag, bool triangulate, std::vector<std::vector<int>>& sub_cells, 
-                          std::vector<type>& sub_cell_types, std::unordered_map<int,int>& vertex_case_map)
-    {
-        // Allocate memory
-        int num_sub_elements = get_num_sub_elements(flag, triangulate);
-        sub_cells.resize(num_sub_elements);
-        sub_cell_types.resize(num_sub_elements);
-
-        for(int i=0;i<num_sub_elements;i++)
-        {
-            type sub_cell_type;
-
-            if(triangulate)
-            {
-                sub_cell_type = type::triangle;
-            }
-            else
-            {
-                sub_cell_type = triangle_sub_element_cell_types[flag];
-            }
-            sub_cell_types[i] = sub_cell_type;
-            int num_vertices = get_num_vertices(sub_cell_type);
-            sub_cells[i].resize(num_vertices);
-        }
-
-        // Fill in vertex ids
-        //int vertices[4] = triangle_sub_element[flag];
-        type sub_cell_type = triangle_sub_element_cell_types[flag];
-
-        //collect all vertices of sub-elements (elements are separated by -1 in list)
-        if(sub_cell_type == type::quadrilateral && triangulate == true)
-        {
-            std::vector<std::vector<int>> triangles;
-            triangulation(sub_cell_type, triangle_sub_element[flag], triangles);
-
-            for(int i=0;i<num_sub_elements;i++)
-                for(int j=0;j<3;j++)
-                {
-                    sub_cells[i][j] = vertex_case_map[triangles[i][j]];
-                }
-        }
-        else
-        {
-            //number of entries in sub_element table
-            int ncols = 4;
-            int sub_element = 0;
-
-            for(int i=0;i<num_sub_elements;i++)
-            {
-                for(int j=0;j<ncols;j++)
-                {
-                    if(triangle_sub_element[flag][j]!=-1)
-                    {
-                        sub_cells[i][j] = vertex_case_map[triangle_sub_element[flag][j]];
-                    }
-                    else
-                    {
-                        //vertex is -1, move on to next element
-                    }
-                }
-            }
-        }
-    }
-
     template <std::floating_point T>
     void create_cut_cell(const std::span<const T> vertex_coordinates, 
                          const int gdim,  const std::span<const T> ls_values,
                          const std::string& cut_type_str,
-                         CutCell<T>& cut_cell, bool triangulate, 
+                         CutCell<T>& cut_cell, TriangulationStrategy strategy,
                          const std::span<const T> intersection_points, 
-                         std::unordered_map<int,int>& vertex_case_map)
+                         VertexCaseMap& vertex_case_map)
     {
         cut_cell._gdim = gdim;
+        cutcells::cell::clear_cell_topology(cut_cell);
+        const cut_type cut_kind = string_to_cut_type(cut_type_str);
 
-        if(cut_type_str=="phi=0")
+        auto append_midpoint_split_quad = [&](int flag)
+        {
+            std::array<int, 4> quad_tokens = {};
+            for (int j = 0; j < 4; ++j)
+                quad_tokens[j] = triangle_sub_element[flag][j];
+
+            std::vector<T> quad_vertex_coords(static_cast<std::size_t>(4 * gdim));
+            for (int local_id = 0; local_id < 4; ++local_id)
+            {
+                const int token = quad_tokens[static_cast<std::size_t>(local_id)];
+                const int vertex_id = vertex_case_map[token];
+                if (vertex_id < 0)
+                    throw std::runtime_error("triangle::create_cut_cell missing quadrilateral vertex token");
+
+                for (int d = 0; d < gdim; ++d)
+                {
+                    quad_vertex_coords[static_cast<std::size_t>(local_id * gdim + d)]
+                        = cut_cell._vertex_coords[static_cast<std::size_t>(vertex_id * gdim + d)];
+                }
+            }
+
+            int next_token_base = 200;
+            auto split = cutcells::cell::quad_midpoint::split_triangle_derived_quadrilateral<T>(
+                std::span<const T>(quad_vertex_coords.data(), quad_vertex_coords.size()),
+                gdim,
+                std::span<const int>(quad_tokens.data(), quad_tokens.size()),
+                next_token_base);
+
+            const int old_num_vertices = static_cast<int>(cut_cell._vertex_coords.size() / gdim);
+            cut_cell._vertex_coords.insert(
+                cut_cell._vertex_coords.end(),
+                split.added_vertex_coords.begin(),
+                split.added_vertex_coords.end());
+
+            for (std::size_t i = 0; i < split.added_vertex_tokens.size(); ++i)
+            {
+                const int token = split.added_vertex_tokens[i];
+                if (token < 0 || token >= static_cast<int>(vertex_case_map.size()))
+                    throw std::runtime_error("triangle::create_cut_cell midpoint token out of bounds");
+                vertex_case_map[token] = old_num_vertices + static_cast<int>(i);
+            }
+
+            for (const auto& tri_tokens : split.triangles)
+            {
+                std::array<int, 3> t = {
+                    vertex_case_map[tri_tokens[0]],
+                    vertex_case_map[tri_tokens[1]],
+                    vertex_case_map[tri_tokens[2]],
+                };
+                cutcells::cell::append_cell(cut_cell, type::triangle, t, 3);
+            }
+        };
+
+        auto append_classical_quad = [&](int flag)
+        {
+            std::array<int, 4> quad_tokens = {};
+            for (int j = 0; j < 4; ++j)
+                quad_tokens[j] = triangle_sub_element[flag][j];
+
+            cell::reorder_subcell_vertices_from_vtk_to_basix(
+                type::quadrilateral, quad_tokens, 4);
+
+            std::vector<std::vector<int>> triangles;
+            triangulation(type::quadrilateral, quad_tokens.data(), triangles);
+            for (const auto& tri_tokens : triangles)
+            {
+                std::array<int, 3> t = {
+                    vertex_case_map[tri_tokens[0]],
+                    vertex_case_map[tri_tokens[1]],
+                    vertex_case_map[tri_tokens[2]],
+                };
+                cutcells::cell::append_cell(cut_cell, type::triangle, t, 3);
+            }
+        };
+
+        auto append_triangulated_quad = [&](int flag)
+        {
+            if (strategy == TriangulationStrategy::midpoint)
+                append_midpoint_split_quad(flag);
+            else
+                append_classical_quad(flag);
+        };
+
+        if(cut_kind == cut_type::phieq0)
         {
             cut_cell._tdim = 1;
             int flag_interior = get_entity_flag(ls_values, false);
@@ -277,28 +303,51 @@ namespace triangle{
             {
                 cut_cell._vertex_coords[i] = intersection_points[i];
             }
-            // Determine interface cells for triangle this is an interval with two points (the intersection points)
-            create_interface_cells(cut_cell._connectivity, cut_cell._types);
+            // Interface is a single interval spanning the two intersection points
+            const std::array<int, 2> iface_verts = {0, 1};
+            cutcells::cell::append_cell(cut_cell, type::interval, iface_verts, 2);
         }
-        else if(cut_type_str=="phi<0")
+        else if(cut_kind == cut_type::philt0)
         {
             cut_cell._tdim = 2;
             int flag_interior = get_entity_flag(ls_values, false);
             create_sub_cell_vertex_coords(flag_interior, vertex_coordinates, gdim, intersection_points, 
                         cut_cell._vertex_coords, vertex_case_map);
-            //Determine interior sub-cells
-            create_sub_cells(flag_interior, triangulate, cut_cell._connectivity, 
-                        cut_cell._types, vertex_case_map);
+            // Append sub-cells directly into flat storage without staging
+            type sub_cell_type = triangle_sub_element_cell_types[flag_interior];
+            if(sub_cell_type == type::quadrilateral && triangulates(strategy))
+            {
+                append_triangulated_quad(flag_interior);
+            }
+            else
+            {
+                int num_vertices = get_num_vertices(sub_cell_type);
+                std::array<int, 4> verts;
+                for(int j = 0; j < num_vertices; ++j)
+                    verts[j] = vertex_case_map[triangle_sub_element[flag_interior][j]];
+                cutcells::cell::append_cell(cut_cell, sub_cell_type, verts, num_vertices);
+            }
         }
-        else if(cut_type_str=="phi>0")
+        else if(cut_kind == cut_type::phigt0)
         {
             cut_cell._tdim = 2;
-            //Determine exterior sub-cells
             int flag_exterior = get_entity_flag(ls_values, true);
             create_sub_cell_vertex_coords(flag_exterior, vertex_coordinates, gdim, intersection_points, 
-                        cut_cell._vertex_coords, vertex_case_map);
-            create_sub_cells(flag_exterior, triangulate, cut_cell._connectivity, 
-                    cut_cell._types, vertex_case_map);
+                    cut_cell._vertex_coords, vertex_case_map);
+            // Append sub-cells directly into flat storage without staging
+            type sub_cell_type = triangle_sub_element_cell_types[flag_exterior];
+            if(sub_cell_type == type::quadrilateral && triangulates(strategy))
+            {
+                append_triangulated_quad(flag_exterior);
+            }
+            else
+            {
+                int num_vertices = get_num_vertices(sub_cell_type);
+                std::array<int, 4> verts;
+                for(int j = 0; j < num_vertices; ++j)
+                    verts[j] = vertex_case_map[triangle_sub_element[flag_exterior][j]];
+                cutcells::cell::append_cell(cut_cell, sub_cell_type, verts, num_vertices);
+            }
         }
         else
         {
@@ -306,22 +355,20 @@ namespace triangle{
         }
     }
     template <std::floating_point T>
-    void str(CutCell<T>& cut_cell, std::unordered_map<int,int>& vertex_case_map)
+    void str(CutCell<T>& cut_cell, const VertexCaseMap& vertex_case_map)
     {
         std::cout << "vertex case map=[";
-        for(auto& it: vertex_case_map)
+        for(std::size_t token = 0; token < vertex_case_map.size(); ++token)
         {
-        std::cout << it.first << ": " << it.second << std::endl;
+            if (vertex_case_map[token] >= 0)
+                std::cout << token << ": " << vertex_case_map[token] << std::endl;
         }
         std::cout << "]" << std::endl;
 
         std::cout << "connectivity=[";
         for(auto &i: cut_cell._connectivity)
         {
-            for(auto &j : i)
-            {
-                std::cout << j << ", ";
-            }
+            std::cout << i << ", ";
         }
         std::cout << "]" << std::endl;
 
@@ -344,7 +391,7 @@ namespace triangle{
     template <std::floating_point T>
     void cut(const std::span<const T> vertex_coordinates, const int gdim,
              const std::span<const T> ls_values, const std::string& cut_type_str,
-             CutCell<T>& cut_cell, bool triangulate)
+             CutCell<T>& cut_cell, TriangulationStrategy strategy)
     {
         int flag_interior = get_entity_flag(ls_values, false);
 
@@ -356,26 +403,43 @@ namespace triangle{
 
         // Compute intersection points these are required for any cut cell part (interface, interior, exterior)
         // get the number of intersection points
-        std::vector<T> intersection_points;
+        thread_local std::vector<T> intersection_points;
+        intersection_points.clear();
+        intersection_points.reserve(2 * gdim);
         // the vertex case map,
         // first few entries map from intersected edge to intersection point number 
         // next entries map from orginal vertex id to number of vertex in vertex_coordinates of CutCell (renumbered to go from 0,...,N)
         // example: intersected edges 0 -> 0, 2 -> 1
         //          then orginal vertex 101 -> 2 , 102 -> 3 etc.
-        std::unordered_map<int,int> vertex_case_map;
+        VertexCaseMap vertex_case_map;
+        vertex_case_map.fill(-1);
         compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
 
-        create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, 
-                        triangulate, intersection_points, vertex_case_map);
+        cut_cell._vertex_coords.reserve(reserve_vertex_coords * gdim);
+        cutcells::cell::reserve_cell_topology(cut_cell, reserve_connectivity, reserve_types);
 
-        cutcells::utils::create_vertex_parent_entity_map<T>(vertex_case_map, cut_cell._vertex_parent_entity);
+        create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, 
+                        strategy, intersection_points, vertex_case_map);
+
+        cutcells::utils::create_vertex_parent_entity_map<T>(
+            vertex_case_map, cut_cell._vertex_parent_entity,
+            /*n_edges=*/3, /*n_vertices=*/3);
     };
+
+    template <std::floating_point T>
+    void cut(const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::string& cut_type_str,
+             CutCell<T>& cut_cell, bool triangulate)
+    {
+        cut(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell,
+            triangulation_strategy_from_bool(triangulate));
+    }
 
     // cut triangle version with vector of string in case multiple parts of the cut-cell are needed (very common)
     template <std::floating_point T>
     void cut(const std::span<const T> vertex_coordinates, const int gdim,
              const std::span<const T> ls_values, const std::vector<std::string>& cut_type_str,
-             std::vector<CutCell<T>>& cut_cell, bool triangulate)
+             std::vector<CutCell<T>>& cut_cell, TriangulationStrategy strategy)
     {
         int flag_interior = get_entity_flag(ls_values, false);
 
@@ -387,8 +451,11 @@ namespace triangle{
 
         // Compute intersection points these are required for any cut cell part (interface, interior, exterior)
         // get the number of intersection points
-        std::vector<T> intersection_points;
-        std::unordered_map<int,int> vertex_case_map;
+        thread_local std::vector<T> intersection_points;
+        intersection_points.clear();
+        intersection_points.reserve(2 * gdim);
+        VertexCaseMap vertex_case_map;
+        vertex_case_map.fill(-1);
         compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_interior, intersection_points, vertex_case_map);
 
         cut_cell.resize(cut_type_str.size());
@@ -396,9 +463,21 @@ namespace triangle{
         for(int i=0;i<cut_type_str.size();i++)
         {
             create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str[i], cut_cell[i], 
-                            triangulate, intersection_points, vertex_case_map);
+                            strategy, intersection_points, vertex_case_map);
+            cutcells::utils::create_vertex_parent_entity_map<T>(
+                vertex_case_map, cut_cell[i]._vertex_parent_entity,
+                /*n_edges=*/3, /*n_vertices=*/3);
         }
     };
+
+    template <std::floating_point T>
+    void cut(const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::vector<std::string>& cut_type_str,
+             std::vector<CutCell<T>>& cut_cell, bool triangulate)
+    {
+        cut(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell,
+            triangulation_strategy_from_bool(triangulate));
+    }
 
     template <std::floating_point T>
     T volume(const std::span<const T> vertex_coordinates, const int gdim)
@@ -420,10 +499,29 @@ namespace triangle{
     //-----------------------------------------------------------------------------
     template void cut(const std::span<const double> vertex_coordinates, const int gdim,
             const std::span<const double> ls_values, const std::string& cut_type_str,
+            CutCell<double>& cut_cell, TriangulationStrategy strategy);
+    template void cut(const std::span<const float> vertex_coordinates, const int gdim,
+              const std::span<const float> ls_values, const std::string& cut_type_str,
+              CutCell<float>& cut_cell, TriangulationStrategy strategy);
+    template void cut(const std::span<const double> vertex_coordinates, const int gdim,
+            const std::span<const double> ls_values, const std::vector<std::string>& cut_type_str,
+            std::vector<CutCell<double>>& cut_cell, TriangulationStrategy strategy);
+    template void cut(const std::span<const float> vertex_coordinates, const int gdim,
+              const std::span<const float> ls_values, const std::vector<std::string>& cut_type_str,
+              std::vector<CutCell<float>>& cut_cell, TriangulationStrategy strategy);
+
+    template void cut(const std::span<const double> vertex_coordinates, const int gdim,
+            const std::span<const double> ls_values, const std::string& cut_type_str,
             CutCell<double>& cut_cell, bool triangulate);
     template void cut(const std::span<const float> vertex_coordinates, const int gdim,
               const std::span<const float> ls_values, const std::string& cut_type_str,
               CutCell<float>& cut_cell, bool triangulate);
+    template void cut(const std::span<const double> vertex_coordinates, const int gdim,
+            const std::span<const double> ls_values, const std::vector<std::string>& cut_type_str,
+            std::vector<CutCell<double>>& cut_cell, bool triangulate);
+    template void cut(const std::span<const float> vertex_coordinates, const int gdim,
+              const std::span<const float> ls_values, const std::vector<std::string>& cut_type_str,
+              std::vector<CutCell<float>>& cut_cell, bool triangulate);
 
     template double volume(const std::span<const double> vertex_coordinates, const int gdim);
     template float volume(const std::span<const float> vertex_coordinates, const int gdim);

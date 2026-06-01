@@ -25,95 +25,105 @@ inline constexpr std::array<std::array<int, 2>, 1> interval_edges = {{
 }};
 
 /// Triangle: 3 edges
-/// VTK edge order: (0,1), (1,2), (2,0)
+/// Basix vertex order: 0=(0,0), 1=(1,0), 2=(0,1)
+/// Basix edge order: 0=(1,2), 1=(0,2), 2=(0,1)
 inline constexpr std::array<std::array<int, 2>, 3> triangle_edges = {{
-    {0, 1}, {1, 2}, {2, 0}
+    {1, 2}, {0, 2}, {0, 1}
 }};
 
 /// Quadrilateral: 4 edges
-/// VTK edge order: (0,1), (1,2), (2,3), (3,0)
+/// Basix vertex order: 0=(0,0), 1=(1,0), 2=(0,1), 3=(1,1)
+/// Basix edge order: 0=(0,1), 1=(0,2), 2=(1,3), 3=(2,3)
 ///
-///   3 --- 2
+///   2 --- 3
 ///   |     |
 ///   0 --- 1
 inline constexpr std::array<std::array<int, 2>, 4> quadrilateral_edges = {{
-    {0, 1}, {1, 2}, {2, 3}, {3, 0}
+    {0, 1}, {0, 2}, {1, 3}, {2, 3}
 }};
 
+/// Tetrahedron: 4 triangular faces
+/// Basix face order: opposite vertex 0, 1, 2, 3
+inline constexpr std::array<std::array<int, 3>, 4> tetrahedron_faces = {{
+    {1, 2, 3},  // face 0: opposite vertex 0
+    {0, 2, 3},  // face 1: opposite vertex 1
+    {0, 1, 3},  // face 2: opposite vertex 2
+    {0, 1, 2}   // face 3: opposite vertex 3
+}};
+inline constexpr std::array<int, 4> tetrahedron_face_sizes = {3, 3, 3, 3};
+
 /// Tetrahedron: 6 edges
-/// VTK edge order: (0,1), (1,2), (2,0), (0,3), (1,3), (2,3)
+/// Basix vertex order: 0=(0,0,0), 1=(1,0,0), 2=(0,1,0), 3=(0,0,1)
+/// Basix edge order: 0=(2,3), 1=(1,3), 2=(1,2), 3=(0,3), 4=(0,2), 5=(0,1)
 inline constexpr std::array<std::array<int, 2>, 6> tetrahedron_edges = {{
-    {0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 3}, {2, 3}
+    {2, 3}, {1, 3}, {1, 2}, {0, 3}, {0, 2}, {0, 1}
 }};
 
 /// Hexahedron: 12 edges
-/// VTK vertex numbering:
-///        7 -------- 6
+/// Basix vertex numbering:
+///   0=(0,0,0), 1=(1,0,0), 2=(0,1,0), 3=(1,1,0),
+///   4=(0,0,1), 5=(1,0,1), 6=(0,1,1), 7=(1,1,1)
+///
+///        6 -------- 7
 ///       /|         /|
 ///      / |        / |
 ///     4 -------- 5  |
-///     |  3 ------|-- 2
+///     |  2 ------|-- 3
 ///     | /        | /
 ///     |/         |/
 ///     0 -------- 1
 ///
-/// VTK edge order:
-///   Base: (0,1), (1,2), (2,3), (3,0)
-///   Top:  (4,5), (5,6), (6,7), (7,4)
-///   Verticals: (0,4), (1,5), (2,6), (3,7)
+/// Basix edge order:
+///   Bottom face: (0,1),(0,2),(1,3),(2,3)
+///   Verticals:   (0,4),(1,5),(2,6),(3,7)
+///   Top face:    (4,5),(4,6),(5,7),(6,7)
 inline constexpr std::array<std::array<int, 2>, 12> hexahedron_edges = {{
-    // Base edges (0-3)
-    {0, 1}, {1, 2}, {2, 3}, {3, 0},
-    // Top edges (4-7)
-    {4, 5}, {5, 6}, {6, 7}, {7, 4},
-    // Vertical edges (8-11)
-    {0, 4}, {1, 5}, {2, 6}, {3, 7}
+    // Bottom face edges (0-3)
+    {0, 1}, {0, 2}, {1, 3}, {2, 3},
+    // Vertical edges (4-7)
+    {0, 4}, {1, 5}, {2, 6}, {3, 7},
+    // Top face edges (8-11)
+    {4, 5}, {4, 6}, {5, 7}, {6, 7}
 }};
 
 /// Prism (Wedge): 9 edges
-/// VTK vertex numbering:
-///       2
-///      /|\
-///     / | \
-///    0-----1
-///    |  |  |
-///    |  5  |
-///    | /|\ |
-///    |/ | \|
-///    3-----4
+/// Basix vertex numbering (same as VTK for prism):
+///   0=(0,0,0), 1=(1,0,0), 2=(0,1,0), 3=(0,0,1), 4=(1,0,1), 5=(0,1,1)
 ///
-/// VTK edge order:
-///   Bottom triangle: (0,1), (1,2), (2,0)
-///   Top triangle: (3,4), (4,5), (5,3)
-///   Verticals: (0,3), (1,4), (2,5)
+/// Basix edge order:
+///   Bottom triangle: (0,1),(0,2),(1,2)
+///   Verticals:       (0,3),(1,4),(2,5)
+///   Top triangle:    (3,4),(3,5),(4,5)
 inline constexpr std::array<std::array<int, 2>, 9> prism_edges = {{
     // Bottom triangle (0-2)
-    {0, 1}, {1, 2}, {2, 0},
-    // Top triangle (3-5)
-    {3, 4}, {4, 5}, {5, 3},
-    // Vertical edges (6-8)
-    {0, 3}, {1, 4}, {2, 5}
+    {0, 1}, {0, 2}, {1, 2},
+    // Vertical edges (3-5)
+    {0, 3}, {1, 4}, {2, 5},
+    // Top triangle (6-8)
+    {3, 4}, {3, 5}, {4, 5}
 }};
 
 /// Pyramid: 8 edges
-/// VTK vertex numbering:
+/// Basix vertex numbering:
+///   0=(0,0,0), 1=(1,0,0), 2=(0,1,0), 3=(1,1,0), 4=(0,0,1) (apex)
+///
 ///         4
 ///        /|\
 ///       / | \
 ///      /  |  \
 ///     /   |   \
-///    3----|----2
+///    2----|----3
 ///    |    |    |
 ///    0---------1
 ///
-/// VTK edge order:
-///   Base: (0,1), (1,2), (2,3), (3,0)
-///   Apex connections: (0,4), (1,4), (2,4), (3,4)
+/// Basix edge order:
+///   Base: (0,1),(0,2),(1,3),(2,3)
+///   Apex connections: (0,4),(1,4),(3,4),(2,4)
 inline constexpr std::array<std::array<int, 2>, 8> pyramid_edges = {{
     // Base edges (0-3)
-    {0, 1}, {1, 2}, {2, 3}, {3, 0},
+    {0, 1}, {0, 2}, {1, 3}, {2, 3},
     // Apex edges (4-7)
-    {0, 4}, {1, 4}, {2, 4}, {3, 4}
+    {0, 4}, {1, 4}, {3, 4}, {2, 4}
 }};
 
 //-----------------------------------------------------------------------------
@@ -173,28 +183,35 @@ inline std::span<const std::array<int, 2>> edges(type cell_type)
 
 /// Hexahedron: 6 faces (quads)
 /// Face order: -X, +X, -Y, +Y, -Z, +Z (left, right, front, back, bottom, top)
+/// Vertex ordering follows basix tensor-product convention for quadrilateral:
+///   basix quad: 0=(0,0), 1=(1,0), 2=(0,1), 3=(1,1)  (NOT cyclic).
+/// Conversion from VTK cyclic {a,b,c,d} -> basix {a,b,d,c}.
 inline constexpr std::array<std::array<int, 4>, 6> hexahedron_faces = {{
-    {0, 3, 7, 4},  // -X (left)
-    {1, 2, 6, 5},  // +X (right)
-    {0, 1, 5, 4},  // -Y (front)
-    {3, 2, 6, 7},  // +Y (back)
-    {0, 1, 2, 3},  // -Z (bottom)
-    {4, 5, 6, 7}   // +Z (top)
+    {0, 3, 4, 7},  // -X (left)    was VTK {0,3,7,4}
+    {1, 2, 5, 6},  // +X (right)   was VTK {1,2,6,5}
+    {0, 1, 4, 5},  // -Y (front)   was VTK {0,1,5,4}
+    {3, 2, 7, 6},  // +Y (back)    was VTK {3,2,6,7}
+    {0, 1, 2, 3},  // -Z (bottom)  was VTK {0,1,3,2} -> basix {0,1,2,3}
+    {4, 5, 6, 7}   // +Z (top)     was VTK {4,5,7,6} -> basix {4,5,6,7}
 }};
 
 /// Prism: 5 faces (2 triangles + 3 quads)
-/// Represented as max 4 vertices per face, with -1 padding for triangles
+/// Represented as max 4 vertices per face, with -1 padding for triangles.
+/// Quad faces use basix tensor-product ordering: 0=(0,0),1=(1,0),2=(0,1),3=(1,1).
+/// Conversion from VTK cyclic {a,b,c,d} -> basix {a,b,d,c}.
 inline constexpr std::array<std::array<int, 4>, 5> prism_faces = {{
     {0, 1, 2, -1},  // bottom triangle
     {3, 4, 5, -1},  // top triangle
-    {0, 1, 4, 3},   // quad face
-    {1, 2, 5, 4},   // quad face
-    {2, 0, 3, 5}    // quad face
+    {0, 1, 3, 4},   // quad (y=0 plane)   was VTK {0,1,4,3}
+    {1, 2, 4, 5},   // quad (x+y=1 plane) was VTK {1,2,5,4}
+    {2, 0, 5, 3}    // quad (x=0 plane)   was VTK {2,0,3,5}
 }};
 
 /// Pyramid: 5 faces (1 quad base + 4 triangles)
+/// Base quad uses basix tensor-product ordering: 0=(0,0),1=(1,0),2=(0,1),3=(1,1).
+/// Conversion from VTK cyclic {0,1,2,3} -> basix {0,1,3,2}.
 inline constexpr std::array<std::array<int, 4>, 5> pyramid_faces = {{
-    {0, 1, 2, 3},   // base quad
+    {0, 1, 3, 2},   // base quad: basix ordering, was VTK {0,1,2,3}
     {0, 1, 4, -1},  // triangle
     {1, 2, 4, -1},  // triangle
     {2, 3, 4, -1},  // triangle
@@ -224,6 +241,73 @@ inline constexpr int num_faces(type cell_type)
     case type::pyramid:       return 5;
     default:
         throw std::invalid_argument("Unknown cell type in num_faces");
+    }
+}
+
+/// Get the number of vertices per face for a cell type.
+inline std::span<const int> face_sizes(type cell_type)
+{
+    switch (cell_type)
+    {
+    case type::tetrahedron:   return std::span(tetrahedron_face_sizes);
+    case type::hexahedron:    return std::span(hexahedron_face_sizes);
+    case type::prism:         return std::span(prism_face_sizes);
+    case type::pyramid:       return std::span(pyramid_face_sizes);
+    default:
+        throw std::invalid_argument("Unknown cell type in face_sizes");
+    }
+}
+
+/// Get the vertex indices for face `face_id` of a tetrahedron.
+/// Returns a span of 3 vertex indices.
+inline std::span<const int, 3> tet_face(int face_id)
+{
+    return std::span<const int, 3>(tetrahedron_faces[static_cast<std::size_t>(face_id)]);
+}
+
+/// Get the cell type of a specific face of a cell.
+inline type face_type(type cell_type, int face_id)
+{
+    switch (cell_type)
+    {
+    case type::tetrahedron:
+        return type::triangle;
+    case type::hexahedron:
+        return type::quadrilateral;
+    case type::prism:
+        return (face_id < 2) ? type::triangle : type::quadrilateral;
+    case type::pyramid:
+        return (face_id == 0) ? type::quadrilateral : type::triangle;
+    default:
+        throw std::invalid_argument("Unknown cell type in face_type");
+    }
+}
+
+/// Get the vertex indices for face `face_id` of a 3D cell.
+/// The returned span has `face_sizes(cell_type)[face_id]` entries.
+inline std::span<const int> face_vertices(type cell_type, int face_id)
+{
+    const int fsize = face_sizes(cell_type)[static_cast<std::size_t>(face_id)];
+    switch (cell_type)
+    {
+    case type::tetrahedron:
+        return std::span<const int>(
+            tetrahedron_faces[static_cast<std::size_t>(face_id)].data(),
+            static_cast<std::size_t>(fsize));
+    case type::hexahedron:
+        return std::span<const int>(
+            hexahedron_faces[static_cast<std::size_t>(face_id)].data(),
+            static_cast<std::size_t>(fsize));
+    case type::prism:
+        return std::span<const int>(
+            prism_faces[static_cast<std::size_t>(face_id)].data(),
+            static_cast<std::size_t>(fsize));
+    case type::pyramid:
+        return std::span<const int>(
+            pyramid_faces[static_cast<std::size_t>(face_id)].data(),
+            static_cast<std::size_t>(fsize));
+    default:
+        throw std::invalid_argument("Unknown cell type in face_vertices");
     }
 }
 

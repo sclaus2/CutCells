@@ -39,8 +39,16 @@ pts_ext = np.asarray(cut_cell_ext.vertex_coords)
 if pts_ext.shape[1] == 2:
     pts_ext = np.c_[pts_ext, np.zeros((pts_ext.shape[0],), dtype=pts_ext.dtype)]
 
-grid_int = pv.UnstructuredGrid(cut_cell_int.connectivity, cut_cell_int.types, pts_int)
-grid_ext = pv.UnstructuredGrid(cut_cell_ext.connectivity, cut_cell_ext.types, pts_ext)
+grid_int = pv.UnstructuredGrid(
+    cut_cell_int.cells,
+    cut_cell_int.vtk_types,
+    pts_int,
+)
+grid_ext = pv.UnstructuredGrid(
+    cut_cell_ext.cells,
+    cut_cell_ext.vtk_types,
+    pts_ext,
+)
 
 plotter = pv.Plotter()  # off_screen=True
 plotter.set_background("white", top="white")

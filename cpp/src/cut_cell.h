@@ -9,6 +9,7 @@
 #include <cstdint>
 
 #include "cell_types.h"
+#include "triangulation.h"
 #include <vector>
 #include <span>
 #include <string>
@@ -30,12 +31,23 @@ namespace cutcells
             /// Topological Dimension of Cell
             int _tdim;
 
-            /// Coordinates of vertices of cut cell
+            /// Cut vertices as produced by the cutting routine.
+            /// Semantic: always interpreted as parent reference coordinates after frame completion.
+            /// When cutting is done in reference space these are ready to use.
+            /// When cutting is done in physical space, call complete_from_physical() which
+            /// copies these into _vertex_coords_phys and pulls back to fill _vertex_coords.
             std::vector<T> _vertex_coords;
 
+            /// Cut vertices in physical space.
+            /// Empty until compute_physical_cut_vertices() or complete_from_physical() is called.
+            std::vector<T> _vertex_coords_phys;
+
             /// Vertex ids of cut cells
-            /// @todo: maybe change this to connectivity and offset vectors
-            std::vector<std::vector<int>> _connectivity;
+            /// Flattened cell-to-vertex connectivity in CSR layout
+            std::vector<int> _connectivity;
+
+            /// Offsets into _connectivity (size = num_cells + 1)
+            std::vector<int> _offset;
 
             /// Cell type of cut cells
             std::vector<type> _types;
@@ -64,8 +76,19 @@ namespace cutcells
         template <std::floating_point T>
         void sub_cell_vertices(const CutCell<T> &cut_cell, const int& id, std::vector<T>& vertex_coordinates);
 
+        /// Gather physical-space coordinates of sub-cell id into vertex_coordinates.
+        /// Reads from _vertex_coords_phys, which must be filled before calling
+        /// (call compute_physical_cut_vertices or complete_from_physical first).
+        template <std::floating_point T>
+        void sub_cell_vertices_phys(const CutCell<T> &cut_cell, const int& id, std::vector<T>& vertex_coordinates);
+
         template <std::floating_point T>
         T volume(const CutCell<T> &cut_cell);
+
+        template <std::floating_point T>
+        void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+                 const std::span<const T> ls_values, const std::string& cut_type_str,
+                CutCell<T>& cut_cell, TriangulationStrategy strategy);
 
         template <std::floating_point T>
         void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
@@ -75,7 +98,17 @@ namespace cutcells
         template <std::floating_point T>
         void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
              const std::span<const T> ls_values, const std::vector<std::string>& cut_type_str,
+             std::vector<CutCell<T>>& cut_cell, TriangulationStrategy strategy);
+
+        template <std::floating_point T>
+        void cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::vector<std::string>& cut_type_str,
              std::vector<CutCell<T>>& cut_cell, bool triangulate=false);
+
+        template <std::floating_point T>
+        CutCell<T> higher_order_cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
+             const std::span<const T> ls_values, const std::string& cut_type_str,
+             TriangulationStrategy strategy);
 
         template <std::floating_point T>
         CutCell<T> higher_order_cut(const type cell_type, const std::span<const T> vertex_coordinates, const int gdim,
@@ -92,7 +125,79 @@ namespace cutcells
         void recursive_cut(cutcells::cell::CutCell<T> &cut_cell,
                   std::span<const T> ls_vals_all,
                   const std::string& cut_type_str,
+                  TriangulationStrategy strategy);
+
+        template <std::floating_point T>
+        void recursive_cut(cutcells::cell::CutCell<T> &cut_cell,
+                  std::span<const T> ls_vals_all,
+                  const std::string& cut_type_str,
                   bool triangulate);
+
+                template <std::floating_point T>
+                inline int num_cells(const CutCell<T>& cut_cell)
+                {
+                    return cut_cell._offset.empty() ? 0 : static_cast<int>(cut_cell._offset.size()) - 1;
+                }
+
+                template <std::floating_point T>
+                inline int num_cell_vertices(const CutCell<T>& cut_cell, const int cell_id)
+                {
+                    return cut_cell._offset[cell_id + 1] - cut_cell._offset[cell_id];
+                }
+
+                template <std::floating_point T>
+                inline std::span<const int> cell_vertices(const CutCell<T>& cut_cell, const int cell_id)
+                {
+                    const int begin = cut_cell._offset[cell_id];
+                    const int end = cut_cell._offset[cell_id + 1];
+                    return std::span<const int>(cut_cell._connectivity.data() + begin, end - begin);
+                }
+
+                template <std::floating_point T>
+                inline void clear_cell_topology(CutCell<T>& cut_cell)
+                {
+                    cut_cell._connectivity.clear();
+                    cut_cell._offset.clear();
+                    cut_cell._offset.push_back(0);
+                    cut_cell._types.clear();
+                }
+
+                template <std::floating_point T>
+                inline void reserve_cell_topology(CutCell<T>& cut_cell,
+                                                                                    const int connectivity_capacity,
+                                                                                    const int cell_capacity)
+                {
+                    cut_cell._connectivity.reserve(connectivity_capacity);
+                    cut_cell._offset.reserve(cell_capacity + 1);
+                    cut_cell._types.reserve(cell_capacity);
+                }
+
+                template <std::floating_point T>
+                inline void append_cell(CutCell<T>& cut_cell, const type cell_type, std::span<const int> vertices)
+                {
+                    cut_cell._types.push_back(cell_type);
+                    cut_cell._connectivity.insert(cut_cell._connectivity.end(), vertices.begin(), vertices.end());
+                    cut_cell._offset.push_back(static_cast<int>(cut_cell._connectivity.size()));
+                }
+
+                /// Append a subcell given as a raw pointer + count.
+                /// Avoids forcing a temporary std::vector<int> at call sites.
+                template <std::floating_point T>
+                inline void append_cell(CutCell<T>& cut_cell, const type cell_type, const int* vertices, int n)
+                {
+                    cut_cell._types.push_back(cell_type);
+                    cut_cell._connectivity.insert(cut_cell._connectivity.end(), vertices, vertices + n);
+                    cut_cell._offset.push_back(static_cast<int>(cut_cell._connectivity.size()));
+                }
+
+                /// Append a subcell given as a fixed-size std::array using the first n entries.
+                template <std::floating_point T, std::size_t N>
+                inline void append_cell(CutCell<T>& cut_cell, const type cell_type, const std::array<int, N>& vertices, int n)
+                {
+                    cut_cell._types.push_back(cell_type);
+                    cut_cell._connectivity.insert(cut_cell._connectivity.end(), vertices.begin(), vertices.begin() + n);
+                    cut_cell._offset.push_back(static_cast<int>(cut_cell._connectivity.size()));
+                }
     }
 
 }

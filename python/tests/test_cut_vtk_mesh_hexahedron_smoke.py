@@ -43,7 +43,7 @@ def test_cut_vtk_mesh_single_hexahedron_smoke():
 
     cut_mesh = cutcells.cut_vtk_mesh(
         ls_vals,
-        points,
+        points.ravel(),
         connectivity,
         offset,
         vtk_type,
@@ -58,6 +58,6 @@ def test_cut_vtk_mesh_single_hexahedron_smoke():
     assert coords[:, 1].min() >= -tol and coords[:, 1].max() <= 1.0 + tol
     assert coords[:, 2].min() >= -tol and coords[:, 2].max() <= 1.0 + tol
 
-    assert len(cut_mesh.types) > 0
+    assert cut_mesh.types.size > 0
     # Do not constrain emitted cell types here; the table-driven hex cutter may emit
     # hex/prism/pyramid/tet depending on the case.

@@ -121,7 +121,9 @@ def main() -> None:
                 )
                 inside_points = np.asarray(inside_cell.vertex_coords)
                 inside_grid = pv.UnstructuredGrid(
-                    inside_cell.connectivity, inside_cell.types, inside_points
+                    inside_cell.cells,
+                    inside_cell.vtk_types,
+                    inside_points,
                 )
 
                 # Interface surface (phi=0)
@@ -136,7 +138,9 @@ def main() -> None:
 
                 points = np.asarray(cut_cell.vertex_coords)
                 grid = pv.UnstructuredGrid(
-                    cut_cell.connectivity, cut_cell.types, points
+                    cut_cell.cells,
+                    cut_cell.vtk_types,
+                    points,
                 )
 
                 edge_mask = np.array([on_unit_cube_edge(p) for p in points], dtype=bool)

@@ -1,84 +1,187 @@
 cmake_minimum_required(VERSION 3.19)
 
+project(cutcells_nanobind VERSION "0.2.0" LANGUAGES CXX)
+
 # nanobind uses aligned deallocators only present on macOS > 10.14
-if(APPLE)
+if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14")
 endif()
 
-project(cutcells_nanobind VERSION "0.2.0" LANGUAGES CXX)
-
-# Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if (TARGET cutcells)
-  add_library(CUTCELLS::cutcells ALIAS cutcells)
-else()
-  # Find CutCells (C++)
-  # Prefer the in-repo build if present, so `pip install -e python` uses local C++ changes.
-  if (NOT DEFINED CutCells_DIR)
-    set(_local_cutcells_prefix "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-dir/prefix")
-    if (EXISTS "${_local_cutcells_prefix}/lib/cmake/cutcells/CutCellsConfig.cmake")
-      list(PREPEND CMAKE_PREFIX_PATH "${_local_cutcells_prefix}")
+set(_conda_prefix "$ENV{CONDA_PREFIX}")
+if(_conda_prefix)
+  # Prefer the active conda environment over the base installation.
+  if(NOT DEFINED Python_ROOT_DIR)
+    set(Python_ROOT_DIR "${_conda_prefix}")
+  endif()
+  if(NOT DEFINED Python_FIND_VIRTUALENV)
+    set(Python_FIND_VIRTUALENV ONLY)
+  endif()
+  if(NOT DEFINED Python_FIND_STRATEGY)
+    set(Python_FIND_STRATEGY LOCATION)
+  endif()
+  if(NOT DEFINED Python_EXECUTABLE)
+    if(WIN32)
+      set(_conda_python "${_conda_prefix}/python.exe")
+    else()
+      set(_conda_python "${_conda_prefix}/bin/python")
+    endif()
+    if(EXISTS "${_conda_python}")
+      set(Python_EXECUTABLE "${_conda_python}")
     endif()
   endif()
-  find_package(CutCells REQUIRED)
+
+  list(PREPEND CMAKE_PREFIX_PATH
+    "${_conda_prefix}"
+    "${_conda_prefix}/lib/cmake"
+    "${_conda_prefix}/Library"
+    "${_conda_prefix}/Library/lib/cmake")
 endif()
 
-if(CUTCELLS_FOUND)
-  message(STATUS "Found CutCells at ${CUTCELLS_DIR}")
+# Imported CutCells targets may depend on OpenMP::OpenMP_CXX.
+# Keep this optional and quiet so builds without OpenMP still proceed.
+find_package(OpenMP QUIET COMPONENTS CXX)
+
+option(CUTCELLS_PYTHON_USE_LOCAL_CPP
+  "Build the bundled CutCells C++ library from source with the same compiler as the Python extension."
+  ON)
+
+function(_set_default_cutcells_dir)
+  if(DEFINED CutCells_DIR)
+    return()
+  endif()
+
+  set(_candidates
+    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build/prefix/lib/cmake/cutcells"
+    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-noomp/prefix/lib/cmake/cutcells"
+    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-bench-release/prefix/lib/cmake/cutcells"
+    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-dir/prefix/lib/cmake/cutcells")
+
+  set(_best_dir "")
+  set(_best_ts -1)
+  foreach(_dir IN LISTS _candidates)
+    if(EXISTS "${_dir}/CutCellsConfig.cmake")
+      set(_lib "${_dir}/../../libcutcells.dylib")
+      if(EXISTS "${_lib}")
+        file(TIMESTAMP "${_lib}" _ts "%s" UTC)
+      else()
+        file(TIMESTAMP "${_dir}/CutCellsConfig.cmake" _ts "%s" UTC)
+      endif()
+      if(_ts GREATER _best_ts)
+        set(_best_ts "${_ts}")
+        set(_best_dir "${_dir}")
+      endif()
+    endif()
+  endforeach()
+  if(_best_dir)
+    set(CutCells_DIR "${_best_dir}" PARENT_SCOPE)
+  endif()
+endfunction()
+
+if(CUTCELLS_PYTHON_USE_LOCAL_CPP
+   AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/../cpp/CMakeLists.txt"
+   AND NOT DEFINED CutCells_DIR
+   AND NOT TARGET CUTCELLS::cutcells
+   AND NOT TARGET cutcells)
+  add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../cpp"
+                   "${CMAKE_CURRENT_BINARY_DIR}/cutcells_cpp")
+endif()
+
+if(TARGET cutcells)
+  add_library(CUTCELLS::cutcells ALIAS cutcells)
+  if(APPLE)
+    set_target_properties(cutcells PROPERTIES
+      INSTALL_NAME_DIR "@loader_path/../lib")
+  endif()
+elseif(NOT TARGET CUTCELLS::cutcells)
+  _set_default_cutcells_dir()
+  find_package(CutCells REQUIRED CONFIG)
+endif()
+
+if(CutCells_FOUND)
+  message(STATUS "Found CutCells in: ${CutCells_DIR}")
+endif()
+
+set(_cutcells_lib "")
+if(TARGET cutcells)
+  set(_cutcells_lib "$<TARGET_FILE:cutcells>")
+elseif(TARGET CUTCELLS::cutcells)
+  get_target_property(_cutcells_lib_rel CUTCELLS::cutcells IMPORTED_LOCATION_RELEASE)
+  get_target_property(_cutcells_lib_dbg CUTCELLS::cutcells IMPORTED_LOCATION_DEBUG)
+  get_target_property(_cutcells_lib_any CUTCELLS::cutcells IMPORTED_LOCATION)
+  if(_cutcells_lib_rel)
+    set(_cutcells_lib "${_cutcells_lib_rel}")
+  elseif(_cutcells_lib_dbg)
+    set(_cutcells_lib "${_cutcells_lib_dbg}")
+  elseif(_cutcells_lib_any)
+    set(_cutcells_lib "${_cutcells_lib_any}")
+  endif()
+endif()
+
+if(_cutcells_lib AND NOT TARGET cutcells)
+  message(STATUS "Using CutCells library: ${_cutcells_lib}")
+  find_program(NM_EXECUTABLE nm)
+  if(NM_EXECUTABLE)
+    execute_process(
+      COMMAND "${NM_EXECUTABLE}" -gU "${_cutcells_lib}"
+      OUTPUT_VARIABLE _nm_out
+      ERROR_QUIET
+    )
+    string(FIND "${_nm_out}" "create_level_set_function" _has_create_level_set_function)
+    string(FIND "${_nm_out}" "write_level_set_vtu" _has_write_level_set_vtu)
+    if(_has_create_level_set_function EQUAL -1 OR _has_write_level_set_vtu EQUAL -1)
+      message(FATAL_ERROR
+        "The selected libcutcells is stale and missing required symbols "
+        "(create_level_set_function / write_level_set_vtu).\n"
+        "Selected library: ${_cutcells_lib}\n"
+        "Rebuild and reinstall the C++ core, then rerun the Python build.")
+    endif()
+  endif()
 endif()
 
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
+message(STATUS "Using Python executable: ${Python_EXECUTABLE}")
+if(_conda_prefix)
+  message(STATUS "Using active conda prefix: ${_conda_prefix}")
+endif()
 
 # Detect the installed nanobind package and import it into CMake
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -c "import nanobind; print(nanobind.cmake_dir())"
-  OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE NB_DIR)
+  OUTPUT_VARIABLE NB_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
 list(APPEND CMAKE_PREFIX_PATH "${NB_DIR}")
 find_package(nanobind CONFIG REQUIRED)
 
-# Create the binding library
 nanobind_add_module(_cutcellscpp cutcells/wrapper.cpp)
 target_link_libraries(_cutcellscpp PRIVATE CUTCELLS::cutcells)
 
-# Add strict compiler flags
 include(CheckCXXCompilerFlag)
-CHECK_CXX_COMPILER_FLAG("-Wall -Werror -Wextra -Wno-comment -pedantic" HAVE_PEDANTIC)
-
+check_cxx_compiler_flag("-Wall -Wextra -Wno-comment -pedantic" HAVE_PEDANTIC)
 if(HAVE_PEDANTIC)
-  target_compile_options(_cutcellscpp PRIVATE -Wall;-Wextra;-Werror;-Wno-comment)
+  target_compile_options(_cutcellscpp PRIVATE -Wall -Wextra -Wno-comment)
 endif()
 
-get_target_property(_location CUTCELLS::cutcells LOCATION)
-get_filename_component(_cutcells_dir ${_location} DIRECTORY)
-
-# Ensure we load the CutCells library we just found/linked against.
-# In conda environments it's common to also have a (possibly older) libcutcells.dylib
-# available on the default RPATH; if that appears before our in-repo prefix, dyld
-# will pick the wrong one at runtime.
-set_target_properties(_cutcellscpp PROPERTIES
-  INSTALL_RPATH "${_cutcells_dir}"
-  BUILD_RPATH "${_cutcells_dir}"
-  BUILD_WITH_INSTALL_RPATH TRUE
-  INSTALL_RPATH_USE_LINK_PATH FALSE)
-
-if(APPLE AND DEFINED ENV{CONDA_PREFIX})
-  # scikit-build/nanobind often injects ${CONDA_PREFIX}/lib as an LC_RPATH ahead of ours.
-  # If that environment contains another libcutcells.dylib, dyld will load the wrong one.
-  # Reorder RPATHs post-link so the in-repo CutCells lib directory is searched first.
-  set(_conda_lib "$ENV{CONDA_PREFIX}/lib")
-  # If CutCells itself is installed into the conda env lib dir, then _cutcells_dir == _conda_lib
-  # and reordering is unnecessary (and would attempt to add the same RPATH twice).
-  if (NOT "${_cutcells_dir}" STREQUAL "${_conda_lib}")
-    add_custom_command(TARGET _cutcellscpp POST_BUILD
-      COMMAND install_name_tool -delete_rpath "${_conda_lib}" $<TARGET_FILE:_cutcellscpp> || true
-      COMMAND install_name_tool -delete_rpath "${_cutcells_dir}" $<TARGET_FILE:_cutcellscpp> || true
-      COMMAND install_name_tool -add_rpath "${_cutcells_dir}" $<TARGET_FILE:_cutcellscpp>
-      COMMAND install_name_tool -add_rpath "${_conda_lib}" $<TARGET_FILE:_cutcellscpp>
-      VERBATIM)
+set(_build_rpath "$<TARGET_FILE_DIR:CUTCELLS::cutcells>")
+if(TARGET cutcells)
+  if(APPLE)
+    set(_install_rpath "@loader_path/../lib")
+  else()
+    set(_install_rpath "$ORIGIN/../lib")
   endif()
+else()
+  set(_install_rpath "$<TARGET_FILE_DIR:CUTCELLS::cutcells>")
 endif()
+
+set_target_properties(_cutcellscpp PROPERTIES
+  BUILD_RPATH "${_build_rpath}"
+  INSTALL_RPATH "${_install_rpath}"
+  BUILD_WITH_INSTALL_RPATH FALSE
+  INSTALL_RPATH_USE_LINK_PATH FALSE
+)
 
 install(TARGETS _cutcellscpp LIBRARY DESTINATION cutcells)

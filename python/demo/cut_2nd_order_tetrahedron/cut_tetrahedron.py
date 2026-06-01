@@ -2,6 +2,7 @@ import cutcells
 import numpy as np
 import pyvista as pv
 
+
 subdivision = np.array([[2, 3], [1, 3], [1, 2], [0, 3], [0, 2], [0, 1]])
 
 # e01 : 4 , e12: 5, e02: 6, e03: 7, e13: 8, e23: 9
@@ -64,14 +65,14 @@ cut_cell_ext.write_vtk("exterior.vtu")
 # pv.start_xvfb()
 
 grid_int = pv.UnstructuredGrid(
-    cut_cell_int.connectivity,
-    cut_cell_int.types,
-    cut_cell_int.vertex_coords,
+    cut_cell_int.cells,
+    cut_cell_int.vtk_types,
+    np.asarray(cut_cell_int.vertex_coords),
 )
 grid_ext = pv.UnstructuredGrid(
-    cut_cell_ext.connectivity,
-    cut_cell_ext.types,
-    cut_cell_ext.vertex_coords,
+    cut_cell_ext.cells,
+    cut_cell_ext.vtk_types,
+    np.asarray(cut_cell_ext.vertex_coords),
 )
 
 plotter = pv.Plotter()  # off_screen=True

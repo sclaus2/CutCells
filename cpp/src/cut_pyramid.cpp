@@ -14,15 +14,20 @@
 #include "generated/cut_pyramid_outside_tables.h"
 #include "utils.h"
 
+#include <array>
 #include <concepts>
 #include <stdexcept>
-#include <unordered_map>
 #include <vector>
 
 namespace cutcells::cell::pyramid
 {
     namespace
     {
+        using VertexCaseMap = std::array<int, cutcells::utils::MAX_TOKEN_LOOKUP>;
+        constexpr int reserve_vertex_coords = 28;
+        constexpr int reserve_connectivity = 48;
+        constexpr int reserve_types = 48;
+
         // VTK_PYRAMID vertex ordering assumed:
         // base quad: 0,1,2,3 and apex: 4.
         // Edge ids must match the VTK TableBasedClip case stream.
@@ -37,29 +42,29 @@ namespace cutcells::cell::pyramid
                                      + " for flag=" + std::to_string(flag));
         }
 
-        int lookup_token_or_throw(const std::unordered_map<int, int>& vertex_case_map,
+        int lookup_token_or_throw(const VertexCaseMap& vertex_case_map,
                                   const int flag,
                                   const int token,
                                   const char* where)
         {
-            const auto it = vertex_case_map.find(token);
-            if (it == vertex_case_map.end())
+            if (token < 0 || token >= static_cast<int>(vertex_case_map.size()) || vertex_case_map[token] < 0)
                 throw_missing_token(flag, token, where);
-            return it->second;
+            return vertex_case_map[token];
         }
 
         template <std::floating_point T>
         void compute_intersection_points(const std::span<const T> vertex_coordinates, const int gdim,
                                           const std::span<const T> ls_values, const int flag,
                                           std::vector<T>& intersection_points,
-                                          std::unordered_map<int, int>& vertex_case_map)
+                                          VertexCaseMap& vertex_case_map)
         {
             intersection_points.clear();
-            vertex_case_map.clear();
+            intersection_points.reserve(8 * gdim);
+            vertex_case_map.fill(-1);
 
-            std::vector<T> v0(gdim);
-            std::vector<T> v1(gdim);
-            std::vector<T> ip(gdim);
+            // gdim is 3 for pyramids; use stack arrays to avoid heap allocation per edge
+            std::array<T, 3> v0 = {};
+            std::array<T, 3> v1 = {};
 
             int ip_index = 0;
             for (int e = 0; e < 8; ++e)
@@ -79,10 +84,11 @@ namespace cutcells::cell::pyramid
                 const T ls0 = ls_values[v0_id];
                 const T ls1 = ls_values[v1_id];
 
-                interval::compute_intersection_point<T>(0.0, v0, v1, ls0, ls1, ip);
-
-                for (int j = 0; j < gdim; ++j)
-                    intersection_points.push_back(ip[j]);
+                const int ip_offset = static_cast<int>(intersection_points.size());
+                intersection_points.resize(intersection_points.size() + gdim);
+                interval::compute_intersection_point<T>(T(0), std::span<const T>(v0.data(), gdim),
+                                                        std::span<const T>(v1.data(), gdim),
+                                                        ls0, ls1, intersection_points, ip_offset);
 
                 vertex_case_map[e] = ip_index;
                 ++ip_index;
@@ -93,9 +99,9 @@ namespace cutcells::cell::pyramid
         void ensure_vertex_token(const std::span<const T> vertex_coordinates, const int gdim,
                                  const int token,
                                  CutCell<T>& cut_cell,
-                                 std::unordered_map<int, int>& vertex_case_map)
+                                 VertexCaseMap& vertex_case_map)
         {
-            if (vertex_case_map.find(token) != vertex_case_map.end())
+            if (vertex_case_map[token] >= 0)
                 return;
 
             const int vid = token - 100;
@@ -113,9 +119,9 @@ namespace cutcells::cell::pyramid
                                   const int* special_point_offset,
                                   const int* special_point_data,
                                   CutCell<T>& cut_cell,
-                                  std::unordered_map<int, int>& vertex_case_map)
+                                  VertexCaseMap& vertex_case_map)
         {
-            if (vertex_case_map.find(token) != vertex_case_map.end())
+            if (vertex_case_map[token] >= 0)
                 return;
 
             if (special_point_count == nullptr || special_point_offset == nullptr || special_point_data == nullptr)
@@ -137,7 +143,8 @@ namespace cutcells::cell::pyramid
             if (nrefs <= 0)
                 throw std::runtime_error("Malformed special point definition");
 
-            std::vector<T> coord(gdim, T(0));
+            // gdim is at most 3 for 3-D cells; use stack storage
+            std::array<T, 3> coord = {T(0), T(0), T(0)};
             for (int r = 0; r < nrefs; ++r)
             {
                 const int ref = special_point_data[idx++];
@@ -188,7 +195,7 @@ namespace cutcells::cell::pyramid
                          const int* special_point_data,
                          bool triangulate,
                          CutCell<T>& cut_cell,
-                         std::unordered_map<int, int>& vertex_case_map)
+                         VertexCaseMap& vertex_case_map)
         {
             const int cell_begin = case_offsets[flag];
             const int cell_end = case_offsets[flag + 1];
@@ -198,8 +205,8 @@ namespace cutcells::cell::pyramid
                 const type sub_type = cell_types[cell_idx];
                 const int* verts = subcell_verts[cell_idx];
 
-                std::vector<int> verts_local;
-                verts_local.reserve(MaxVerts);
+                std::array<int, MaxVerts> verts_local;
+                int nverts = 0;
                 for (int i = 0; i < MaxVerts; ++i)
                 {
                     const int token = verts[i];
@@ -221,20 +228,19 @@ namespace cutcells::cell::pyramid
                                                 cut_cell, vertex_case_map);
                     }
 
-                    verts_local.push_back(lookup_token_or_throw(vertex_case_map, flag, token, "decode_case"));
+                    verts_local[nverts++] = lookup_token_or_throw(vertex_case_map, flag, token, "decode_case");
                 }
 
-                if (triangulate && sub_type == type::quadrilateral && verts_local.size() == 4)
+                if (triangulate && sub_type == type::quadrilateral && nverts == 4)
                 {
-                    cut_cell._types.push_back(type::triangle);
-                    cut_cell._connectivity.push_back({verts_local[0], verts_local[1], verts_local[2]});
-                    cut_cell._types.push_back(type::triangle);
-                    cut_cell._connectivity.push_back({verts_local[0], verts_local[2], verts_local[3]});
+                    const std::array<int, 3> t0 = {verts_local[0], verts_local[1], verts_local[2]};
+                    const std::array<int, 3> t1 = {verts_local[0], verts_local[2], verts_local[3]};
+                    cutcells::cell::append_cell(cut_cell, type::triangle, t0, 3);
+                    cutcells::cell::append_cell(cut_cell, type::triangle, t1, 3);
                 }
                 else
                 {
-                    cut_cell._types.push_back(sub_type);
-                    cut_cell._connectivity.push_back(std::move(verts_local));
+                    cutcells::cell::append_cell(cut_cell, sub_type, verts_local.data(), nverts);
                 }
             }
         }
@@ -267,17 +273,19 @@ namespace cutcells::cell::pyramid
         }
 
         // Compute intersections (shared for all parts)
-        std::vector<T> intersection_points;
-        std::unordered_map<int, int> vertex_case_map;
+        thread_local std::vector<T> intersection_points;
+        VertexCaseMap vertex_case_map;
         compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_lt0,
                                        intersection_points, vertex_case_map);
 
         cut_cell._gdim = gdim;
-        cut_cell._vertex_coords = std::move(intersection_points);
-        cut_cell._types.clear();
-        cut_cell._connectivity.clear();
+        cut_cell._vertex_coords.assign(intersection_points.begin(), intersection_points.end());
+        cutcells::cell::clear_cell_topology(cut_cell);
+        cut_cell._vertex_coords.reserve(reserve_vertex_coords * gdim);
+        cutcells::cell::reserve_cell_topology(cut_cell, reserve_connectivity, reserve_types);
+        const cut_type cut_kind = string_to_cut_type(cut_type_str);
 
-        if (cut_type_str == "phi=0")
+        if (cut_kind == cut_type::phieq0)
         {
             cut_cell._tdim = 2;
             decode_case<T, 4>(vertex_coordinates, gdim, flag_lt0,
@@ -285,7 +293,7 @@ namespace cutcells::cell::pyramid
                               nullptr, nullptr, nullptr,
                               triangulate, cut_cell, vertex_case_map);
         }
-        else if (cut_type_str == "phi<0")
+        else if (cut_kind == cut_type::philt0)
         {
             cut_cell._tdim = 3;
             decode_case<T, 8>(vertex_coordinates, gdim, flag_lt0,
@@ -293,7 +301,7 @@ namespace cutcells::cell::pyramid
                               special_point_count_inside, special_point_offset_inside, special_point_data_inside,
                               triangulate, cut_cell, vertex_case_map);
         }
-        else if (cut_type_str == "phi>0")
+        else if (cut_kind == cut_type::phigt0)
         {
             cut_cell._tdim = 3;
             decode_case<T, 8>(vertex_coordinates, gdim, flag_lt0,
@@ -306,7 +314,7 @@ namespace cutcells::cell::pyramid
             throw std::invalid_argument("cutting type unknown");
         }
 
-        cutcells::utils::create_vertex_parent_entity_map<T>(vertex_case_map, cut_cell._vertex_parent_entity);
+        cutcells::utils::create_vertex_parent_entity_map<T>(vertex_case_map, cut_cell._vertex_parent_entity, 8, 5, 1);
     }
 
     template <std::floating_point T>

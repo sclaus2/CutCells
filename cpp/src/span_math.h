@@ -5,6 +5,7 @@
 // SPDX-License-Identifier:    MIT
 #pragma once
 
+#include <array>
 #include <span>
 #include <string>
 #include <sstream>
@@ -15,6 +16,37 @@ namespace cutcells
 {
     namespace math
     {
+      template<typename T, std::size_t N>
+      using Vec = std::array<T, N>;
+
+      template<typename T>
+      using Vec2 = std::array<T, 2>;
+
+      template<typename T>
+      using Vec3 = std::array<T, 3>;
+
+      template <std::size_t N, std::floating_point T>
+      inline Vec<T, N> to_vec(std::span<const T> a)
+      {
+        assert(a.size() == N);
+        Vec<T, N> result{};
+        for (std::size_t i = 0; i < N; ++i)
+          result[i] = a[i];
+        return result;
+      }
+
+      template <std::floating_point T>
+      inline Vec2<T> to_vec2(std::span<const T> a)
+      {
+        return to_vec<2, T>(a);
+      }
+
+      template <std::floating_point T>
+      inline Vec3<T> to_vec3(std::span<const T> a)
+      {
+        return to_vec<3, T>(a);
+      }
+
       template <std::floating_point T>
       inline T dot(std::span<const T> a, std::span<const T> b)
       {
@@ -28,12 +60,9 @@ namespace cutcells
       }
 
       template <std::floating_point T>
-      inline std::vector<T> cross(std::span<const T> a, std::span<const T> b)
+      inline Vec3<T> cross(const Vec3<T>& a, const Vec3<T>& b)
       {
-        //cross product only implemented in 3D
-        assert(a.size()==3);
-        assert(a.size()==b.size());
-        std::vector<T> result(3);
+        Vec3<T> result{};
 
         result[0] = a[1]*b[2]-a[2]*b[1];
         result[1] = a[2]*b[0]-a[0]*b[2];
@@ -43,23 +72,39 @@ namespace cutcells
       }
 
       template <std::floating_point T>
-      inline std::vector<T> subtract(std::span<const T> a, std::span<const T> b)
+      inline T cross(const Vec2<T>& a, const Vec2<T>& b)
       {
-        assert(a.size()==b.size());
-        std::vector<T> result(a.size());
-        for(std::size_t i=0;i<a.size();i++)
-          result[i] =a[i]-b[i];
+        return a[0] * b[1] - a[1] * b[0];
+      }
+
+      template <std::size_t N, std::floating_point T>
+      inline Vec<T, N> subtract(const Vec<T, N>& a, const Vec<T, N>& b)
+      {
+        Vec<T, N> result{};
+        for (std::size_t i = 0; i < N; ++i)
+          result[i] = a[i] - b[i];
         return result;
       }
 
       template <std::floating_point T>
-      inline std::vector<T> add(std::span<const T> a, std::span<const T> b)
+      inline Vec3<T> subtract(const Vec3<T>& a, const Vec3<T>& b)
       {
-        assert(a.size()==b.size());
-        std::vector<T> result(a.size());
-        for(std::size_t i=0;i<a.size();i++)
-          result[i] =a[i]+b[i];
+        return subtract<3, T>(a, b);
+      }
+
+      template <std::size_t N, std::floating_point T>
+      inline Vec<T, N> add(const Vec<T, N>& a, const Vec<T, N>& b)
+      {
+        Vec<T, N> result{};
+        for (std::size_t i = 0; i < N; ++i)
+          result[i] = a[i] + b[i];
         return result;
+      }
+
+      template <std::floating_point T>
+      inline Vec3<T> add(const Vec3<T>& a, const Vec3<T>& b)
+      {
+        return add<3, T>(a, b);
       }
 
       template <std::floating_point T>

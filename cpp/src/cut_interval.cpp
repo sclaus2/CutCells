@@ -7,10 +7,11 @@
 #include "cell_flags.h"
 #include "span_math.h"
 #include "utils.h"
-#include <unordered_map>
 
 namespace cutcells::cell
 {
+    using VertexCaseMap = std::array<int, cutcells::utils::MAX_TOKEN_LOOKUP>;
+
     namespace{
         int interval_sub_element[4][2] = 
         {   {-1 -1},           // 0
@@ -28,32 +29,10 @@ namespace cutcells::cell
             return 1;
         }
 
-        // cut interval by linear interpolation to obtain intersection point
-        template <std::floating_point T>
-        void compute_intersection_point(const T& level, std::span<const T> p0, std::span<const T> p1,
-                 const T& v0, const T& v1, std::vector<T>& intersection_point, const int & offset)
-        {
-            // TODO: Catch precision errors and almost alignments.
-            for(int i=0;i<p0.size();i++)
-            {
-                intersection_point[i+offset] = p0[i] +  (p1[i] - p0[i])*(level - v0)/(v1-v0);
-            }
-        };
-
-        void create_interface_cells(std::vector<std::vector<int>>& interface_cells, std::vector<type>& interface_cell_types)
-        {
-            interface_cells.resize(1);
-            interface_cells[0].resize(1);
-            interface_cells[0][0] = 0;
-
-            interface_cell_types.resize(1);
-            interface_cell_types[0] = type::point;
-        }
-
-        template <std::floating_point T>
+template <std::floating_point T>
         void create_sub_cell_vertex_coords(const int& flag, const std::span<const T> vertex_coordinates, const int gdim,
                                         const std::span<const T> intersection_points,
-                                        std::vector<T>& coords, std::unordered_map<int,int>& vertex_case_map)
+                                        std::vector<T>& coords, VertexCaseMap& vertex_case_map)
         {
             int num_intersection_points = intersection_points.size()/gdim;
             type cell_type = cell::type::interval;
@@ -96,28 +75,6 @@ namespace cutcells::cell
             }
         }
 
-        void create_sub_cells(const int& flag, std::vector<std::vector<int>>& sub_cells,
-                          std::vector<type>& sub_cell_types, std::unordered_map<int,int>& vertex_case_map)
-        {
-            // Allocate memory
-            int num_sub_elements = 1;
-            sub_cells.resize(num_sub_elements);
-            sub_cell_types.resize(num_sub_elements);
-
-            for(int i=0;i<num_sub_elements;i++)
-            {
-                type sub_cell_type = type::interval;
-                sub_cell_types[i] = sub_cell_type;
-                int num_vertices = get_num_vertices(sub_cell_type);
-                sub_cells[i].resize(num_vertices);
-
-                for(int j=0;j<num_vertices;j++)
-                {
-                    sub_cells[i][j] = vertex_case_map[interval_sub_element[flag][j]];
-                }
-            }
-        }
-
         template <std::floating_point T>
         void create_cut_cell(const std::span<const T> vertex_coordinates,
                         const int gdim,  const std::span<const T> ls_values,
@@ -126,7 +83,9 @@ namespace cutcells::cell
                         const std::span<const T> intersection_points)
         {
             cut_cell._gdim = gdim;
-            std::unordered_map<int,int> vertex_case_map;
+            cutcells::cell::clear_cell_topology(cut_cell);
+            VertexCaseMap vertex_case_map;
+            vertex_case_map.fill(-1);
 
             if(cut_type_str=="phi=0")
             {
@@ -136,28 +95,33 @@ namespace cutcells::cell
                 {
                     cut_cell._vertex_coords[i] = intersection_points[i];
                 }
-                //Fill in cut cell with intersection point for interval this is just the intersection point
-                create_interface_cells(cut_cell._connectivity, cut_cell._types);
+                // Interface is the single intersection point (index 0)
+                const int v = 0;
+                cutcells::cell::append_cell(cut_cell, type::point, &v, 1);
             }
             else if(cut_type_str=="phi<0")
             {
                 cut_cell._tdim = 1;
                 int flag_interior = get_entity_flag(ls_values, false);
-                create_sub_cell_vertex_coords(flag_interior, vertex_coordinates, gdim, intersection_points, 
+                create_sub_cell_vertex_coords(flag_interior, vertex_coordinates, gdim, intersection_points,
                             cut_cell._vertex_coords, vertex_case_map);
-                //Determine interior sub-cells
-                create_sub_cells(flag_interior, cut_cell._connectivity,
-                            cut_cell._types, vertex_case_map);
+                // Interval always produces exactly one sub-interval with 2 vertices
+                std::array<int, 2> verts;
+                verts[0] = vertex_case_map[interval_sub_element[flag_interior][0]];
+                verts[1] = vertex_case_map[interval_sub_element[flag_interior][1]];
+                cutcells::cell::append_cell(cut_cell, type::interval, verts, 2);
             }
             else if(cut_type_str=="phi>0")
             {
                 cut_cell._tdim = 1;
-                //Determine exterior sub-cells
                 int flag_exterior = get_entity_flag(ls_values, true);
-                create_sub_cell_vertex_coords(flag_exterior, vertex_coordinates, gdim, intersection_points, 
+                create_sub_cell_vertex_coords(flag_exterior, vertex_coordinates, gdim, intersection_points,
                             cut_cell._vertex_coords, vertex_case_map);
-                create_sub_cells(flag_exterior, cut_cell._connectivity,
-                        cut_cell._types, vertex_case_map);
+                // Interval always produces exactly one sub-interval with 2 vertices
+                std::array<int, 2> verts;
+                verts[0] = vertex_case_map[interval_sub_element[flag_exterior][0]];
+                verts[1] = vertex_case_map[interval_sub_element[flag_exterior][1]];
+                cutcells::cell::append_cell(cut_cell, type::interval, verts, 2);
             }
             else
             {
@@ -182,9 +146,10 @@ namespace cutcells::cell
             }
 
             // Compute intersection point these are required for any cut cell part (interface, interior, exterior)
-            std::vector<T> intersection_point(gdim);
-            std::vector<T> p0(gdim);
-            std::vector<T> p1(gdim);
+            thread_local std::vector<T> intersection_point;
+            intersection_point.resize(gdim);
+            std::array<T, 3> p0 = {};
+            std::array<T, 3> p1 = {};
             T level = 0.0;
 
             for(auto i=0;i<gdim;i++)
@@ -193,7 +158,9 @@ namespace cutcells::cell
             for(auto i=0;i<gdim;i++)
                 p1[i] = vertex_coordinates[gdim+i];
 
-            compute_intersection_point<T>(level, p0, p1,ls_values[0],ls_values[1], intersection_point);
+            compute_intersection_point<T>(level, std::span<const T>(p0.data(), gdim),
+                                          std::span<const T>(p1.data(), gdim),
+                                          ls_values[0], ls_values[1], intersection_point);
 
             //Create the cut cell depending on which cut is requested
             create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, intersection_point);
@@ -216,11 +183,6 @@ namespace cutcells::cell
     template void cut(const std::span<const float> vertex_coordinates, const int gdim,
               const std::span<const float> ls_values, const std::string& cut_type_str,
               CutCell<float>& cut_cell);
-
-    template void compute_intersection_point(const double& level, std::span<const double> p0, std::span<const double> p1,
-                 const double& v0, const double& v1, std::vector<double>& intersection_point, const int & offset);
-    template void compute_intersection_point(const float& level, std::span<const float> p0, std::span<const float> p1,
-                 const float& v0, const float& v1, std::vector<float>& intersection_point, const int & offset);
 
     template double volume(const std::span<const double> vertex_coordinates, const int gdim);
     template float volume(const std::span<const float> vertex_coordinates, const int gdim);

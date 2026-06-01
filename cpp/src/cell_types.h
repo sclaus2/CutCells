@@ -15,7 +15,7 @@ namespace cutcells
     namespace cell
     {
         /// Cell type
-        enum class type
+        enum class type : int
         {
             point = 0,
             interval = 1,

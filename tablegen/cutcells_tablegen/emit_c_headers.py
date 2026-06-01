@@ -249,7 +249,9 @@ def _emit_tet_like_header(
         end = arrays["sub_element_offset"][i + 1]
         num_subcells_per_case.append(end - start)
 
-    lines.append(f"// Number of subcells produced for each case ({table_kind} volume)")
+    lines.append(
+        f"// Number of subcells produced for each case ({table_kind} volume)"
+    )
     lines.append(
         f"constexpr int num_subcells_{table_kind}[{n_cases}] = "
         + _format_int_list(num_subcells_per_case)
