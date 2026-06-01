@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <numeric>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 namespace cutcells::output
@@ -705,6 +706,26 @@ void append_uncut_volume_cells(mesh::CutMesh<T>& out,
     }
 }
 
+template <std::floating_point T>
+T reference_cell_measure(cell::type cell_type)
+{
+    const auto rule = quadrature::get_reference_rule<T>(cell_type, 1);
+    return std::accumulate(rule._weights.begin(), rule._weights.end(), T(0));
+}
+
+template <std::floating_point T>
+T entity_reference_measure(cell::type cell_type,
+                           std::span<const T> reference_vertices,
+                           int parent_tdim)
+{
+    if (cell_type == cell::type::point)
+        return T(1);
+
+    return reference_cell_measure<T>(cell_type)
+         * cell::affine_volume_factor<T>(
+             cell_type, reference_vertices.data(), parent_tdim);
+}
+
 } // namespace
 
 template <std::floating_point T, std::integral I>
@@ -798,6 +819,83 @@ quadrature::QuadratureRules<T> quadrature_rules(const HOMeshPart<T, I>& part,
     return rules;
 }
 
+template <std::floating_point T, std::integral I>
+std::pair<std::vector<I>, std::vector<T>>
+volume_fractions(const HOMeshPart<T, I>& part)
+{
+    if (!part.mesh)
+        throw std::runtime_error("HOMeshPart is not attached to a mesh");
+    if ((!part.cut_cells || !part.parent_cells) && !part.cut_cell_ids.empty())
+        throw std::runtime_error("HOMeshPart cut entities require cut-cell storage");
+    if (part.dim != part.mesh->tdim)
+        throw std::runtime_error("volume_fractions expects a volume HOMeshPart");
+
+    std::unordered_map<I, T> fraction_by_parent;
+
+    if (part.cut_cells)
+    {
+        for (std::int32_t cut_id : part.cut_cell_ids)
+        {
+            const auto& adapt_cell =
+                part.cut_cells->adapt_cells[static_cast<std::size_t>(cut_id)];
+            const I parent_cell_id =
+                part.cut_cells->parent_cell_ids[static_cast<std::size_t>(cut_id)];
+            const auto entities = selected_entities(part, adapt_cell, cut_id);
+            if (entities.empty())
+                continue;
+
+            const T parent_measure =
+                reference_cell_measure<T>(adapt_cell.parent_cell_type);
+            if (parent_measure <= T(0))
+                throw std::runtime_error(
+                    "volume_fractions encountered a parent cell with zero "
+                    "reference measure");
+
+            T selected_fraction = T(0);
+            for (const auto& entity : entities)
+            {
+                if (cell::get_tdim(entity.type) != part.mesh->tdim)
+                {
+                    throw std::runtime_error(
+                        "volume_fractions encountered a non-volume selected "
+                        "entity in a volume HOMeshPart");
+                }
+
+                const auto ref_coords = entity_reference_coords(
+                    adapt_cell,
+                    std::span<const int>(entity.vertices.data(),
+                                         entity.vertices.size()));
+                selected_fraction += entity_reference_measure<T>(
+                    entity.type,
+                    std::span<const T>(ref_coords.data(), ref_coords.size()),
+                    adapt_cell.tdim)
+                                     / parent_measure;
+            }
+
+            fraction_by_parent[parent_cell_id] += selected_fraction;
+        }
+    }
+
+    for (I cell_id : part.uncut_cell_ids)
+        fraction_by_parent[cell_id] += T(1);
+
+    std::vector<I> parents;
+    parents.reserve(fraction_by_parent.size());
+    for (const auto& [parent, fraction] : fraction_by_parent)
+        parents.push_back(parent);
+    std::ranges::sort(parents);
+
+    std::vector<T> fractions;
+    fractions.reserve(parents.size());
+    for (I parent : parents)
+    {
+        const T fraction = fraction_by_parent.at(parent);
+        fractions.push_back(std::clamp(fraction, T(0), T(1)));
+    }
+
+    return {std::move(parents), std::move(fractions)};
+}
+
 template mesh::CutMesh<double> visualization_mesh(
     const HOMeshPart<double, int>&, bool);
 template mesh::CutMesh<float> visualization_mesh(
@@ -824,5 +922,14 @@ template quadrature::QuadratureRules<double> quadrature_rules(
     const HOMeshPart<double, long>&, int, bool);
 template quadrature::QuadratureRules<float> quadrature_rules(
     const HOMeshPart<float, long>&, int, bool);
+
+template std::pair<std::vector<int>, std::vector<double>> volume_fractions(
+    const HOMeshPart<double, int>&);
+template std::pair<std::vector<int>, std::vector<float>> volume_fractions(
+    const HOMeshPart<float, int>&);
+template std::pair<std::vector<long>, std::vector<double>> volume_fractions(
+    const HOMeshPart<double, long>&);
+template std::pair<std::vector<long>, std::vector<float>> volume_fractions(
+    const HOMeshPart<float, long>&);
 
 } // namespace cutcells::output

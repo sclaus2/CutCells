@@ -7,6 +7,7 @@
 
 #include <concepts>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "cut_mesh.h"
@@ -36,5 +37,18 @@ template <std::floating_point T, std::integral I = int>
 quadrature::QuadratureRules<T> quadrature_rules(const HOMeshPart<T, I>& part,
                                                 int order,
                                                 bool include_uncut_cells);
+
+/// Compute the selected volume fraction for each parent cell represented by a
+/// volume mesh part.
+///
+/// The mesh part already encodes the selection expression. For each returned
+/// parent id, the matching value is the reference-space measure of the selected
+/// part divided by the reference-space measure of the full parent cell. Multiple
+/// selected pieces with the same parent are accumulated into one fraction.
+///
+/// @throws std::runtime_error if @p part is not a volume part.
+template <std::floating_point T, std::integral I = int>
+std::pair<std::vector<I>, std::vector<T>>
+volume_fractions(const HOMeshPart<T, I>& part);
 
 } // namespace cutcells::output
