@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.19)
 
-project(cutcells_nanobind VERSION "0.2.0" LANGUAGES CXX)
+project(cutcells_nanobind VERSION "0.4.0" LANGUAGES CXX)
 
 # nanobind uses aligned deallocators only present on macOS > 10.14
 if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
@@ -49,38 +49,6 @@ option(CUTCELLS_PYTHON_USE_LOCAL_CPP
   "Build the bundled CutCells C++ library from source with the same compiler as the Python extension."
   ON)
 
-function(_set_default_cutcells_dir)
-  if(DEFINED CutCells_DIR)
-    return()
-  endif()
-
-  set(_candidates
-    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build/prefix/lib/cmake/cutcells"
-    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-noomp/prefix/lib/cmake/cutcells"
-    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-bench-release/prefix/lib/cmake/cutcells"
-    "${CMAKE_CURRENT_LIST_DIR}/../cpp/build-dir/prefix/lib/cmake/cutcells")
-
-  set(_best_dir "")
-  set(_best_ts -1)
-  foreach(_dir IN LISTS _candidates)
-    if(EXISTS "${_dir}/CutCellsConfig.cmake")
-      set(_lib "${_dir}/../../libcutcells.dylib")
-      if(EXISTS "${_lib}")
-        file(TIMESTAMP "${_lib}" _ts "%s" UTC)
-      else()
-        file(TIMESTAMP "${_dir}/CutCellsConfig.cmake" _ts "%s" UTC)
-      endif()
-      if(_ts GREATER _best_ts)
-        set(_best_ts "${_ts}")
-        set(_best_dir "${_dir}")
-      endif()
-    endif()
-  endforeach()
-  if(_best_dir)
-    set(CutCells_DIR "${_best_dir}" PARENT_SCOPE)
-  endif()
-endfunction()
-
 if(CUTCELLS_PYTHON_USE_LOCAL_CPP
    AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/../cpp/CMakeLists.txt"
    AND NOT DEFINED CutCells_DIR
@@ -97,8 +65,7 @@ if(TARGET cutcells)
       INSTALL_NAME_DIR "@loader_path/../lib")
   endif()
 elseif(NOT TARGET CUTCELLS::cutcells)
-  _set_default_cutcells_dir()
-  find_package(CutCells REQUIRED CONFIG)
+  find_package(CutCells 0.4.0 REQUIRED CONFIG)
 endif()
 
 if(CutCells_FOUND)

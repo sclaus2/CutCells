@@ -3,6 +3,7 @@
 # This file is part of CutCells
 #
 # SPDX-License-Identifier:    MIT
+__version__ = "0.4.0"
 
 import importlib as _importlib
 from importlib import util as _importlib_util
