@@ -12,6 +12,7 @@
 #include "generated/cut_prism_inside_tables.h"
 #include "generated/cut_prism_interface_tables.h"
 #include "generated/cut_prism_outside_tables.h"
+#include "reference_cell.h"
 #include "triangulation.h"
 #include "utils.h"
 
@@ -229,6 +230,8 @@ namespace cutcells::cell::prism
 
                     verts_local[nverts++] = lookup_token_or_throw(vertex_case_map, flag, token, "decode_case");
                 }
+                cell::reorder_subcell_vertices_from_vtk_to_basix(
+                    sub_type, verts_local, nverts);
 
                 if (triangulate && sub_type == type::quadrilateral && nverts == 4)
                 {
@@ -258,8 +261,15 @@ namespace cutcells::cell::prism
         if (ls_values.size() != 6)
             throw std::invalid_argument("prism::cut expects 6 level set values");
 
+        const auto table_vertex_coordinates =
+            cell::vertex_data_basix_to_vtk<T>(type::prism, vertex_coordinates, gdim);
+        const auto table_ls_values =
+            cell::vertex_data_basix_to_vtk<T>(type::prism, ls_values, 1);
+
         // CutCells convention: case mask bit i is set when phi_i < 0.
-        const int flag_lt0 = get_entity_flag(ls_values, false);
+        const int flag_lt0 = get_entity_flag<T>(
+            std::span<const T>(table_ls_values.data(), table_ls_values.size()),
+            false);
         if (flag_lt0 == 0 || flag_lt0 == 63)
             throw std::invalid_argument("prism is not intersected and therefore cannot be cut");
 
@@ -277,8 +287,12 @@ namespace cutcells::cell::prism
         // Compute intersections (shared for all parts)
         thread_local std::vector<T> intersection_points;
         VertexCaseMap vertex_case_map;
-        compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_lt0,
-                           intersection_points, vertex_case_map);
+        const std::span<const T> table_vertices(
+            table_vertex_coordinates.data(), table_vertex_coordinates.size());
+        compute_intersection_points<T>(
+            table_vertices, gdim,
+            std::span<const T>(table_ls_values.data(), table_ls_values.size()),
+            flag_lt0, intersection_points, vertex_case_map);
 
         cut_cell._gdim = gdim;
         cut_cell._vertex_coords.assign(intersection_points.begin(), intersection_points.end());
@@ -290,7 +304,7 @@ namespace cutcells::cell::prism
         if (cut_kind == cut_type::phieq0)
         {
             cut_cell._tdim = 2;
-            decode_case<T, 4>(vertex_coordinates, gdim, flag_lt0,
+            decode_case<T, 4>(table_vertices, gdim, flag_lt0,
                               case_subcell_offset_interface, subcell_type_interface, subcell_verts_interface,
                               special_point_count_interface, special_point_offset_interface, special_point_data_interface,
                               triangulate, cut_cell, vertex_case_map);
@@ -298,7 +312,7 @@ namespace cutcells::cell::prism
         else if (cut_kind == cut_type::philt0)
         {
             cut_cell._tdim = 3;
-            decode_case<T, 8>(vertex_coordinates, gdim, flag_lt0,
+            decode_case<T, 8>(table_vertices, gdim, flag_lt0,
                               case_subcell_offset_inside, subcell_type_inside, subcell_verts_inside,
                               special_point_count_inside, special_point_offset_inside, special_point_data_inside,
                               triangulate, cut_cell, vertex_case_map);
@@ -306,7 +320,7 @@ namespace cutcells::cell::prism
         else if (cut_kind == cut_type::phigt0)
         {
             cut_cell._tdim = 3;
-            decode_case<T, 8>(vertex_coordinates, gdim, flag_lt0,
+            decode_case<T, 8>(table_vertices, gdim, flag_lt0,
                               case_subcell_offset_outside, subcell_type_outside, subcell_verts_outside,
                               special_point_count_outside, special_point_offset_outside, special_point_data_outside,
                               triangulate, cut_cell, vertex_case_map);
@@ -316,7 +330,11 @@ namespace cutcells::cell::prism
             throw std::invalid_argument("cutting type unknown");
         }
 
-        cutcells::utils::create_vertex_parent_entity_map<T>(vertex_case_map, cut_cell._vertex_parent_entity, 9, 6, 44);
+        const auto basix_vertex_case_map =
+            cell::remap_token_to_vertex_map_from_vtk_to_basix(
+                type::prism, vertex_case_map, 9, 6, 44);
+        cutcells::utils::create_vertex_parent_entity_map<T>(
+            basix_vertex_case_map, cut_cell._vertex_parent_entity, 9, 6, 44);
     }
 
     template <std::floating_point T>

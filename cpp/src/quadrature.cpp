@@ -10,6 +10,7 @@
 #include "triangulation.h"
 #include "cell_flags.h"
 #include "mapping.h"
+#include "reference_cell.h"
 
 #include <cassert>
 #include <cmath>
@@ -376,9 +377,11 @@ QuadratureRules<T> runtime_quadrature(
     const cut_type ctype_enum = string_to_cut_type(cut_type_str);
 
     // Thread-local scratch (reused across calls, avoids repeated allocations)
-    thread_local std::vector<T>   tl_vtx_buf;
-    thread_local std::vector<T>   tl_ls_buf;
-    thread_local std::vector<T>   tl_vtx_buf_2d;   // 2D projection for embedded 2D cells
+    thread_local std::vector<T>   tl_vtx_vtk;
+    thread_local std::vector<T>   tl_vtx_basix;
+    thread_local std::vector<T>   tl_ls_vtk;
+    thread_local std::vector<T>   tl_ls_basix;
+    thread_local std::vector<T>   tl_vtx_basix_2d;   // 2D projection for embedded 2D cells
     thread_local CutCell<T>       tl_scratch;
     thread_local std::vector<T>   tl_can_verts;
     thread_local std::vector<T>   tl_ref_sub;
@@ -397,12 +400,12 @@ QuadratureRules<T> runtime_quadrature(
         const int tdim = get_tdim(ctype);
 
         // Gather level-set values at the cell vertices
-        tl_ls_buf.resize(nv);
+        tl_ls_vtk.resize(nv);
         for (int j = 0; j < nv; ++j)
-            tl_ls_buf[j] = ls_vals[connectivity[coff + j]];
+            tl_ls_vtk[j] = ls_vals[connectivity[coff + j]];
 
         const domain dom = classify_cell_domain<T>(
-            std::span<const T>(tl_ls_buf.data(), nv));
+            std::span<const T>(tl_ls_vtk.data(), nv));
 
         const bool is_full = (ctype_enum == cut_type::philt0 && dom == domain::inside)  ||
                              (ctype_enum == cut_type::phigt0 && dom == domain::outside);
@@ -415,14 +418,25 @@ QuadratureRules<T> runtime_quadrature(
         if (rules._tdim == 0)
             rules._tdim = tdim;
 
-        // Gather physical vertex coordinates (gdim = 3, VTK convention)
-        tl_vtx_buf.resize(nv * 3);
-        for (int j = 0; j < nv; ++j)
+        // Gather physical vertex coordinates from VTK input and convert once
+        // to CutCells' internal Basix vertex ordering.
+        tl_vtx_vtk.resize(nv * 3);
+        tl_vtx_basix.resize(nv * 3);
+        tl_ls_basix.resize(nv);
+        for (int vtk_v = 0; vtk_v < nv; ++vtk_v)
         {
-            const int vid = connectivity[coff + j];
-            tl_vtx_buf[j * 3 + 0] = points[vid * 3 + 0];
-            tl_vtx_buf[j * 3 + 1] = points[vid * 3 + 1];
-            tl_vtx_buf[j * 3 + 2] = points[vid * 3 + 2];
+            const int vid = connectivity[coff + vtk_v];
+            tl_vtx_vtk[vtk_v * 3 + 0] = points[vid * 3 + 0];
+            tl_vtx_vtk[vtk_v * 3 + 1] = points[vid * 3 + 1];
+            tl_vtx_vtk[vtk_v * 3 + 2] = points[vid * 3 + 2];
+        }
+        for (int basix_v = 0; basix_v < nv; ++basix_v)
+        {
+            const int vtk_v = basix_to_vtk_vertex(ctype, basix_v);
+            tl_vtx_basix[basix_v * 3 + 0] = tl_vtx_vtk[vtk_v * 3 + 0];
+            tl_vtx_basix[basix_v * 3 + 1] = tl_vtx_vtk[vtk_v * 3 + 1];
+            tl_vtx_basix[basix_v * 3 + 2] = tl_vtx_vtk[vtk_v * 3 + 2];
+            tl_ls_basix[basix_v] = tl_ls_vtk[vtk_v];
         }
 
         // ------------------------------------------------------------------
@@ -438,7 +452,7 @@ QuadratureRules<T> runtime_quadrature(
             {
                 // Direct rule: reference points are canonical quadrature points
                 const auto& ref_rule = get_reference_rule<T>(ctype, order);
-                const T det_J = affine_volume_factor<T>(ctype, tl_vtx_buf.data(), 3);
+                const T det_J = affine_volume_factor<T>(ctype, tl_vtx_basix.data(), 3);
                 const int nq  = ref_rule._num_points;
 
                 rules._points.insert(rules._points.end(),
@@ -482,7 +496,7 @@ QuadratureRules<T> runtime_quadrature(
                     {
                         const int vi = simplex[k];
                         for (int d = 0; d < 3; ++d)
-                            tl_phys_sub[k * 3 + d] = tl_vtx_buf[vi * 3 + d];
+                            tl_phys_sub[k * 3 + d] = tl_vtx_basix[vi * 3 + d];
                     }
 
                     // Map canonical simplex quadrature points → parent ref space
@@ -520,39 +534,39 @@ QuadratureRules<T> runtime_quadrature(
                 // For 2D cells embedded in a 3D VTK mesh (z-plane), project
                 // vertices to 2D (x,y) so the cutter and pull-back work in a
                 // square (2×2) Jacobian system.
-                tl_vtx_buf_2d.resize(nv * 2);
+                tl_vtx_basix_2d.resize(nv * 2);
                 for (int j = 0; j < nv; ++j)
                 {
-                    tl_vtx_buf_2d[j * 2 + 0] = tl_vtx_buf[j * 3 + 0];
-                    tl_vtx_buf_2d[j * 2 + 1] = tl_vtx_buf[j * 3 + 1];
+                    tl_vtx_basix_2d[j * 2 + 0] = tl_vtx_basix[j * 3 + 0];
+                    tl_vtx_basix_2d[j * 2 + 1] = tl_vtx_basix[j * 3 + 1];
                 }
                 cell::cut<T>(ctype,
-                             std::span<const T>(tl_vtx_buf_2d.data(), nv * 2),
+                             std::span<const T>(tl_vtx_basix_2d.data(), nv * 2),
                              2,
-                             std::span<const T>(tl_ls_buf.data(), nv),
+                             std::span<const T>(tl_ls_basix.data(), nv),
                              cut_type_str,
                              tl_scratch,
                              triangulate);
                 if (cell::num_cells(tl_scratch) == 0)
                     continue;
                 tl_scratch._parent_cell_type     = ctype;
-                tl_scratch._parent_vertex_coords = tl_vtx_buf_2d;  // 2D parent
+                tl_scratch._parent_vertex_coords = tl_vtx_basix_2d;  // 2D parent
                 cell::complete_from_physical(tl_scratch);
                 append_quadrature(tl_scratch, order, rules);
             }
             else  // tdim == 3
             {
                 cell::cut<T>(ctype,
-                             std::span<const T>(tl_vtx_buf.data(), nv * 3),
+                             std::span<const T>(tl_vtx_basix.data(), nv * 3),
                              3,
-                             std::span<const T>(tl_ls_buf.data(), nv),
+                             std::span<const T>(tl_ls_basix.data(), nv),
                              cut_type_str,
                              tl_scratch,
                              triangulate);
                 if (cell::num_cells(tl_scratch) == 0)
                     continue;
                 tl_scratch._parent_cell_type      = ctype;
-                tl_scratch._parent_vertex_coords  = tl_vtx_buf;
+                tl_scratch._parent_vertex_coords  = tl_vtx_basix;
                 cell::complete_from_physical(tl_scratch);
                 append_quadrature(tl_scratch, order, rules);
             }

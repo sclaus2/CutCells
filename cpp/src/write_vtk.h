@@ -26,6 +26,25 @@ namespace cutcells::io
                     const std::span<cell::type> element_types, 
                     const int gdim);
 
+    template <std::floating_point T>
+    void write_vtk(std::string filename,
+                   const std::span<const T> element_vertex_coords,
+                   const std::span<const int> connectivity,
+                   const std::span<const int> offsets,
+                   const std::span<cell::type> element_types,
+                   const int gdim)
+    {
+        std::vector<double> coords_d(element_vertex_coords.begin(),
+                                     element_vertex_coords.end());
+        write_vtk(
+            filename,
+            std::span<const double>(coords_d.data(), coords_d.size()),
+            connectivity,
+            offsets,
+            element_types,
+            gdim);
+    }
+
     void write_vtk(std::string filename, cell::CutCell<double>& cut_cell);
 
     /// Write a CutMesh (basix-ordered internally) to a VTU file.

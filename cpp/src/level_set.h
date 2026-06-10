@@ -41,6 +41,11 @@ struct LevelSetMeshData
   std::vector<I> cell_dofs;
   std::vector<I> cell_offsets;
 
+  // Optional flattened reference coordinates for one local cell dof row:
+  // [xi0_0, xi0_1, ..., xi1_0, xi1_1, ...]. When empty, CutCells falls
+  // back to its equispaced reference lattice for the requested cell type.
+  std::vector<T> cell_reference_points;
+
   // Optional non-owning cell -> global dof map. When cell_offsets_view is empty,
   // cell_dofs_view is interpreted as fixed-width rows with cell_dof_stride
   // entries and cell_dofs_per_cell active entries.
@@ -253,7 +258,8 @@ LevelSetMeshData<T, I> create_level_set_mesh_data(
     std::span<const T> dof_coordinates,
     std::span<const I> cell_dofs,
     std::span<const I> cell_offsets,
-    std::span<const cell::type> cell_types = {});
+    std::span<const cell::type> cell_types = {},
+    std::span<const T> cell_reference_points = {});
 
 template <std::floating_point T, std::integral I = int>
 LevelSetMeshData<T, I> create_level_set_mesh_data_view(

@@ -20,7 +20,7 @@ namespace
   // Per-cell-type helpers
   // -------------------------------------------------------------------------
 
-  /// Number of first-order vertices per parent cell type (VTK convention).
+  /// Number of first-order vertices per parent cell type.
   inline int num_parent_vertices(type cell_type)
   {
     switch (cell_type)

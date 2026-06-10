@@ -118,9 +118,9 @@ class TestFullCellIntegration:
     def test_hexahedron_full_cell_volume(self):
         """Unit cube has volume 1.0.
 
-        VTK hexahedron vertex ordering:
-          v0=(0,0,0)  v1=(1,0,0)  v2=(1,1,0)  v3=(0,1,0)
-          v4=(0,0,1)  v5=(1,0,1)  v6=(1,1,1)  v7=(0,1,1)
+        Basix hexahedron vertex ordering:
+          v0=(0,0,0)  v1=(1,0,0)  v2=(0,1,0)  v3=(1,1,0)
+          v4=(0,0,1)  v5=(1,0,1)  v6=(0,1,1)  v7=(1,1,1)
         """
         vertex_coords = np.array(
             [
@@ -130,10 +130,10 @@ class TestFullCellIntegration:
                 1.0,
                 0.0,
                 0.0,  # v1
-                1.0,
+                0.0,
                 1.0,
                 0.0,  # v2
-                0.0,
+                1.0,
                 1.0,
                 0.0,  # v3
                 0.0,
@@ -142,18 +142,18 @@ class TestFullCellIntegration:
                 1.0,
                 0.0,
                 1.0,  # v5
-                1.0,
+                0.0,
                 1.0,
                 1.0,  # v6
-                0.0,
+                1.0,
                 1.0,
                 1.0,  # v7
             ],
             dtype=np.float64,
         )
         eps = 1e-4
-        # v6=(1,1,1) has eps>0; all others negative → phi<0 is almost the full cube
-        ls = np.array([-1.0] * 6 + [eps] + [-1.0], dtype=np.float64)
+        # v7=(1,1,1) has eps>0; all others negative -> phi<0 is almost the full cube
+        ls = np.array([-1.0] * 7 + [eps], dtype=np.float64)
         cut_cell = _make_and_enrich(
             cutcells.CellType.hexahedron, vertex_coords, 3, ls, "phi<0"
         )

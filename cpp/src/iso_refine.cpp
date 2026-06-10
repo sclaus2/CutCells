@@ -409,10 +409,10 @@ IsoRefineTemplate make_hexahedron_iso_p1_storage(int order)
 
     for (int t = 1; t < order; ++t) add_pt(t, 0, 0, 1, 0);
     for (int t = 1; t < order; ++t) add_pt(0, t, 0, 1, 1);
-    for (int t = 1; t < order; ++t) add_pt(order, t, 0, 1, 2);
-    for (int t = 1; t < order; ++t) add_pt(t, order, 0, 1, 3);
-    for (int t = 1; t < order; ++t) add_pt(0, 0, t, 1, 4);
-    for (int t = 1; t < order; ++t) add_pt(order, 0, t, 1, 5);
+    for (int t = 1; t < order; ++t) add_pt(0, 0, t, 1, 2);
+    for (int t = 1; t < order; ++t) add_pt(order, t, 0, 1, 3);
+    for (int t = 1; t < order; ++t) add_pt(order, 0, t, 1, 4);
+    for (int t = 1; t < order; ++t) add_pt(t, order, 0, 1, 5);
     for (int t = 1; t < order; ++t) add_pt(0, order, t, 1, 6);
     for (int t = 1; t < order; ++t) add_pt(order, order, t, 1, 7);
     for (int t = 1; t < order; ++t) add_pt(t, 0, order, 1, 8);
@@ -420,11 +420,11 @@ IsoRefineTemplate make_hexahedron_iso_p1_storage(int order)
     for (int t = 1; t < order; ++t) add_pt(order, t, order, 1, 10);
     for (int t = 1; t < order; ++t) add_pt(t, order, order, 1, 11);
 
-    for (int j = 1; j < order; ++j) for (int i = 1; i < order; ++i) add_pt(i, j, 0, 2, 4);
-    for (int k = 1; k < order; ++k) for (int i = 1; i < order; ++i) add_pt(i, 0, k, 2, 2);
-    for (int k = 1; k < order; ++k) for (int j = 1; j < order; ++j) add_pt(0, j, k, 2, 0);
-    for (int k = 1; k < order; ++k) for (int j = 1; j < order; ++j) add_pt(order, j, k, 2, 1);
-    for (int k = 1; k < order; ++k) for (int i = 1; i < order; ++i) add_pt(i, order, k, 2, 3);
+    for (int j = 1; j < order; ++j) for (int i = 1; i < order; ++i) add_pt(i, j, 0, 2, 0);
+    for (int k = 1; k < order; ++k) for (int i = 1; i < order; ++i) add_pt(i, 0, k, 2, 1);
+    for (int k = 1; k < order; ++k) for (int j = 1; j < order; ++j) add_pt(0, j, k, 2, 2);
+    for (int k = 1; k < order; ++k) for (int j = 1; j < order; ++j) add_pt(order, j, k, 2, 3);
+    for (int k = 1; k < order; ++k) for (int i = 1; i < order; ++i) add_pt(i, order, k, 2, 4);
     for (int j = 1; j < order; ++j) for (int i = 1; i < order; ++i) add_pt(i, j, order, 2, 5);
 
     for (int k = 1; k < order; ++k)

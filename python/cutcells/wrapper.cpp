@@ -2772,6 +2772,41 @@ void declare_certification(nb::module_& m, const std::string& suffix)
     }
 }
 
+template <typename T>
+void declare_write_vtk(nb::module_& m)
+{
+  m.def("write_vtk",
+        [](std::string filename,
+           const nb::ndarray<const T, nb::shape<-1>, nb::c_contig>& vertex_coordinates,
+           const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,
+           const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offsets,
+           const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& element_types,
+           int gdim)
+        {
+          std::vector<cell::type> types;
+          types.reserve(element_types.size());
+          for (std::size_t i = 0; i < element_types.size(); ++i)
+            types.push_back(static_cast<cell::type>(element_types.data()[i]));
+
+          nb::gil_scoped_release release;
+          io::write_vtk(
+            std::move(filename),
+            std::span<const T>(vertex_coordinates.data(), vertex_coordinates.size()),
+            std::span<const int>(connectivity.data(), connectivity.size()),
+            std::span<const int>(offsets.data(), offsets.size()),
+            std::span<cell::type>(types.data(), types.size()),
+            gdim);
+        },
+        nb::arg("filename"),
+        nb::arg("vertex_coordinates"),
+        nb::arg("connectivity"),
+        nb::arg("offsets"),
+        nb::arg("element_types"),
+        nb::arg("gdim"),
+        "Write an unstructured VTK XML file using the existing C++ writer.\n"
+        "vertex_coordinates is a flat array of length num_points * gdim.");
+}
+
 } // namespace
 
 NB_MODULE(_cutcellscpp, m)
@@ -2914,34 +2949,6 @@ NB_MODULE(_cutcellscpp, m)
         nb::arg("offsets"),
         "Pack CSR connectivity/offsets to VTK cells layout [n0, v0..., n1, v1..., ...].");
 
-  m.def("write_vtk",
-        [](std::string filename,
-           const nb::ndarray<const double, nb::shape<-1>, nb::c_contig>& vertex_coordinates,
-           const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& connectivity,
-           const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& offsets,
-           const nb::ndarray<const int, nb::shape<-1>, nb::c_contig>& element_types,
-           int gdim)
-        {
-          std::vector<cell::type> types;
-          types.reserve(element_types.size());
-          for (std::size_t i = 0; i < element_types.size(); ++i)
-            types.push_back(static_cast<cell::type>(element_types.data()[i]));
-
-          nb::gil_scoped_release release;
-          io::write_vtk(
-            std::move(filename),
-            std::span<const double>(vertex_coordinates.data(), vertex_coordinates.size()),
-            std::span<const int>(connectivity.data(), connectivity.size()),
-            std::span<const int>(offsets.data(), offsets.size()),
-            std::span<cell::type>(types.data(), types.size()),
-            gdim);
-        },
-        nb::arg("filename"),
-        nb::arg("vertex_coordinates"),
-        nb::arg("connectivity"),
-        nb::arg("offsets"),
-        nb::arg("element_types"),
-        nb::arg("gdim"),
-        "Write an unstructured VTK XML file using the existing C++ writer.\n"
-        "vertex_coordinates is a flat array of length num_points * gdim.");
+  declare_write_vtk<float>(m);
+  declare_write_vtk<double>(m);
 }

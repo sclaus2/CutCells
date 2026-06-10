@@ -13,12 +13,12 @@ QUADRILATERAL = int(cutcells.CellType.quadrilateral.value)
 
 
 def _square_vertices():
-    return np.array([0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0], dtype=float)
+    return np.array([0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0], dtype=float)
 
 
 def test_quadrilateral_opposite_corners_disconnected():
     vertices = _square_vertices()
-    ls_values = np.array([-0.5, 0.5, -0.5, 0.5], dtype=float)
+    ls_values = np.array([-0.5, 0.5, 0.5, -0.5], dtype=float)
 
     cut_inside = cutcells.cut(
         cutcells.CellType.quadrilateral, vertices, 2, ls_values, "phi<0", False

@@ -37,6 +37,75 @@ def _single_triangle_mesh():
     return cutcells.MeshView(coords, connectivity, offsets, cell_types, tdim=2)
 
 
+def _single_quad_mesh():
+    coords = np.array(
+        [
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    connectivity = np.array([0, 1, 3, 2], dtype=np.int32)
+    offsets = np.array([0, 4], dtype=np.int32)
+    cell_types = np.array([9], dtype=np.int32)
+    return cutcells.MeshView(coords, connectivity, offsets, cell_types, tdim=2)
+
+
+def _single_hex_mesh():
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    connectivity = np.array([0, 1, 3, 2, 4, 5, 7, 6], dtype=np.int32)
+    offsets = np.array([0, 8], dtype=np.int32)
+    cell_types = np.array([12], dtype=np.int32)
+    return cutcells.MeshView(coords, connectivity, offsets, cell_types, tdim=3)
+
+
+def _structured_hex_mesh(n: int):
+    grid = np.linspace(-1.0, 1.0, n + 1)
+    coords = np.array(
+        [[x, y, z] for z in grid for y in grid for x in grid],
+        dtype=np.float64,
+    )
+
+    def node(i: int, j: int, k: int) -> int:
+        return k * (n + 1) * (n + 1) + j * (n + 1) + i
+
+    cells = []
+    for k in range(n):
+        for j in range(n):
+            for i in range(n):
+                cells.extend(
+                    [
+                        node(i, j, k),
+                        node(i + 1, j, k),
+                        node(i + 1, j + 1, k),
+                        node(i, j + 1, k),
+                        node(i, j, k + 1),
+                        node(i + 1, j, k + 1),
+                        node(i + 1, j + 1, k + 1),
+                        node(i, j + 1, k + 1),
+                    ]
+                )
+
+    connectivity = np.asarray(cells, dtype=np.int32)
+    offsets = np.arange(0, connectivity.size + 1, 8, dtype=np.int32)
+    cell_types = np.full(n**3, 12, dtype=np.int32)
+    return cutcells.MeshView(coords, connectivity, offsets, cell_types, tdim=3)
+
+
 def _two_tetra_mesh():
     coords = np.array(
         [
@@ -160,9 +229,9 @@ def test_triangle_lut_triangulated_quad_connects_uncut_edge_vertices_to_adjacent
     token_tris = {tuple(sorted(int(parent_tokens[v]) for v in tri)) for tri in connectivity}
 
     assert token_tris == {
-        tuple(sorted((101, 0, 1))),
-        tuple(sorted((1, 0, 2))),
-        tuple(sorted((102, 1, 2))),
+        tuple(sorted((101, 2, 0))),
+        tuple(sorted((0, 2, 1))),
+        tuple(sorted((102, 0, 1))),
     }
 
 
@@ -406,3 +475,167 @@ def test_triangle_volume_output_reflects_adaptcell_quad_leaf():
     assert np.asarray(vis_base.vtk_types).tolist() == [9]
     assert np.asarray(vis_base.vertex_coords).shape[0] == 4
     assert q_base.weights.sum() > 0.0
+
+
+@pytest.mark.parametrize(
+    "mesh_factory,expected_volume_type,expected_interface_type,expected_counts",
+    [
+        (_single_quad_mesh, 9, 3, {"negative": 2, "positive": 4, "interface": 2}),
+        (_single_hex_mesh, 12, 9, {"negative": 4, "positive": 8, "interface": 4}),
+    ],
+)
+def test_iso_p1_tensor_product_quad_hex_output(
+    mesh_factory,
+    expected_volume_type,
+    expected_interface_type,
+    expected_counts,
+):
+    mesh = mesh_factory()
+    ls = cutcells.create_level_set(
+        mesh,
+        lambda X: X[0] - 0.3,
+        degree=1,
+        name="phi",
+    )
+
+    result = cutcells.cut(
+        mesh,
+        ls,
+        triangulate=False,
+        cut_approximation="iso_p1",
+        cut_approximation_order=2,
+    )
+
+    parts = {
+        "negative": result["phi < 0"],
+        "positive": result["phi > 0"],
+        "interface": result["phi = 0"],
+    }
+    expected = {
+        "negative": (expected_volume_type, 0.3),
+        "positive": (expected_volume_type, 0.7),
+        "interface": (expected_interface_type, 1.0),
+    }
+
+    assert result.num_cut_cells == 1
+    for name, part in parts.items():
+        expected_type, expected_measure = expected[name]
+        vis = part.visualization_mesh(mode="cut_only")
+        q = part.quadrature(order=3, mode="cut_only")
+
+        assert np.asarray(vis.vtk_types, dtype=np.int32).tolist() == [
+            expected_type
+        ] * expected_counts[name]
+        assert q.tdim == mesh.tdim
+        assert np.asarray(q.points).size == np.asarray(q.weights).size * mesh.tdim
+        np.testing.assert_allclose(q.weights.sum(), expected_measure, atol=1.0e-12)
+
+
+def test_hexahedron_diagonal_plane_interface_uses_all_six_cut_vertices():
+    mesh = _single_hex_mesh()
+    ls = cutcells.create_level_set(
+        mesh,
+        lambda X: X[0] + X[1] + X[2] - 1.5,
+        degree=1,
+        name="phi",
+    )
+
+    result = cutcells.cut(mesh, ls, triangulate=True)
+    interface = result["phi = 0"]
+
+    vis = interface.visualization_mesh(mode="cut_only")
+    q = interface.quadrature(order=2, mode="cut_only")
+    coords = np.asarray(vis.vertex_coords, dtype=np.float64)
+    expected_points = np.array(
+        [
+            [1.0, 0.5, 0.0],
+            [1.0, 0.0, 0.5],
+            [0.5, 1.0, 0.0],
+            [0.0, 1.0, 0.5],
+            [0.5, 0.0, 1.0],
+            [0.0, 0.5, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+    assert result.num_cut_cells == 1
+    for point in expected_points:
+        assert np.min(np.linalg.norm(coords - point, axis=1)) < 1.0e-12
+    np.testing.assert_allclose(
+        q.weights.sum(),
+        3.0 * np.sqrt(3.0) / 4.0,
+        atol=1.0e-12,
+    )
+
+
+def test_hexahedron_sphere_cell_interface_is_not_counted_from_both_sides():
+    radius = 0.63
+    coords = np.array(
+        [
+            [0.25, -0.5, -0.5],
+            [0.5, -0.5, -0.5],
+            [0.25, -0.25, -0.5],
+            [0.5, -0.25, -0.5],
+            [0.25, -0.5, -0.25],
+            [0.5, -0.5, -0.25],
+            [0.25, -0.25, -0.25],
+            [0.5, -0.25, -0.25],
+        ],
+        dtype=np.float64,
+    )
+    connectivity = np.array([0, 1, 3, 2, 4, 5, 7, 6], dtype=np.int32)
+    offsets = np.array([0, 8], dtype=np.int32)
+    cell_types = np.array([12], dtype=np.int32)
+    mesh = cutcells.MeshView(coords, connectivity, offsets, cell_types, tdim=3)
+    level_set = lambda X: np.sum(X * X, axis=0) - radius**2
+
+    ls = cutcells.create_level_set(mesh, level_set, degree=1, name="phi")
+    result = cutcells.cut(mesh, ls, triangulate=True)
+    interface = result["phi = 0"]
+    q = interface.quadrature(order=4, mode="cut_only")
+
+    values = level_set(coords.T)
+    direct = cutcells.cut(
+        cutcells.CellType.hexahedron,
+        coords.ravel(),
+        3,
+        values,
+        "phi=0",
+        True,
+    )
+    direct_coords = np.asarray(direct.vertex_coords, dtype=np.float64)
+    direct_cells = np.asarray(direct.connectivity, dtype=np.int32).reshape(-1, 3)
+    direct_area = 0.0
+    for tri in direct_cells:
+        a, b, c = direct_coords[tri]
+        direct_area += 0.5 * np.linalg.norm(np.cross(b - a, c - a))
+
+    np.testing.assert_allclose(q.weights.sum(), direct_area, atol=1.0e-12)
+
+
+def test_iso_p1_hexahedron_sphere_exports_generated_zero_faces():
+    mesh = _structured_hex_mesh(2)
+    radius = 0.8
+    ls = cutcells.create_level_set(
+        mesh,
+        lambda X: X[0] ** 2 + X[1] ** 2 + X[2] ** 2 - radius**2,
+        degree=2,
+        name="phi",
+    )
+
+    result = cutcells.cut(
+        mesh,
+        ls,
+        triangulate=False,
+        cut_approximation="iso_p1",
+        cut_approximation_order=2,
+    )
+
+    interface = result["phi = 0"]
+    q = interface.quadrature(order=3, mode="cut_only")
+    weights = np.asarray(q.weights, dtype=np.float64)
+
+    assert result.num_cut_cells == 8
+    assert np.asarray(q.parent_map).size > result.num_cut_cells
+    assert weights.sum() > 1.0
+    assert np.asarray(q.points).size == weights.size * mesh.tdim

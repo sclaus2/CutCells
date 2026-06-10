@@ -22,16 +22,16 @@ namespace cutcells::cell
 /// Column k of J  =  parent_vertex[ col[k] ] - parent_vertex[0].
 /// Up to tdim columns; unused entries are -1.
 ///
-/// Choices follow VTK first-order vertex ordering so that J is diagonal
+/// Choices follow Basix first-order vertex ordering so that J is diagonal
 /// (and thus the identity) for the unit reference cell.
 ///
 ///  interval:       v0=0   v1=1                     → col[0]=1
 ///  triangle:       v0=(0,0)  v1=(1,0)  v2=(0,1)    → col={1,2}
 ///  tetrahedron:    v0=(0,0,0) v1=(1,0,0) v2=(0,1,0) v3=(0,0,1) → col={1,2,3}
-///  quadrilateral:  v0=(0,0) v1=(1,0) v2=(1,1) v3=(0,1)         → col={1,3}
-///  hexahedron:     v0=(0,0,0) v1=(1,0,0) v3=(0,1,0) v4=(0,0,1) → col={1,3,4}
+///  quadrilateral:  v0=(0,0) v1=(1,0) v2=(0,1) v3=(1,1)         → col={1,2}
+///  hexahedron:     v0=(0,0,0) v1=(1,0,0) v2=(0,1,0) v4=(0,0,1) → col={1,2,4}
 ///  prism:          v0=(0,0,0) v1=(1,0,0) v2=(0,1,0) v3=(0,0,1) → col={1,2,3}
-///  pyramid:        v0=(0,0,0) v1=(1,0,0) v3=(0,1,0) v4=apex    → col={1,3,4}
+///  pyramid:        v0=(0,0,0) v1=(1,0,0) v2=(0,1,0) v4=apex    → col={1,2,4}
 inline std::array<int, 3> jacobian_col_indices(type cell_type)
 {
     switch (cell_type)
@@ -39,10 +39,10 @@ inline std::array<int, 3> jacobian_col_indices(type cell_type)
       case type::interval:      return {1, -1, -1};
       case type::triangle:      return {1,  2, -1};
       case type::tetrahedron:   return {1,  2,  3};
-      case type::quadrilateral: return {1,  3, -1};
-      case type::hexahedron:    return {1,  3,  4};
+      case type::quadrilateral: return {1,  2, -1};
+      case type::hexahedron:    return {1,  2,  4};
       case type::prism:         return {1,  2,  3};
-      case type::pyramid:       return {1,  3,  4};
+      case type::pyramid:       return {1,  2,  4};
       default:
         throw std::invalid_argument("mapping: unsupported parent cell type");
     }
@@ -59,7 +59,7 @@ inline std::array<int, 3> jacobian_col_indices(type cell_type)
 /// √(det(JᵀJ)) which gives the correct area / length scaling factor.
 ///
 /// @param cell_type     VTK cell type
-/// @param phys_verts    flat physical vertex coordinates in VTK ordering
+/// @param phys_verts    flat physical vertex coordinates in Basix ordering
 ///                      (nv * gdim values)
 /// @param gdim          geometric dimension of the embedding space (1, 2, or 3)
 /// @returns volume scaling factor ≥ 0
@@ -69,7 +69,7 @@ T affine_volume_factor(type cell_type, const T* phys_verts, int gdim);
 /// @brief Push all cut vertices from parent reference space into physical space.
 ///
 /// Uses the affine map  x_phys = x0 + J * X_ref  where J is built from the
-/// first-order parent cell vertex differences (VTK ordering) and x0 is the first
+/// first-order parent cell vertex differences (Basix ordering) and x0 is the first
 /// parent physical vertex.
 ///
 /// Precondition  : _vertex_coords holds reference coordinates in the parent
@@ -105,10 +105,10 @@ void complete_from_physical(CutCell<T>& cut_cell);
 ///
 /// Maps X_ref (flat, n*gdim) from parent reference space to physical space
 /// x_phys (flat, n*gdim) via  x = x0 + J * X  where J is derived from
-/// parent_vertex_coords and parent_type in VTK vertex ordering.
+/// parent_vertex_coords and parent_type in Basix vertex ordering.
 ///
 /// @param parent_type         cell type of the parent element
-/// @param parent_vertex_coords flat physical vertex coords in VTK ordering
+/// @param parent_vertex_coords flat physical vertex coords in Basix ordering
 /// @param gdim                geometric / topological dimension (must equal
 ///                            the topological dimension of parent_type)
 /// @param X_ref               flat input: n * gdim reference coordinates
@@ -127,7 +127,7 @@ void push_forward_affine(type parent_type,
 /// triangles in 3D or intervals in 2D/3D.
 ///
 /// @param parent_type          cell type of the parent element
-/// @param parent_vertex_coords flat physical vertex coords in VTK ordering
+/// @param parent_vertex_coords flat physical vertex coords in Basix ordering
 /// @param gdim                 physical embedding dimension
 /// @param X_ref                flat input: n * tdim reference coordinates
 /// @returns                    flat output: n * gdim physical coordinates
@@ -143,7 +143,7 @@ std::vector<T> push_forward_affine_map(type parent_type,
 /// X_ref (flat, n*gdim) by solving  J * X = x - x0.
 ///
 /// @param parent_type         cell type of the parent element
-/// @param parent_vertex_coords flat physical vertex coords in VTK ordering
+/// @param parent_vertex_coords flat physical vertex coords in Basix ordering
 /// @param gdim                geometric / topological dimension
 /// @param x_phys              flat input: n * gdim physical coordinates
 /// @param X_ref               flat output: n * gdim reference coordinates

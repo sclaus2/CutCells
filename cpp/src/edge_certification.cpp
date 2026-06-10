@@ -138,12 +138,12 @@ inline int simplex_index_3d(int i, int j, int k, int n)
 
 inline int tp_index_2d(int ix, int iy, int n)
 {
-    return iy * (n + 1) + ix;
+    return ix * (n + 1) + iy;
 }
 
 inline int tp_index_3d(int ix, int iy, int iz, int n)
 {
-    return iz * (n + 1) * (n + 1) + iy * (n + 1) + ix;
+    return (ix * (n + 1) + iy) * (n + 1) + iz;
 }
 
 // =====================================================================
@@ -572,9 +572,9 @@ void restrict_edge_bernstein_exact(cell::type parent_cell_type,
         if (tdim == 2)
         {
             int coeff_index = 0;
-            for (int iy = 0; iy <= p; ++iy)
+            for (int ix = 0; ix <= p; ++ix)
             {
-                for (int ix = 0; ix <= p; ++ix, ++coeff_index)
+                for (int iy = 0; iy <= p; ++iy, ++coeff_index)
                 {
                     std::vector<T> term = {T(1)};
                     const int ids[2] = {ix, iy};
@@ -599,11 +599,11 @@ void restrict_edge_bernstein_exact(cell::type parent_cell_type,
         else if (tdim == 3)
         {
             int coeff_index = 0;
-            for (int iz = 0; iz <= p; ++iz)
+            for (int ix = 0; ix <= p; ++ix)
             {
                 for (int iy = 0; iy <= p; ++iy)
                 {
-                    for (int ix = 0; ix <= p; ++ix, ++coeff_index)
+                    for (int iz = 0; iz <= p; ++iz, ++coeff_index)
                     {
                         std::vector<T> term = {T(1)};
                         const int ids[3] = {ix, iy, iz};

@@ -9,41 +9,23 @@ def _is_on_unit_cube_edge(p: np.ndarray, tol: float = 1e-12) -> bool:
 
 
 def test_hexahedron_interface_uses_special_point_n0():
-    # Pick a concrete VTK case that is known (from generated tables) to reference token 200 (N0).
-    # Case id 67 corresponds to mask bits set at vertices {0,1,6}.
-    ls_values = np.array([-1.0, -1.1, 1.2, 1.3, 1.4, 1.5, -1.6, 1.7], dtype=np.float64)
+    # Pick a concrete Basix-ordered case that maps to a generated table case
+    # referencing token 200 (N0).
+    ls_values = np.array([1.0, 1.1, -1.2, -1.3, -1.4, -1.5, -1.6, 1.7], dtype=np.float64)
 
-    # VTK hexahedron vertex ordering:
-    # 0:(0,0,0) 1:(1,0,0) 2:(1,1,0) 3:(0,1,0) 4:(0,0,1) 5:(1,0,1) 6:(1,1,1) 7:(0,1,1)
     vertex_coordinates = np.array(
         [
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-            1.0,
-            1.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            1.0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
         ],
         dtype=np.float64,
-    )
+    ).ravel()
 
     cut_cell = cutcells.cut(
         cutcells.CellType.hexahedron,

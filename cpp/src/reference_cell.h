@@ -118,7 +118,7 @@ inline std::span<const int> vtk_to_basix_edge_permutation(type cell_type)
     static constexpr std::array<int, 3> triangle = {2, 0, 1};
     static constexpr std::array<int, 4> quadrilateral = {0, 2, 3, 1};
     static constexpr std::array<int, 6> tetrahedron = {5, 2, 4, 3, 1, 0};
-    static constexpr std::array<int, 12> hexahedron = {0, 3, 1, 2, 4, 7, 5, 6, 8, 9, 11, 10};
+    static constexpr std::array<int, 12> hexahedron = {0, 3, 5, 1, 8, 10, 11, 9, 2, 4, 6, 7};
     static constexpr std::array<int, 9> prism = {0, 2, 1, 6, 8, 7, 3, 4, 5};
     static constexpr std::array<int, 8> pyramid = {0, 2, 3, 1, 4, 5, 6, 7};
 
@@ -210,6 +210,54 @@ inline std::vector<I> permute_vertex_ids(std::span<const I> ids,
         if (src < 0 || src >= static_cast<int>(permutation.size()))
             throw std::invalid_argument("permute_vertex_ids: permutation entry out of bounds");
         out[i] = ids[static_cast<std::size_t>(src)];
+    }
+    return out;
+}
+
+template <typename T>
+inline std::vector<T> vertex_data_vtk_to_basix(type cell_type,
+                                               std::span<const T> data,
+                                               int ncomp)
+{
+    if (ncomp < 0)
+        throw std::invalid_argument("vertex_data_vtk_to_basix: negative component count");
+    const int nvertices = get_num_vertices(cell_type);
+    if (data.size() != static_cast<std::size_t>(nvertices) * static_cast<std::size_t>(ncomp))
+        throw std::invalid_argument("vertex_data_vtk_to_basix: data size does not match cell type");
+
+    std::vector<T> out(data.size());
+    for (int basix_v = 0; basix_v < nvertices; ++basix_v)
+    {
+        const int vtk_v = basix_to_vtk_vertex(cell_type, basix_v);
+        for (int c = 0; c < ncomp; ++c)
+        {
+            out[static_cast<std::size_t>(basix_v * ncomp + c)]
+                = data[static_cast<std::size_t>(vtk_v * ncomp + c)];
+        }
+    }
+    return out;
+}
+
+template <typename T>
+inline std::vector<T> vertex_data_basix_to_vtk(type cell_type,
+                                               std::span<const T> data,
+                                               int ncomp)
+{
+    if (ncomp < 0)
+        throw std::invalid_argument("vertex_data_basix_to_vtk: negative component count");
+    const int nvertices = get_num_vertices(cell_type);
+    if (data.size() != static_cast<std::size_t>(nvertices) * static_cast<std::size_t>(ncomp))
+        throw std::invalid_argument("vertex_data_basix_to_vtk: data size does not match cell type");
+
+    std::vector<T> out(data.size());
+    for (int basix_v = 0; basix_v < nvertices; ++basix_v)
+    {
+        const int vtk_v = basix_to_vtk_vertex(cell_type, basix_v);
+        for (int c = 0; c < ncomp; ++c)
+        {
+            out[static_cast<std::size_t>(vtk_v * ncomp + c)]
+                = data[static_cast<std::size_t>(basix_v * ncomp + c)];
+        }
     }
     return out;
 }

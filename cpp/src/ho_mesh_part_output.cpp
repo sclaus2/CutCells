@@ -15,6 +15,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <unordered_map>
@@ -44,6 +45,29 @@ std::vector<T> parent_cell_vertex_coords_vtk(const MeshView<T, I>& mesh,
         const T* x = mesh.node(node_id);
         for (int d = 0; d < mesh.gdim; ++d)
             coords[static_cast<std::size_t>(vtk_v * mesh.gdim + d)] = x[d];
+    }
+    return coords;
+}
+
+template <std::floating_point T, std::integral I>
+std::vector<T> parent_cell_vertex_coords_basix(const MeshView<T, I>& mesh,
+                                               I cell_id)
+{
+    const auto ctype = mesh.cell_type(cell_id);
+    const int nv = cell::get_num_vertices(ctype);
+    std::vector<T> coords(static_cast<std::size_t>(nv * mesh.gdim), T(0));
+    std::vector<I> cell_node_scratch;
+    const auto parent_nodes = mesh.cell_nodes(cell_id, cell_node_scratch);
+
+    for (int basix_v = 0; basix_v < nv; ++basix_v)
+    {
+        const int local_v = mesh.vtk_vertex_order
+                                ? cell::basix_to_vtk_vertex(ctype, basix_v)
+                                : basix_v;
+        const I node_id = parent_nodes[static_cast<std::size_t>(local_v)];
+        const T* x = mesh.node(node_id);
+        for (int d = 0; d < mesh.gdim; ++d)
+            coords[static_cast<std::size_t>(basix_v * mesh.gdim + d)] = x[d];
     }
     return coords;
 }
@@ -465,6 +489,172 @@ T simplex_physical_measure(const T* vertices,
 }
 
 template <std::floating_point T>
+void tabulate_tensor_product_p1(cell::type cell_type,
+                                const T* X,
+                                std::vector<T>& shape,
+                                std::vector<T>& dshape)
+{
+    if (cell_type == cell::type::quadrilateral)
+    {
+        const T u = X[0];
+        const T v = X[1];
+        shape = {
+            (T(1) - u) * (T(1) - v),
+            u * (T(1) - v),
+            (T(1) - u) * v,
+            u * v};
+        dshape = {
+            -(T(1) - v), -(T(1) - u),
+             (T(1) - v), -u,
+            -v,            T(1) - u,
+             v,            u};
+        return;
+    }
+
+    if (cell_type == cell::type::hexahedron)
+    {
+        const T u = X[0];
+        const T v = X[1];
+        const T w = X[2];
+        const std::array<T, 2> nx = {T(1) - u, u};
+        const std::array<T, 2> ny = {T(1) - v, v};
+        const std::array<T, 2> nz = {T(1) - w, w};
+        const std::array<T, 2> dnx = {-T(1), T(1)};
+        const std::array<T, 2> dny = {-T(1), T(1)};
+        const std::array<T, 2> dnz = {-T(1), T(1)};
+        const std::array<std::array<int, 3>, 8> bits = {{
+            {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0},
+            {0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 1, 1}}};
+
+        shape.assign(8, T(0));
+        dshape.assign(8 * 3, T(0));
+        for (std::size_t i = 0; i < bits.size(); ++i)
+        {
+            const int bx = bits[i][0];
+            const int by = bits[i][1];
+            const int bz = bits[i][2];
+            shape[i] = nx[static_cast<std::size_t>(bx)]
+                     * ny[static_cast<std::size_t>(by)]
+                     * nz[static_cast<std::size_t>(bz)];
+            dshape[i * 3 + 0] = dnx[static_cast<std::size_t>(bx)]
+                              * ny[static_cast<std::size_t>(by)]
+                              * nz[static_cast<std::size_t>(bz)];
+            dshape[i * 3 + 1] = nx[static_cast<std::size_t>(bx)]
+                              * dny[static_cast<std::size_t>(by)]
+                              * nz[static_cast<std::size_t>(bz)];
+            dshape[i * 3 + 2] = nx[static_cast<std::size_t>(bx)]
+                              * ny[static_cast<std::size_t>(by)]
+                              * dnz[static_cast<std::size_t>(bz)];
+        }
+        return;
+    }
+
+    throw std::invalid_argument(
+        "tabulate_tensor_product_p1: unsupported cell type");
+}
+
+template <std::floating_point T>
+T gram_measure(std::span<const T> jacobian,
+               int entity_dim,
+               int gdim)
+{
+    std::array<T, 9> gram = {};
+    for (int i = 0; i < entity_dim; ++i)
+    {
+        for (int j = 0; j < entity_dim; ++j)
+        {
+            T sum = T(0);
+            for (int d = 0; d < gdim; ++d)
+                sum += jacobian[static_cast<std::size_t>(i * gdim + d)]
+                     * jacobian[static_cast<std::size_t>(j * gdim + d)];
+            gram[static_cast<std::size_t>(i * entity_dim + j)] = sum;
+        }
+    }
+
+    T det = T(0);
+    if (entity_dim == 1)
+        det = gram[0];
+    else if (entity_dim == 2)
+        det = gram[0] * gram[3] - gram[1] * gram[2];
+    else if (entity_dim == 3)
+    {
+        det =
+            gram[0] * (gram[4] * gram[8] - gram[7] * gram[5])
+          - gram[3] * (gram[1] * gram[8] - gram[7] * gram[2])
+          + gram[6] * (gram[1] * gram[5] - gram[4] * gram[2]);
+    }
+    else
+    {
+        throw std::invalid_argument("gram_measure: unsupported entity dimension");
+    }
+
+    if (det < T(0) && std::abs(det) < T(100) * std::numeric_limits<T>::epsilon())
+        det = T(0);
+    if (det < T(0))
+        throw std::runtime_error("gram_measure: negative Gram determinant");
+    return std::sqrt(det);
+}
+
+template <std::floating_point T>
+void append_tensor_product_quadrature(quadrature::QuadratureRules<T>& rules,
+                                      cell::type cell_type,
+                                      std::span<const T> ref_vertices,
+                                      std::span<const T> physical_vertices,
+                                      int parent_tdim,
+                                      int gdim,
+                                      int order)
+{
+    const auto ref_rule = quadrature::get_reference_rule<T>(cell_type, order);
+    const int num_points = ref_rule._num_points;
+    const int entity_dim = ref_rule._tdim;
+    const int num_vertices = cell::get_num_vertices(cell_type);
+
+    std::vector<T> shape;
+    std::vector<T> dshape;
+    std::vector<T> mapped_ref_point(static_cast<std::size_t>(parent_tdim), T(0));
+    std::vector<T> jacobian(static_cast<std::size_t>(entity_dim * gdim), T(0));
+
+    for (int q = 0; q < num_points; ++q)
+    {
+        const T* X = ref_rule._points.data()
+            + static_cast<std::size_t>(q * entity_dim);
+        tabulate_tensor_product_p1(cell_type, X, shape, dshape);
+
+        std::fill(mapped_ref_point.begin(), mapped_ref_point.end(), T(0));
+        std::fill(jacobian.begin(), jacobian.end(), T(0));
+
+        for (int v = 0; v < num_vertices; ++v)
+        {
+            for (int d = 0; d < parent_tdim; ++d)
+            {
+                mapped_ref_point[static_cast<std::size_t>(d)] +=
+                    shape[static_cast<std::size_t>(v)]
+                    * ref_vertices[static_cast<std::size_t>(v * parent_tdim + d)];
+            }
+
+            for (int k = 0; k < entity_dim; ++k)
+            {
+                const T dN =
+                    dshape[static_cast<std::size_t>(v * entity_dim + k)];
+                for (int d = 0; d < gdim; ++d)
+                {
+                    jacobian[static_cast<std::size_t>(k * gdim + d)] +=
+                        dN * physical_vertices[
+                            static_cast<std::size_t>(v * gdim + d)];
+                }
+            }
+        }
+
+        rules._points.insert(
+            rules._points.end(), mapped_ref_point.begin(), mapped_ref_point.end());
+        rules._weights.push_back(
+            ref_rule._weights[static_cast<std::size_t>(q)]
+            * gram_measure(std::span<const T>(jacobian.data(), jacobian.size()),
+                           entity_dim, gdim));
+    }
+}
+
+template <std::floating_point T>
 void append_mesh_entity(mesh::CutMesh<T>& out,
                         std::span<const T> physical_coords,
                         int gdim,
@@ -567,15 +757,13 @@ void append_entity_quadrature(quadrature::QuadratureRules<T>& rules,
             rules, cell_type, ref_vertices, physical_vertices,
             parent_tdim, gdim, order);
     }
-    else if (entity_dim >= 2)
+    else if ((cell_type == cell::type::quadrilateral
+              || cell_type == cell::type::hexahedron)
+             && entity_dim == parent_tdim)
     {
-        const auto ref_rule = quadrature::get_reference_rule<T>(cell_type, order);
-        const T measure = cell::affine_volume_factor<T>(
-            cell_type, physical_vertices.data(), gdim);
-        rules._points.insert(
-            rules._points.end(), ref_rule._points.begin(), ref_rule._points.end());
-        for (int q = 0; q < ref_rule._num_points; ++q)
-            rules._weights.push_back(ref_rule._weights[q] * measure);
+        append_tensor_product_quadrature(
+            rules, cell_type, ref_vertices, physical_vertices,
+            parent_tdim, gdim, order);
     }
     else
     {
@@ -631,7 +819,7 @@ void append_cut_entities(mesh::CutMesh<T>& out,
         const I parent_cell_id =
             part.cut_cells->parent_cell_ids[static_cast<std::size_t>(cut_id)];
         const auto parent_vertex_coords =
-            parent_cell_vertex_coords_vtk(mesh, parent_cell_id);
+            parent_cell_vertex_coords_basix(mesh, parent_cell_id);
 
         for (const auto& entity : entities)
         {
@@ -681,10 +869,10 @@ void append_uncut_volume_cells(mesh::CutMesh<T>& out,
     for (I cell_id : part.uncut_cell_ids)
     {
         const auto ctype = mesh.cell_type(cell_id);
-        const auto phys_coords = parent_cell_vertex_coords_vtk(mesh, cell_id);
+        const auto vtk_phys_coords = parent_cell_vertex_coords_vtk(mesh, cell_id);
         append_mesh_entity(
             out,
-            std::span<const T>(phys_coords.data(), phys_coords.size()),
+            std::span<const T>(vtk_phys_coords.data(), vtk_phys_coords.size()),
             mesh.gdim,
             ctype,
             static_cast<int>(cell_id),
@@ -692,12 +880,14 @@ void append_uncut_volume_cells(mesh::CutMesh<T>& out,
 
         if (rules != nullptr)
         {
+            const auto basix_phys_coords =
+                parent_cell_vertex_coords_basix(mesh, cell_id);
             const auto ref_coords = cell::canonical_vertices<T>(ctype);
             append_entity_quadrature(
                 *rules,
                 ctype,
                 std::span<const T>(ref_coords.data(), ref_coords.size()),
-                std::span<const T>(phys_coords.data(), phys_coords.size()),
+                std::span<const T>(basix_phys_coords.data(), basix_phys_coords.size()),
                 mesh.tdim,
                 mesh.gdim,
                 static_cast<int>(cell_id),

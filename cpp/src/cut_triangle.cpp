@@ -421,8 +421,12 @@ namespace triangle{
         create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str, cut_cell, 
                         strategy, intersection_points, vertex_case_map);
 
+        const auto basix_vertex_case_map =
+            cell::remap_token_to_vertex_map_from_vtk_to_basix(
+                type::triangle, vertex_case_map,
+                /*n_edges=*/3, /*n_vertices=*/3);
         cutcells::utils::create_vertex_parent_entity_map<T>(
-            vertex_case_map, cut_cell._vertex_parent_entity,
+            basix_vertex_case_map, cut_cell._vertex_parent_entity,
             /*n_edges=*/3, /*n_vertices=*/3);
     };
 
@@ -464,8 +468,12 @@ namespace triangle{
         {
             create_cut_cell<T>(vertex_coordinates, gdim, ls_values, cut_type_str[i], cut_cell[i], 
                             strategy, intersection_points, vertex_case_map);
+            const auto basix_vertex_case_map =
+                cell::remap_token_to_vertex_map_from_vtk_to_basix(
+                    type::triangle, vertex_case_map,
+                    /*n_edges=*/3, /*n_vertices=*/3);
             cutcells::utils::create_vertex_parent_entity_map<T>(
-                vertex_case_map, cut_cell[i]._vertex_parent_entity,
+                basix_vertex_case_map, cut_cell[i]._vertex_parent_entity,
                 /*n_edges=*/3, /*n_vertices=*/3);
         }
     };

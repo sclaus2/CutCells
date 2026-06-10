@@ -59,11 +59,11 @@ inline std::span<const FaceDef<int>> basix_faces(cell::type ctype)
     }};
     static constexpr std::array<FaceDef<int>, 6> hexahedron = {{
         {cell::type::quadrilateral, 4, {0, 1, 2, 3}},
-        {cell::type::quadrilateral, 4, {4, 5, 6, 7}},
         {cell::type::quadrilateral, 4, {0, 1, 4, 5}},
         {cell::type::quadrilateral, 4, {0, 2, 4, 6}},
         {cell::type::quadrilateral, 4, {1, 3, 5, 7}},
         {cell::type::quadrilateral, 4, {2, 3, 6, 7}},
+        {cell::type::quadrilateral, 4, {4, 5, 6, 7}},
     }};
     static constexpr std::array<FaceDef<int>, 5> prism = {{
         {cell::type::triangle, 3, {0, 1, 2, -1}},
@@ -485,7 +485,19 @@ make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
             cell_ls.nodal_values[static_cast<std::size_t>(i)]
                 = global_ls.dof_values[static_cast<std::size_t>(cell_dofs[static_cast<std::size_t>(i)])];
         cell_ls.nodal_order = degree;
-        const auto& dof_ref = cached_reference_lagrange_points<T>(ctype, degree);
+        std::span<const T> dof_ref;
+        if (!md.cell_reference_points.empty())
+        {
+            dof_ref = std::span<const T>(
+                md.cell_reference_points.data(), md.cell_reference_points.size());
+        }
+        else
+        {
+            const auto& cached_dof_ref =
+                cached_reference_lagrange_points<T>(ctype, degree);
+            dof_ref = std::span<const T>(
+                cached_dof_ref.data(), cached_dof_ref.size());
+        }
         if (static_cast<int>(dof_ref.size()) != ndofs * cell_ls.tdim)
         {
             throw std::runtime_error(
@@ -496,7 +508,7 @@ make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
         cell_ls.bernstein_order = degree;
         bernstein::lagrange_to_bernstein(
             ctype, degree,
-            std::span<const T>(dof_ref.data(), dof_ref.size()),
+            dof_ref,
             std::span<const T>(cell_ls.nodal_values),
             cell_ls.bernstein_coeffs);
     }

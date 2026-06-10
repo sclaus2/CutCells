@@ -295,15 +295,10 @@ namespace cutcells::mesh
               }
               else
               {
-                // token is a VTK edge index; cell_topology.h uses Basix ordering.
-                const int basix_eid = cell::vtk_to_basix_edge(cut_cell._parent_cell_type, edge_id);
-                const int bv0 = parent_edges[basix_eid][0];
-                const int bv1 = parent_edges[basix_eid][1];
-                // _parent_vertex_ids is indexed by VTK vertex; convert.
-                const int vtk_v0 = cell::basix_to_vtk_vertex(cut_cell._parent_cell_type, bv0);
-                const int vtk_v1 = cell::basix_to_vtk_vertex(cut_cell._parent_cell_type, bv1);
-                const int32_t gv0 = static_cast<int32_t>(cut_cell._parent_vertex_ids[vtk_v0]);
-                const int32_t gv1 = static_cast<int32_t>(cut_cell._parent_vertex_ids[vtk_v1]);
+                const int bv0 = parent_edges[edge_id][0];
+                const int bv1 = parent_edges[edge_id][1];
+                const int32_t gv0 = static_cast<int32_t>(cut_cell._parent_vertex_ids[bv0]);
+                const int32_t gv1 = static_cast<int32_t>(cut_cell._parent_vertex_ids[bv1]);
                 key.kind = 1;
                 key.a = std::min(gv0, gv1);
                 key.b = std::max(gv0, gv1);
@@ -461,8 +456,11 @@ namespace cutcells::mesh
 
       // --- thread-local scratch (reused across invocations) ------------------
       thread_local std::vector<int>   tl_intersected;
-      thread_local std::vector<T>     tl_vtx_buf;
-      thread_local std::vector<T>     tl_ls_buf;
+      thread_local std::vector<T>     tl_vtx_vtk;
+      thread_local std::vector<T>     tl_vtx_basix;
+      thread_local std::vector<T>     tl_ls_vtk;
+      thread_local std::vector<T>     tl_ls_basix;
+      thread_local std::vector<int>   tl_parent_ids_basix;
       thread_local cell::CutCell<T>   tl_scratch;
       thread_local std::vector<int>   tl_local_merged;
       thread_local std::unordered_map<VertexKey, int, VertexKeyHash> tl_dedup;
@@ -477,10 +475,10 @@ namespace cutcells::mesh
           const cell::type ctype = cell::map_vtk_type_to_cell_type(
               static_cast<cell::vtk_types>(vtk_type[i]));
           const int nv = cell::get_num_vertices(ctype);
-          tl_ls_buf.resize(nv);
+          tl_ls_vtk.resize(nv);
           for (int j = 0; j < nv; ++j)
-            tl_ls_buf[j] = ls_vals[connectivity[coff + j]];
-          if (cell::classify_cell_domain<T>(std::span<const T>(tl_ls_buf.data(), nv))
+            tl_ls_vtk[j] = ls_vals[connectivity[coff + j]];
+          if (cell::classify_cell_domain<T>(std::span<const T>(tl_ls_vtk.data(), nv))
                 == cell::domain::intersected)
             tl_intersected.push_back(i);
         }
@@ -523,26 +521,38 @@ namespace cutcells::mesh
         const int nv = cell::get_num_vertices(ctype);
 
         // Gather vertex coords and level-set values
-        tl_vtx_buf.resize(nv * 3);
-        tl_ls_buf.resize(nv);
-        for (int j = 0; j < nv; ++j)
+        tl_vtx_vtk.resize(nv * 3);
+        tl_vtx_basix.resize(nv * 3);
+        tl_ls_vtk.resize(nv);
+        tl_ls_basix.resize(nv);
+        tl_parent_ids_basix.resize(nv);
+        for (int vtk_v = 0; vtk_v < nv; ++vtk_v)
         {
-          const int vid = connectivity[coff + j];
-          tl_vtx_buf[j * 3 + 0] = points[vid * 3 + 0];
-          tl_vtx_buf[j * 3 + 1] = points[vid * 3 + 1];
-          tl_vtx_buf[j * 3 + 2] = points[vid * 3 + 2];
-          tl_ls_buf[j] = ls_vals[vid];
+          const int vid = connectivity[coff + vtk_v];
+          tl_vtx_vtk[vtk_v * 3 + 0] = points[vid * 3 + 0];
+          tl_vtx_vtk[vtk_v * 3 + 1] = points[vid * 3 + 1];
+          tl_vtx_vtk[vtk_v * 3 + 2] = points[vid * 3 + 2];
+          tl_ls_vtk[vtk_v] = ls_vals[vid];
+        }
+        for (int basix_v = 0; basix_v < nv; ++basix_v)
+        {
+          const int vtk_v = cell::basix_to_vtk_vertex(ctype, basix_v);
+          tl_vtx_basix[basix_v * 3 + 0] = tl_vtx_vtk[vtk_v * 3 + 0];
+          tl_vtx_basix[basix_v * 3 + 1] = tl_vtx_vtk[vtk_v * 3 + 1];
+          tl_vtx_basix[basix_v * 3 + 2] = tl_vtx_vtk[vtk_v * 3 + 2];
+          tl_ls_basix[basix_v] = tl_ls_vtk[vtk_v];
+          tl_parent_ids_basix[basix_v] = connectivity[coff + vtk_v];
         }
 
         // Cut into scratch — all CutCell fields are reset by the cutter
-        cell::cut<T>(ctype, tl_vtx_buf, 3, tl_ls_buf, cut_type_str, tl_scratch, strategy);
+        cell::cut<T>(ctype, tl_vtx_basix, 3, tl_ls_basix, cut_type_str, tl_scratch, strategy);
 
         // Override parent vertex IDs with context-global mesh indices
         // (the individual cutters default them to local 0..nv-1)
         tl_scratch._parent_cell_type = ctype;
         tl_scratch._parent_vertex_ids.resize(nv);
         for (int j = 0; j < nv; ++j)
-          tl_scratch._parent_vertex_ids[j] = connectivity[coff + j];
+          tl_scratch._parent_vertex_ids[j] = tl_parent_ids_basix[j];
 
         const int n_local_verts = static_cast<int>(tl_scratch._vertex_coords.size())
                                   / tl_scratch._gdim;
@@ -594,16 +604,12 @@ namespace cutcells::mesh
               const int eid = static_cast<int>(token);
               if (eid >= 0 && eid < static_cast<int>(parent_edges.size()))
               {
-                // token is a VTK edge index; cell_topology.h uses Basix ordering.
-                const int basix_eid = cell::vtk_to_basix_edge(ctype, eid);
-                const int bv0 = parent_edges[basix_eid][0];
-                const int bv1 = parent_edges[basix_eid][1];
-                const int vtk_v0 = cell::basix_to_vtk_vertex(ctype, bv0);
-                const int vtk_v1 = cell::basix_to_vtk_vertex(ctype, bv1);
+                const int bv0 = parent_edges[eid][0];
+                const int bv1 = parent_edges[eid][1];
                 const int32_t gv0 = static_cast<int32_t>(
-                    tl_scratch._parent_vertex_ids[vtk_v0]);
+                    tl_scratch._parent_vertex_ids[bv0]);
                 const int32_t gv1 = static_cast<int32_t>(
-                    tl_scratch._parent_vertex_ids[vtk_v1]);
+                    tl_scratch._parent_vertex_ids[bv1]);
                 key.kind = 1;
                 key.a    = std::min(gv0, gv1);
                 key.b    = std::max(gv0, gv1);

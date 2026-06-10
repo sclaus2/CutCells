@@ -190,6 +190,50 @@ infer_zero_entity_parent_host(const AdaptCell<T>& ac,
     return {static_cast<std::int8_t>(tdim), static_cast<std::int32_t>(ac.parent_cell_id)};
 }
 
+template <std::floating_point T>
+bool register_codim_one_zero_entity(const AdaptCell<T>& ac,
+                                    int dim,
+                                    int entity_id,
+                                    std::uint64_t mask)
+{
+    if (dim != ac.tdim - 1 || !ac.has_connectivity_map(dim, ac.tdim))
+        return true;
+    if (ac.cell_cert_tag_num_level_sets <= 0 || ac.cell_cert_tag.empty())
+        return true;
+
+    auto adjacent_cells = ac.connectivity[dim][ac.tdim][static_cast<std::int32_t>(entity_id)];
+    if (adjacent_cells.empty())
+        return true;
+
+    bool has_relevant_level_set = false;
+    bool has_negative_side = false;
+    bool has_positive_side = false;
+    const int nls = std::min(ac.cell_cert_tag_num_level_sets, 64);
+    for (int ls = 0; ls < nls; ++ls)
+    {
+        const std::uint64_t bit = std::uint64_t(1) << ls;
+        if ((mask & bit) == 0)
+            continue;
+
+        has_relevant_level_set = true;
+        for (const auto cell_id : adjacent_cells)
+        {
+            if (cell_id < 0 || cell_id >= ac.n_entities(ac.tdim))
+                continue;
+
+            const CellCertTag tag = ac.get_cell_cert_tag(ls, cell_id);
+            has_negative_side = has_negative_side || tag == CellCertTag::negative;
+            has_positive_side = has_positive_side || tag == CellCertTag::positive;
+        }
+    }
+
+    if (!has_relevant_level_set)
+        return true;
+    if (has_negative_side)
+        return true;
+    return !has_positive_side;
+}
+
 } // namespace
 
 template <std::floating_point T>
@@ -409,8 +453,14 @@ AdaptCell<T> make_adapt_cell(const MeshView<T, I>& mesh, I cell_id)
     std::vector<I> cell_node_scratch;
     const auto parent_nodes = mesh.cell_nodes(cell_id, cell_node_scratch);
     for (int v = 0; v < nv; ++v)
+    {
+        const int local_v = mesh.vtk_vertex_order
+                                ? cell::basix_to_vtk_vertex(ctype, v)
+                                : v;
         ac.vertex_parent_id[static_cast<std::size_t>(v)] =
-            static_cast<std::int32_t>(parent_nodes[static_cast<std::size_t>(v)]);
+            static_cast<std::int32_t>(
+                parent_nodes[static_cast<std::size_t>(local_v)]);
+    }
 
     // No parametric coordinates for parent vertices (empty param per vertex).
     ac.vertex_parent_param_offset.assign(static_cast<std::size_t>(nv + 1),
@@ -601,6 +651,8 @@ void rebuild_zero_entity_inventory(AdaptCell<T>& ac)
                     break;
             }
             if (mask == 0)
+                continue;
+            if (!register_codim_one_zero_entity<T>(ac, dim, e, mask))
                 continue;
 
             ac.zero_entity_dim.push_back(static_cast<std::uint8_t>(dim));

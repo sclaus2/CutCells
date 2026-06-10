@@ -12,6 +12,8 @@
 #include "generated/cut_hexahedron_inside_tables.h"
 #include "generated/cut_hexahedron_interface_tables.h"
 #include "generated/cut_hexahedron_outside_tables.h"
+#include "reference_cell.h"
+#include "triangulation.h"
 #include "utils.h"
 
 #include <array>
@@ -220,13 +222,18 @@ namespace cutcells::cell::hexahedron
 
                     verts_local[nverts++] = lookup_token_or_throw(vertex_case_map, flag, token, "decode_case");
                 }
+                cell::reorder_subcell_vertices_from_vtk_to_basix(
+                    sub_type, verts_local, nverts);
 
                 if (triangulate && sub_type == type::quadrilateral && nverts == 4)
                 {
-                    const std::array<int, 3> t0 = {verts_local[0], verts_local[1], verts_local[2]};
-                    const std::array<int, 3> t1 = {verts_local[0], verts_local[2], verts_local[3]};
-                    cutcells::cell::append_cell(cut_cell, type::triangle, t0, 3);
-                    cutcells::cell::append_cell(cut_cell, type::triangle, t1, 3);
+                    std::vector<std::vector<int>> triangles;
+                    triangulation(sub_type, verts_local.data(), triangles);
+                    for (const auto& tri : triangles)
+                    {
+                        const std::array<int, 3> t = {tri[0], tri[1], tri[2]};
+                        cutcells::cell::append_cell(cut_cell, type::triangle, t, 3);
+                    }
                 }
                 else
                 {
@@ -246,8 +253,23 @@ namespace cutcells::cell::hexahedron
         if (ls_values.size() != 8)
             throw std::invalid_argument("hexahedron::cut expects 8 level set values");
 
-        // CutCells convention: case mask bit i is set when phi_i < 0.
-        const int flag_lt0 = get_entity_flag(ls_values, false);
+        const auto table_vertex_coordinates =
+            cell::vertex_data_basix_to_vtk<T>(
+                type::hexahedron, vertex_coordinates, gdim);
+        const auto table_ls_values =
+            cell::vertex_data_basix_to_vtk<T>(
+                type::hexahedron, ls_values, 1);
+
+        // The hexahedron tables are derived from VTK TableBasedClip, whose
+        // case mask is set for the positive side. CutCells selectors still use
+        // phi<0 as the interior convention, so volume cuts below keep the
+        // negative mask and the interface table uses the positive mask.
+        const int flag_lt0 = get_entity_flag<T>(
+            std::span<const T>(table_ls_values.data(), table_ls_values.size()),
+            false);
+        const int flag_gt0 = get_entity_flag<T>(
+            std::span<const T>(table_ls_values.data(), table_ls_values.size()),
+            true);
         if (flag_lt0 == 0 || flag_lt0 == 255)
         {
             throw std::invalid_argument("hexahedron is not intersected and therefore cannot be cut");
@@ -264,11 +286,18 @@ namespace cutcells::cell::hexahedron
             cut_cell._parent_vertex_ids[i] = i;
         }
 
-        // Compute intersections (shared for all parts)
+        const cut_type cut_kind = string_to_cut_type(cut_type_str);
+        const int table_flag = (cut_kind == cut_type::phieq0) ? flag_gt0 : flag_lt0;
+
+        // Compute intersections (shared for the requested part)
         thread_local std::vector<T> intersection_points;
         VertexCaseMap vertex_case_map;
-        compute_intersection_points<T>(vertex_coordinates, gdim, ls_values, flag_lt0,
-                   intersection_points, vertex_case_map);
+        const std::span<const T> table_vertices(
+            table_vertex_coordinates.data(), table_vertex_coordinates.size());
+        const std::span<const T> table_values(
+            table_ls_values.data(), table_ls_values.size());
+        compute_intersection_points<T>(table_vertices, gdim, table_values, table_flag,
+                                       intersection_points, vertex_case_map);
 
         cut_cell._gdim = gdim;
         cut_cell._vertex_coords.assign(intersection_points.begin(), intersection_points.end());
@@ -276,26 +305,26 @@ namespace cutcells::cell::hexahedron
         cut_cell._vertex_coords.reserve(reserve_vertex_coords * gdim);
         cutcells::cell::reserve_cell_topology(cut_cell, reserve_connectivity, reserve_types);
 
-        if (cut_type_str == "phi=0")
+        if (cut_kind == cut_type::phieq0)
         {
             cut_cell._tdim = 2;
-            decode_case<T, 4>(vertex_coordinates, gdim, flag_lt0,
+            decode_case<T, 4>(table_vertices, gdim, table_flag,
                               case_subcell_offset_interface, subcell_type_interface, subcell_verts_interface,
                               special_point_count_interface, special_point_offset_interface, special_point_data_interface,
                               triangulate, cut_cell, vertex_case_map);
         }
-        else if (cut_type_str == "phi<0")
+        else if (cut_kind == cut_type::philt0)
         {
             cut_cell._tdim = 3;
-            decode_case<T, 8>(vertex_coordinates, gdim, flag_lt0,
+            decode_case<T, 8>(table_vertices, gdim, table_flag,
                               case_subcell_offset_inside, subcell_type_inside, subcell_verts_inside,
                               special_point_count_inside, special_point_offset_inside, special_point_data_inside,
                               triangulate, cut_cell, vertex_case_map);
         }
-        else if (cut_type_str == "phi>0")
+        else if (cut_kind == cut_type::phigt0)
         {
             cut_cell._tdim = 3;
-            decode_case<T, 8>(vertex_coordinates, gdim, flag_lt0,
+            decode_case<T, 8>(table_vertices, gdim, table_flag,
                               case_subcell_offset_outside, subcell_type_outside, subcell_verts_outside,
                               special_point_count_outside, special_point_offset_outside, special_point_data_outside,
                               triangulate, cut_cell, vertex_case_map);
@@ -305,7 +334,11 @@ namespace cutcells::cell::hexahedron
             throw std::invalid_argument("cutting type unknown");
         }
 
-        cutcells::utils::create_vertex_parent_entity_map<T>(vertex_case_map, cut_cell._vertex_parent_entity, 12, 8, 56);
+        const auto basix_vertex_case_map =
+            cell::remap_token_to_vertex_map_from_vtk_to_basix(
+                type::hexahedron, vertex_case_map, 12, 8, 56);
+        cutcells::utils::create_vertex_parent_entity_map<T>(
+            basix_vertex_case_map, cut_cell._vertex_parent_entity, 12, 8, 56);
     }
 
     template <std::floating_point T>

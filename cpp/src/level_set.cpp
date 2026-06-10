@@ -227,11 +227,11 @@ inline std::span<const FaceDef<int>> basix_faces(cell::type ctype)
   }};
   static constexpr std::array<FaceDef<int>, 6> hexahedron = {{
       {cell::type::quadrilateral, 4, {0, 1, 2, 3}},
-      {cell::type::quadrilateral, 4, {4, 5, 6, 7}},
       {cell::type::quadrilateral, 4, {0, 1, 4, 5}},
       {cell::type::quadrilateral, 4, {0, 2, 4, 6}},
       {cell::type::quadrilateral, 4, {1, 3, 5, 7}},
       {cell::type::quadrilateral, 4, {2, 3, 6, 7}},
+      {cell::type::quadrilateral, 4, {4, 5, 6, 7}},
   }};
   static constexpr std::array<FaceDef<int>, 5> prism = {{
       {cell::type::triangle, 3, {0, 1, 2, -1}},
@@ -906,7 +906,8 @@ void validate_mesh_data_args(int gdim, int tdim, int degree,
                              std::span<const T> dof_coordinates,
                              std::span<const I> cell_dofs,
                              std::span<const I> cell_offsets,
-                             std::span<const cell::type> cell_types)
+                             std::span<const cell::type> cell_types,
+                             std::span<const T> cell_reference_points)
 {
   if (gdim <= 0)
     throw std::runtime_error("create_level_set_mesh_data: gdim must be positive");
@@ -924,6 +925,12 @@ void validate_mesh_data_args(int gdim, int tdim, int degree,
     throw std::runtime_error("create_level_set_mesh_data: cell_offsets.back() must equal cell_dofs.size()");
   if (!cell_types.empty() && cell_types.size() + 1 != cell_offsets.size())
     throw std::runtime_error("create_level_set_mesh_data: cell_types size must equal number of cells");
+  if (!cell_reference_points.empty()
+      && cell_reference_points.size() % static_cast<std::size_t>(tdim) != 0)
+  {
+    throw std::runtime_error(
+        "create_level_set_mesh_data: cell_reference_points size must be divisible by tdim");
+  }
 }
 
 template <std::floating_point T, std::integral I>
@@ -1104,10 +1111,12 @@ LevelSetMeshData<T, I> create_level_set_mesh_data(
     std::span<const T> dof_coordinates,
     std::span<const I> cell_dofs,
     std::span<const I> cell_offsets,
-    std::span<const cell::type> cell_types)
+    std::span<const cell::type> cell_types,
+    std::span<const T> cell_reference_points)
 {
   validate_mesh_data_args(gdim, tdim, degree,
-                          dof_coordinates, cell_dofs, cell_offsets, cell_types);
+                          dof_coordinates, cell_dofs, cell_offsets, cell_types,
+                          cell_reference_points);
 
   LevelSetMeshData<T, I> out;
   out.gdim = gdim;
@@ -1116,6 +1125,8 @@ LevelSetMeshData<T, I> create_level_set_mesh_data(
   out.dof_coordinates.assign(dof_coordinates.begin(), dof_coordinates.end());
   out.cell_dofs.assign(cell_dofs.begin(), cell_dofs.end());
   out.cell_offsets.assign(cell_offsets.begin(), cell_offsets.end());
+  out.cell_reference_points.assign(cell_reference_points.begin(),
+                                   cell_reference_points.end());
   out.cell_types.assign(cell_types.begin(), cell_types.end());
   return out;
 }
@@ -1270,13 +1281,15 @@ template LevelSetMeshData<float, int> create_level_set_mesh_data(
     std::span<const float> dof_coordinates,
     std::span<const int> cell_dofs,
     std::span<const int> cell_offsets,
-    std::span<const cell::type> cell_types);
+    std::span<const cell::type> cell_types,
+    std::span<const float> cell_reference_points);
 template LevelSetMeshData<double, int> create_level_set_mesh_data(
     int gdim, int tdim, int degree,
     std::span<const double> dof_coordinates,
     std::span<const int> cell_dofs,
     std::span<const int> cell_offsets,
-    std::span<const cell::type> cell_types);
+    std::span<const cell::type> cell_types,
+    std::span<const double> cell_reference_points);
 
 template LevelSetMeshData<float, int> create_level_set_mesh_data_view(
     int gdim, int tdim, int degree,

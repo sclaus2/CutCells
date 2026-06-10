@@ -13,10 +13,11 @@
 namespace cutcells::cell
 {
 /// @brief Cell topology data for edge-based clipping algorithms.
-/// Edge and face numbering follows VTK conventions.
+/// Edge and face numbering follows Basix conventions unless a function name
+/// explicitly says VTK.
 
 //-----------------------------------------------------------------------------
-// Edge definitions per cell type (VTK ordering)
+// Edge definitions per cell type (Basix ordering)
 //-----------------------------------------------------------------------------
 
 /// Interval: 1 edge (0-1)
@@ -74,16 +75,11 @@ inline constexpr std::array<std::array<int, 2>, 6> tetrahedron_edges = {{
 ///     0 -------- 1
 ///
 /// Basix edge order:
-///   Bottom face: (0,1),(0,2),(1,3),(2,3)
-///   Verticals:   (0,4),(1,5),(2,6),(3,7)
-///   Top face:    (4,5),(4,6),(5,7),(6,7)
+///   (0,1), (0,2), (0,4), (1,3), (1,5), (2,3),
+///   (2,6), (3,7), (4,5), (4,6), (5,7), (6,7)
 inline constexpr std::array<std::array<int, 2>, 12> hexahedron_edges = {{
-    // Bottom face edges (0-3)
-    {0, 1}, {0, 2}, {1, 3}, {2, 3},
-    // Vertical edges (4-7)
-    {0, 4}, {1, 5}, {2, 6}, {3, 7},
-    // Top face edges (8-11)
-    {4, 5}, {4, 6}, {5, 7}, {6, 7}
+    {0, 1}, {0, 2}, {0, 4}, {1, 3}, {1, 5}, {2, 3},
+    {2, 6}, {3, 7}, {4, 5}, {4, 6}, {5, 7}, {6, 7}
 }};
 
 /// Prism (Wedge): 9 edges
@@ -182,17 +178,15 @@ inline std::span<const std::array<int, 2>> edges(type cell_type)
 //-----------------------------------------------------------------------------
 
 /// Hexahedron: 6 faces (quads)
-/// Face order: -X, +X, -Y, +Y, -Z, +Z (left, right, front, back, bottom, top)
-/// Vertex ordering follows basix tensor-product convention for quadrilateral:
-///   basix quad: 0=(0,0), 1=(1,0), 2=(0,1), 3=(1,1)  (NOT cyclic).
-/// Conversion from VTK cyclic {a,b,c,d} -> basix {a,b,d,c}.
+/// Basix face order and tensor-product vertex ordering:
+///   z=0, y=0, x=0, x=1, y=1, z=1.
 inline constexpr std::array<std::array<int, 4>, 6> hexahedron_faces = {{
-    {0, 3, 4, 7},  // -X (left)    was VTK {0,3,7,4}
-    {1, 2, 5, 6},  // +X (right)   was VTK {1,2,6,5}
-    {0, 1, 4, 5},  // -Y (front)   was VTK {0,1,5,4}
-    {3, 2, 7, 6},  // +Y (back)    was VTK {3,2,6,7}
-    {0, 1, 2, 3},  // -Z (bottom)  was VTK {0,1,3,2} -> basix {0,1,2,3}
-    {4, 5, 6, 7}   // +Z (top)     was VTK {4,5,7,6} -> basix {4,5,6,7}
+    {0, 1, 2, 3},
+    {0, 1, 4, 5},
+    {0, 2, 4, 6},
+    {1, 3, 5, 7},
+    {2, 3, 6, 7},
+    {4, 5, 6, 7}
 }};
 
 /// Prism: 5 faces (2 triangles + 3 quads)
@@ -209,13 +203,12 @@ inline constexpr std::array<std::array<int, 4>, 5> prism_faces = {{
 
 /// Pyramid: 5 faces (1 quad base + 4 triangles)
 /// Base quad uses basix tensor-product ordering: 0=(0,0),1=(1,0),2=(0,1),3=(1,1).
-/// Conversion from VTK cyclic {0,1,2,3} -> basix {0,1,3,2}.
 inline constexpr std::array<std::array<int, 4>, 5> pyramid_faces = {{
-    {0, 1, 3, 2},   // base quad: basix ordering, was VTK {0,1,2,3}
+    {0, 1, 2, 3},   // base quad
     {0, 1, 4, -1},  // triangle
-    {1, 2, 4, -1},  // triangle
-    {2, 3, 4, -1},  // triangle
-    {3, 0, 4, -1}   // triangle
+    {1, 3, 4, -1},  // triangle
+    {3, 2, 4, -1},  // triangle
+    {2, 0, 4, -1}   // triangle
 }};
 
 //-----------------------------------------------------------------------------

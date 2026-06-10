@@ -31,37 +31,22 @@ def test_quadrilateral_vertex_parent_entity_tokens_are_valid():
 
 
 def test_hexahedron_vertex_parent_entity_includes_special_point_token_200():
-    # Same case as test_hexahedron_interface_uses_special_point_n0, but assert the token appears.
-    ls_values = np.array([-1.0, -1.1, 1.2, 1.3, 1.4, 1.5, -1.6, 1.7], dtype=np.float64)
+    # Same Basix-ordered case as test_hexahedron_interface_uses_special_point_n0,
+    # but assert the token appears in the parent-entity map.
+    ls_values = np.array([1.0, 1.1, -1.2, -1.3, -1.4, -1.5, -1.6, 1.7], dtype=np.float64)
     vertex_coordinates = np.array(
         [
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-            1.0,
-            1.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            0.0,
-            1.0,
-            1.0,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
         ],
         dtype=np.float64,
-    )
+    ).ravel()
 
     cut_cell = cutcells.cut(
         cutcells.CellType.hexahedron, vertex_coordinates, 3, ls_values, "phi=0", False
