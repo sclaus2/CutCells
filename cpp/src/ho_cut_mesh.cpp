@@ -158,6 +158,36 @@ bool vertex_state_for_level_set(const AdaptCell<T>& ac,
     return true;
 }
 
+inline bool has_single_bit(std::uint64_t mask)
+{
+    return mask != 0 && (mask & (mask - std::uint64_t(1))) == 0;
+}
+
+template <std::floating_point T, std::integral I>
+bool inactive_sign_requirement_matches_parent_domain(
+    const SelectionTerm& term,
+    int level_set_id,
+    std::uint64_t cut_cell_active_mask,
+    const ParentCellClassification<T, I>& parent_cells,
+    I parent_cell_id)
+{
+    const std::uint64_t bit = std::uint64_t(1) << level_set_id;
+    const bool require_neg = (term.negative_required & bit) != 0;
+    const bool require_pos = (term.positive_required & bit) != 0;
+    if (!require_neg && !require_pos)
+        return true;
+
+    if ((cut_cell_active_mask & bit) != 0)
+        return true;
+
+    const auto dom = parent_cells.domain(level_set_id, parent_cell_id);
+    if (require_neg && dom != cell::domain::inside)
+        return false;
+    if (require_pos && dom != cell::domain::outside)
+        return false;
+    return true;
+}
+
 template <std::floating_point T, std::integral I>
 bool leaf_cell_matches_sign_requirements(
     const AdaptCell<T>& ac,
@@ -176,14 +206,13 @@ bool leaf_cell_matches_sign_requirements(
         if (!require_neg && !require_pos)
             continue;
 
-        const bool ls_is_active = (cut_cell_active_mask & bit) != 0;
-        if (!ls_is_active)
+        if ((cut_cell_active_mask & bit) == 0)
         {
-            const auto dom = parent_cells.domain(li, parent_cell_id);
-            if (require_neg && dom != cell::domain::inside)
+            if (!inactive_sign_requirement_matches_parent_domain(
+                    term, li, cut_cell_active_mask, parent_cells, parent_cell_id))
+            {
                 return false;
-            if (require_pos && dom != cell::domain::outside)
-                return false;
+            }
             continue;
         }
 
@@ -227,6 +256,97 @@ bool leaf_cell_matches_selection_expr(
     {
         if (leaf_cell_matches_sign_requirements(
                 ac, cell_verts, term, cut_cell_active_mask, parent_cells, parent_cell_id))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <std::floating_point T, std::integral I>
+bool implicit_codim_one_interface_may_match(
+    const SelectionTerm& term,
+    std::uint64_t cut_cell_active_mask,
+    const ParentCellClassification<T, I>& parent_cells,
+    I parent_cell_id)
+{
+    const std::uint64_t zero_required = term.zero_required;
+    if (!has_single_bit(zero_required))
+        return false;
+    if ((cut_cell_active_mask & zero_required) != zero_required)
+        return false;
+
+    const int nls = std::min(parent_cells.num_level_sets, 64);
+    for (int li = 0; li < nls; ++li)
+    {
+        if (!inactive_sign_requirement_matches_parent_domain(
+                term, li, cut_cell_active_mask, parent_cells, parent_cell_id))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+template <std::floating_point T, std::integral I>
+bool implicit_codim_one_interface_may_match(
+    const SelectionExpr& expr,
+    std::uint64_t cut_cell_active_mask,
+    const ParentCellClassification<T, I>& parent_cells,
+    I parent_cell_id)
+{
+    for (const auto& term : expr.terms)
+    {
+        if (implicit_codim_one_interface_may_match(
+                term, cut_cell_active_mask, parent_cells, parent_cell_id))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <std::floating_point T, std::integral I>
+bool implicit_volume_selection_may_match(
+    const SelectionTerm& term,
+    std::uint64_t cut_cell_active_mask,
+    const ParentCellClassification<T, I>& parent_cells,
+    I parent_cell_id)
+{
+    if (term.zero_required != 0
+        || (term.negative_required & term.positive_required) != 0)
+    {
+        return false;
+    }
+
+    const std::uint64_t active_sign_required =
+        (term.negative_required | term.positive_required) & cut_cell_active_mask;
+    if (!has_single_bit(active_sign_required))
+        return false;
+
+    const int nls = std::min(parent_cells.num_level_sets, 64);
+    for (int li = 0; li < nls; ++li)
+    {
+        if (!inactive_sign_requirement_matches_parent_domain(
+                term, li, cut_cell_active_mask, parent_cells, parent_cell_id))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+template <std::floating_point T, std::integral I>
+bool implicit_volume_selection_may_match(
+    const SelectionExpr& expr,
+    std::uint64_t cut_cell_active_mask,
+    const ParentCellClassification<T, I>& parent_cells,
+    I parent_cell_id)
+{
+    for (const auto& term : expr.terms)
+    {
+        if (implicit_volume_selection_may_match(
+                term, cut_cell_active_mask, parent_cells, parent_cell_id))
         {
             return true;
         }
@@ -827,6 +947,11 @@ HOMeshPart<T, I> select_part(const MeshView<T, I>& mesh,
 
             if (has_matching_leaf)
                 part.cut_cell_ids.push_back(static_cast<std::int32_t>(k));
+            else if (implicit_volume_selection_may_match(
+                         part.expr, cut_active_mask, parent_cells, bg_cell))
+            {
+                part.cut_cell_ids.push_back(static_cast<std::int32_t>(k));
+            }
         }
         else
         {
@@ -844,6 +969,12 @@ HOMeshPart<T, I> select_part(const MeshView<T, I>& mesh,
 
             if (has_matching_zero_entity)
                 part.cut_cell_ids.push_back(static_cast<std::int32_t>(k));
+            else if (part.dim == cut_cells.tdim - 1
+                     && implicit_codim_one_interface_may_match(
+                            part.expr, cut_active_mask, parent_cells, bg_cell))
+            {
+                part.cut_cell_ids.push_back(static_cast<std::int32_t>(k));
+            }
         }
     }
 
