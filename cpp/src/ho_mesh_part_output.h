@@ -7,6 +7,8 @@
 
 #include <concepts>
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -16,6 +18,13 @@
 
 namespace cutcells::output
 {
+
+enum class QuadratureBackend
+{
+    Straight,
+    AlgoimBernstein,
+    AlgoimGeneral
+};
 
 struct SelectedZeroEntityInfo
 {
@@ -37,6 +46,22 @@ template <std::floating_point T, std::integral I = int>
 quadrature::QuadratureRules<T> quadrature_rules(const HOMeshPart<T, I>& part,
                                                 int order,
                                                 bool include_uncut_cells);
+
+QuadratureBackend quadrature_backend_from_string(std::string_view backend);
+
+template <std::floating_point T, std::integral I = int>
+quadrature::QuadratureRules<T> quadrature_rules(const HOMeshPart<T, I>& part,
+                                                int order,
+                                                bool include_uncut_cells,
+                                                QuadratureBackend backend);
+
+template <std::floating_point T, std::integral I = int>
+std::vector<std::pair<std::string, quadrature::QuadratureRules<T>>>
+paired_quadrature_rules(
+    const std::vector<std::pair<std::string, HOMeshPart<T, I>>>& parts,
+    int order,
+    bool include_uncut_cells,
+    QuadratureBackend backend);
 
 /// Compute the selected volume fraction for each parent cell represented by a
 /// volume mesh part.

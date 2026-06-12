@@ -161,6 +161,34 @@ def _edge_counts(cut_mesh):
     return counts
 
 
+def test_structured_hex_quadratic_sphere_interface_has_no_boundary_edges():
+    mesh = _structured_hex_mesh(10)
+    center = np.array([0.05, -0.03, 0.02], dtype=np.float64)
+    radius = 0.62
+    ls = cutcells.create_level_set(
+        mesh,
+        lambda X: (
+            (X[0] - center[0]) ** 2
+            + (X[1] - center[1]) ** 2
+            + (X[2] - center[2]) ** 2
+            - radius**2
+        ),
+        degree=2,
+        name="phi",
+    )
+
+    result = cutcells.cut(mesh, ls)
+    interface = result["phi = 0"]
+    vis = interface.visualization_mesh(mode="cut_only")
+
+    edge_counts = _edge_counts(vis)
+    boundary_edges = [edge for edge, count in edge_counts.items() if count == 1]
+    nonmanifold_edges = [edge for edge, count in edge_counts.items() if count > 2]
+
+    assert boundary_edges == []
+    assert nonmanifold_edges == []
+
+
 def _assert_zero_edges_have_only_zero_vertices(adapt_cell):
     zero_masks = np.asarray(adapt_cell.zero_mask_per_vertex, dtype=np.uint64)
     edge_connectivity = np.asarray(adapt_cell.edge_connectivity, dtype=np.int32)

@@ -76,7 +76,8 @@ CellCertTag classify_leaf_cell(const AdaptCell<T>& adapt_cell,
                                const LevelSetCell<T, I>& ls_cell,
                                int level_set_id,
                                int cell_id,
-                               T zero_tol, T sign_tol);
+                               T zero_tol, T sign_tol,
+                               bool linear_subcell_level_set = false);
 
 /// Classify all not-yet-classified leaf cells for one level set.
 ///
@@ -89,7 +90,8 @@ template <std::floating_point T, std::integral I>
 void classify_leaf_cells(AdaptCell<T>& adapt_cell,
                          const LevelSetCell<T, I>& ls_cell,
                          int level_set_id,
-                         T zero_tol, T sign_tol);
+                         T zero_tol, T sign_tol,
+                         bool linear_subcell_level_set = false);
 
 // =====================================================================
 // Face (facet) classifier (3D only)
@@ -198,7 +200,8 @@ void certify_and_refine(AdaptCell<T>& adapt_cell,
                         int level_set_id,
                         int max_iterations,
                         T zero_tol, T sign_tol,
-                        int edge_max_depth);
+                        int edge_max_depth,
+                        bool linear_subcell_level_set = false);
 
 /// Full local single-level-set pipeline:
 ///   1. stamp vertex signs
@@ -212,7 +215,8 @@ void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
                                             int max_iterations,
                                             T zero_tol, T sign_tol,
                                             int edge_max_depth,
-                                            cell::TriangulationStrategy triangulation_strategy);
+                                            cell::TriangulationStrategy triangulation_strategy,
+                                            bool linear_subcell_level_set = false);
 
 template <std::floating_point T, std::integral I>
 void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
@@ -221,6 +225,7 @@ void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
                                             int max_iterations,
                                             T zero_tol, T sign_tol,
                                             int edge_max_depth,
-                                            bool triangulate_cut_parts = false);
+                                            bool triangulate_cut_parts = false,
+                                            bool linear_subcell_level_set = false);
 
 } // namespace cutcells

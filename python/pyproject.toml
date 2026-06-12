@@ -27,4 +27,8 @@ minimum-version = "0.5"
 cmake.minimum-version = "3.21.0"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["cutcells"]
-wheel.license-files = ["../LICENSE"]
+wheel.license-files = [
+    "../LICENSE",
+    "../third_party/VTK-Copyright.txt",
+    "../third_party/algoim/LICENSE",
+]

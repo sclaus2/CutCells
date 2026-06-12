@@ -192,6 +192,7 @@ void classify_new_edges(AdaptCell<T>& adapt_cell,
                         const LevelSetCell<T, I>& ls_cell,
                         int level_set_id,
                         T zero_tol, T sign_tol,
-                        int max_depth);
+                        int max_depth,
+                        bool linear_subcell_level_set = false);
 
 } // namespace cutcells

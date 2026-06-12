@@ -767,11 +767,14 @@ template <typename T>
 cutcells::quadrature::QuadratureRules<T> part_quadrature(
     const cutcells::HOMeshPart<T, int>& part,
     int order,
-    std::string_view mode)
+    std::string_view mode,
+    std::string_view backend)
 {
   const bool cut_only = part_mode_is_cut_only(mode);
+  const auto parsed_backend =
+      cutcells::output::quadrature_backend_from_string(backend);
   return cutcells::output::quadrature_rules(
-      part, order, /*include_uncut_cells=*/!cut_only);
+      part, order, /*include_uncut_cells=*/!cut_only, parsed_backend);
 }
 
 template <typename T>
@@ -1968,12 +1971,14 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             "quadrature",
             [](const PartT& self,
                int order,
-               const std::string& mode) {
+               const std::string& mode,
+               const std::string& backend) {
                 nb::gil_scoped_release release;
-                return part_quadrature(self, order, mode);
+                return part_quadrature(self, order, mode, backend);
             },
             nb::arg("order") = 3,
             nb::arg("mode") = "full",
+            nb::arg("backend") = "straight",
             "Return quadrature rules for an HOMeshPart, preserving AdaptCell topology.")
         .def(
             "write_vtu",

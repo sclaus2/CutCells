@@ -5,6 +5,7 @@
 
 #include "ho_mesh_part_output.h"
 
+#include "algoim_quadrature.h"
 #include "cell_topology.h"
 #include "mapping.h"
 #include "quadrature_tables.h"
@@ -1009,6 +1010,70 @@ quadrature::QuadratureRules<T> quadrature_rules(const HOMeshPart<T, I>& part,
     return rules;
 }
 
+QuadratureBackend quadrature_backend_from_string(std::string_view backend)
+{
+    if (backend == "straight" || backend == "cutcells")
+        return QuadratureBackend::Straight;
+    if (backend == "algoim" || backend == "algoim_bernstein")
+        return QuadratureBackend::AlgoimBernstein;
+    if (backend == "algoim_general")
+        return QuadratureBackend::AlgoimGeneral;
+
+    throw std::runtime_error(
+        "Unknown quadrature backend '" + std::string(backend)
+        + "'. Expected 'straight', 'algoim', or 'algoim_general'.");
+}
+
+template <std::floating_point T, std::integral I>
+quadrature::QuadratureRules<T> quadrature_rules(const HOMeshPart<T, I>& part,
+                                                int order,
+                                                bool include_uncut_cells,
+                                                QuadratureBackend backend)
+{
+    switch (backend)
+    {
+    case QuadratureBackend::Straight:
+        return quadrature_rules(part, order, include_uncut_cells);
+    case QuadratureBackend::AlgoimBernstein:
+        return algoim_quadrature_rules(part, order, include_uncut_cells);
+    case QuadratureBackend::AlgoimGeneral:
+        return algoim_general_quadrature_rules(part, order, include_uncut_cells);
+    }
+
+    throw std::runtime_error("Unhandled quadrature backend");
+}
+
+template <std::floating_point T, std::integral I>
+std::vector<std::pair<std::string, quadrature::QuadratureRules<T>>>
+paired_quadrature_rules(
+    const std::vector<std::pair<std::string, HOMeshPart<T, I>>>& parts,
+    int order,
+    bool include_uncut_cells,
+    QuadratureBackend backend)
+{
+    switch (backend)
+    {
+    case QuadratureBackend::Straight:
+    case QuadratureBackend::AlgoimGeneral:
+    {
+        std::vector<std::pair<std::string, quadrature::QuadratureRules<T>>> out;
+        out.reserve(parts.size());
+        for (const auto& [name, part] : parts)
+        {
+            out.emplace_back(
+                name,
+                quadrature_rules(part, order, include_uncut_cells, backend));
+        }
+        return out;
+    }
+    case QuadratureBackend::AlgoimBernstein:
+        return algoim_paired_quadrature_rules(
+            parts, order, include_uncut_cells);
+    }
+
+    throw std::runtime_error("Unhandled quadrature backend");
+}
+
 template <std::floating_point T, std::integral I>
 std::pair<std::vector<I>, std::vector<T>>
 volume_fractions(const HOMeshPart<T, I>& part)
@@ -1112,6 +1177,32 @@ template quadrature::QuadratureRules<double> quadrature_rules(
     const HOMeshPart<double, long>&, int, bool);
 template quadrature::QuadratureRules<float> quadrature_rules(
     const HOMeshPart<float, long>&, int, bool);
+
+template quadrature::QuadratureRules<double> quadrature_rules(
+    const HOMeshPart<double, int>&, int, bool, QuadratureBackend);
+template quadrature::QuadratureRules<float> quadrature_rules(
+    const HOMeshPart<float, int>&, int, bool, QuadratureBackend);
+template quadrature::QuadratureRules<double> quadrature_rules(
+    const HOMeshPart<double, long>&, int, bool, QuadratureBackend);
+template quadrature::QuadratureRules<float> quadrature_rules(
+    const HOMeshPart<float, long>&, int, bool, QuadratureBackend);
+
+template std::vector<std::pair<std::string, quadrature::QuadratureRules<double>>>
+paired_quadrature_rules(
+    const std::vector<std::pair<std::string, HOMeshPart<double, int>>>&,
+    int, bool, QuadratureBackend);
+template std::vector<std::pair<std::string, quadrature::QuadratureRules<float>>>
+paired_quadrature_rules(
+    const std::vector<std::pair<std::string, HOMeshPart<float, int>>>&,
+    int, bool, QuadratureBackend);
+template std::vector<std::pair<std::string, quadrature::QuadratureRules<double>>>
+paired_quadrature_rules(
+    const std::vector<std::pair<std::string, HOMeshPart<double, long>>>&,
+    int, bool, QuadratureBackend);
+template std::vector<std::pair<std::string, quadrature::QuadratureRules<float>>>
+paired_quadrature_rules(
+    const std::vector<std::pair<std::string, HOMeshPart<float, long>>>&,
+    int, bool, QuadratureBackend);
 
 template std::pair<std::vector<int>, std::vector<double>> volume_fractions(
     const HOMeshPart<double, int>&);

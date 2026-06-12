@@ -887,7 +887,8 @@ void classify_new_edges(AdaptCell<T>& adapt_cell,
                         const LevelSetCell<T, I>& ls_cell,
                         int level_set_id,
                         T zero_tol, T sign_tol,
-                        int max_depth)
+                        int max_depth,
+                        bool linear_subcell_level_set)
 {
     const int n_edges = adapt_cell.n_entities(1);
 
@@ -927,27 +928,52 @@ void classify_new_edges(AdaptCell<T>& adapt_cell,
                 + static_cast<std::size_t>(verts[1]) * static_cast<std::size_t>(tdim),
             static_cast<std::size_t>(tdim));
 
-        restrict_edge_bernstein_exact(
-            ls_cell.cell_type, ls_cell.bernstein_order,
-            std::span<const T>(ls_cell.bernstein_coeffs),
-            xi_a, xi_b, edge_coeffs);
-
-        // Classify.
         T green_split_t = T(0);
         bool has_green = false;
-        EdgeRootTag tag = classify_edge_roots<T>(
-            std::span<const T>(edge_coeffs),
-            zero_tol, sign_tol, max_depth,
-            green_split_t, has_green);
-
         T linear_root_t = T(0);
-        const bool has_linear_root =
-            tag == EdgeRootTag::one_root
-            && edge_coeffs.size() >= 2
-            && linear_one_root_parameter_from_endpoint_values<T>(
-                edge_coeffs.front(), edge_coeffs.back(), zero_tol, linear_root_t);
-        if (tag == EdgeRootTag::one_root && !has_linear_root)
-            tag = EdgeRootTag::no_root;
+        EdgeRootTag tag = EdgeRootTag::not_classified;
+
+        if (linear_subcell_level_set)
+        {
+            const T phi_a = ls_cell.value(xi_a);
+            const T phi_b = ls_cell.value(xi_b);
+            const bool a_zero = std::fabs(phi_a) <= zero_tol;
+            const bool b_zero = std::fabs(phi_b) <= zero_tol;
+            if (a_zero && b_zero)
+            {
+                tag = EdgeRootTag::zero;
+            }
+            else if (linear_one_root_parameter_from_endpoint_values<T>(
+                         phi_a, phi_b, zero_tol, linear_root_t))
+            {
+                tag = EdgeRootTag::one_root;
+            }
+            else
+            {
+                tag = EdgeRootTag::no_root;
+            }
+        }
+        else
+        {
+            restrict_edge_bernstein_exact(
+                ls_cell.cell_type, ls_cell.bernstein_order,
+                std::span<const T>(ls_cell.bernstein_coeffs),
+                xi_a, xi_b, edge_coeffs);
+
+            tag = classify_edge_roots<T>(
+                std::span<const T>(edge_coeffs),
+                zero_tol, sign_tol, max_depth,
+                green_split_t, has_green);
+
+            const bool has_linear_root =
+                tag == EdgeRootTag::one_root
+                && edge_coeffs.size() >= 2
+                && linear_one_root_parameter_from_endpoint_values<T>(
+                    edge_coeffs.front(), edge_coeffs.back(), zero_tol,
+                    linear_root_t);
+            if (tag == EdgeRootTag::one_root && !has_linear_root)
+                tag = EdgeRootTag::no_root;
+        }
 
         adapt_cell.set_edge_root_tag(level_set_id, e, tag);
 
@@ -1019,12 +1045,12 @@ template EdgeRootTag classify_edge_roots(std::span<const float>, float, float,
                                          int, float&, bool&);
 
 template void classify_new_edges(AdaptCell<double>&, const LevelSetCell<double, int>&,
-                                 int, double, double, int);
+                                 int, double, double, int, bool);
 template void classify_new_edges(AdaptCell<float>&, const LevelSetCell<float, int>&,
-                                 int, float, float, int);
+                                 int, float, float, int, bool);
 template void classify_new_edges(AdaptCell<double>&, const LevelSetCell<double, long>&,
-                                 int, double, double, int);
+                                 int, double, double, int, bool);
 template void classify_new_edges(AdaptCell<float>&, const LevelSetCell<float, long>&,
-                                 int, float, float, int);
+                                 int, float, float, int, bool);
 
 } // namespace cutcells

@@ -146,3 +146,37 @@ At runtime for the python examples, CutCells requires [`numpy`](https://numpy.or
 
 The library contains python `pytest` tests in `python/tests`.
 
+### Optional Algoim quadrature backend
+
+CutCells vendors a pinned Algoim snapshot in `third_party/algoim`.
+The default build does not use it. Configure with `-DCUTCELLS_WITH_ALGOIM=ON`
+to enable the Algoim-backed quadrature backend:
+
+```console
+cmake -S cpp -B build/cutcells-algoim -DCUTCELLS_WITH_ALGOIM=ON
+cmake --build build/cutcells-algoim
+```
+
+For the Python package, pass the CMake option through the build frontend:
+
+```console
+CMAKE_ARGS="-DCUTCELLS_WITH_ALGOIM=ON" python -m pip install ./python
+```
+
+The Python `HOMeshPart.quadrature` API keeps the existing straight backend as
+the default. Request Algoim explicitly. The `algoim` backend uses Algoim's
+Bernstein-polynomial quadrature path; `algoim_general` keeps the older callback
+and interval path available for comparison:
+
+```python
+rules = result["phi < 0"].quadrature(order=4, mode="cut_only", backend="algoim")
+surface = result["phi = 0"].quadrature(order=4, mode="cut_only", backend="algoim")
+legacy = result["phi < 0"].quadrature(
+    order=4, mode="cut_only", backend="algoim_general"
+)
+```
+
+The Algoim backends support single-clause `phi < 0`, `phi > 0`, and `phi = 0`
+selections on quadrilateral and hexahedral parent cells with Bernstein level-set
+data. Unsupported selections fail with an explicit error rather than silently
+falling back to the straight backend.

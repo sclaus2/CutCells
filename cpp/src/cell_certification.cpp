@@ -815,7 +815,7 @@ CellCertTag classify_ready_to_cut_topology(const AdaptCell<T>& adapt_cell,
     }
 
     if (has_multiple_roots)
-        return CellCertTag::cut;
+        return CellCertTag::ambiguous;
 
     if (subcell_type == cell::type::interval && cut_point_tokens.size() == 1)
         return CellCertTag::ready_to_cut;
@@ -845,7 +845,7 @@ CellCertTag classify_ready_to_cut_topology(const AdaptCell<T>& adapt_cell,
     }
 
     if (!cut_point_tokens.empty())
-        return CellCertTag::cut;
+        return CellCertTag::ambiguous;
 
     if (has_zero_edge)
         return CellCertTag::not_classified;
@@ -1095,7 +1095,8 @@ CellCertTag classify_leaf_cell(const AdaptCell<T>& adapt_cell,
                                const LevelSetCell<T, I>& ls_cell,
                                int level_set_id,
                                int cell_id,
-                               T zero_tol, T sign_tol)
+                               T zero_tol, T sign_tol,
+                               bool linear_subcell_level_set)
 {
     // A. Check the incident-edge topology first.
     {
@@ -1103,6 +1104,39 @@ CellCertTag classify_leaf_cell(const AdaptCell<T>& adapt_cell,
             classify_ready_to_cut_topology(adapt_cell, level_set_id, cell_id);
         if (edge_topology_tag != CellCertTag::not_classified)
             return edge_topology_tag;
+    }
+
+    if (linear_subcell_level_set)
+    {
+        const int tdim = adapt_cell.tdim;
+        auto cell_verts = adapt_cell.entity_to_vertex[tdim][
+            static_cast<std::int32_t>(cell_id)];
+        const std::uint64_t bit = std::uint64_t(1) << level_set_id;
+
+        bool has_zero = false;
+        bool has_negative = false;
+        bool has_positive = false;
+        for (const auto v : cell_verts)
+        {
+            const std::size_t vertex = static_cast<std::size_t>(v);
+            if ((adapt_cell.zero_mask_per_vertex[vertex] & bit) != 0)
+            {
+                has_zero = true;
+                continue;
+            }
+            if ((adapt_cell.negative_mask_per_vertex[vertex] & bit) != 0)
+                has_negative = true;
+            else
+                has_positive = true;
+        }
+
+        if (has_negative && !has_positive)
+            return CellCertTag::negative;
+        if (has_positive && !has_negative)
+            return CellCertTag::positive;
+        if (has_zero && !has_negative && !has_positive)
+            return CellCertTag::zero;
+        return CellCertTag::ambiguous;
     }
 
     // B. No edge roots: use exact subcell Bernstein restriction.
@@ -1257,7 +1291,8 @@ template <std::floating_point T, std::integral I>
 void classify_leaf_cells(AdaptCell<T>& adapt_cell,
                          const LevelSetCell<T, I>& ls_cell,
                          int level_set_id,
-                         T zero_tol, T sign_tol)
+                         T zero_tol, T sign_tol,
+                         bool linear_subcell_level_set)
 {
     const int tdim = adapt_cell.tdim;
     const int n_cells = adapt_cell.n_entities(tdim);
@@ -1273,7 +1308,8 @@ void classify_leaf_cells(AdaptCell<T>& adapt_cell,
             continue;
 
         CellCertTag tag = classify_leaf_cell(
-            adapt_cell, ls_cell, level_set_id, c, zero_tol, sign_tol);
+            adapt_cell, ls_cell, level_set_id, c, zero_tol, sign_tol,
+            linear_subcell_level_set);
         adapt_cell.set_cell_cert_tag(level_set_id, c, tag);
     }
 }
@@ -2041,13 +2077,15 @@ void certify_and_refine(AdaptCell<T>& adapt_cell,
                         int level_set_id,
                         int max_iterations,
                         T zero_tol, T sign_tol,
-                        int edge_max_depth)
+                        int edge_max_depth,
+                        bool linear_subcell_level_set)
 {
     for (int iter = 0; iter < max_iterations; ++iter)
     {
         // 1. Classify edges.
         classify_new_edges(adapt_cell, ls_cell, level_set_id,
-                           zero_tol, sign_tol, edge_max_depth);
+                           zero_tol, sign_tol, edge_max_depth,
+                           linear_subcell_level_set);
 
         // 1b. Build faces and classify them (3D only).
         if (adapt_cell.tdim == 3)
@@ -2059,7 +2097,7 @@ void certify_and_refine(AdaptCell<T>& adapt_cell,
 
         // 2. Classify cells.
         classify_leaf_cells(adapt_cell, ls_cell, level_set_id,
-                            zero_tol, sign_tol);
+                            zero_tol, sign_tol, linear_subcell_level_set);
 
         // 3. Green refinement: multiple_roots edges.
         bool did_green = false;
@@ -2120,12 +2158,14 @@ void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
                                             int max_iterations,
                                             T zero_tol, T sign_tol,
                                             int edge_max_depth,
-                                            bool triangulate_cut_parts)
+                                            bool triangulate_cut_parts,
+                                            bool linear_subcell_level_set)
 {
     certify_refine_and_process_ready_cells(
         adapt_cell, ls_cell, level_set_id, max_iterations, zero_tol, sign_tol,
         edge_max_depth,
-        cell::triangulation_strategy_from_bool(triangulate_cut_parts));
+        cell::triangulation_strategy_from_bool(triangulate_cut_parts),
+        linear_subcell_level_set);
 }
 
 template <std::floating_point T, std::integral I>
@@ -2135,11 +2175,13 @@ void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
                                             int max_iterations,
                                             T zero_tol, T sign_tol,
                                             int edge_max_depth,
-                                            cell::TriangulationStrategy triangulation_strategy)
+                                            cell::TriangulationStrategy triangulation_strategy,
+                                            bool linear_subcell_level_set)
 {
     fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
     certify_and_refine(adapt_cell, ls_cell, level_set_id,
-                       max_iterations, zero_tol, sign_tol, edge_max_depth);
+                       max_iterations, zero_tol, sign_tol, edge_max_depth,
+                       linear_subcell_level_set);
     fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
     process_ready_to_cut_cells(adapt_cell, ls_cell, level_set_id,
                                zero_tol, sign_tol, edge_max_depth,
@@ -2169,23 +2211,23 @@ template void restrict_subcell_bernstein_exact(cell::type, int,
 
 template CellCertTag classify_leaf_cell(const AdaptCell<double>&,
                                         const LevelSetCell<double, int>&,
-                                        int, int, double, double);
+                                        int, int, double, double, bool);
 template CellCertTag classify_leaf_cell(const AdaptCell<float>&,
                                         const LevelSetCell<float, int>&,
-                                        int, int, float, float);
+                                        int, int, float, float, bool);
 template CellCertTag classify_leaf_cell(const AdaptCell<double>&,
                                         const LevelSetCell<double, long>&,
-                                        int, int, double, double);
+                                        int, int, double, double, bool);
 
 template void classify_leaf_cells(AdaptCell<double>&,
                                   const LevelSetCell<double, int>&,
-                                  int, double, double);
+                                  int, double, double, bool);
 template void classify_leaf_cells(AdaptCell<float>&,
                                   const LevelSetCell<float, int>&,
-                                  int, float, float);
+                                  int, float, float, bool);
 template void classify_leaf_cells(AdaptCell<double>&,
                                   const LevelSetCell<double, long>&,
-                                  int, double, double);
+                                  int, double, double, bool);
 
 template FaceCertTag classify_leaf_face(const AdaptCell<double>&,
                                         const LevelSetCell<double, int>&,
@@ -2273,42 +2315,42 @@ template bool refine_ready_cell_on_largest_midpoint_value(
 
 template void certify_and_refine(AdaptCell<double>&,
                                  const LevelSetCell<double, int>&,
-                                 int, int, double, double, int);
+                                 int, int, double, double, int, bool);
 template void certify_and_refine(AdaptCell<float>&,
                                  const LevelSetCell<float, int>&,
-                                 int, int, float, float, int);
+                                 int, int, float, float, int, bool);
 template void certify_and_refine(AdaptCell<double>&,
                                  const LevelSetCell<double, long>&,
-                                 int, int, double, double, int);
+                                 int, int, double, double, int, bool);
 
 template void certify_refine_and_process_ready_cells(AdaptCell<double>&,
                                                      const LevelSetCell<double, int>&,
                                                      int, int, double, double, int,
-                                                     cell::TriangulationStrategy);
+                                                     cell::TriangulationStrategy, bool);
 template void certify_refine_and_process_ready_cells(AdaptCell<float>&,
                                                      const LevelSetCell<float, int>&,
                                                      int, int, float, float, int,
-                                                     cell::TriangulationStrategy);
+                                                     cell::TriangulationStrategy, bool);
 template void certify_refine_and_process_ready_cells(AdaptCell<double>&,
                                                      const LevelSetCell<double, long>&,
                                                      int, int, double, double, int,
-                                                     cell::TriangulationStrategy);
+                                                     cell::TriangulationStrategy, bool);
 template void certify_refine_and_process_ready_cells(AdaptCell<float>&,
                                                      const LevelSetCell<float, long>&,
                                                      int, int, float, float, int,
-                                                     cell::TriangulationStrategy);
+                                                     cell::TriangulationStrategy, bool);
 
 template void certify_refine_and_process_ready_cells(AdaptCell<double>&,
                                                      const LevelSetCell<double, int>&,
-                                                     int, int, double, double, int, bool);
+                                                     int, int, double, double, int, bool, bool);
 template void certify_refine_and_process_ready_cells(AdaptCell<float>&,
                                                      const LevelSetCell<float, int>&,
-                                                     int, int, float, float, int, bool);
+                                                     int, int, float, float, int, bool, bool);
 template void certify_refine_and_process_ready_cells(AdaptCell<double>&,
                                                      const LevelSetCell<double, long>&,
-                                                     int, int, double, double, int, bool);
+                                                     int, int, double, double, int, bool, bool);
 template void certify_refine_and_process_ready_cells(AdaptCell<float>&,
                                                      const LevelSetCell<float, long>&,
-                                                     int, int, float, float, int, bool);
+                                                     int, int, float, float, int, bool, bool);
 
 } // namespace cutcells

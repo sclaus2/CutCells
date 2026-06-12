@@ -505,13 +505,16 @@ cut(const MeshView<T, I>& mesh,
         // AdaptCell
         AdaptCell<T> ac = make_adapt_cell(mesh, ci);
         apply_cut_approximation(ac, resolved_options);
+        const bool linear_subcell_level_set =
+            resolved_options.cut_approximation == "iso_p1";
 
         certify_refine_and_process_ready_cells(
             ac, hc.level_set_cells.back(), /*level_set_id=*/0,
             /*max_iterations=*/8, T(1e-12), T(1e-12), /*edge_max_depth=*/20,
             resolved_options.triangulate_cut_parts
                 ? resolved_options.triangulation_strategy
-                : cell::TriangulationStrategy::none);
+                : cell::TriangulationStrategy::none,
+            linear_subcell_level_set);
         {
             const std::array<int, 1> processed_ids = {0};
             const auto* processed_cell = &hc.level_set_cells.back();
@@ -656,6 +659,8 @@ cut(const MeshView<T, I>& mesh,
         // Build AdaptCell once per cell.
         AdaptCell<T> ac = make_adapt_cell(mesh, ci);
         apply_cut_approximation(ac, resolved_options);
+        const bool linear_subcell_level_set =
+            resolved_options.cut_approximation == "iso_p1";
 
         // Process intersecting level sets recursively (input order).
         //
@@ -669,7 +674,8 @@ cut(const MeshView<T, I>& mesh,
                     /*edge_max_depth=*/20,
                     resolved_options.triangulate_cut_parts
                         ? resolved_options.triangulation_strategy
-                        : cell::TriangulationStrategy::none);
+                        : cell::TriangulationStrategy::none,
+                    linear_subcell_level_set);
 
             // New vertices created while processing level set li must be
             // reclassified for all already-processed level sets.

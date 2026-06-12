@@ -38,6 +38,7 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/ho_mesh_part_output.h
   ${CMAKE_CURRENT_SOURCE_DIR}/selection_expr.h
   ${CMAKE_CURRENT_SOURCE_DIR}/edge_certification.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/edge_root.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_certification.h
   ${CMAKE_CURRENT_SOURCE_DIR}/refine_cell.h
   ${CMAKE_CURRENT_SOURCE_DIR}/quadrature.h
@@ -69,6 +70,7 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/iso_refine.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ho_cut_mesh.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/ho_mesh_part_output.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/algoim_quadrature.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/selection_expr.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/edge_certification.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_certification.cpp
