@@ -9,6 +9,8 @@
 #include <cmath>
 #include <limits>
 #include <concepts>
+#include <stdexcept>
+#include <string>
 
 namespace cutcells
 {
@@ -44,14 +46,19 @@ namespace cutcells
 
         inline std::string domain_type_to_string(const domain& cell_domain)
         {
-            if(cell_domain==domain::unset)
+            switch (cell_domain)
+            {
+            case domain::unset:
                 return "unset";
-            else if(cell_domain==domain::intersected)
+            case domain::intersected:
                 return "intersected";
-            else if(cell_domain==domain::inside)
+            case domain::inside:
                 return "inside";
-            else if(cell_domain==domain::outside)
+            case domain::outside:
                 return "outside";
+            default:
+                throw std::invalid_argument("Unknown cell domain.");
+            }
         }
 
         template <std::floating_point T>
@@ -128,7 +135,7 @@ namespace cutcells
 
         // Flag all nodes with abs(ls_val) < tol
         template <std::floating_point T>
-        inline int get_entity_corner_case_flag(const std::span<const T> ls_values, bool outside)
+        inline int get_entity_corner_case_flag(const std::span<const T> ls_values, bool)
         {
             int index = 0;
             int multiplier = 1;

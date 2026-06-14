@@ -23,6 +23,7 @@ sys.path.insert(0, str(_TABLEGEN_ROOT))
 
 
 _VTK_DERIVED_CELL_TYPES = {"hexahedron", "prism", "pyramid"}
+_DEFAULT_VTK_REF = "v9.4.2"
 
 
 def _import_tablegen():
@@ -77,7 +78,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--vtk-ref",
         default=None,
-        help="VTK git ref/tag/commit to download vtkTableBasedClipCases.h from (default: env CUT_CELLS_VTK_REF or 'master')",
+        help=(
+            "VTK git ref/tag/commit to download vtkTableBasedClipCases.h from "
+            f"(default: env CUT_CELLS_VTK_REF or '{_DEFAULT_VTK_REF}')"
+        ),
     )
     parser.add_argument(
         "--vtk-header-path",
@@ -96,7 +100,7 @@ def main() -> None:
         os.environ["CUT_CELLS_VTK_HEADER"] = str(args.vtk_header_path)
 
     emit_all_tet_like, _, _, registered_cell_types = _import_tablegen()
-    vtk_ref = os.environ.get("CUT_CELLS_VTK_REF", "master")
+    vtk_ref = os.environ.get("CUT_CELLS_VTK_REF", _DEFAULT_VTK_REF)
     vtk_header_path = os.environ.get("CUT_CELLS_VTK_HEADER")
 
     cell_types = args.cell_type

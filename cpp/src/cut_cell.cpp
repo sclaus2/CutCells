@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <cstdint>
 #include <concepts>
+#include <stdexcept>
 
 namespace
 {
@@ -232,7 +233,7 @@ namespace cutcells::cell{
              throw std::invalid_argument("more than 10 level set values, only 2nd order tetrahedra are supported");
           break;
         }
-        default: throw std::invalid_argument("Only intervals, triangles and tetrahedra are implemented for cutting so far.");
+        default: throw std::invalid_argument("Only triangles and tetrahedra are implemented for higher order cutting so far.");
                 break;
       }
 
@@ -247,6 +248,7 @@ namespace cutcells::cell{
                                         break;}
           case cutcells::cell::type::tetrahedron: {num_sub_cells = cutcells::cell::tetrahedron_subdivision_table.size();
                                         break;}
+          default: throw std::invalid_argument("Only triangles and tetrahedra are implemented for higher order cutting so far.");
         }
 
         std::vector<cutcells::cell::CutCell<T>> sub_cut_cells;
@@ -265,6 +267,7 @@ namespace cutcells::cell{
                                           break;}
             case cutcells::cell::type::tetrahedron: {sub_tet = std::span<const int>(cutcells::cell::tetrahedron_subdivision_table[i]);
                                           break;}
+            default: throw std::invalid_argument("Only triangles and tetrahedra are implemented for higher order cutting so far.");
           }
 
           std::vector<T> sub_ls_values(num_vertices);
@@ -313,6 +316,10 @@ namespace cutcells::cell{
                 sub_cut_cell_id++;
               }
               break;
+            }
+            case cutcells::cell::domain::unset:
+            {
+              throw std::invalid_argument("Sub-cell domain classification is unset.");
             }
           }
         }

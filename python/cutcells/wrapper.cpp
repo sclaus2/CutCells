@@ -24,26 +24,26 @@
 #include <cstdint>
 #include <string_view>
 
-#include "../../cpp/src/cell_types.h"
-#include "../../cpp/src/cut_cell.h"
-#include "../../cpp/src/cut_mesh.h"
-#include "../../cpp/src/write_vtk.h"
-#include "../../cpp/src/bernstein.h"
-#include "../../cpp/src/mapping.h"
-#include "../../cpp/src/quadrature.h"
-#include "../../cpp/src/quadrature_tables.h"
-#include "../../cpp/src/mesh_view.h"
-#include "../../cpp/src/level_set.h"
-#include "../../cpp/src/adapt_cell.h"
-#include "../../cpp/src/cell_topology.h"
-#include "../../cpp/src/level_set_cell.h"
-#include "../../cpp/src/reference_cell.h"
-#include "../../cpp/src/triangulation.h"
-#include "../../cpp/src/edge_certification.h"
-#include "../../cpp/src/cell_certification.h"
-#include "../../cpp/src/refine_cell.h"
-#include "../../cpp/src/ho_cut_mesh.h"
-#include "../../cpp/src/ho_mesh_part_output.h"
+#include <cutcells/adapt_cell.h>
+#include <cutcells/bernstein.h>
+#include <cutcells/cell_certification.h>
+#include <cutcells/cell_topology.h>
+#include <cutcells/cell_types.h>
+#include <cutcells/cut_cell.h>
+#include <cutcells/cut_mesh.h>
+#include <cutcells/edge_certification.h>
+#include <cutcells/ho_cut_mesh.h>
+#include <cutcells/ho_mesh_part_output.h>
+#include <cutcells/level_set.h>
+#include <cutcells/level_set_cell.h>
+#include <cutcells/mapping.h>
+#include <cutcells/mesh_view.h>
+#include <cutcells/quadrature.h>
+#include <cutcells/quadrature_tables.h>
+#include <cutcells/reference_cell.h>
+#include <cutcells/refine_cell.h>
+#include <cutcells/triangulation.h>
+#include <cutcells/write_vtk.h>
 
 namespace nb = nanobind;
 

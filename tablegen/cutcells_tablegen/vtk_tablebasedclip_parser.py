@@ -25,6 +25,7 @@ import re
 import urllib.request
 
 
+_DEFAULT_VTK_REF = "v9.4.2"
 _VTK_DEFAULT_URL = "https://raw.githubusercontent.com/Kitware/VTK/{ref}/Filters/General/vtkTableBasedClipCases.h"
 
 
@@ -160,13 +161,13 @@ def load_hexahedron_cases(
 
     Environment variables:
       - CUT_CELLS_VTK_HEADER: local path override
-      - CUT_CELLS_VTK_REF: Git ref (default: master)
+      - CUT_CELLS_VTK_REF: Git ref (default: v9.4.2)
     """
 
     if vtk_header_path is None:
         vtk_header_path = os.environ.get("CUT_CELLS_VTK_HEADER")
     if vtk_ref is None:
-        vtk_ref = os.environ.get("CUT_CELLS_VTK_REF", "master")
+        vtk_ref = os.environ.get("CUT_CELLS_VTK_REF", _DEFAULT_VTK_REF)
 
     text = _read_header_text(vtk_header_path, vtk_ref)
     block = _find_hex_block(text)
@@ -217,7 +218,7 @@ def load_wedge_cases(
     if vtk_header_path is None:
         vtk_header_path = os.environ.get("CUT_CELLS_VTK_HEADER")
     if vtk_ref is None:
-        vtk_ref = os.environ.get("CUT_CELLS_VTK_REF", "master")
+        vtk_ref = os.environ.get("CUT_CELLS_VTK_REF", _DEFAULT_VTK_REF)
 
     text = _read_header_text(vtk_header_path, vtk_ref)
     block = _find_wedge_block(text)
@@ -266,7 +267,7 @@ def load_pyramid_cases(
     if vtk_header_path is None:
         vtk_header_path = os.environ.get("CUT_CELLS_VTK_HEADER")
     if vtk_ref is None:
-        vtk_ref = os.environ.get("CUT_CELLS_VTK_REF", "master")
+        vtk_ref = os.environ.get("CUT_CELLS_VTK_REF", _DEFAULT_VTK_REF)
 
     text = _read_header_text(vtk_header_path, vtk_ref)
     block = _find_pyramid_block(text)

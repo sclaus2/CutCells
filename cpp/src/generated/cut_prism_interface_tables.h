@@ -7,6 +7,9 @@
 // It contains case tables derived from VTK's vtkTableBasedClipCases.h
 // (Visualization Toolkit, TableBasedClip).
 //
+// VTK ref: legacy generated header; exact commit not recorded
+// VTK header path override: (none recorded)
+//
 // VTK is licensed under the BSD 3-Clause License.
 // See third_party/VTK-Copyright.txt in this repository.
 // -----------------------------------------------------------------------------

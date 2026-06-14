@@ -10,6 +10,9 @@ option(BUILD_SHARED_LIBS "Build CutCells with shared libraries." ON)
 option(CUTCELLS_WITH_ALGOIM
   "Enable the optional Algoim-backed quadrature implementation."
   OFF)
+option(CUTCELLS_ENABLE_IPO
+  "Enable interprocedural optimization in release builds when supported."
+  OFF)
 
 include(GNUInstallDirs)
 include(CheckIPOSupported)
@@ -35,16 +38,49 @@ if(CUTCELLS_WITH_ALGOIM)
       "CUTCELLS_WITH_ALGOIM=ON requires the local LAPACKE compatibility header")
   endif()
 
-  find_library(CUTCELLS_LAPACK_LIBRARY NAMES lapack)
-  find_library(CUTCELLS_LAPACKE_LIBRARY NAMES lapacke)
-  set(CUTCELLS_ALGOIM_LAPACK_LIBRARIES)
-  if(CUTCELLS_LAPACKE_LIBRARY)
-    list(APPEND CUTCELLS_ALGOIM_LAPACK_LIBRARIES
-      "${CUTCELLS_LAPACKE_LIBRARY}")
+  set(CUTCELLS_ALGOIM_LAPACK_LIBRARIES "" CACHE STRING
+    "BLAS/LAPACK libraries for the Algoim-backed quadrature backend")
+  if(NOT CUTCELLS_ALGOIM_LAPACK_LIBRARIES)
+    set(_cutcells_lapack_hints)
+    foreach(_cutcells_prefix IN LISTS CMAKE_PREFIX_PATH)
+      list(APPEND _cutcells_lapack_hints "${_cutcells_prefix}")
+    endforeach()
+
+    if(_cutcells_lapack_hints)
+      find_library(CUTCELLS_BLAS_LIBRARY
+        NAMES blas openblas
+        PATHS ${_cutcells_lapack_hints}
+        PATH_SUFFIXES lib
+        NO_DEFAULT_PATH)
+      find_library(CUTCELLS_LAPACK_LIBRARY
+        NAMES lapack
+        PATHS ${_cutcells_lapack_hints}
+        PATH_SUFFIXES lib
+        NO_DEFAULT_PATH)
+      find_library(CUTCELLS_LAPACKE_LIBRARY
+        NAMES lapacke
+        PATHS ${_cutcells_lapack_hints}
+        PATH_SUFFIXES lib
+        NO_DEFAULT_PATH)
+    endif()
+
+    if(CUTCELLS_BLAS_LIBRARY)
+      list(APPEND CUTCELLS_ALGOIM_LAPACK_LIBRARIES
+        "${CUTCELLS_BLAS_LIBRARY}")
+    endif()
+    if(CUTCELLS_LAPACKE_LIBRARY)
+      list(APPEND CUTCELLS_ALGOIM_LAPACK_LIBRARIES
+        "${CUTCELLS_LAPACKE_LIBRARY}")
+    endif()
+    if(CUTCELLS_LAPACK_LIBRARY)
+      list(APPEND CUTCELLS_ALGOIM_LAPACK_LIBRARIES
+        "${CUTCELLS_LAPACK_LIBRARY}")
+    endif()
   endif()
-  if(CUTCELLS_LAPACK_LIBRARY)
-    list(APPEND CUTCELLS_ALGOIM_LAPACK_LIBRARIES
-      "${CUTCELLS_LAPACK_LIBRARY}")
+
+  if(NOT CUTCELLS_ALGOIM_LAPACK_LIBRARIES)
+    find_package(LAPACK REQUIRED)
+    list(APPEND CUTCELLS_ALGOIM_LAPACK_LIBRARIES ${LAPACK_LIBRARIES})
   endif()
   if(NOT CUTCELLS_ALGOIM_LAPACK_LIBRARIES)
     message(FATAL_ERROR
@@ -135,9 +171,13 @@ if(OpenMP_CXX_FOUND AND TARGET OpenMP::OpenMP_CXX)
   target_link_libraries(cutcells PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
-check_ipo_supported(RESULT CUTCELLS_IPO_SUPPORTED OUTPUT CUTCELLS_IPO_ERROR)
-if(CUTCELLS_IPO_SUPPORTED)
-  set_property(TARGET cutcells PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+if(CUTCELLS_ENABLE_IPO)
+  check_ipo_supported(RESULT CUTCELLS_IPO_SUPPORTED OUTPUT CUTCELLS_IPO_ERROR)
+  if(CUTCELLS_IPO_SUPPORTED)
+    set_property(TARGET cutcells PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+  else()
+    message(STATUS "IPO requested but not supported: ${CUTCELLS_IPO_ERROR}")
+  endif()
 endif()
 
 target_include_directories(cutcells PUBLIC
@@ -162,6 +202,22 @@ install(TARGETS cutcells
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT RuntimeExecutables
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT RuntimeLibraries
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT Development)
+
+set(_cutcells_license_install_dir
+  "${CMAKE_INSTALL_DATADIR}/licenses/cutcells")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE"
+  DESTINATION ${_cutcells_license_install_dir}
+  RENAME CutCells-LICENSE.txt)
+install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/THIRD_PARTY_NOTICES.md"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/VTK-Copyright.txt"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/Basix-LICENSE.txt"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/algoim/UPSTREAM_COMMIT"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/algoim/PATCHES.md"
+  DESTINATION ${_cutcells_license_install_dir})
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/algoim/LICENSE"
+  DESTINATION ${_cutcells_license_install_dir}
+  RENAME Algoim-LICENSE.txt)
 
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(CutCellsConfigVersion.cmake

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 ONERA
+// SPDX-License-Identifier: MIT
+//
 // Minimal LAPACKE declarations needed by vendored Algoim.
 //
 // Some conda-forge LAPACK builds export LAPACKE symbols from liblapack but do
