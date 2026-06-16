@@ -54,7 +54,13 @@ def _load_cpp_module():
                 pass
 
         lib_candidates = [
+            build_dir / "cutcells_cpp" / "src" / "libcutcells.so",
             build_dir / "cutcells_cpp" / "src" / "libcutcells.dylib",
+            _Path(__file__).resolve().parents[2]
+            / "cpp"
+            / "build"
+            / "src"
+            / "libcutcells.so",
             _Path(__file__).resolve().parents[2]
             / "cpp"
             / "build"
@@ -111,8 +117,11 @@ def _load_cpp_module():
         so_path = local_sos[0]
 
         lib_candidates = [
+            this_pkg_dir / "libcutcells.so",
             this_pkg_dir / "libcutcells.dylib",
+            this_pkg_dir.parent / "libcutcells.so",
             this_pkg_dir.parent / "libcutcells.dylib",
+            this_pkg_dir.parent / "lib" / "libcutcells.so",
             this_pkg_dir.parent / "lib" / "libcutcells.dylib",
         ]
         for lib in lib_candidates:
@@ -144,10 +153,13 @@ def _load_cpp_module():
         installed = sorted(installed, key=lambda p: p.stat().st_mtime, reverse=True)
         so_path = installed[0]
 
-        # Try to preload the companion dylib if it was packaged separately.
+        # Try to preload the companion shared library if it was packaged separately.
         lib_candidates = [
+            so_path.parent / "libcutcells.so",
             so_path.parent / "libcutcells.dylib",
+            so_path.parent.parent / "libcutcells.so",
             so_path.parent.parent / "libcutcells.dylib",
+            so_path.parent.parent / "lib" / "libcutcells.so",
             so_path.parent.parent / "lib" / "libcutcells.dylib",
         ]
         for lib in lib_candidates:

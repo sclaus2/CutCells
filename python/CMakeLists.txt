@@ -1,6 +1,7 @@
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.21)
 
 project(cutcells_nanobind VERSION "0.4.0" LANGUAGES CXX)
+include(GNUInstallDirs)
 
 # nanobind uses aligned deallocators only present on macOS > 10.14
 if(APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
@@ -45,7 +46,13 @@ if(HAVE_PEDANTIC)
 endif()
 
 set(_build_rpath "$<TARGET_FILE_DIR:CUTCELLS::cutcells>")
-set(_install_rpath "")
+if(APPLE)
+  set(_install_rpath "@loader_path/../${CMAKE_INSTALL_LIBDIR}")
+elseif(UNIX)
+  set(_install_rpath "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+else()
+  set(_install_rpath "")
+endif()
 
 set_target_properties(_cutcellscpp PROPERTIES
   BUILD_RPATH "${_build_rpath}"
@@ -55,3 +62,6 @@ set_target_properties(_cutcellscpp PROPERTIES
 )
 
 install(TARGETS _cutcellscpp LIBRARY DESTINATION cutcells)
+install(IMPORTED_RUNTIME_ARTIFACTS CUTCELLS::cutcells
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
