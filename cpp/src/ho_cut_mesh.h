@@ -30,6 +30,8 @@ struct CutOptions
         = cell::TriangulationStrategy::classical;
     std::string cut_approximation = "auto";
     int cut_approximation_order = 1;
+    int max_refinement_iterations = 8;
+    int edge_max_depth = 20;
 };
 
 // =====================================================================

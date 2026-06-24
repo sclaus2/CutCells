@@ -181,6 +181,38 @@ class AdaptCellIsoRefineTests(unittest.TestCase):
                 cut_approximation_order=2,
             )
 
+    def test_zero_refinement_iterations_keeps_linear_p1_table_output(self):
+        mesh = _quad_mesh()
+        ls = cutcells.create_level_set(
+            mesh,
+            lambda X: X[0] - 0.45,
+            degree=1,
+            name="phi",
+        )
+
+        no_refine = cutcells.cut(
+            mesh,
+            ls,
+            cut_approximation="linear",
+            max_refinement_iterations=0,
+        )
+
+        self.assertEqual(no_refine.num_cut_cells, 1)
+        self.assertEqual(no_refine.adapt_cell(0).num_vertices(), 6)
+        self.assertEqual(no_refine.adapt_cell(0).num_cells(), 2)
+
+    def test_negative_refinement_iterations_are_rejected(self):
+        mesh = _triangle_mesh()
+        ls = cutcells.create_level_set(
+            mesh,
+            lambda X: X[0] + X[1] - 0.9,
+            degree=1,
+            name="phi",
+        )
+
+        with self.assertRaisesRegex(Exception, "max_refinement_iterations"):
+            cutcells.cut(mesh, ls, max_refinement_iterations=-1)
+
 
 if __name__ == "__main__":
     unittest.main()

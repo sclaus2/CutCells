@@ -481,6 +481,12 @@ inline void validate_resolved_cut_options(const CutOptions& options)
 
 inline void validate_cut_options(const CutOptions& options)
 {
+    if (options.max_refinement_iterations < 0)
+        throw std::invalid_argument(
+            "cut: max_refinement_iterations must be nonnegative");
+    if (options.edge_max_depth < 0)
+        throw std::invalid_argument("cut: edge_max_depth must be nonnegative");
+
     if (options.cut_approximation == "auto")
         return;
 
@@ -630,7 +636,8 @@ cut(const MeshView<T, I>& mesh,
 
         certify_refine_and_process_ready_cells(
             ac, hc.level_set_cells.back(), /*level_set_id=*/0,
-            /*max_iterations=*/8, T(1e-12), T(1e-12), /*edge_max_depth=*/20,
+            resolved_options.max_refinement_iterations, T(1e-12), T(1e-12),
+            resolved_options.edge_max_depth,
             resolved_options.triangulate_cut_parts
                 ? resolved_options.triangulation_strategy
                 : cell::TriangulationStrategy::none,
@@ -790,8 +797,8 @@ cut(const MeshView<T, I>& mesh,
             const int li = intersected_ls_indices[k];
             certify_refine_and_process_ready_cells(
                     ac, intersected_ls_cells[k], li,
-                    /*max_iterations=*/8, T(1e-12), T(1e-12),
-                    /*edge_max_depth=*/20,
+                    resolved_options.max_refinement_iterations, T(1e-12), T(1e-12),
+                    resolved_options.edge_max_depth,
                     resolved_options.triangulate_cut_parts
                         ? resolved_options.triangulation_strategy
                         : cell::TriangulationStrategy::none,

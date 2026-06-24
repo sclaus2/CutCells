@@ -2080,7 +2080,8 @@ void certify_and_refine(AdaptCell<T>& adapt_cell,
                         int edge_max_depth,
                         bool linear_subcell_level_set)
 {
-    for (int iter = 0; iter < max_iterations; ++iter)
+    const int classification_passes = std::max(max_iterations, 1);
+    for (int iter = 0; iter < classification_passes; ++iter)
     {
         // 1. Classify edges.
         classify_new_edges(adapt_cell, ls_cell, level_set_id,
@@ -2098,6 +2099,9 @@ void certify_and_refine(AdaptCell<T>& adapt_cell,
         // 2. Classify cells.
         classify_leaf_cells(adapt_cell, ls_cell, level_set_id,
                             zero_tol, sign_tol, linear_subcell_level_set);
+
+        if (max_iterations == 0)
+            break;
 
         // 3. Green refinement: multiple_roots edges.
         bool did_green = false;
