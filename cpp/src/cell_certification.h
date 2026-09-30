@@ -50,19 +50,21 @@ void restrict_subcell_bernstein_exact(cell::type parent_cell_type,
 /// Classify a single leaf cell for one level set.
 ///
 /// Logic:
-///   A. If the incident edge pattern is a directly cuttable simplex case:
-///        - triangle with exactly 2 one_root edges and no multiple_roots
-///        - tetrahedron with exactly 3 or 4 one_root edges and no multiple_roots
-///      → ready_to_cut.
-///   B. Else if any incident edge has tag one_root or multiple_roots → cut.
-///      Zero edges alone fall through so later level sets can still classify
-///      or refine cells whose interface is inherited from an earlier cut.
-///   C. Otherwise, restrict the parent Bernstein to the subcell and check
-///      the sign hull:
-///        - all positive → positive
-///        - all negative → negative
-///        - all zero → zero
-///        - mixed → ambiguous
+///   A. If any incident edge has tag multiple_roots → ambiguous.
+///   B. If phi changes sign across the leaf (an edge crossing between nonzero
+///      endpoints, or strictly negative and strictly positive vertices) and
+///      the cut points (crossing edges and zero vertices) form a directly
+///      cuttable pattern, e.g.
+///        - triangle with exactly 2 cut points
+///        - tetrahedron with exactly 3 or 4 cut points
+///      → ready_to_cut; any other sign-changing pattern → ambiguous.
+///   C. Otherwise the leaf touches the interface at most through zero
+///      vertices, edges or faces. Restrict the parent Bernstein to the
+///      subcell and check the sign hull:
+///        - all zero → zero (or the sign at the centroid)
+///        - all positive or nonnegative → positive
+///        - all negative or nonpositive → negative
+///        - mixed → monotonicity/face filters, else ambiguous
 ///
 /// @param adapt_cell     The AdaptCell.
 /// @param ls_cell        LevelSetCell providing Bernstein coefficients.

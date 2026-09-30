@@ -763,6 +763,9 @@ CellCertTag classify_ready_to_cut_topology(const AdaptCell<T>& adapt_cell,
     std::set<int> cut_point_tokens;
     bool has_multiple_roots = false;
     bool has_zero_edge = false;
+    bool has_crossing_edge = false;
+    bool has_negative_vertex = false;
+    bool has_positive_vertex = false;
     const std::uint64_t bit = std::uint64_t(1) << level_set_id;
 
     std::map<int, int> local_vertex_by_global;
@@ -772,6 +775,10 @@ CellCertTag classify_ready_to_cut_topology(const AdaptCell<T>& adapt_cell,
         local_vertex_by_global[gv] = static_cast<int>(lv);
         if ((adapt_cell.zero_mask_per_vertex[static_cast<std::size_t>(gv)] & bit) != 0)
             cut_point_tokens.insert(100 + static_cast<int>(lv));
+        else if ((adapt_cell.negative_mask_per_vertex[static_cast<std::size_t>(gv)] & bit) != 0)
+            has_negative_vertex = true;
+        else
+            has_positive_vertex = true;
     }
 
     const int n_edges = adapt_cell.n_entities(1);
@@ -810,12 +817,24 @@ CellCertTag classify_ready_to_cut_topology(const AdaptCell<T>& adapt_cell,
                 const int local_edge_id = basix_edge_id_for_vertices(
                     subcell_type, it0->second, it1->second);
                 cut_point_tokens.insert(local_edge_id);
+                has_crossing_edge = true;
             }
         }
     }
 
     if (has_multiple_roots)
         return CellCertTag::ambiguous;
+
+    // phi changes sign across the leaf only along a crossing edge or, e.g. for
+    // a hexahedron cut through zero vertices only, between strictly negative and
+    // strictly positive vertices that share no edge. Otherwise zero vertices,
+    // zero edges or zero faces only mean that the leaf touches the interface
+    // (a zero set through mesh vertices or along mesh facets). Leave such
+    // leaves to the sign-hull classification: tagging them ambiguous would red
+    // refine them in every iteration, since their children keep touching the
+    // interface. Below, zero edges therefore belong to cut leaves.
+    if (!has_crossing_edge && !(has_negative_vertex && has_positive_vertex))
+        return CellCertTag::not_classified;
 
     if (subcell_type == cell::type::interval && cut_point_tokens.size() == 1)
         return CellCertTag::ready_to_cut;
@@ -836,8 +855,10 @@ CellCertTag classify_ready_to_cut_topology(const AdaptCell<T>& adapt_cell,
         return CellCertTag::ready_to_cut;
     }
 
+    // A cut hexahedron may contain zero edges, e.g. a plane through two
+    // opposite hexahedron edges. Refinement cannot remove them because every
+    // child along those edges repeats the pattern, so the LUT cuts it directly.
     if (subcell_type == cell::type::hexahedron
-        && !has_zero_edge
         && cut_point_tokens.size() >= 3
         && cut_point_tokens.size() <= 6)
     {
@@ -1197,6 +1218,15 @@ CellCertTag classify_leaf_cell(const AdaptCell<T>& adapt_cell,
     if (bernstein_all_positive(sc, sign_tol))
         return CellCertTag::positive;
     if (bernstein_all_negative(sc, sign_tol))
+        return CellCertTag::negative;
+
+    // Sign-semidefinite hull (all coefficients >= -zero_tol, resp. <= zero_tol):
+    // phi does not change sign on the leaf and vanishes at most on a
+    // lower-dimensional part of it, e.g. a zero vertex, edge or face. The leaf
+    // touches the interface without being cut.
+    if (bernstein_all_positive(sc, -zero_tol))
+        return CellCertTag::positive;
+    if (bernstein_all_negative(sc, -zero_tol))
         return CellCertTag::negative;
 
     // Mixed Bernstein signs — apply additional filters before declaring ambiguous.

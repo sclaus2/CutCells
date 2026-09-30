@@ -234,6 +234,21 @@ bool register_codim_one_zero_entity(const AdaptCell<T>& ac,
     return !has_positive_side;
 }
 
+void fill_connectivity(EntityAdjacency& adjacency,
+                       const std::vector<std::vector<std::int32_t>>& rows)
+{
+    adjacency.indices.clear();
+    adjacency.offsets.clear();
+    adjacency.offsets.push_back(std::int32_t(0));
+    for (const auto& row : rows)
+    {
+        for (const auto value : row)
+            adjacency.indices.push_back(value);
+        adjacency.offsets.push_back(
+            static_cast<std::int32_t>(adjacency.indices.size()));
+    }
+}
+
 } // namespace
 
 template <std::floating_point T>
@@ -329,20 +344,6 @@ void build_faces(AdaptCell<T>& ac)
         }
     }
 
-    auto fill_connectivity = [](EntityAdjacency& adjacency,
-                                const std::vector<std::vector<std::int32_t>>& rows)
-    {
-        adjacency.indices.clear();
-        adjacency.offsets.clear();
-        adjacency.offsets.push_back(std::int32_t(0));
-        for (const auto& row : rows)
-        {
-            for (const auto value : row)
-                adjacency.indices.push_back(value);
-            adjacency.offsets.push_back(
-                static_cast<std::int32_t>(adjacency.indices.size()));
-        }
-    };
     fill_connectivity(ac.connectivity[2][ac.tdim], face_to_cells);
     ac.has_connectivity[2][ac.tdim] = 1;
     fill_connectivity(ac.connectivity[ac.tdim][2], cell_to_faces);
@@ -371,6 +372,8 @@ void build_edges(AdaptCell<T>& ac)
     std::map<std::pair<std::int32_t, std::int32_t>, int> edge_map;
 
     const int n_cells = ac.n_entities(tdim);
+    std::vector<std::vector<std::int32_t>> edge_to_cells;
+    std::vector<std::vector<std::int32_t>> cell_to_edges(static_cast<std::size_t>(n_cells));
     for (int c = 0; c < n_cells; ++c)
     {
         const cell::type ctype = ac.entity_types[tdim][static_cast<std::size_t>(c)];
@@ -383,9 +386,11 @@ void build_edges(AdaptCell<T>& ac)
             const std::int32_t lv1 = cell_verts[static_cast<std::size_t>(ce[1])];
             const auto key = std::make_pair(std::min(lv0, lv1), std::max(lv0, lv1));
 
-            if (edge_map.find(key) == edge_map.end())
+            auto edge_it = edge_map.find(key);
+            if (edge_it == edge_map.end())
             {
-                edge_map[key] = ac.n_entities(1);
+                edge_it = edge_map.emplace(key, ac.n_entities(1)).first;
+                edge_to_cells.emplace_back();
                 ac.entity_types[1].push_back(cell::type::interval);
                 ac.entity_to_vertex[1].indices.push_back(lv0);
                 ac.entity_to_vertex[1].indices.push_back(lv1);
@@ -416,8 +421,20 @@ void build_edges(AdaptCell<T>& ac)
                     host_vertices.empty() ? std::span<const std::int32_t>(cell_verts)
                                           : host_vertices);
             }
+
+            edge_to_cells[static_cast<std::size_t>(edge_it->second)].push_back(
+                static_cast<std::int32_t>(c));
+            cell_to_edges[static_cast<std::size_t>(c)].push_back(
+                static_cast<std::int32_t>(edge_it->second));
         }
     }
+
+    // In 2D the edges are the facets: zero-entity ownership needs their
+    // incident leaf cells (see register_codim_one_zero_entity).
+    fill_connectivity(ac.connectivity[1][tdim], edge_to_cells);
+    ac.has_connectivity[1][tdim] = 1;
+    fill_connectivity(ac.connectivity[tdim][1], cell_to_edges);
+    ac.has_connectivity[tdim][1] = 1;
 }
 
 // ---------------------------------------------------------------------------
