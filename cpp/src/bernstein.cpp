@@ -290,19 +290,32 @@ const std::vector<T>& cached_lagrange_to_bernstein_transform(
     thread_local std::unordered_map<TransformKey<T>, std::vector<T>, TransformKeyHash<T>>
         cache;
 
+    // Consecutive calls almost always ask for the same transform; compare
+    // against the previous key before building and hashing a new one.
+    // Map nodes are stable, so the cached pointer stays valid.
+    thread_local const TransformKey<T>* last_key = nullptr;
+    thread_local const std::vector<T>* last_transform = nullptr;
+    if (last_key != nullptr && last_key->ctype == ctype
+        && last_key->degree == degree
+        && std::ranges::equal(last_key->ref_points, ref_points))
+    {
+        return *last_transform;
+    }
+
     TransformKey<T> key;
     key.ctype = ctype;
     key.degree = degree;
     key.ref_points.assign(ref_points.begin(), ref_points.end());
 
     auto it = cache.find(key);
-    if (it != cache.end())
-        return it->second;
-
-    auto transform = build_lagrange_to_bernstein_transform(ctype, degree, ref_points);
-    auto [inserted_it, inserted] = cache.emplace(std::move(key), std::move(transform));
-    (void)inserted;
-    return inserted_it->second;
+    if (it == cache.end())
+    {
+        auto transform = build_lagrange_to_bernstein_transform(ctype, degree, ref_points);
+        it = cache.emplace(std::move(key), std::move(transform)).first;
+    }
+    last_key = &it->first;
+    last_transform = &it->second;
+    return it->second;
 }
 
 // ---------------------------------------------------------------------------

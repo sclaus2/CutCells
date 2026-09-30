@@ -12,6 +12,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace cutcells
 {
@@ -60,26 +61,44 @@ T multinomial(int n, const int* alpha, int num_components)
 }
 
 template <std::floating_point T>
-std::vector<T> linear_power_poly(T a, T b, int n)
+void linear_power_poly(T a, T b, int n, std::vector<T>& out)
 {
-    std::vector<T> out(static_cast<std::size_t>(n + 1), T(0));
+    out.assign(static_cast<std::size_t>(n + 1), T(0));
     for (int i = 0; i <= n; ++i)
     {
         out[static_cast<std::size_t>(i)] =
             binomial<T>(n, i) * integer_pow(a, n - i) * integer_pow(b, i);
     }
-    return out;
 }
 
+/// out = a * b; `out` must not alias `a` or `b`.
 template <std::floating_point T>
-std::vector<T> multiply_poly(std::span<const T> a, std::span<const T> b)
+void multiply_poly(std::span<const T> a, std::span<const T> b,
+                   std::vector<T>& out)
 {
-    std::vector<T> out(a.size() + b.size() - 1, T(0));
+    out.assign(a.size() + b.size() - 1, T(0));
     for (std::size_t i = 0; i < a.size(); ++i)
         for (std::size_t j = 0; j < b.size(); ++j)
             out[i + j] += a[i] * b[j];
-    return out;
 }
+
+/// term <- term * factor, using `product` as storage.
+template <std::floating_point T>
+void multiply_poly_in_place(std::vector<T>& term, const std::vector<T>& factor,
+                            std::vector<T>& product)
+{
+    multiply_poly<T>(std::span<const T>(term), std::span<const T>(factor),
+                     product);
+    std::swap(term, product);
+}
+
+/// Per-thread scratch polynomials for restrict_edge_bernstein_exact.
+template <std::floating_point T>
+struct EdgeRestrictionScratch
+{
+    std::vector<T> power_coeffs, lambda_a, lambda_b, term, factor, other,
+        product;
+};
 
 template <std::floating_point T>
 void add_scaled_poly(std::vector<T>& dst, std::span<const T> src, T scale)
@@ -182,21 +201,19 @@ inline int tetrahedron_edge_coeff_index(int v0, int v1, int k, int n)
 // subdivide_bernstein_1d
 // =====================================================================
 
+namespace
+{
+/// de Casteljau split into caller-provided storage of coeffs.size() values.
 template <std::floating_point T>
-void subdivide_bernstein_1d(std::span<const T> coeffs,
-                            T t_split,
-                            std::vector<T>& left,
-                            std::vector<T>& right)
+void subdivide_bernstein_1d_into(std::span<const T> coeffs, T t_split,
+                                 T* left, T* right, T* work)
 {
     const int p = static_cast<int>(coeffs.size()) - 1;
     assert(p >= 0);
 
-    left.resize(static_cast<std::size_t>(p + 1));
-    right.resize(static_cast<std::size_t>(p + 1));
-
     // Work array: de Casteljau triangle columns.
     // Starting column = coeffs.
-    std::vector<T> work(coeffs.begin(), coeffs.end());
+    std::copy(coeffs.begin(), coeffs.end(), work);
 
     // The left child's i-th coeff is work[0] after i reduction steps.
     // The right child's i-th coeff is work[p-i] after (p-i) reduction steps.
@@ -216,6 +233,24 @@ void subdivide_bernstein_1d(std::span<const T> coeffs,
         right[static_cast<std::size_t>(p - level)] =
             work[static_cast<std::size_t>(p - level)];
     }
+}
+} // anonymous namespace
+
+template <std::floating_point T>
+void subdivide_bernstein_1d(std::span<const T> coeffs,
+                            T t_split,
+                            std::vector<T>& left,
+                            std::vector<T>& right)
+{
+    const int p = static_cast<int>(coeffs.size()) - 1;
+    assert(p >= 0);
+
+    left.resize(static_cast<std::size_t>(p + 1));
+    right.resize(static_cast<std::size_t>(p + 1));
+    static thread_local std::vector<T> work;
+    work.resize(static_cast<std::size_t>(p + 1));
+    subdivide_bernstein_1d_into(coeffs, t_split, left.data(), right.data(),
+                                work.data());
 }
 
 // =====================================================================
@@ -250,13 +285,19 @@ bool bernstein_all_zero(std::span<const T> coeffs, T tol)
 // find_root_intervals_1d
 // =====================================================================
 
+namespace
+{
+/// Recursive bisection. `children` holds 2 * coeffs.size() values per
+/// remaining level (left and right child of this call, then deeper levels);
+/// `work` holds coeffs.size() values of de Casteljau scratch.
 template <std::floating_point T>
-void find_root_intervals_1d(std::span<const T> coeffs,
-                            T t0, T t1,
-                            T zero_tol, T sign_tol,
-                            int depth, int max_depth,
-                            std::vector<EdgeRootInterval<T>>& intervals,
-                            bool& has_zero_segment)
+void find_root_intervals_1d_impl(std::span<const T> coeffs,
+                                 T t0, T t1,
+                                 T zero_tol, T sign_tol,
+                                 int depth, int max_depth,
+                                 std::vector<EdgeRootInterval<T>>& intervals,
+                                 bool& has_zero_segment,
+                                 T* children, T* work)
 {
     // If convex hull excludes zero → no root in this interval.
     if (bernstein_all_positive(coeffs, sign_tol)
@@ -279,16 +320,39 @@ void find_root_intervals_1d(std::span<const T> coeffs,
 
     // Subdivide at midpoint.
     T t_mid = (t0 + t1) * T(0.5);
-    std::vector<T> left_c, right_c;
-    subdivide_bernstein_1d(coeffs, T(0.5), left_c, right_c);
+    const std::size_t n = coeffs.size();
+    T* left_c = children;
+    T* right_c = children + n;
+    subdivide_bernstein_1d_into(coeffs, T(0.5), left_c, right_c, work);
 
-    find_root_intervals_1d<T>(
-        std::span<const T>(left_c), t0, t_mid,
-        zero_tol, sign_tol, depth + 1, max_depth, intervals, has_zero_segment);
+    find_root_intervals_1d_impl<T>(
+        std::span<const T>(left_c, n), t0, t_mid,
+        zero_tol, sign_tol, depth + 1, max_depth, intervals, has_zero_segment,
+        children + 2 * n, work);
 
-    find_root_intervals_1d<T>(
-        std::span<const T>(right_c), t_mid, t1,
-        zero_tol, sign_tol, depth + 1, max_depth, intervals, has_zero_segment);
+    find_root_intervals_1d_impl<T>(
+        std::span<const T>(right_c, n), t_mid, t1,
+        zero_tol, sign_tol, depth + 1, max_depth, intervals, has_zero_segment,
+        children + 2 * n, work);
+}
+} // anonymous namespace
+
+template <std::floating_point T>
+void find_root_intervals_1d(std::span<const T> coeffs,
+                            T t0, T t1,
+                            T zero_tol, T sign_tol,
+                            int depth, int max_depth,
+                            std::vector<EdgeRootInterval<T>>& intervals,
+                            bool& has_zero_segment)
+{
+    const std::size_t n = coeffs.size();
+    const std::size_t levels
+        = max_depth > depth ? static_cast<std::size_t>(max_depth - depth) : 0;
+    static thread_local std::vector<T> arena;
+    arena.resize(n * (1 + 2 * levels));
+    find_root_intervals_1d_impl<T>(coeffs, t0, t1, zero_tol, sign_tol, depth,
+                                   max_depth, intervals, has_zero_segment,
+                                   arena.data() + n, arena.data());
 }
 
 // =====================================================================
@@ -477,12 +541,19 @@ void restrict_edge_bernstein_exact(cell::type parent_cell_type,
             "restrict_edge_bernstein_exact: endpoint dimension mismatch");
     }
 
-    std::vector<T> power_coeffs(static_cast<std::size_t>(p + 1), T(0));
+    static thread_local EdgeRestrictionScratch<T> scratch;
+    std::vector<T>& power_coeffs = scratch.power_coeffs;
+    std::vector<T>& term = scratch.term;
+    std::vector<T>& product = scratch.product;
+    power_coeffs.assign(static_cast<std::size_t>(p + 1), T(0));
 
     if (bernstein::is_simplex(parent_cell_type))
     {
-        std::vector<T> lambda_a(static_cast<std::size_t>(tdim + 1), T(0));
-        std::vector<T> lambda_b(static_cast<std::size_t>(tdim + 1), T(0));
+        std::vector<T>& lambda_a = scratch.lambda_a;
+        std::vector<T>& lambda_b = scratch.lambda_b;
+        std::vector<T>& factor = scratch.factor;
+        lambda_a.assign(static_cast<std::size_t>(tdim + 1), T(0));
+        lambda_b.assign(static_cast<std::size_t>(tdim + 1), T(0));
 
         lambda_a[0] = T(1);
         lambda_b[0] = T(1);
@@ -500,14 +571,14 @@ void restrict_edge_bernstein_exact(cell::type parent_cell_type,
             for (int i = 0; i <= p; ++i, ++coeff_index)
             {
                 const int alpha[2] = {p - i, i};
-                std::vector<T> term = {T(1)};
+                term.assign(1, T(1));
                 for (int c = 0; c < 2; ++c)
                 {
-                    const std::vector<T> factor = linear_power_poly(
+                    linear_power_poly(
                         lambda_a[static_cast<std::size_t>(c)],
                         lambda_b[static_cast<std::size_t>(c)] - lambda_a[static_cast<std::size_t>(c)],
-                        alpha[c]);
-                    term = multiply_poly<T>(term, factor);
+                        alpha[c], factor);
+                    multiply_poly_in_place(term, factor, product);
                 }
                 add_scaled_poly(power_coeffs, std::span<const T>(term),
                                 parent_coeffs[static_cast<std::size_t>(coeff_index)]
@@ -521,14 +592,14 @@ void restrict_edge_bernstein_exact(cell::type parent_cell_type,
                 for (int i = 0; i <= p - j; ++i, ++coeff_index)
                 {
                     const int alpha[3] = {p - i - j, i, j};
-                    std::vector<T> term = {T(1)};
+                    term.assign(1, T(1));
                     for (int c = 0; c < 3; ++c)
                     {
-                        const std::vector<T> factor = linear_power_poly(
+                        linear_power_poly(
                             lambda_a[static_cast<std::size_t>(c)],
                             lambda_b[static_cast<std::size_t>(c)] - lambda_a[static_cast<std::size_t>(c)],
-                            alpha[c]);
-                        term = multiply_poly<T>(term, factor);
+                            alpha[c], factor);
+                        multiply_poly_in_place(term, factor, product);
                     }
                     add_scaled_poly(power_coeffs, std::span<const T>(term),
                                     parent_coeffs[static_cast<std::size_t>(coeff_index)]
@@ -545,14 +616,14 @@ void restrict_edge_bernstein_exact(cell::type parent_cell_type,
                     for (int i = 0; i <= p - k - j; ++i, ++coeff_index)
                     {
                         const int alpha[4] = {p - i - j - k, i, j, k};
-                        std::vector<T> term = {T(1)};
+                        term.assign(1, T(1));
                         for (int c = 0; c < 4; ++c)
                         {
-                            const std::vector<T> factor = linear_power_poly(
+                            linear_power_poly(
                                 lambda_a[static_cast<std::size_t>(c)],
                                 lambda_b[static_cast<std::size_t>(c)] - lambda_a[static_cast<std::size_t>(c)],
-                                alpha[c]);
-                            term = multiply_poly<T>(term, factor);
+                                alpha[c], factor);
+                            multiply_poly_in_place(term, factor, product);
                         }
                         add_scaled_poly(power_coeffs, std::span<const T>(term),
                                         parent_coeffs[static_cast<std::size_t>(coeff_index)]
@@ -576,20 +647,20 @@ void restrict_edge_bernstein_exact(cell::type parent_cell_type,
             {
                 for (int iy = 0; iy <= p; ++iy, ++coeff_index)
                 {
-                    std::vector<T> term = {T(1)};
+                    term.assign(1, T(1));
                     const int ids[2] = {ix, iy};
                     for (int d = 0; d < 2; ++d)
                     {
                         const T a = xi_a[static_cast<std::size_t>(d)];
                         const T b = xi_b[static_cast<std::size_t>(d)] - a;
-                        std::vector<T> dim_poly = linear_power_poly(a, b, ids[d]);
-                        const std::vector<T> one_minus_poly =
-                            linear_power_poly(T(1) - a, -b, p - ids[d]);
-                        dim_poly = multiply_poly<T>(dim_poly, one_minus_poly);
+                        std::vector<T>& dim_poly = scratch.factor;
+                        linear_power_poly(a, b, ids[d], dim_poly);
+                        linear_power_poly(T(1) - a, -b, p - ids[d], scratch.other);
+                        multiply_poly_in_place(dim_poly, scratch.other, product);
                         const T scale = binomial<T>(p, ids[d]);
                         for (T& x : dim_poly)
                             x *= scale;
-                        term = multiply_poly<T>(term, dim_poly);
+                        multiply_poly_in_place(term, dim_poly, product);
                     }
                     add_scaled_poly(power_coeffs, std::span<const T>(term),
                                     parent_coeffs[static_cast<std::size_t>(coeff_index)]);
@@ -605,20 +676,20 @@ void restrict_edge_bernstein_exact(cell::type parent_cell_type,
                 {
                     for (int iz = 0; iz <= p; ++iz, ++coeff_index)
                     {
-                        std::vector<T> term = {T(1)};
+                        term.assign(1, T(1));
                         const int ids[3] = {ix, iy, iz};
                         for (int d = 0; d < 3; ++d)
                         {
                             const T a = xi_a[static_cast<std::size_t>(d)];
                             const T b = xi_b[static_cast<std::size_t>(d)] - a;
-                            std::vector<T> dim_poly = linear_power_poly(a, b, ids[d]);
-                            const std::vector<T> one_minus_poly =
-                                linear_power_poly(T(1) - a, -b, p - ids[d]);
-                            dim_poly = multiply_poly<T>(dim_poly, one_minus_poly);
+                            std::vector<T>& dim_poly = scratch.factor;
+                            linear_power_poly(a, b, ids[d], dim_poly);
+                            linear_power_poly(T(1) - a, -b, p - ids[d], scratch.other);
+                            multiply_poly_in_place(dim_poly, scratch.other, product);
                             const T scale = binomial<T>(p, ids[d]);
                             for (T& x : dim_poly)
                                 x *= scale;
-                            term = multiply_poly<T>(term, dim_poly);
+                            multiply_poly_in_place(term, dim_poly, product);
                         }
                         add_scaled_poly(power_coeffs, std::span<const T>(term),
                                         parent_coeffs[static_cast<std::size_t>(coeff_index)]);

@@ -534,7 +534,8 @@ struct AdaptCell
 /// @param cell_id  Index of the cell to extract.
 /// @return         Initialised AdaptCell<T> in reference space.
 template <std::floating_point T, std::integral I = int>
-AdaptCell<T> make_adapt_cell(const MeshView<T, I>& mesh, I cell_id);
+AdaptCell<T> make_adapt_cell(const MeshView<T, I>& mesh, I cell_id,
+                             bool with_faces = true);
 
 /// Fill the vertex-level-set sign masks of an AdaptCell for one level set.
 ///

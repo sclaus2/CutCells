@@ -76,7 +76,8 @@ cutcells::CutOptions make_cut_options(bool triangulate,
                                       const std::string& cut_approximation,
                                       int cut_approximation_order,
                                       int max_refinement_iterations,
-                                      int edge_max_depth)
+                                      int edge_max_depth,
+                                      bool linear_fast_path = true)
 {
   cutcells::CutOptions options;
   options.triangulate_cut_parts = triangulate;
@@ -87,6 +88,7 @@ cutcells::CutOptions make_cut_options(bool triangulate,
   options.cut_approximation_order = cut_approximation_order;
   options.max_refinement_iterations = max_refinement_iterations;
   options.edge_max_depth = edge_max_depth;
+  options.linear_fast_path = linear_fast_path;
   return options;
 }
 
@@ -2001,12 +2003,12 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate,
            const std::string& cut_approximation, int cut_approximation_order,
            const std::string& triangulation, int max_refinement_iterations,
-           int edge_max_depth) {
+           int edge_max_depth, bool linear_fast_path) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<LevelSetT>(ls);
             auto options = make_cut_options(
                 triangulate, triangulation, cut_approximation, cut_approximation_order,
-                max_refinement_iterations, edge_max_depth);
+                max_refinement_iterations, edge_max_depth, linear_fast_path);
             auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, options);
             return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
@@ -2016,6 +2018,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         nb::arg("triangulation") = "classical",
         nb::arg("max_refinement_iterations") = 8,
         nb::arg("edge_max_depth") = 20,
+        nb::arg("linear_fast_path") = true,
         "Cut a MeshView with a single LevelSetFunction.\n"
         "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
 
@@ -2023,12 +2026,13 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets,
            bool triangulate, const std::string& cut_approximation,
            int cut_approximation_order, const std::string& triangulation,
-           int max_refinement_iterations, int edge_max_depth) {
+           int max_refinement_iterations, int edge_max_depth,
+           bool linear_fast_path) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
             auto options = make_cut_options(
                 triangulate, triangulation, cut_approximation, cut_approximation_order,
-                max_refinement_iterations, edge_max_depth);
+                max_refinement_iterations, edge_max_depth, linear_fast_path);
             auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, options);
             return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
@@ -2038,6 +2042,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         nb::arg("triangulation") = "classical",
         nb::arg("max_refinement_iterations") = 8,
         nb::arg("edge_max_depth") = 20,
+        nb::arg("linear_fast_path") = true,
         "Cut a MeshView with multiple LevelSetFunctions.\n"
         "Returns an HOCutResult; use result[\"phi1 < 0 and phi2 = 0\"] to select parts.");
 
@@ -2045,12 +2050,12 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         [](const MeshViewT& mesh, const LevelSetT& ls, bool triangulate,
            const std::string& cut_approximation, int cut_approximation_order,
            const std::string& triangulation, int max_refinement_iterations,
-           int edge_max_depth) {
+           int edge_max_depth, bool linear_fast_path) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<LevelSetT>(ls);
             auto options = make_cut_options(
                 triangulate, triangulation, cut_approximation, cut_approximation_order,
-                max_refinement_iterations, edge_max_depth);
+                max_refinement_iterations, edge_max_depth, linear_fast_path);
             auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, options);
             return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
@@ -2060,6 +2065,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         nb::arg("triangulation") = "classical",
         nb::arg("max_refinement_iterations") = 8,
         nb::arg("edge_max_depth") = 20,
+        nb::arg("linear_fast_path") = true,
         "Cut a MeshView with a single LevelSetFunction.\n"
         "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
 
@@ -2067,12 +2073,13 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         [](const MeshViewT& mesh, const std::vector<LevelSetT>& level_sets,
            bool triangulate, const std::string& cut_approximation,
            int cut_approximation_order, const std::string& triangulation,
-           int max_refinement_iterations, int edge_max_depth) {
+           int max_refinement_iterations, int edge_max_depth,
+           bool linear_fast_path) {
             nb::gil_scoped_release release;
             auto owned_ls = std::make_shared<std::vector<LevelSetT>>(level_sets);
             auto options = make_cut_options(
                 triangulate, triangulation, cut_approximation, cut_approximation_order,
-                max_refinement_iterations, edge_max_depth);
+                max_refinement_iterations, edge_max_depth, linear_fast_path);
             auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, options);
             return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
         },
@@ -2082,6 +2089,7 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         nb::arg("triangulation") = "classical",
         nb::arg("max_refinement_iterations") = 8,
         nb::arg("edge_max_depth") = 20,
+        nb::arg("linear_fast_path") = true,
         "Cut a MeshView with multiple LevelSetFunctions.\n"
         "Returns an HOCutResult; use result[\"phi1 < 0 and phi2 = 0\"] to select parts.");
 

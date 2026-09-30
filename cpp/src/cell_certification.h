@@ -230,4 +230,21 @@ void certify_refine_and_process_ready_cells(AdaptCell<T>& adapt_cell,
                                             bool triangulate_cut_parts = false,
                                             bool linear_subcell_level_set = false);
 
+/// Whether cut_linear_cell applies: a degree-1 (linear) polynomial level set
+/// on an interval, triangle or tetrahedron.
+template <std::floating_point T, std::integral I>
+bool is_linear_simplex_level_set_cell(const LevelSetCell<T, I>& ls_cell);
+
+/// Fast path for a linear level set: cut an unrefined parent AdaptCell
+/// (from make_adapt_cell) directly with the cut lookup tables, skipping
+/// certification, refinement and the generic topology update. Produces the
+/// same leaf cells, vertices, signs and zero entities as
+/// certify_refine_and_process_ready_cells for this level set.
+template <std::floating_point T, std::integral I>
+void cut_linear_cell(AdaptCell<T>& adapt_cell,
+                     const LevelSetCell<T, I>& ls_cell,
+                     int level_set_id,
+                     T zero_tol,
+                     cell::TriangulationStrategy triangulation_strategy);
+
 } // namespace cutcells

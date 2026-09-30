@@ -6,11 +6,13 @@
 #include "refine_cell.h"
 #include "cell_subdivision.h"
 #include "cell_topology.h"
+#include "entity_numbering.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <map>
+#include <numeric>
 #include <stdexcept>
 
 namespace cutcells
@@ -18,10 +20,15 @@ namespace cutcells
 namespace
 {
 
+/// Edge state before a topology update, in the AdaptCell flat layout
+/// [ls * num_edges + e]. Entries missing in the AdaptCell take the defaults.
 template <std::floating_point T>
-struct EdgeStateData
+struct CapturedEdgeState
 {
-    std::array<std::int32_t, 2> verts = {0, 0};
+    int num_level_sets = 0;
+    int num_edges = 0;
+    std::vector<std::array<std::int32_t, 2>> verts;
+    std::vector<std::array<std::int32_t, 2>> keys;
     std::vector<EdgeRootTag> tags;
     std::vector<T> split_params;
     std::vector<std::uint8_t> split_has_value;
@@ -31,70 +38,47 @@ struct EdgeStateData
 };
 
 template <std::floating_point T>
-struct CapturedEdgeState
-{
-    int num_level_sets = 0;
-    std::vector<std::pair<std::pair<int, int>, EdgeStateData<T>>> edges_in_old_order;
-    std::map<std::pair<int, int>, const EdgeStateData<T>*> by_key;
-};
-
-template <std::floating_point T>
 CapturedEdgeState<T> capture_edge_state(const AdaptCell<T>& adapt_cell)
 {
     CapturedEdgeState<T> state;
     const int n_edges = adapt_cell.n_entities(1);
-    state.num_level_sets = adapt_cell.edge_root_tag_num_level_sets;
-    state.edges_in_old_order.reserve(static_cast<std::size_t>(n_edges));
-
+    const int nls = adapt_cell.edge_root_tag_num_level_sets;
+    state.num_level_sets = nls;
+    state.num_edges = n_edges;
+    state.verts.reserve(static_cast<std::size_t>(n_edges));
+    state.keys.reserve(static_cast<std::size_t>(n_edges));
     for (int e = 0; e < n_edges; ++e)
     {
         auto ev = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(e)];
-        const std::pair<int, int> key = {
-            std::min(static_cast<int>(ev[0]), static_cast<int>(ev[1])),
-            std::max(static_cast<int>(ev[0]), static_cast<int>(ev[1]))};
-
-        EdgeStateData<T> data;
-        data.verts = {ev[0], ev[1]};
-        data.tags.resize(static_cast<std::size_t>(state.num_level_sets),
-                         EdgeRootTag::not_classified);
-        data.split_params.resize(static_cast<std::size_t>(state.num_level_sets), T(0));
-        data.split_has_value.resize(static_cast<std::size_t>(state.num_level_sets),
-                                    std::uint8_t(0));
-        data.root_params.resize(static_cast<std::size_t>(state.num_level_sets), T(0));
-        data.root_vertex_ids.resize(static_cast<std::size_t>(state.num_level_sets),
-                                    std::int32_t(-1));
-        data.root_has_value.resize(static_cast<std::size_t>(state.num_level_sets),
-                                   std::uint8_t(0));
-
-        for (int ls = 0; ls < state.num_level_sets; ++ls)
-        {
-            data.tags[static_cast<std::size_t>(ls)] =
-                adapt_cell.get_edge_root_tag(ls, e);
-
-            const auto idx = static_cast<std::size_t>(ls * n_edges + e);
-            if (idx < adapt_cell.edge_green_split_param.size())
-                data.split_params[static_cast<std::size_t>(ls)] =
-                    adapt_cell.edge_green_split_param[idx];
-            if (idx < adapt_cell.edge_green_split_has_value.size())
-                data.split_has_value[static_cast<std::size_t>(ls)] =
-                    adapt_cell.edge_green_split_has_value[idx];
-            if (idx < adapt_cell.edge_one_root_param.size())
-                data.root_params[static_cast<std::size_t>(ls)] =
-                    adapt_cell.edge_one_root_param[idx];
-            if (idx < adapt_cell.edge_one_root_vertex_id.size())
-                data.root_vertex_ids[static_cast<std::size_t>(ls)] =
-                    adapt_cell.edge_one_root_vertex_id[idx];
-            if (idx < adapt_cell.edge_one_root_has_value.size())
-                data.root_has_value[static_cast<std::size_t>(ls)] =
-                    adapt_cell.edge_one_root_has_value[idx];
-        }
-
-        state.edges_in_old_order.emplace_back(key, std::move(data));
+        state.verts.push_back({ev[0], ev[1]});
+        state.keys.push_back({std::min(ev[0], ev[1]), std::max(ev[0], ev[1])});
     }
 
-    for (auto& [key, data] : state.edges_in_old_order)
-        state.by_key[key] = &data;
-
+    const std::size_t n = static_cast<std::size_t>(nls * n_edges);
+    state.tags.resize(n);
+    state.split_params.assign(n, T(0));
+    state.split_has_value.assign(n, std::uint8_t(0));
+    state.root_params.assign(n, T(0));
+    state.root_vertex_ids.assign(n, std::int32_t(-1));
+    state.root_has_value.assign(n, std::uint8_t(0));
+    for (int ls = 0; ls < nls; ++ls)
+    {
+        for (int e = 0; e < n_edges; ++e)
+        {
+            const auto idx = static_cast<std::size_t>(ls * n_edges + e);
+            state.tags[idx] = adapt_cell.get_edge_root_tag(ls, e);
+            if (idx < adapt_cell.edge_green_split_param.size())
+                state.split_params[idx] = adapt_cell.edge_green_split_param[idx];
+            if (idx < adapt_cell.edge_green_split_has_value.size())
+                state.split_has_value[idx] = adapt_cell.edge_green_split_has_value[idx];
+            if (idx < adapt_cell.edge_one_root_param.size())
+                state.root_params[idx] = adapt_cell.edge_one_root_param[idx];
+            if (idx < adapt_cell.edge_one_root_vertex_id.size())
+                state.root_vertex_ids[idx] = adapt_cell.edge_one_root_vertex_id[idx];
+            if (idx < adapt_cell.edge_one_root_has_value.size())
+                state.root_has_value[idx] = adapt_cell.edge_one_root_has_value[idx];
+        }
+    }
     return state;
 }
 
@@ -299,56 +283,68 @@ void rebuild_leaf_edges_preserve_certification(
     const CapturedEdgeState<T>& old_edge_state)
 {
     const int tdim = adapt_cell.tdim;
-    std::map<std::pair<int, int>, std::array<std::int32_t, 2>> new_leaf_edges;
-    std::vector<std::pair<int, int>> new_edge_keys_in_encounter_order;
 
+    // Distinct leaf edges in encounter order, oriented as first encountered.
+    std::vector<std::array<std::int32_t, 2>> keys;
+    std::vector<std::array<std::int32_t, 2>> encountered;
     const int n_cells = adapt_cell.n_entities(tdim);
     for (int c = 0; c < n_cells; ++c)
     {
         const cell::type ctype = adapt_cell.entity_types[tdim][static_cast<std::size_t>(c)];
         auto cell_verts = adapt_cell.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
-        auto cell_edges = cell::edges(ctype);
-
-        for (const auto& ce : cell_edges)
+        for (const auto& ce : cell::edges(ctype))
         {
             const std::int32_t lv0 = cell_verts[static_cast<std::size_t>(ce[0])];
             const std::int32_t lv1 = cell_verts[static_cast<std::size_t>(ce[1])];
-            const std::pair<int, int> key = {
-                std::min(static_cast<int>(lv0), static_cast<int>(lv1)),
-                std::max(static_cast<int>(lv0), static_cast<int>(lv1))};
-
-            if (!new_leaf_edges.contains(key))
-            {
-                new_leaf_edges[key] = {lv0, lv1};
-                new_edge_keys_in_encounter_order.push_back(key);
-            }
+            keys.push_back({std::min(lv0, lv1), std::max(lv0, lv1)});
+            encountered.push_back({lv0, lv1});
         }
     }
-
-    std::vector<std::array<std::int32_t, 2>> final_edges;
-    std::vector<const EdgeStateData<T>*> final_old_state;
-    final_edges.reserve(new_leaf_edges.size());
-    final_old_state.reserve(new_leaf_edges.size());
-
-    for (const auto& [key, old_data] : old_edge_state.edges_in_old_order)
+    std::vector<std::int32_t> edge_of;
+    std::vector<std::uint8_t> is_first;
+    detail::number_by_first_occurrence(keys, edge_of, is_first);
+    std::vector<std::array<std::int32_t, 2>> new_keys;
+    std::vector<std::array<std::int32_t, 2>> new_verts;
+    for (std::size_t k = 0; k < keys.size(); ++k)
     {
-        auto it = new_leaf_edges.find(key);
-        if (it == new_leaf_edges.end())
-            continue;
-
-        final_edges.push_back(old_data.verts);
-        final_old_state.push_back(&old_data);
-        new_leaf_edges.erase(it);
+        if (is_first[k])
+        {
+            new_keys.push_back(keys[k]);
+            new_verts.push_back(encountered[k]);
+        }
     }
+    std::vector<std::int32_t> by_key(new_keys.size());
+    std::iota(by_key.begin(), by_key.end(), std::int32_t(0));
+    std::sort(by_key.begin(), by_key.end(), [&new_keys](std::int32_t a, std::int32_t b)
+              { return new_keys[static_cast<std::size_t>(a)] < new_keys[static_cast<std::size_t>(b)]; });
+    std::vector<std::uint8_t> taken(new_keys.size(), std::uint8_t(0));
 
-    for (const auto& key : new_edge_keys_in_encounter_order)
+    // Surviving old edges keep their old order, orientation and state; new
+    // edges follow in encounter order.
+    std::vector<std::array<std::int32_t, 2>> final_edges;
+    std::vector<std::int32_t> final_old_edge;
+    final_edges.reserve(new_keys.size());
+    final_old_edge.reserve(new_keys.size());
+    for (int old_e = 0; old_e < old_edge_state.num_edges; ++old_e)
     {
-        auto it = new_leaf_edges.find(key);
-        if (it == new_leaf_edges.end())
+        const auto& key = old_edge_state.keys[static_cast<std::size_t>(old_e)];
+        auto it = std::lower_bound(
+            by_key.begin(), by_key.end(), key,
+            [&new_keys](std::int32_t a, const std::array<std::int32_t, 2>& k)
+            { return new_keys[static_cast<std::size_t>(a)] < k; });
+        if (it == by_key.end() || new_keys[static_cast<std::size_t>(*it)] != key
+            || taken[static_cast<std::size_t>(*it)])
             continue;
-
-        final_edges.push_back(it->second);
-        final_old_state.push_back(nullptr);
+        taken[static_cast<std::size_t>(*it)] = 1;
+        final_edges.push_back(old_edge_state.verts[static_cast<std::size_t>(old_e)]);
+        final_old_edge.push_back(old_e);
+    }
+    for (std::size_t u = 0; u < new_keys.size(); ++u)
+    {
+        if (taken[u])
+            continue;
+        final_edges.push_back(new_verts[u]);
+        final_old_edge.push_back(-1);
     }
 
     adapt_cell.entity_types[1].assign(final_edges.size(), cell::type::interval);
@@ -365,6 +361,7 @@ void rebuild_leaf_edges_preserve_certification(
 
     const int n_edges = static_cast<int>(final_edges.size());
     const int nls = old_edge_state.num_level_sets;
+    const int old_n_edges = old_edge_state.num_edges;
     adapt_cell.edge_root_tag_num_level_sets = nls;
     adapt_cell.edge_root_tag.assign(static_cast<std::size_t>(nls * n_edges),
                                     EdgeRootTag::not_classified);
@@ -379,24 +376,23 @@ void rebuild_leaf_edges_preserve_certification(
 
     for (int e = 0; e < n_edges; ++e)
     {
-        const auto* old_data = final_old_state[static_cast<std::size_t>(e)];
-        if (!old_data)
+        const int old_e = final_old_edge[static_cast<std::size_t>(e)];
+        if (old_e < 0)
             continue;
 
         for (int ls = 0; ls < nls; ++ls)
         {
             const auto idx = static_cast<std::size_t>(ls * n_edges + e);
-            adapt_cell.edge_root_tag[idx] = old_data->tags[static_cast<std::size_t>(ls)];
-            adapt_cell.edge_green_split_param[idx] =
-                old_data->split_params[static_cast<std::size_t>(ls)];
+            const auto old_idx = static_cast<std::size_t>(ls * old_n_edges + old_e);
+            adapt_cell.edge_root_tag[idx] = old_edge_state.tags[old_idx];
+            adapt_cell.edge_green_split_param[idx] = old_edge_state.split_params[old_idx];
             adapt_cell.edge_green_split_has_value[idx] =
-                old_data->split_has_value[static_cast<std::size_t>(ls)];
-            adapt_cell.edge_one_root_param[idx] =
-                old_data->root_params[static_cast<std::size_t>(ls)];
+                old_edge_state.split_has_value[old_idx];
+            adapt_cell.edge_one_root_param[idx] = old_edge_state.root_params[old_idx];
             adapt_cell.edge_one_root_vertex_id[idx] =
-                old_data->root_vertex_ids[static_cast<std::size_t>(ls)];
+                old_edge_state.root_vertex_ids[old_idx];
             adapt_cell.edge_one_root_has_value[idx] =
-                old_data->root_has_value[static_cast<std::size_t>(ls)];
+                old_edge_state.root_has_value[old_idx];
         }
     }
 }

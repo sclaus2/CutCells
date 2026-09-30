@@ -21,6 +21,7 @@
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <span>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -1514,6 +1515,474 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
         cell::triangulation_strategy_from_bool(triangulate_cut_parts));
 }
 
+namespace
+{
+/// Leaf cells produced by cutting ready leaves, with the per-cell metadata
+/// apply_topology_update_preserve_certification consumes.
+struct LeafCutOutput
+{
+    std::vector<cell::type> types;
+    EntityAdjacency cells{{0}, {}};
+    std::vector<int> old_cell_ids;
+    std::vector<int> source_cell_ids;
+    std::vector<CellRefinementReason> reasons;
+    std::vector<CellCertTag> tags;
+};
+
+/// Replace ready_to_cut leaf `c` by its LUT decomposition on the negative and
+/// positive side, appending the parts to `out`. `edge_id_of(a, b)` returns the
+/// leaf edge between AdaptCell vertices a and b, or -1 if there is none.
+template <std::floating_point T, std::integral I, typename EdgeIdOf>
+void cut_ready_leaf(AdaptCell<T>& adapt_cell,
+                    const LevelSetCell<T, I>& ls_cell,
+                    int level_set_id,
+                    int c,
+                    cell::type leaf_cell_type,
+                    std::span<const std::int32_t> old_cell_vertices,
+                    const EdgeIdOf& edge_id_of,
+                    T zero_tol,
+                    T sign_tol,
+                    int edge_max_depth,
+                    cell::TriangulationStrategy triangulation_strategy,
+                    LeafCutOutput& out)
+{
+    const int tdim = adapt_cell.tdim;
+    if (leaf_cell_type != cell::type::interval
+        && leaf_cell_type != cell::type::triangle
+        && leaf_cell_type != cell::type::quadrilateral
+        && leaf_cell_type != cell::type::tetrahedron
+        && leaf_cell_type != cell::type::hexahedron)
+    {
+        throw std::runtime_error(
+            "process_ready_to_cut_cells: ready_to_cut only implemented for interval, triangle, quadrilateral, tetrahedron, and hexahedron leaves");
+    }
+
+    std::vector<T> vertex_coords(
+        static_cast<std::size_t>(old_cell_vertices.size() * tdim), T(0));
+    for (std::size_t j = 0; j < old_cell_vertices.size(); ++j)
+    {
+        const int gv = old_cell_vertices[j];
+        for (int d = 0; d < tdim; ++d)
+        {
+            vertex_coords[static_cast<std::size_t>(j * tdim + d)] =
+                adapt_cell.vertex_coords[static_cast<std::size_t>(gv * tdim + d)];
+        }
+    }
+    const std::vector<T> ls_values =
+        gather_leaf_cell_vertex_level_set_values(adapt_cell, ls_cell, c);
+
+    const std::uint64_t current_level_set_bit = std::uint64_t(1) << level_set_id;
+    std::vector<bool> current_level_set_zero(old_cell_vertices.size(), false);
+    bool has_strict_negative = false;
+    bool has_strict_positive = false;
+    bool has_zero = false;
+    for (std::size_t j = 0; j < ls_values.size(); ++j)
+    {
+        const T value = ls_values[j];
+        const int gv = old_cell_vertices[j];
+        current_level_set_zero[j] =
+            (adapt_cell.zero_mask_per_vertex[static_cast<std::size_t>(gv)]
+             & current_level_set_bit) != 0;
+        has_strict_negative = has_strict_negative || value < -zero_tol;
+        has_strict_positive = has_strict_positive || value > zero_tol;
+        has_zero = has_zero || current_level_set_zero[j];
+    }
+    if (!(has_strict_negative && has_strict_positive))
+    {
+        std::vector<int> copy(old_cell_vertices.begin(), old_cell_vertices.end());
+        append_top_cell_local(out.types, out.cells, leaf_cell_type, std::span<const int>(copy));
+        out.old_cell_ids.push_back(c);
+        CellCertTag copied_tag = CellCertTag::zero;
+        if (has_strict_negative)
+            copied_tag = CellCertTag::negative;
+        else if (has_strict_positive)
+            copied_tag = CellCertTag::positive;
+        else if (!has_zero)
+            copied_tag = CellCertTag::not_classified;
+        out.tags.push_back(copied_tag);
+        return;
+    }
+
+    std::array<int, 12> old_edge_ids_by_local_edge;
+    old_edge_ids_by_local_edge.fill(-1);
+    const auto ledges = cell::edges(leaf_cell_type);
+    for (std::size_t le = 0; le < ledges.size(); ++le)
+    {
+        const int a = old_cell_vertices[static_cast<std::size_t>(ledges[le][0])];
+        const int b = old_cell_vertices[static_cast<std::size_t>(ledges[le][1])];
+        const int edge_id = edge_id_of(a, b);
+        if (edge_id < 0)
+        {
+            throw std::runtime_error(
+                "process_ready_to_cut_cells: missing leaf edge for ready-to-cut cell "
+                + std::to_string(c) + " type="
+                + cell_type_to_str(leaf_cell_type) + " local_edge="
+                + std::to_string(le) + " key=("
+                + std::to_string(std::min(a, b)) + ","
+                + std::to_string(std::max(a, b)) + ")");
+        }
+        old_edge_ids_by_local_edge[le] = edge_id;
+    }
+
+    std::map<int, int> token_to_vertex;
+    for (std::size_t j = 0; j < old_cell_vertices.size(); ++j)
+        token_to_vertex[100 + static_cast<int>(j)] = old_cell_vertices[j];
+    for (std::size_t le = 0; le < ledges.size(); ++le)
+    {
+        const int old_edge_id = old_edge_ids_by_local_edge[le];
+        if (old_edge_id < 0)
+            continue;
+        if (adapt_cell.get_edge_root_tag(level_set_id, old_edge_id)
+            != EdgeRootTag::one_root)
+        {
+            continue;
+        }
+
+        const int root_vertex_id = ensure_one_root_vertex_on_edge(
+            adapt_cell, ls_cell, level_set_id, old_edge_id,
+            zero_tol, sign_tol, edge_max_depth);
+        if (root_vertex_id >= 0)
+            token_to_vertex[static_cast<int>(le)] = root_vertex_id;
+    }
+
+    if (leaf_cell_type == cell::type::interval)
+    {
+        cell::CutCell<T> negative_part;
+        cell::CutCell<T> positive_part;
+        cell::interval::cut(
+            std::span<const T>(vertex_coords),
+            tdim,
+            std::span<const T>(ls_values),
+            "phi<0",
+            negative_part);
+        cell::interval::cut(
+            std::span<const T>(vertex_coords),
+            tdim,
+            std::span<const T>(ls_values),
+            "phi>0",
+            positive_part);
+
+        append_ready_cut_part_cells(
+            adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
+            old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 1),
+            out.types, out.cells, out.old_cell_ids,
+            out.source_cell_ids, out.reasons,
+            out.tags,
+            token_to_vertex, zero_tol, CellCertTag::negative);
+        append_ready_cut_part_cells(
+            adapt_cell, ls_cell, level_set_id, c, positive_part, leaf_cell_type,
+            old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 1),
+            out.types, out.cells, out.old_cell_ids,
+            out.source_cell_ids, out.reasons,
+            out.tags,
+            token_to_vertex, zero_tol, CellCertTag::positive);
+    }
+    else if (leaf_cell_type == cell::type::triangle)
+    {
+        if (has_zero)
+        {
+            auto append_zero_vertex_triangle_side =
+                [&](bool negative_side, CellCertTag side_tag)
+            {
+                std::vector<int> tokens;
+                auto append_token = [&](int token)
+                {
+                    if (tokens.empty() || tokens.back() != token)
+                        tokens.push_back(token);
+                };
+
+                for (int lv = 0; lv < 3; ++lv)
+                {
+                    const int next = (lv + 1) % 3;
+                    const T vi = ls_values[static_cast<std::size_t>(lv)];
+                    const T vj = ls_values[static_cast<std::size_t>(next)];
+                    const bool zero_i =
+                        current_level_set_zero[static_cast<std::size_t>(lv)];
+                    const bool inside_i = negative_side
+                                              ? (zero_i || vi < -zero_tol)
+                                              : (zero_i || vi > zero_tol);
+                    if (inside_i)
+                        append_token(100 + lv);
+
+                    const bool strict_cross =
+                        (vi < -zero_tol && vj > zero_tol)
+                        || (vi > zero_tol && vj < -zero_tol);
+                    if (strict_cross)
+                    {
+                        const int local_edge =
+                            basix_edge_id_for_vertices(leaf_cell_type, lv, next);
+                        append_token(local_edge);
+                    }
+                }
+
+                if (tokens.size() > 1 && tokens.front() == tokens.back())
+                    tokens.pop_back();
+                if (tokens.size() < 3)
+                    return;
+                if (tokens.size() != 3)
+                {
+                    throw std::runtime_error(
+                        "process_ready_to_cut_cells: zero-vertex triangle clipping "
+                        "expected a triangle");
+                }
+
+                std::vector<int> mapped(tokens.size(), -1);
+                for (std::size_t j = 0; j < tokens.size(); ++j)
+                {
+                    auto token_it = token_to_vertex.find(tokens[j]);
+                    if (token_it == token_to_vertex.end())
+                    {
+                        throw std::runtime_error(
+                            "process_ready_to_cut_cells: missing zero-vertex "
+                            "triangle token " + std::to_string(tokens[j]));
+                    }
+                    mapped[j] = token_it->second;
+                }
+
+                append_top_cell_local(
+                    out.types, out.cells, cell::type::triangle,
+                    std::span<const int>(mapped));
+                out.old_cell_ids.push_back(-1);
+                out.source_cell_ids.push_back(c);
+                out.reasons.push_back(
+                    CellRefinementReason::cut_level_set);
+                out.tags.push_back(side_tag);
+            };
+
+            append_zero_vertex_triangle_side(true, CellCertTag::negative);
+            append_zero_vertex_triangle_side(false, CellCertTag::positive);
+            return;
+        }
+
+        cell::CutCell<T> negative_part;
+        cell::CutCell<T> positive_part;
+        cell::triangle::cut(
+            std::span<const T>(vertex_coords),
+            tdim,
+            std::span<const T>(ls_values),
+            "phi<0",
+            negative_part,
+            triangulation_strategy);
+        cell::triangle::cut(
+            std::span<const T>(vertex_coords),
+            tdim,
+            std::span<const T>(ls_values),
+            "phi>0",
+            positive_part,
+            triangulation_strategy);
+
+        append_ready_cut_part_cells(
+            adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
+            old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 3),
+            out.types, out.cells, out.old_cell_ids,
+            out.source_cell_ids, out.reasons,
+            out.tags,
+            token_to_vertex, zero_tol, CellCertTag::negative);
+        append_ready_cut_part_cells(
+            adapt_cell, ls_cell, level_set_id, c, positive_part, leaf_cell_type,
+            old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 3),
+            out.types, out.cells, out.old_cell_ids,
+            out.source_cell_ids, out.reasons,
+            out.tags,
+            token_to_vertex, zero_tol, CellCertTag::positive);
+    }
+    else if (leaf_cell_type == cell::type::tetrahedron)
+    {
+        if (has_zero)
+        {
+            auto append_zero_vertex_tetra_side =
+                [&](bool negative_side, CellCertTag side_tag)
+            {
+                std::vector<int> zero_vertices;
+                std::vector<int> inside_vertices;
+                std::vector<int> outside_vertices;
+
+                for (int lv = 0; lv < 4; ++lv)
+                {
+                    const T value = ls_values[static_cast<std::size_t>(lv)];
+                    if (current_level_set_zero[static_cast<std::size_t>(lv)])
+                    {
+                        zero_vertices.push_back(lv);
+                        continue;
+                    }
+
+                    const bool inside =
+                        negative_side ? (value < -zero_tol) : (value > zero_tol);
+                    if (inside)
+                        inside_vertices.push_back(lv);
+                    else
+                        outside_vertices.push_back(lv);
+                }
+
+                auto edge_token = [&](int a, int b)
+                {
+                    const int token =
+                        basix_edge_id_for_vertices(leaf_cell_type, a, b);
+                    if (token < 0)
+                    {
+                        throw std::runtime_error(
+                            "process_ready_to_cut_cells: missing tetra edge token");
+                    }
+                    return token;
+                };
+
+                auto append_tet_tokens = [&](const std::array<int, 4>& tokens)
+                {
+                    std::array<int, 4> mapped;
+                    for (std::size_t j = 0; j < tokens.size(); ++j)
+                    {
+                        auto token_it = token_to_vertex.find(tokens[j]);
+                        if (token_it == token_to_vertex.end())
+                        {
+                            throw std::runtime_error(
+                                "process_ready_to_cut_cells: missing zero-vertex "
+                                "tetra token " + std::to_string(tokens[j]));
+                        }
+                        mapped[j] = token_it->second;
+                    }
+
+                    std::set<int> unique(mapped.begin(), mapped.end());
+                    if (unique.size() != mapped.size())
+                        return;
+
+                    append_top_cell_local(
+                        out.types, out.cells, cell::type::tetrahedron,
+                        std::span<const int>(mapped));
+                    out.old_cell_ids.push_back(-1);
+                    out.source_cell_ids.push_back(c);
+                    out.reasons.push_back(
+                        CellRefinementReason::cut_level_set);
+                    out.tags.push_back(side_tag);
+                };
+
+                if (zero_vertices.size() == 1)
+                {
+                    const int z = zero_vertices[0];
+                    if (inside_vertices.size() == 1
+                        && outside_vertices.size() == 2)
+                    {
+                        const int a = inside_vertices[0];
+                        append_tet_tokens({
+                            100 + z,
+                            100 + a,
+                            edge_token(a, outside_vertices[0]),
+                            edge_token(a, outside_vertices[1]),
+                        });
+                        return;
+                    }
+
+                    if (inside_vertices.size() == 2
+                        && outside_vertices.size() == 1)
+                    {
+                        const int a = inside_vertices[0];
+                        const int b = inside_vertices[1];
+                        const int o = outside_vertices[0];
+                        const int ra = edge_token(a, o);
+                        const int rb = edge_token(b, o);
+                        append_tet_tokens({100 + z, 100 + a, 100 + b, rb});
+                        append_tet_tokens({100 + z, 100 + a, rb, ra});
+                        return;
+                    }
+                }
+
+                if (zero_vertices.size() == 2
+                    && inside_vertices.size() == 1
+                    && outside_vertices.size() == 1)
+                {
+                    append_tet_tokens({
+                        100 + zero_vertices[0],
+                        100 + zero_vertices[1],
+                        100 + inside_vertices[0],
+                        edge_token(inside_vertices[0], outside_vertices[0]),
+                    });
+                    return;
+                }
+
+                throw std::runtime_error(
+                    "process_ready_to_cut_cells: unsupported zero-vertex "
+                    "tetrahedron clipping case");
+            };
+
+            append_zero_vertex_tetra_side(true, CellCertTag::negative);
+            append_zero_vertex_tetra_side(false, CellCertTag::positive);
+            return;
+        }
+
+        cell::CutCell<T> negative_part;
+        cell::CutCell<T> positive_part;
+        cell::tetrahedron::cut(
+            std::span<const T>(vertex_coords), tdim,
+            std::span<const T>(ls_values), "phi<0",
+            negative_part, triangulation_strategy);
+        cell::tetrahedron::cut(
+            std::span<const T>(vertex_coords), tdim,
+            std::span<const T>(ls_values), "phi>0",
+            positive_part, triangulation_strategy);
+
+        append_ready_cut_part_cells(
+            adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
+            old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 6),
+            out.types, out.cells, out.old_cell_ids,
+            out.source_cell_ids, out.reasons,
+            out.tags,
+            token_to_vertex, zero_tol, CellCertTag::negative);
+        append_ready_cut_part_cells(
+            adapt_cell, ls_cell, level_set_id, c, positive_part, leaf_cell_type,
+            old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 6),
+            out.types, out.cells, out.old_cell_ids,
+            out.source_cell_ids, out.reasons,
+            out.tags,
+            token_to_vertex, zero_tol, CellCertTag::positive);
+    }
+    else
+    {
+        cell::CutCell<T> negative_part;
+        cell::CutCell<T> positive_part;
+        cell::CutCell<T> interface_part;
+        cell::cut(
+            leaf_cell_type,
+            std::span<const T>(vertex_coords.data(), vertex_coords.size()), tdim,
+            std::span<const T>(ls_values.data(), ls_values.size()), "phi<0",
+            negative_part, triangulation_strategy);
+        cell::cut(
+            leaf_cell_type,
+            std::span<const T>(vertex_coords.data(), vertex_coords.size()), tdim,
+            std::span<const T>(ls_values.data(), ls_values.size()), "phi>0",
+            positive_part, triangulation_strategy);
+        cell::cut(
+            leaf_cell_type,
+            std::span<const T>(vertex_coords.data(), vertex_coords.size()), tdim,
+            std::span<const T>(ls_values.data(), ls_values.size()), "phi=0",
+            interface_part, triangulation_strategy);
+
+        std::set<int> interface_zero_tokens;
+        for (const int token : interface_part._vertex_parent_entity)
+            interface_zero_tokens.insert(token);
+
+        append_ready_cut_part_cells(
+            adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
+            old_cell_vertices,
+            std::span<const int>(
+                old_edge_ids_by_local_edge.data(), ledges.size()),
+            out.types, out.cells, out.old_cell_ids,
+            out.source_cell_ids, out.reasons,
+            out.tags,
+            token_to_vertex, zero_tol, CellCertTag::negative,
+            &interface_zero_tokens);
+        append_ready_cut_part_cells(
+            adapt_cell, ls_cell, level_set_id, c, positive_part, leaf_cell_type,
+            old_cell_vertices,
+            std::span<const int>(
+                old_edge_ids_by_local_edge.data(), ledges.size()),
+            out.types, out.cells, out.old_cell_ids,
+            out.source_cell_ids, out.reasons,
+            out.tags,
+            token_to_vertex, zero_tol, CellCertTag::positive,
+            &interface_zero_tokens);
+    }
+}
+} // anonymous namespace
+
 template <std::floating_point T, std::integral I>
 void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
                                 const LevelSetCell<T, I>& ls_cell,
@@ -1541,15 +2010,13 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
     const std::vector<cell::type> old_types = adapt_cell.entity_types[tdim];
     const EntityAdjacency old_cells = adapt_cell.entity_to_vertex[tdim];
     const auto edge_lookup = build_leaf_edge_lookup(adapt_cell);
+    const auto edge_id_of = [&edge_lookup](int a, int b)
+    {
+        auto it = edge_lookup.find({std::min(a, b), std::max(a, b)});
+        return it == edge_lookup.end() ? -1 : it->second;
+    };
 
-    EntityAdjacency new_cells;
-    new_cells.offsets.push_back(0);
-    std::vector<cell::type> new_types;
-    std::vector<int> old_cell_ids_for_new_cells;
-    std::vector<int> source_cell_ids_for_new_cells;
-    std::vector<CellRefinementReason> refinement_reasons_for_new_cells;
-    std::vector<CellCertTag> explicit_current_ls_tags;
-
+    LeafCutOutput out;
     for (int c = 0; c < n_cells; ++c)
     {
         auto old_cell_vertices = old_cells[static_cast<std::int32_t>(c)];
@@ -1558,460 +2025,29 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
         if (adapt_cell.get_cell_cert_tag(level_set_id, c) != CellCertTag::ready_to_cut)
         {
             std::vector<int> copy(old_cell_vertices.begin(), old_cell_vertices.end());
-            append_top_cell_local(new_types, new_cells, leaf_cell_type, std::span<const int>(copy));
-            old_cell_ids_for_new_cells.push_back(c);
-            source_cell_ids_for_new_cells.push_back(c);
-            refinement_reasons_for_new_cells.push_back(CellRefinementReason::none);
-            explicit_current_ls_tags.push_back(CellCertTag::not_classified);
+            append_top_cell_local(out.types, out.cells, leaf_cell_type, std::span<const int>(copy));
+            out.old_cell_ids.push_back(c);
+            out.source_cell_ids.push_back(c);
+            out.reasons.push_back(CellRefinementReason::none);
+            out.tags.push_back(CellCertTag::not_classified);
             continue;
         }
 
-        if (leaf_cell_type != cell::type::interval
-            && leaf_cell_type != cell::type::triangle
-            && leaf_cell_type != cell::type::quadrilateral
-            && leaf_cell_type != cell::type::tetrahedron
-            && leaf_cell_type != cell::type::hexahedron)
-        {
-            throw std::runtime_error(
-                "process_ready_to_cut_cells: ready_to_cut only implemented for interval, triangle, quadrilateral, tetrahedron, and hexahedron leaves");
-        }
-
-        std::vector<T> vertex_coords(
-            static_cast<std::size_t>(old_cell_vertices.size() * tdim), T(0));
-        for (std::size_t j = 0; j < old_cell_vertices.size(); ++j)
-        {
-            const int gv = old_cell_vertices[j];
-            for (int d = 0; d < tdim; ++d)
-            {
-                vertex_coords[static_cast<std::size_t>(j * tdim + d)] =
-                    adapt_cell.vertex_coords[static_cast<std::size_t>(gv * tdim + d)];
-            }
-        }
-        const std::vector<T> ls_values =
-            gather_leaf_cell_vertex_level_set_values(adapt_cell, ls_cell, c);
-
-        const std::uint64_t current_level_set_bit = std::uint64_t(1) << level_set_id;
-        std::vector<bool> current_level_set_zero(old_cell_vertices.size(), false);
-        bool has_strict_negative = false;
-        bool has_strict_positive = false;
-        bool has_zero = false;
-        for (std::size_t j = 0; j < ls_values.size(); ++j)
-        {
-            const T value = ls_values[j];
-            const int gv = old_cell_vertices[j];
-            current_level_set_zero[j] =
-                (adapt_cell.zero_mask_per_vertex[static_cast<std::size_t>(gv)]
-                 & current_level_set_bit) != 0;
-            has_strict_negative = has_strict_negative || value < -zero_tol;
-            has_strict_positive = has_strict_positive || value > zero_tol;
-            has_zero = has_zero || current_level_set_zero[j];
-        }
-        if (!(has_strict_negative && has_strict_positive))
-        {
-            std::vector<int> copy(old_cell_vertices.begin(), old_cell_vertices.end());
-            append_top_cell_local(new_types, new_cells, leaf_cell_type, std::span<const int>(copy));
-            old_cell_ids_for_new_cells.push_back(c);
-            CellCertTag copied_tag = CellCertTag::zero;
-            if (has_strict_negative)
-                copied_tag = CellCertTag::negative;
-            else if (has_strict_positive)
-                copied_tag = CellCertTag::positive;
-            else if (!has_zero)
-                copied_tag = CellCertTag::not_classified;
-            explicit_current_ls_tags.push_back(copied_tag);
-            continue;
-        }
-
-        std::array<int, 12> old_edge_ids_by_local_edge;
-        old_edge_ids_by_local_edge.fill(-1);
-        const auto ledges = cell::edges(leaf_cell_type);
-        for (std::size_t le = 0; le < ledges.size(); ++le)
-        {
-            const int a = old_cell_vertices[static_cast<std::size_t>(ledges[le][0])];
-            const int b = old_cell_vertices[static_cast<std::size_t>(ledges[le][1])];
-            const std::pair<int, int> key = {std::min(a, b), std::max(a, b)};
-            auto edge_it = edge_lookup.find(key);
-            if (edge_it == edge_lookup.end())
-            {
-                throw std::runtime_error(
-                    "process_ready_to_cut_cells: missing leaf edge for ready-to-cut cell "
-                    + std::to_string(c) + " type="
-                    + cell_type_to_str(leaf_cell_type) + " local_edge="
-                    + std::to_string(le) + " key=("
-                    + std::to_string(key.first) + ","
-                    + std::to_string(key.second) + ")");
-            }
-            old_edge_ids_by_local_edge[le] = edge_it->second;
-        }
-
-        std::map<int, int> token_to_vertex;
-        for (std::size_t j = 0; j < old_cell_vertices.size(); ++j)
-            token_to_vertex[100 + static_cast<int>(j)] = old_cell_vertices[j];
-        for (std::size_t le = 0; le < ledges.size(); ++le)
-        {
-            const int old_edge_id = old_edge_ids_by_local_edge[le];
-            if (old_edge_id < 0)
-                continue;
-            if (adapt_cell.get_edge_root_tag(level_set_id, old_edge_id)
-                != EdgeRootTag::one_root)
-            {
-                continue;
-            }
-
-            const int root_vertex_id = ensure_one_root_vertex_on_edge(
-                adapt_cell, ls_cell, level_set_id, old_edge_id,
-                zero_tol, sign_tol, edge_max_depth);
-            if (root_vertex_id >= 0)
-                token_to_vertex[static_cast<int>(le)] = root_vertex_id;
-        }
-
-        if (leaf_cell_type == cell::type::interval)
-        {
-            cell::CutCell<T> negative_part;
-            cell::CutCell<T> positive_part;
-            cell::interval::cut(
-                std::span<const T>(vertex_coords),
-                tdim,
-                std::span<const T>(ls_values),
-                "phi<0",
-                negative_part);
-            cell::interval::cut(
-                std::span<const T>(vertex_coords),
-                tdim,
-                std::span<const T>(ls_values),
-                "phi>0",
-                positive_part);
-
-            append_ready_cut_part_cells(
-                adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
-                old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 1),
-                new_types, new_cells, old_cell_ids_for_new_cells,
-                source_cell_ids_for_new_cells, refinement_reasons_for_new_cells,
-                explicit_current_ls_tags,
-                token_to_vertex, zero_tol, CellCertTag::negative);
-            append_ready_cut_part_cells(
-                adapt_cell, ls_cell, level_set_id, c, positive_part, leaf_cell_type,
-                old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 1),
-                new_types, new_cells, old_cell_ids_for_new_cells,
-                source_cell_ids_for_new_cells, refinement_reasons_for_new_cells,
-                explicit_current_ls_tags,
-                token_to_vertex, zero_tol, CellCertTag::positive);
-        }
-        else if (leaf_cell_type == cell::type::triangle)
-        {
-            if (has_zero)
-            {
-                auto append_zero_vertex_triangle_side =
-                    [&](bool negative_side, CellCertTag side_tag)
-                {
-                    std::vector<int> tokens;
-                    auto append_token = [&](int token)
-                    {
-                        if (tokens.empty() || tokens.back() != token)
-                            tokens.push_back(token);
-                    };
-
-                    for (int lv = 0; lv < 3; ++lv)
-                    {
-                        const int next = (lv + 1) % 3;
-                        const T vi = ls_values[static_cast<std::size_t>(lv)];
-                        const T vj = ls_values[static_cast<std::size_t>(next)];
-                        const bool zero_i =
-                            current_level_set_zero[static_cast<std::size_t>(lv)];
-                        const bool inside_i = negative_side
-                                                  ? (zero_i || vi < -zero_tol)
-                                                  : (zero_i || vi > zero_tol);
-                        if (inside_i)
-                            append_token(100 + lv);
-
-                        const bool strict_cross =
-                            (vi < -zero_tol && vj > zero_tol)
-                            || (vi > zero_tol && vj < -zero_tol);
-                        if (strict_cross)
-                        {
-                            const int local_edge =
-                                basix_edge_id_for_vertices(leaf_cell_type, lv, next);
-                            append_token(local_edge);
-                        }
-                    }
-
-                    if (tokens.size() > 1 && tokens.front() == tokens.back())
-                        tokens.pop_back();
-                    if (tokens.size() < 3)
-                        return;
-                    if (tokens.size() != 3)
-                    {
-                        throw std::runtime_error(
-                            "process_ready_to_cut_cells: zero-vertex triangle clipping "
-                            "expected a triangle");
-                    }
-
-                    std::vector<int> mapped(tokens.size(), -1);
-                    for (std::size_t j = 0; j < tokens.size(); ++j)
-                    {
-                        auto token_it = token_to_vertex.find(tokens[j]);
-                        if (token_it == token_to_vertex.end())
-                        {
-                            throw std::runtime_error(
-                                "process_ready_to_cut_cells: missing zero-vertex "
-                                "triangle token " + std::to_string(tokens[j]));
-                        }
-                        mapped[j] = token_it->second;
-                    }
-
-                    append_top_cell_local(
-                        new_types, new_cells, cell::type::triangle,
-                        std::span<const int>(mapped));
-                    old_cell_ids_for_new_cells.push_back(-1);
-                    source_cell_ids_for_new_cells.push_back(c);
-                    refinement_reasons_for_new_cells.push_back(
-                        CellRefinementReason::cut_level_set);
-                    explicit_current_ls_tags.push_back(side_tag);
-                };
-
-                append_zero_vertex_triangle_side(true, CellCertTag::negative);
-                append_zero_vertex_triangle_side(false, CellCertTag::positive);
-                continue;
-            }
-
-            cell::CutCell<T> negative_part;
-            cell::CutCell<T> positive_part;
-            cell::triangle::cut(
-                std::span<const T>(vertex_coords),
-                tdim,
-                std::span<const T>(ls_values),
-                "phi<0",
-                negative_part,
-                triangulation_strategy);
-            cell::triangle::cut(
-                std::span<const T>(vertex_coords),
-                tdim,
-                std::span<const T>(ls_values),
-                "phi>0",
-                positive_part,
-                triangulation_strategy);
-
-            append_ready_cut_part_cells(
-                adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
-                old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 3),
-                new_types, new_cells, old_cell_ids_for_new_cells,
-                source_cell_ids_for_new_cells, refinement_reasons_for_new_cells,
-                explicit_current_ls_tags,
-                token_to_vertex, zero_tol, CellCertTag::negative);
-            append_ready_cut_part_cells(
-                adapt_cell, ls_cell, level_set_id, c, positive_part, leaf_cell_type,
-                old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 3),
-                new_types, new_cells, old_cell_ids_for_new_cells,
-                source_cell_ids_for_new_cells, refinement_reasons_for_new_cells,
-                explicit_current_ls_tags,
-                token_to_vertex, zero_tol, CellCertTag::positive);
-        }
-        else if (leaf_cell_type == cell::type::tetrahedron)
-        {
-            if (has_zero)
-            {
-                auto append_zero_vertex_tetra_side =
-                    [&](bool negative_side, CellCertTag side_tag)
-                {
-                    std::vector<int> zero_vertices;
-                    std::vector<int> inside_vertices;
-                    std::vector<int> outside_vertices;
-
-                    for (int lv = 0; lv < 4; ++lv)
-                    {
-                        const T value = ls_values[static_cast<std::size_t>(lv)];
-                        if (current_level_set_zero[static_cast<std::size_t>(lv)])
-                        {
-                            zero_vertices.push_back(lv);
-                            continue;
-                        }
-
-                        const bool inside =
-                            negative_side ? (value < -zero_tol) : (value > zero_tol);
-                        if (inside)
-                            inside_vertices.push_back(lv);
-                        else
-                            outside_vertices.push_back(lv);
-                    }
-
-                    auto edge_token = [&](int a, int b)
-                    {
-                        const int token =
-                            basix_edge_id_for_vertices(leaf_cell_type, a, b);
-                        if (token < 0)
-                        {
-                            throw std::runtime_error(
-                                "process_ready_to_cut_cells: missing tetra edge token");
-                        }
-                        return token;
-                    };
-
-                    auto append_tet_tokens = [&](const std::array<int, 4>& tokens)
-                    {
-                        std::array<int, 4> mapped;
-                        for (std::size_t j = 0; j < tokens.size(); ++j)
-                        {
-                            auto token_it = token_to_vertex.find(tokens[j]);
-                            if (token_it == token_to_vertex.end())
-                            {
-                                throw std::runtime_error(
-                                    "process_ready_to_cut_cells: missing zero-vertex "
-                                    "tetra token " + std::to_string(tokens[j]));
-                            }
-                            mapped[j] = token_it->second;
-                        }
-
-                        std::set<int> unique(mapped.begin(), mapped.end());
-                        if (unique.size() != mapped.size())
-                            return;
-
-                        append_top_cell_local(
-                            new_types, new_cells, cell::type::tetrahedron,
-                            std::span<const int>(mapped));
-                        old_cell_ids_for_new_cells.push_back(-1);
-                        source_cell_ids_for_new_cells.push_back(c);
-                        refinement_reasons_for_new_cells.push_back(
-                            CellRefinementReason::cut_level_set);
-                        explicit_current_ls_tags.push_back(side_tag);
-                    };
-
-                    if (zero_vertices.size() == 1)
-                    {
-                        const int z = zero_vertices[0];
-                        if (inside_vertices.size() == 1
-                            && outside_vertices.size() == 2)
-                        {
-                            const int a = inside_vertices[0];
-                            append_tet_tokens({
-                                100 + z,
-                                100 + a,
-                                edge_token(a, outside_vertices[0]),
-                                edge_token(a, outside_vertices[1]),
-                            });
-                            return;
-                        }
-
-                        if (inside_vertices.size() == 2
-                            && outside_vertices.size() == 1)
-                        {
-                            const int a = inside_vertices[0];
-                            const int b = inside_vertices[1];
-                            const int o = outside_vertices[0];
-                            const int ra = edge_token(a, o);
-                            const int rb = edge_token(b, o);
-                            append_tet_tokens({100 + z, 100 + a, 100 + b, rb});
-                            append_tet_tokens({100 + z, 100 + a, rb, ra});
-                            return;
-                        }
-                    }
-
-                    if (zero_vertices.size() == 2
-                        && inside_vertices.size() == 1
-                        && outside_vertices.size() == 1)
-                    {
-                        append_tet_tokens({
-                            100 + zero_vertices[0],
-                            100 + zero_vertices[1],
-                            100 + inside_vertices[0],
-                            edge_token(inside_vertices[0], outside_vertices[0]),
-                        });
-                        return;
-                    }
-
-                    throw std::runtime_error(
-                        "process_ready_to_cut_cells: unsupported zero-vertex "
-                        "tetrahedron clipping case");
-                };
-
-                append_zero_vertex_tetra_side(true, CellCertTag::negative);
-                append_zero_vertex_tetra_side(false, CellCertTag::positive);
-                continue;
-            }
-
-            cell::CutCell<T> negative_part;
-            cell::CutCell<T> positive_part;
-            cell::tetrahedron::cut(
-                std::span<const T>(vertex_coords), tdim,
-                std::span<const T>(ls_values), "phi<0",
-                negative_part, triangulation_strategy);
-            cell::tetrahedron::cut(
-                std::span<const T>(vertex_coords), tdim,
-                std::span<const T>(ls_values), "phi>0",
-                positive_part, triangulation_strategy);
-
-            append_ready_cut_part_cells(
-                adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
-                old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 6),
-                new_types, new_cells, old_cell_ids_for_new_cells,
-                source_cell_ids_for_new_cells, refinement_reasons_for_new_cells,
-                explicit_current_ls_tags,
-                token_to_vertex, zero_tol, CellCertTag::negative);
-            append_ready_cut_part_cells(
-                adapt_cell, ls_cell, level_set_id, c, positive_part, leaf_cell_type,
-                old_cell_vertices, std::span<const int>(old_edge_ids_by_local_edge.data(), 6),
-                new_types, new_cells, old_cell_ids_for_new_cells,
-                source_cell_ids_for_new_cells, refinement_reasons_for_new_cells,
-                explicit_current_ls_tags,
-                token_to_vertex, zero_tol, CellCertTag::positive);
-        }
-        else
-        {
-            cell::CutCell<T> negative_part;
-            cell::CutCell<T> positive_part;
-            cell::CutCell<T> interface_part;
-            cell::cut(
-                leaf_cell_type,
-                std::span<const T>(vertex_coords.data(), vertex_coords.size()), tdim,
-                std::span<const T>(ls_values.data(), ls_values.size()), "phi<0",
-                negative_part, triangulation_strategy);
-            cell::cut(
-                leaf_cell_type,
-                std::span<const T>(vertex_coords.data(), vertex_coords.size()), tdim,
-                std::span<const T>(ls_values.data(), ls_values.size()), "phi>0",
-                positive_part, triangulation_strategy);
-            cell::cut(
-                leaf_cell_type,
-                std::span<const T>(vertex_coords.data(), vertex_coords.size()), tdim,
-                std::span<const T>(ls_values.data(), ls_values.size()), "phi=0",
-                interface_part, triangulation_strategy);
-
-            std::set<int> interface_zero_tokens;
-            for (const int token : interface_part._vertex_parent_entity)
-                interface_zero_tokens.insert(token);
-
-            append_ready_cut_part_cells(
-                adapt_cell, ls_cell, level_set_id, c, negative_part, leaf_cell_type,
-                old_cell_vertices,
-                std::span<const int>(
-                    old_edge_ids_by_local_edge.data(), ledges.size()),
-                new_types, new_cells, old_cell_ids_for_new_cells,
-                source_cell_ids_for_new_cells, refinement_reasons_for_new_cells,
-                explicit_current_ls_tags,
-                token_to_vertex, zero_tol, CellCertTag::negative,
-                &interface_zero_tokens);
-            append_ready_cut_part_cells(
-                adapt_cell, ls_cell, level_set_id, c, positive_part, leaf_cell_type,
-                old_cell_vertices,
-                std::span<const int>(
-                    old_edge_ids_by_local_edge.data(), ledges.size()),
-                new_types, new_cells, old_cell_ids_for_new_cells,
-                source_cell_ids_for_new_cells, refinement_reasons_for_new_cells,
-                explicit_current_ls_tags,
-                token_to_vertex, zero_tol, CellCertTag::positive,
-                &interface_zero_tokens);
-        }
+        cut_ready_leaf(adapt_cell, ls_cell, level_set_id, c, leaf_cell_type,
+                       old_cell_vertices, edge_id_of, zero_tol, sign_tol,
+                       edge_max_depth, triangulation_strategy, out);
     }
 
     apply_topology_update_preserve_certification(
-        adapt_cell, std::move(new_types), std::move(new_cells),
-        std::span<const int>(old_cell_ids_for_new_cells),
-        std::span<const int>(source_cell_ids_for_new_cells),
-        std::span<const CellRefinementReason>(refinement_reasons_for_new_cells));
+        adapt_cell, std::move(out.types), std::move(out.cells),
+        std::span<const int>(out.old_cell_ids),
+        std::span<const int>(out.source_cell_ids),
+        std::span<const CellRefinementReason>(out.reasons));
 
     for (int c = 0; c < adapt_cell.n_entities(tdim); ++c)
     {
-        if (c < static_cast<int>(refinement_reasons_for_new_cells.size())
-            && refinement_reasons_for_new_cells[static_cast<std::size_t>(c)]
+        if (c < static_cast<int>(out.reasons.size())
+            && out.reasons[static_cast<std::size_t>(c)]
                    == CellRefinementReason::cut_level_set
             && c < static_cast<int>(adapt_cell.entity_source_level_set[tdim].size()))
         {
@@ -2023,12 +2059,196 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
     const int new_num_cells = adapt_cell.n_entities(tdim);
     for (int c = 0; c < new_num_cells; ++c)
     {
-        if (explicit_current_ls_tags[static_cast<std::size_t>(c)] == CellCertTag::not_classified)
+        if (out.tags[static_cast<std::size_t>(c)] == CellCertTag::not_classified)
             continue;
         adapt_cell.set_cell_cert_tag(
-            level_set_id, c, explicit_current_ls_tags[static_cast<std::size_t>(c)]);
+            level_set_id, c, out.tags[static_cast<std::size_t>(c)]);
     }
 
+}
+
+// =====================================================================
+// cut_linear_cell
+// =====================================================================
+
+template <std::floating_point T, std::integral I>
+bool is_linear_simplex_level_set_cell(const LevelSetCell<T, I>& ls_cell)
+{
+    return ls_cell.bernstein_order == 1 && !ls_cell.bernstein_coeffs.empty()
+           && (ls_cell.cell_type == cell::type::interval
+               || ls_cell.cell_type == cell::type::triangle
+               || ls_cell.cell_type == cell::type::tetrahedron);
+}
+
+template <std::floating_point T, std::integral I>
+void cut_linear_cell(AdaptCell<T>& adapt_cell,
+                     const LevelSetCell<T, I>& ls_cell,
+                     int level_set_id,
+                     T zero_tol,
+                     cell::TriangulationStrategy triangulation_strategy)
+{
+    if (!is_linear_simplex_level_set_cell(ls_cell))
+    {
+        throw std::invalid_argument(
+            "cut_linear_cell: requires a degree-1 level set on a simplex cell");
+    }
+    const int tdim = adapt_cell.tdim;
+    if (adapt_cell.n_entities(tdim) != 1 || adapt_cell.n_entities(1) == 0)
+    {
+        throw std::invalid_argument(
+            "cut_linear_cell: expects an unrefined parent cell with its edges");
+    }
+
+    fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
+
+    // A linear level set has at most one root per edge, located by its
+    // endpoint values; no root isolation is needed.
+    const int n_edges = adapt_cell.n_entities(1);
+    if (adapt_cell.edge_root_tag_num_level_sets <= level_set_id)
+        adapt_cell.resize_edge_root_tags(level_set_id + 1);
+    if (adapt_cell.edge_green_split_has_value.size()
+        < static_cast<std::size_t>((level_set_id + 1) * n_edges))
+        adapt_cell.resize_green_split_data(level_set_id + 1);
+    if (adapt_cell.edge_one_root_has_value.size()
+        < static_cast<std::size_t>((level_set_id + 1) * n_edges))
+        adapt_cell.resize_one_root_data(level_set_id + 1);
+    std::vector<T> edge_coeffs;
+    for (int e = 0; e < n_edges; ++e)
+    {
+        gather_adapt_edge_bernstein(adapt_cell, ls_cell, e, edge_coeffs);
+        T root_t = T(0);
+        EdgeRootTag tag = EdgeRootTag::no_root;
+        if (bernstein_all_zero(std::span<const T>(edge_coeffs), zero_tol))
+            tag = EdgeRootTag::zero;
+        else if (linear_one_root_parameter_from_endpoint_values<T>(
+                     edge_coeffs.front(), edge_coeffs.back(), zero_tol, root_t))
+            tag = EdgeRootTag::one_root;
+
+        adapt_cell.set_edge_root_tag(level_set_id, e, tag);
+        const auto idx = static_cast<std::size_t>(level_set_id * n_edges + e);
+        adapt_cell.edge_green_split_param[idx] = T(0);
+        adapt_cell.edge_green_split_has_value[idx] = 0;
+        const bool one_root = tag == EdgeRootTag::one_root;
+        adapt_cell.edge_one_root_param[idx] = one_root ? root_t : T(0);
+        adapt_cell.edge_one_root_vertex_id[idx] = -1;
+        adapt_cell.edge_one_root_has_value[idx] = one_root ? 1 : 0;
+    }
+
+    // The cell is cut iff its vertex values strictly change sign; the cut
+    // lookup tables also cover zero vertices. Otherwise it keeps its sign.
+    const std::uint64_t bit = std::uint64_t(1) << level_set_id;
+    bool has_zero = false;
+    bool has_negative = false;
+    bool has_positive = false;
+    for (int v = 0; v < adapt_cell.n_vertices(); ++v)
+    {
+        if ((adapt_cell.zero_mask_per_vertex[static_cast<std::size_t>(v)] & bit) != 0)
+            has_zero = true;
+        else if ((adapt_cell.negative_mask_per_vertex[static_cast<std::size_t>(v)] & bit) != 0)
+            has_negative = true;
+        else
+            has_positive = true;
+    }
+    if (adapt_cell.cell_cert_tag_num_level_sets <= level_set_id)
+        adapt_cell.resize_cell_cert_tags(level_set_id + 1);
+
+    if (!(has_negative && has_positive))
+    {
+        CellCertTag tag = CellCertTag::zero;
+        if (has_negative)
+            tag = CellCertTag::negative;
+        else if (has_positive)
+            tag = CellCertTag::positive;
+        else if (!has_zero)
+            tag = CellCertTag::not_classified;
+        adapt_cell.set_cell_cert_tag(level_set_id, 0, tag);
+    }
+    else
+    {
+        adapt_cell.set_cell_cert_tag(level_set_id, 0, CellCertTag::ready_to_cut);
+        const cell::type parent_type = adapt_cell.entity_types[tdim][0];
+        const std::vector<std::int32_t> parent_vertices(
+            adapt_cell.entity_to_vertex[tdim][0].begin(),
+            adapt_cell.entity_to_vertex[tdim][0].end());
+        const auto edge_id_of = [&adapt_cell, n_edges](int a, int b)
+        {
+            for (int e = 0; e < n_edges; ++e)
+            {
+                auto ev = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(e)];
+                if ((ev[0] == a && ev[1] == b) || (ev[0] == b && ev[1] == a))
+                    return e;
+            }
+            return -1;
+        };
+        LeafCutOutput out;
+        cut_ready_leaf(adapt_cell, ls_cell, level_set_id, 0, parent_type,
+                       std::span<const std::int32_t>(parent_vertices), edge_id_of,
+                       zero_tol, zero_tol, /*edge_max_depth=*/0,
+                       triangulation_strategy, out);
+
+        // Every part is cut from leaf 0 by this level set. This is the state
+        // apply_topology_update_preserve_certification produces for a single
+        // cut leaf, written directly.
+        const std::size_t n_parts = out.types.size();
+        const std::int32_t generation = adapt_cell.cell_refinement_generation[0] + 1;
+        const std::int32_t host_parent = adapt_cell.cell_host_parent_cell_id[0];
+        const cell::type host_type = adapt_cell.entity_host_cell_type[tdim][0];
+        adapt_cell.entity_types[tdim] = std::move(out.types);
+        adapt_cell.entity_to_vertex[tdim] = std::move(out.cells);
+        adapt_cell.cell_source_cell_id.assign(n_parts, std::int32_t(0));
+        adapt_cell.cell_refinement_generation.assign(n_parts, generation);
+        adapt_cell.cell_refinement_reason.assign(n_parts, CellRefinementReason::cut_level_set);
+        adapt_cell.cell_host_parent_cell_id.assign(n_parts, host_parent);
+        adapt_cell.entity_host_cell_id[tdim].assign(n_parts, std::int32_t(0));
+        adapt_cell.entity_host_cell_type[tdim].assign(n_parts, host_type);
+        adapt_cell.entity_host_face_id[tdim].assign(n_parts, std::int32_t(-1));
+        adapt_cell.entity_source_level_set[tdim].assign(
+            n_parts, static_cast<std::int32_t>(level_set_id));
+        EntityAdjacency& host_vertices = adapt_cell.entity_host_cell_vertices[tdim];
+        host_vertices.offsets.assign(1, std::int32_t(0));
+        host_vertices.indices.clear();
+        for (std::size_t c = 0; c < n_parts; ++c)
+        {
+            host_vertices.indices.insert(host_vertices.indices.end(),
+                                         parent_vertices.begin(), parent_vertices.end());
+            host_vertices.offsets.push_back(
+                static_cast<std::int32_t>(host_vertices.indices.size()));
+        }
+        const int nls = adapt_cell.cell_cert_tag_num_level_sets;
+        adapt_cell.cell_cert_tag.assign(static_cast<std::size_t>(nls) * n_parts,
+                                        CellCertTag::not_classified);
+        for (std::size_t c = 0; c < n_parts; ++c)
+            adapt_cell.set_cell_cert_tag(level_set_id, static_cast<int>(c), out.tags[c]);
+
+        for (auto& row : adapt_cell.connectivity)
+        {
+            for (auto& conn : row)
+            {
+                conn.offsets.clear();
+                conn.indices.clear();
+            }
+        }
+        adapt_cell.has_connectivity = {};
+
+        // Edge certification data refers to the parent edges, which the cut
+        // replaces; it is not needed once the cell is cut.
+        adapt_cell.edge_root_tag.clear();
+        adapt_cell.edge_root_tag_num_level_sets = 0;
+        adapt_cell.edge_green_split_param.clear();
+        adapt_cell.edge_green_split_has_value.clear();
+        adapt_cell.edge_one_root_param.clear();
+        adapt_cell.edge_one_root_vertex_id.clear();
+        adapt_cell.edge_one_root_has_value.clear();
+
+        fill_all_vertex_signs_from_level_set(adapt_cell, ls_cell, level_set_id, zero_tol);
+        build_edges(adapt_cell);
+    }
+
+    // An uncut parent keeps the edges make_adapt_cell built.
+    if (tdim == 3)
+        build_faces(adapt_cell);
+    recompute_active_level_set_masks(adapt_cell, level_set_id + 1);
+    rebuild_zero_entity_inventory(adapt_cell);
 }
 
 template <std::floating_point T, std::integral I>
@@ -2386,5 +2606,18 @@ template void certify_refine_and_process_ready_cells(AdaptCell<double>&,
 template void certify_refine_and_process_ready_cells(AdaptCell<float>&,
                                                      const LevelSetCell<float, long>&,
                                                      int, int, float, float, int, bool, bool);
+
+template bool is_linear_simplex_level_set_cell(const LevelSetCell<double, int>&);
+template void cut_linear_cell(AdaptCell<double>&, const LevelSetCell<double, int>&,
+                              int, double, cell::TriangulationStrategy);
+template bool is_linear_simplex_level_set_cell(const LevelSetCell<double, long>&);
+template void cut_linear_cell(AdaptCell<double>&, const LevelSetCell<double, long>&,
+                              int, double, cell::TriangulationStrategy);
+template bool is_linear_simplex_level_set_cell(const LevelSetCell<float, int>&);
+template void cut_linear_cell(AdaptCell<float>&, const LevelSetCell<float, int>&,
+                              int, float, cell::TriangulationStrategy);
+template bool is_linear_simplex_level_set_cell(const LevelSetCell<float, long>&);
+template void cut_linear_cell(AdaptCell<float>&, const LevelSetCell<float, long>&,
+                              int, float, cell::TriangulationStrategy);
 
 } // namespace cutcells

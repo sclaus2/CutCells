@@ -64,4 +64,10 @@ LevelSetCell<T, I>
 make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
                     I cell_id);
 
+/// Same as make_cell_level_set, but fills `cell_ls` in place so repeated calls
+/// reuse its storage.
+template <std::floating_point T, std::integral I = int>
+void make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
+                         I cell_id, LevelSetCell<T, I>& cell_ls);
+
 } // namespace cutcells

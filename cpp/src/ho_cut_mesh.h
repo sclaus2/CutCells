@@ -32,6 +32,10 @@ struct CutOptions
     int cut_approximation_order = 1;
     int max_refinement_iterations = 8;
     int edge_max_depth = 20;
+    /// Cut cells of a single linear level set (degree 1 on a simplex) directly
+    /// with the cut lookup tables instead of the certification pipeline.
+    /// Applies when cut_approximation resolves to "linear".
+    bool linear_fast_path = true;
 };
 
 // =====================================================================

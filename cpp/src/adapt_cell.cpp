@@ -4,13 +4,13 @@
 // SPDX-License-Identifier:    MIT
 
 #include "adapt_cell.h"
+#include "entity_numbering.h"
 #include "cell_topology.h"
 #include "reference_cell.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <map>
 #include <stdexcept>
 #include <vector>
 
@@ -128,11 +128,11 @@ bool point_in_face_span(std::span<const T> p,
 template <std::floating_point T>
 std::pair<std::int8_t, std::int32_t>
 infer_zero_entity_parent_host(const AdaptCell<T>& ac,
-                              std::span<const std::int32_t> entity_vertices)
+                              std::span<const std::int32_t> entity_vertices,
+                              const std::vector<T>& ref_vertices)
 {
     const T tol = T(256) * std::numeric_limits<T>::epsilon();
     const int tdim = ac.tdim;
-    const auto ref_vertices = cell::reference_vertices<T>(ac.parent_cell_type);
 
     if (tdim >= 1)
     {
@@ -279,19 +279,102 @@ bool register_codim_one_zero_entity(const AdaptCell<T>& ac,
     return !has_positive_side;
 }
 
-void fill_connectivity(EntityAdjacency& adjacency,
-                       const std::vector<std::vector<std::int32_t>>& rows)
+template <std::floating_point T>
+int host_cell_id_for_entity(const AdaptCell<T>& ac, int c)
 {
-    adjacency.indices.clear();
-    adjacency.offsets.clear();
-    adjacency.offsets.push_back(std::int32_t(0));
-    for (const auto& row : rows)
+    const int tdim = ac.tdim;
+    return (tdim < AdaptCell<T>::max_dim
+            && c < static_cast<int>(ac.entity_host_cell_id[tdim].size()))
+               ? ac.entity_host_cell_id[tdim][static_cast<std::size_t>(c)]
+           : (c < static_cast<int>(ac.cell_source_cell_id.size()))
+               ? ac.cell_source_cell_id[static_cast<std::size_t>(c)]
+               : c;
+}
+
+template <std::floating_point T>
+cell::type host_cell_type_for_entity(const AdaptCell<T>& ac, int c,
+                                     cell::type ctype)
+{
+    const int tdim = ac.tdim;
+    return (tdim < AdaptCell<T>::max_dim
+            && c < static_cast<int>(ac.entity_host_cell_type[tdim].size()))
+               ? ac.entity_host_cell_type[tdim][static_cast<std::size_t>(c)]
+               : ctype;
+}
+
+template <std::floating_point T>
+int source_level_set_for_entity(const AdaptCell<T>& ac, int c)
+{
+    const int tdim = ac.tdim;
+    return (tdim < AdaptCell<T>::max_dim
+            && c < static_cast<int>(ac.entity_source_level_set[tdim].size()))
+               ? ac.entity_source_level_set[tdim][static_cast<std::size_t>(c)]
+               : -1;
+}
+
+/// Entity-to-cell adjacency from per-visit entity ids: cell c visits the
+/// slots [cell_offsets[c], cell_offsets[c + 1]) of `entity_of`. Cells are
+/// listed in visiting order.
+void fill_entity_to_cells(const std::vector<std::int32_t>& entity_of,
+                          const std::vector<std::int32_t>& cell_offsets,
+                          int n_entities, EntityAdjacency& entity_to_cells,
+                          std::vector<std::int32_t>& cursor)
+{
+    entity_to_cells.offsets.assign(static_cast<std::size_t>(n_entities) + 1,
+                                   std::int32_t(0));
+    for (const std::int32_t e : entity_of)
+        ++entity_to_cells.offsets[static_cast<std::size_t>(e) + 1];
+    for (int e = 0; e < n_entities; ++e)
+        entity_to_cells.offsets[static_cast<std::size_t>(e) + 1]
+            += entity_to_cells.offsets[static_cast<std::size_t>(e)];
+    entity_to_cells.indices.resize(entity_of.size());
+    cursor.assign(entity_to_cells.offsets.begin(), entity_to_cells.offsets.end() - 1);
+    const int n_cells = static_cast<int>(cell_offsets.size()) - 1;
+    for (int c = 0; c < n_cells; ++c)
     {
-        for (const auto value : row)
-            adjacency.indices.push_back(value);
-        adjacency.offsets.push_back(
-            static_cast<std::int32_t>(adjacency.indices.size()));
+        for (std::int32_t k = cell_offsets[static_cast<std::size_t>(c)];
+             k < cell_offsets[static_cast<std::size_t>(c) + 1]; ++k)
+        {
+            const std::int32_t e = entity_of[static_cast<std::size_t>(k)];
+            entity_to_cells.indices[static_cast<std::size_t>(
+                cursor[static_cast<std::size_t>(e)]++)] = static_cast<std::int32_t>(c);
+        }
     }
+}
+
+/// Per-thread storage for the temporaries of build_edges/build_faces, so
+/// repeated calls do not allocate.
+struct TopologyScratch
+{
+    std::vector<std::array<std::int32_t, 4>> face_keys, face_vertices;
+    std::vector<std::array<std::int32_t, 2>> edge_keys, edge_vertices;
+    std::vector<std::int32_t> entity_of, order, cursor, cell_offsets;
+    std::vector<std::uint8_t> is_first;
+};
+
+TopologyScratch& topology_scratch()
+{
+    static thread_local TopologyScratch scratch;
+    return scratch;
+}
+
+/// Reserve the entity pool and host provenance of dimension `dim` for
+/// `n_entities` entities with about `vertices_per_entity` vertices each.
+template <std::floating_point T>
+void reserve_entities(AdaptCell<T>& ac, int dim, int n_entities,
+                      int vertices_per_entity, int host_vertices_per_entity)
+{
+    const auto n = static_cast<std::size_t>(n_entities);
+    ac.entity_types[dim].reserve(n);
+    ac.entity_to_vertex[dim].offsets.reserve(n + 1);
+    ac.entity_to_vertex[dim].indices.reserve(n * static_cast<std::size_t>(vertices_per_entity));
+    ac.entity_host_cell_id[dim].reserve(n);
+    ac.entity_host_cell_type[dim].reserve(n);
+    ac.entity_host_face_id[dim].reserve(n);
+    ac.entity_source_level_set[dim].reserve(n);
+    ac.entity_host_cell_vertices[dim].offsets.reserve(n + 1);
+    ac.entity_host_cell_vertices[dim].indices.reserve(
+        n * static_cast<std::size_t>(host_vertices_per_entity));
 }
 
 } // namespace
@@ -314,85 +397,84 @@ void build_faces(AdaptCell<T>& ac)
     ac.face_cert_tag.clear();
     ac.face_cert_tag_num_level_sets = 0;
 
-    // Track unique faces by sorted vertex set → face_id.
-    std::map<std::vector<std::int32_t>, int> face_map;
+    const int tdim = ac.tdim;
+    const int n_cells = ac.n_entities(tdim);
 
-    const int n_cells = ac.n_entities(ac.tdim);
-    std::vector<std::vector<std::int32_t>> face_to_cells;
-    std::vector<std::vector<std::int32_t>> cell_to_faces(static_cast<std::size_t>(n_cells));
+    // Visit every (cell, local face). Faces have at most four vertices; the
+    // sorted key is padded with -1 so triangle and quadrilateral keys differ.
+    EntityAdjacency& cell_to_faces = ac.connectivity[tdim][2];
+    cell_to_faces.offsets.assign(1, std::int32_t(0));
+    cell_to_faces.offsets.reserve(static_cast<std::size_t>(n_cells) + 1);
+    TopologyScratch& scratch = topology_scratch();
+    auto& keys = scratch.face_keys;
+    auto& face_vertices = scratch.face_vertices;
+    keys.clear();
+    face_vertices.clear();
+    int max_cell_vertices = 0;
     for (int c = 0; c < n_cells; ++c)
     {
-        const cell::type ctype = ac.entity_types[ac.tdim][static_cast<std::size_t>(c)];
-        auto cell_verts = ac.entity_to_vertex[ac.tdim][static_cast<std::int32_t>(c)];
+        const cell::type ctype = ac.entity_types[tdim][static_cast<std::size_t>(c)];
+        auto cell_verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
         const int nf = cell::num_faces(ctype);
-
+        max_cell_vertices = std::max(max_cell_vertices, static_cast<int>(cell_verts.size()));
         for (int fi = 0; fi < nf; ++fi)
         {
             auto local_fv = cell::face_vertices(ctype, fi);
-            const int fsize = static_cast<int>(local_fv.size());
+            std::array<std::int32_t, 4> fv = {-1, -1, -1, -1};
+            for (std::size_t j = 0; j < local_fv.size(); ++j)
+                fv[j] = cell_verts[static_cast<std::size_t>(local_fv[j])];
+            std::array<std::int32_t, 4> key = fv;
+            std::sort(key.begin(),
+                      key.begin() + static_cast<std::ptrdiff_t>(local_fv.size()));
+            keys.push_back(key);
+            face_vertices.push_back(fv);
+        }
+        cell_to_faces.offsets.push_back(static_cast<std::int32_t>(keys.size()));
+    }
 
-            // Build global-vertex face and sorted key
-            std::vector<std::int32_t> global_fv(static_cast<std::size_t>(fsize));
-            std::vector<std::int32_t> sorted_fv(static_cast<std::size_t>(fsize));
-            for (int j = 0; j < fsize; ++j)
-            {
-                global_fv[static_cast<std::size_t>(j)] =
-                    cell_verts[static_cast<std::size_t>(local_fv[static_cast<std::size_t>(j)])];
-                sorted_fv[static_cast<std::size_t>(j)] = global_fv[static_cast<std::size_t>(j)];
-            }
-            std::sort(sorted_fv.begin(), sorted_fv.end());
+    std::vector<std::int32_t>& face_of = scratch.entity_of;
+    std::vector<std::uint8_t>& is_first = scratch.is_first;
+    const int n_faces
+        = detail::number_by_first_occurrence(keys, face_of, is_first, scratch.order);
+    reserve_entities(ac, 2, n_faces, 4, max_cell_vertices);
 
-            auto face_it = face_map.find(sorted_fv);
-            int face_id = -1;
-            if (face_it == face_map.end())
-            {
-                face_id = ac.n_entities(2);
-                face_map[sorted_fv] = face_id;
-                ac.entity_types[2].push_back(cell::face_type(ctype, fi));
-                for (int j = 0; j < fsize; ++j)
-                    ac.entity_to_vertex[2].indices.push_back(global_fv[static_cast<std::size_t>(j)]);
-                ac.entity_to_vertex[2].offsets.push_back(
-                    static_cast<std::int32_t>(ac.entity_to_vertex[2].indices.size()));
-                face_to_cells.emplace_back();
+    // Append new faces in first-occurrence order with the creating cell's
+    // provenance.
+    for (int c = 0; c < n_cells; ++c)
+    {
+        const cell::type ctype = ac.entity_types[tdim][static_cast<std::size_t>(c)];
+        auto cell_verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
+        const std::int32_t begin = cell_to_faces.offsets[static_cast<std::size_t>(c)];
+        const std::int32_t end = cell_to_faces.offsets[static_cast<std::size_t>(c) + 1];
+        for (std::int32_t k = begin; k < end; ++k)
+        {
+            if (!is_first[static_cast<std::size_t>(k)])
+                continue;
+            const int fi = k - begin;
+            const std::size_t fsize = cell::face_vertices(ctype, fi).size();
+            ac.entity_types[2].push_back(cell::face_type(ctype, fi));
+            for (std::size_t j = 0; j < fsize; ++j)
+                ac.entity_to_vertex[2].indices.push_back(
+                    face_vertices[static_cast<std::size_t>(k)][j]);
+            ac.entity_to_vertex[2].offsets.push_back(
+                static_cast<std::int32_t>(ac.entity_to_vertex[2].indices.size()));
 
-                const int host_cell_id =
-                    (ac.tdim < AdaptCell<T>::max_dim
-                     && c < static_cast<int>(ac.entity_host_cell_id[ac.tdim].size()))
-                        ? ac.entity_host_cell_id[ac.tdim][static_cast<std::size_t>(c)]
-                    : (c < static_cast<int>(ac.cell_source_cell_id.size()))
-                        ? ac.cell_source_cell_id[static_cast<std::size_t>(c)]
-                        : c;
-                const cell::type host_cell_type =
-                    (ac.tdim < AdaptCell<T>::max_dim
-                     && c < static_cast<int>(ac.entity_host_cell_type[ac.tdim].size()))
-                        ? ac.entity_host_cell_type[ac.tdim][static_cast<std::size_t>(c)]
-                        : ctype;
-                const int source_level_set =
-                    (ac.tdim < AdaptCell<T>::max_dim
-                     && c < static_cast<int>(ac.entity_source_level_set[ac.tdim].size()))
-                        ? ac.entity_source_level_set[ac.tdim][static_cast<std::size_t>(c)]
-                        : -1;
-                const auto host_vertices =
-                    host_vertices_for_entity<T>(ac, ac.tdim, c);
-                append_entity_host_provenance<T>(
-                    ac, 2, host_cell_id, host_cell_type, -1, source_level_set,
-                    host_vertices.empty() ? std::span<const std::int32_t>(cell_verts)
-                                          : host_vertices);
-            }
-            else
-                face_id = face_it->second;
-
-            face_to_cells[static_cast<std::size_t>(face_id)].push_back(
-                static_cast<std::int32_t>(c));
-            cell_to_faces[static_cast<std::size_t>(c)].push_back(
-                static_cast<std::int32_t>(face_id));
+            const auto host_vertices = host_vertices_for_entity<T>(ac, tdim, c);
+            append_entity_host_provenance<T>(
+                ac, 2, host_cell_id_for_entity(ac, c),
+                host_cell_type_for_entity(ac, c, ctype), -1,
+                source_level_set_for_entity(ac, c),
+                host_vertices.empty() ? std::span<const std::int32_t>(cell_verts)
+                                      : host_vertices);
         }
     }
 
-    fill_connectivity(ac.connectivity[2][ac.tdim], face_to_cells);
-    ac.has_connectivity[2][ac.tdim] = 1;
-    fill_connectivity(ac.connectivity[ac.tdim][2], cell_to_faces);
-    ac.has_connectivity[ac.tdim][2] = 1;
+    fill_entity_to_cells(face_of, cell_to_faces.offsets, n_faces,
+                         ac.connectivity[2][tdim], scratch.cursor);
+    ac.has_connectivity[2][tdim] = 1;
+
+    cell_to_faces.indices.assign(face_of.begin(), face_of.end());
+    ac.has_connectivity[tdim][2] = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -413,72 +495,71 @@ void build_edges(AdaptCell<T>& ac)
     ac.entity_to_vertex[1].offsets.push_back(std::int32_t(0));
     clear_entity_host_provenance<T>(ac, 1);
 
-    // Track unique edges as (min_v, max_v) → edge_id.
-    std::map<std::pair<std::int32_t, std::int32_t>, int> edge_map;
-
+    // Visit every (cell, local edge); edges are keyed by (min_v, max_v).
     const int n_cells = ac.n_entities(tdim);
-    std::vector<std::vector<std::int32_t>> edge_to_cells;
-    std::vector<std::vector<std::int32_t>> cell_to_edges(static_cast<std::size_t>(n_cells));
+    TopologyScratch& scratch = topology_scratch();
+    auto& keys = scratch.edge_keys;
+    auto& edge_vertices = scratch.edge_vertices;
+    auto& cell_offsets = scratch.cell_offsets;
+    keys.clear();
+    edge_vertices.clear();
+    cell_offsets.assign(1, std::int32_t(0));
+    int max_cell_vertices = 0;
     for (int c = 0; c < n_cells; ++c)
     {
         const cell::type ctype = ac.entity_types[tdim][static_cast<std::size_t>(c)];
         auto cell_verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
-        auto cell_edges = cell::edges(ctype);
-
-        for (const auto& ce : cell_edges)
+        max_cell_vertices = std::max(max_cell_vertices, static_cast<int>(cell_verts.size()));
+        for (const auto& ce : cell::edges(ctype))
         {
             const std::int32_t lv0 = cell_verts[static_cast<std::size_t>(ce[0])];
             const std::int32_t lv1 = cell_verts[static_cast<std::size_t>(ce[1])];
-            const auto key = std::make_pair(std::min(lv0, lv1), std::max(lv0, lv1));
+            keys.push_back({std::min(lv0, lv1), std::max(lv0, lv1)});
+            edge_vertices.push_back({lv0, lv1});
+        }
+        cell_offsets.push_back(static_cast<std::int32_t>(keys.size()));
+    }
 
-            auto edge_it = edge_map.find(key);
-            if (edge_it == edge_map.end())
-            {
-                edge_it = edge_map.emplace(key, ac.n_entities(1)).first;
-                edge_to_cells.emplace_back();
-                ac.entity_types[1].push_back(cell::type::interval);
-                ac.entity_to_vertex[1].indices.push_back(lv0);
-                ac.entity_to_vertex[1].indices.push_back(lv1);
-                ac.entity_to_vertex[1].offsets.push_back(
-                    static_cast<std::int32_t>(ac.entity_to_vertex[1].indices.size()));
+    std::vector<std::int32_t>& edge_of = scratch.entity_of;
+    std::vector<std::uint8_t>& is_first = scratch.is_first;
+    const int n_edges
+        = detail::number_by_first_occurrence(keys, edge_of, is_first, scratch.order);
+    reserve_entities(ac, 1, n_edges, 2, max_cell_vertices);
 
-                const int host_cell_id =
-                    (tdim < AdaptCell<T>::max_dim
-                     && c < static_cast<int>(ac.entity_host_cell_id[tdim].size()))
-                        ? ac.entity_host_cell_id[tdim][static_cast<std::size_t>(c)]
-                    : (c < static_cast<int>(ac.cell_source_cell_id.size()))
-                        ? ac.cell_source_cell_id[static_cast<std::size_t>(c)]
-                        : c;
-                const cell::type host_cell_type =
-                    (tdim < AdaptCell<T>::max_dim
-                     && c < static_cast<int>(ac.entity_host_cell_type[tdim].size()))
-                        ? ac.entity_host_cell_type[tdim][static_cast<std::size_t>(c)]
-                        : ctype;
-                const int source_level_set =
-                    (tdim < AdaptCell<T>::max_dim
-                     && c < static_cast<int>(ac.entity_source_level_set[tdim].size()))
-                        ? ac.entity_source_level_set[tdim][static_cast<std::size_t>(c)]
-                        : -1;
-                const auto host_vertices =
-                    host_vertices_for_entity<T>(ac, tdim, c);
-                append_entity_host_provenance<T>(
-                    ac, 1, host_cell_id, host_cell_type, -1, source_level_set,
-                    host_vertices.empty() ? std::span<const std::int32_t>(cell_verts)
-                                          : host_vertices);
-            }
+    for (int c = 0; c < n_cells; ++c)
+    {
+        const cell::type ctype = ac.entity_types[tdim][static_cast<std::size_t>(c)];
+        auto cell_verts = ac.entity_to_vertex[tdim][static_cast<std::int32_t>(c)];
+        for (std::int32_t k = cell_offsets[static_cast<std::size_t>(c)];
+             k < cell_offsets[static_cast<std::size_t>(c) + 1]; ++k)
+        {
+            if (!is_first[static_cast<std::size_t>(k)])
+                continue;
+            ac.entity_types[1].push_back(cell::type::interval);
+            ac.entity_to_vertex[1].indices.push_back(
+                edge_vertices[static_cast<std::size_t>(k)][0]);
+            ac.entity_to_vertex[1].indices.push_back(
+                edge_vertices[static_cast<std::size_t>(k)][1]);
+            ac.entity_to_vertex[1].offsets.push_back(
+                static_cast<std::int32_t>(ac.entity_to_vertex[1].indices.size()));
 
-            edge_to_cells[static_cast<std::size_t>(edge_it->second)].push_back(
-                static_cast<std::int32_t>(c));
-            cell_to_edges[static_cast<std::size_t>(c)].push_back(
-                static_cast<std::int32_t>(edge_it->second));
+            const auto host_vertices = host_vertices_for_entity<T>(ac, tdim, c);
+            append_entity_host_provenance<T>(
+                ac, 1, host_cell_id_for_entity(ac, c),
+                host_cell_type_for_entity(ac, c, ctype), -1,
+                source_level_set_for_entity(ac, c),
+                host_vertices.empty() ? std::span<const std::int32_t>(cell_verts)
+                                      : host_vertices);
         }
     }
 
     // In 2D the edges are the facets: zero-entity ownership needs their
     // incident leaf cells (see register_codim_one_zero_entity).
-    fill_connectivity(ac.connectivity[1][tdim], edge_to_cells);
+    fill_entity_to_cells(edge_of, cell_offsets, n_edges, ac.connectivity[1][tdim],
+                         scratch.cursor);
     ac.has_connectivity[1][tdim] = 1;
-    fill_connectivity(ac.connectivity[tdim][1], cell_to_edges);
+    ac.connectivity[tdim][1].offsets.assign(cell_offsets.begin(), cell_offsets.end());
+    ac.connectivity[tdim][1].indices.assign(edge_of.begin(), edge_of.end());
     ac.has_connectivity[tdim][1] = 1;
 }
 
@@ -487,7 +568,8 @@ void build_edges(AdaptCell<T>& ac)
 // ---------------------------------------------------------------------------
 
 template <std::floating_point T, std::integral I>
-AdaptCell<T> make_adapt_cell(const MeshView<T, I>& mesh, I cell_id)
+AdaptCell<T> make_adapt_cell(const MeshView<T, I>& mesh, I cell_id,
+                             bool with_faces)
 {
     if (!mesh.has_cell_types())
         throw std::runtime_error(
@@ -563,7 +645,7 @@ AdaptCell<T> make_adapt_cell(const MeshView<T, I>& mesh, I cell_id)
     // Create edges and faces (if tdim=3) in the entity pools 
     build_edges(ac);
 
-    if (tdim == 3)
+    if (tdim == 3 && with_faces)
         build_faces(ac);
 
     recompute_active_level_set_masks(ac, /*num_level_sets=*/0);
@@ -671,7 +753,38 @@ void rebuild_zero_entity_inventory(AdaptCell<T>& ac)
     ac.zero_entity_host_cell_vertices.indices.clear();
     ac.zero_entity_host_cell_vertices.offsets.push_back(std::int32_t(0));
 
+    // Upper bound on the number of zero entities, to reserve the inventory.
     const int n_vertices = ac.n_vertices();
+    std::size_t max_zero_entities = 0;
+    for (int v = 0; v < n_vertices; ++v)
+        max_zero_entities += ac.zero_mask_per_vertex[static_cast<std::size_t>(v)] != 0;
+    if (max_zero_entities == 0)
+    {
+        ++ac.zero_entity_version;
+        return;
+    }
+    for (int dim = 1; dim < ac.tdim; ++dim)
+    {
+        for (int e = 0; e < ac.n_entities(dim); ++e)
+        {
+            std::uint64_t mask = ~std::uint64_t(0);
+            for (const auto v : ac.entity_to_vertex[dim][static_cast<std::int32_t>(e)])
+                mask &= ac.zero_mask_per_vertex[static_cast<std::size_t>(v)];
+            max_zero_entities += mask != 0;
+        }
+    }
+    ac.zero_entity_dim.reserve(max_zero_entities);
+    ac.zero_entity_id.reserve(max_zero_entities);
+    ac.zero_entity_zero_mask.reserve(max_zero_entities);
+    ac.zero_entity_is_owned.reserve(max_zero_entities);
+    ac.zero_entity_parent_dim.reserve(max_zero_entities);
+    ac.zero_entity_parent_id.reserve(max_zero_entities);
+    ac.zero_entity_host_cell_id.reserve(max_zero_entities);
+    ac.zero_entity_host_cell_type.reserve(max_zero_entities);
+    ac.zero_entity_host_face_id.reserve(max_zero_entities);
+    ac.zero_entity_source_level_set.reserve(max_zero_entities);
+    ac.zero_entity_host_cell_vertices.offsets.reserve(max_zero_entities + 1);
+
     for (int v = 0; v < n_vertices; ++v)
     {
         const auto mask = ac.zero_mask_per_vertex[static_cast<std::size_t>(v)];
@@ -696,6 +809,7 @@ void rebuild_zero_entity_inventory(AdaptCell<T>& ac)
             static_cast<std::int32_t>(ac.zero_entity_host_cell_vertices.indices.size()));
     }
 
+    std::vector<T> ref_vertices;
     for (int dim = 1; dim < ac.tdim; ++dim)
     {
         const int n_entities = ac.n_entities(dim);
@@ -721,7 +835,9 @@ void rebuild_zero_entity_inventory(AdaptCell<T>& ac)
             ac.zero_entity_id.push_back(static_cast<std::int32_t>(e));
             ac.zero_entity_zero_mask.push_back(mask);
             ac.zero_entity_is_owned.push_back(std::uint8_t(1));
-            const auto host = infer_zero_entity_parent_host<T>(ac, verts);
+            if (ref_vertices.empty())
+                ref_vertices = cell::reference_vertices<T>(ac.parent_cell_type);
+            const auto host = infer_zero_entity_parent_host<T>(ac, verts, ref_vertices);
             ac.zero_entity_parent_dim.push_back(host.first);
             ac.zero_entity_parent_id.push_back(host.second);
             if (e < static_cast<int>(ac.entity_host_cell_id[dim].size()))
@@ -764,10 +880,10 @@ template void build_edges(AdaptCell<float>&);
 template void build_faces(AdaptCell<double>&);
 template void build_faces(AdaptCell<float>&);
 
-template AdaptCell<double> make_adapt_cell(const MeshView<double, int>&,  int);
-template AdaptCell<float>  make_adapt_cell(const MeshView<float,  int>&,  int);
-template AdaptCell<double> make_adapt_cell(const MeshView<double, long>&, long);
-template AdaptCell<float>  make_adapt_cell(const MeshView<float,  long>&, long);
+template AdaptCell<double> make_adapt_cell(const MeshView<double, int>&,  int, bool);
+template AdaptCell<float>  make_adapt_cell(const MeshView<float,  int>&,  int, bool);
+template AdaptCell<double> make_adapt_cell(const MeshView<double, long>&, long, bool);
+template AdaptCell<float>  make_adapt_cell(const MeshView<float,  long>&, long, bool);
 
 template void fill_vertex_signs(AdaptCell<double>&, std::span<const double>, int, double);
 template void fill_vertex_signs(AdaptCell<float>&,  std::span<const float>,  int, float);

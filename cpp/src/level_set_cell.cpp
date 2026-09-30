@@ -437,6 +437,24 @@ make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
                     I cell_id)
 {
     LevelSetCell<T, I> cell_ls;
+    make_cell_level_set(global_ls, cell_id, cell_ls);
+    return cell_ls;
+}
+
+template <std::floating_point T, std::integral I>
+void make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
+                         I cell_id, LevelSetCell<T, I>& cell_ls)
+{
+    // Reset to a default-constructed state, keeping vector capacity.
+    cell_ls.level_set_id = 0;
+    cell_ls.cell_type = cell::type::point;
+    cell_ls.gdim = 0;
+    cell_ls.tdim = 0;
+    cell_ls.parent_vertex_coords.clear();
+    cell_ls.bernstein_coeffs.clear();
+    cell_ls.bernstein_order = 0;
+    cell_ls.nodal_values.clear();
+    cell_ls.nodal_order = 0;
     cell_ls.global_level_set = &global_ls;
     cell_ls.cell_id = cell_id;
 
@@ -512,8 +530,6 @@ make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
             std::span<const T>(cell_ls.nodal_values),
             cell_ls.bernstein_coeffs);
     }
-
-    return cell_ls;
 }
 
 // ---------------------------------------------------------------------------
@@ -624,6 +640,10 @@ make_cell_level_set(const LevelSetFunction<double, long>&, long);
 
 template LevelSetCell<float, long>
 make_cell_level_set(const LevelSetFunction<float, long>&, long);
+template void make_cell_level_set(const LevelSetFunction<double, int>&, int, LevelSetCell<double, int>&);
+template void make_cell_level_set(const LevelSetFunction<float, int>&, int, LevelSetCell<float, int>&);
+template void make_cell_level_set(const LevelSetFunction<double, long>&, long, LevelSetCell<double, long>&);
+template void make_cell_level_set(const LevelSetFunction<float, long>&, long, LevelSetCell<float, long>&);
 
 template double LevelSetCell<double, int>::value(std::span<const double>) const;
 template float  LevelSetCell<float,  int>::value(std::span<const float>)  const;

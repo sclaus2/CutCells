@@ -91,11 +91,13 @@ cell::domain classify_cell_domain_fast(const MeshView<T, I>& mesh,
                                        std::vector<T>& vertex_ls_values,
                                        std::vector<I>& mesh_cell_scratch,
                                        std::vector<I>& ls_dof_scratch,
+                                       LevelSetCell<T, I>& ls_cell_scratch,
                                        LevelSetCell<T, I>* intersected_ls_cell)
 {
     if (use_bernstein_classification)
     {
-        LevelSetCell<T, I> ls_cell = make_cell_level_set(ls, cell_id);
+        LevelSetCell<T, I>& ls_cell = ls_cell_scratch;
+        make_cell_level_set(ls, cell_id, ls_cell);
         const cell::domain dom = classify_cell_domain_from_bernstein<T>(
             std::span<const T>(ls_cell.bernstein_coeffs.data(),
                                ls_cell.bernstein_coeffs.size()));
@@ -104,7 +106,7 @@ cell::domain classify_cell_domain_fast(const MeshView<T, I>& mesh,
             if (dom == cell::domain::intersected
                 && intersected_ls_cell != nullptr)
             {
-                *intersected_ls_cell = std::move(ls_cell);
+                *intersected_ls_cell = ls_cell;
             }
             return dom;
         }
@@ -551,6 +553,22 @@ CutOptions resolve_cut_options(
     return resolved;
 }
 
+/// Whether a single-level-set cut cell can use the linear LUT fast path.
+template <std::floating_point T, std::integral I>
+bool use_linear_fast_path(const CutOptions& resolved_options,
+                          const LevelSetCell<T, I>& ls_cell)
+{
+    return resolved_options.linear_fast_path
+           && resolved_options.cut_approximation == "linear"
+           && is_linear_simplex_level_set_cell(ls_cell);
+}
+
+cell::TriangulationStrategy cut_triangulation_strategy(const CutOptions& options)
+{
+    return options.triangulate_cut_parts ? options.triangulation_strategy
+                                         : cell::TriangulationStrategy::none;
+}
+
 template <std::floating_point T>
 void apply_cut_approximation(AdaptCell<T>& ac, const CutOptions& options)
 {
@@ -605,6 +623,7 @@ cut(const MeshView<T, I>& mesh,
     std::vector<T> ls_vertex_vals;
     std::vector<I> mesh_cell_scratch;
     std::vector<I> ls_dof_scratch;
+    LevelSetCell<T, I> ls_cell_scratch;
 
     for (I ci = 0; ci < ncells; ++ci)
     {
@@ -613,7 +632,7 @@ cut(const MeshView<T, I>& mesh,
         LevelSetCell<T, I> ls_cell;
         const cell::domain dom = classify_cell_domain_fast(
             mesh, ls, ci, nv, use_bernstein_classification, ls_vertex_vals,
-            mesh_cell_scratch, ls_dof_scratch,
+            mesh_cell_scratch, ls_dof_scratch, ls_cell_scratch,
             &ls_cell);
         parent_cells.cell_domains[static_cast<std::size_t>(ci)] = dom;
 
@@ -629,35 +648,40 @@ cut(const MeshView<T, I>& mesh,
             static_cast<int>(hc.level_set_cells.size()));
 
         // AdaptCell
-        AdaptCell<T> ac = make_adapt_cell(mesh, ci);
-        apply_cut_approximation(ac, resolved_options);
-        const bool linear_subcell_level_set =
-            resolved_options.cut_approximation == "iso_p1";
-
-        certify_refine_and_process_ready_cells(
-            ac, hc.level_set_cells.back(), /*level_set_id=*/0,
-            resolved_options.max_refinement_iterations, T(1e-12), T(1e-12),
-            resolved_options.edge_max_depth,
-            resolved_options.triangulate_cut_parts
-                ? resolved_options.triangulation_strategy
-                : cell::TriangulationStrategy::none,
-            linear_subcell_level_set);
+        const LevelSetCell<T, I>& cut_ls_cell = hc.level_set_cells.back();
+        const bool linear_fast_path = use_linear_fast_path(resolved_options, cut_ls_cell);
+        AdaptCell<T> ac = make_adapt_cell(mesh, ci, /*with_faces=*/!linear_fast_path);
+        if (linear_fast_path)
         {
-            const std::array<int, 1> processed_ids = {0};
-            const auto* processed_cell = &hc.level_set_cells.back();
-            refresh_adapt_cell_semantics(
-                ac,
-                std::span<const int>(processed_ids.data(), processed_ids.size()),
-                std::span<const LevelSetCell<T, I>>(processed_cell, std::size_t(1)),
-                /*total_num_level_sets=*/1,
-                T(1e-12));
+            cut_linear_cell(ac, cut_ls_cell, /*level_set_id=*/0, T(1e-12),
+                            cut_triangulation_strategy(resolved_options));
         }
+        else
+        {
+            apply_cut_approximation(ac, resolved_options);
+            const bool linear_subcell_level_set =
+                resolved_options.cut_approximation == "iso_p1";
 
-        // Finalize derived topology/semantic layers used by selection + output.
-        build_edges(ac);
-        if (ac.tdim == 3)
-            build_faces(ac);
-        rebuild_zero_entity_inventory(ac);
+            certify_refine_and_process_ready_cells(
+                ac, cut_ls_cell, /*level_set_id=*/0,
+                resolved_options.max_refinement_iterations, T(1e-12), T(1e-12),
+                resolved_options.edge_max_depth,
+                cut_triangulation_strategy(resolved_options),
+                linear_subcell_level_set);
+            {
+                const std::array<int, 1> processed_ids = {0};
+                refresh_adapt_cell_semantics(
+                    ac,
+                    std::span<const int>(processed_ids.data(), processed_ids.size()),
+                    std::span<const LevelSetCell<T, I>>(&cut_ls_cell, std::size_t(1)),
+                    /*total_num_level_sets=*/1,
+                    T(1e-12));
+            }
+
+            // Edges/faces are already current: certify_refine_and_process_ready_cells
+            // rebuilds them last, and the semantic refresh only touches vertex signs.
+            rebuild_zero_entity_inventory(ac);
+        }
         hc.adapt_cells.push_back(std::move(ac));
 
         // Single LS: bit 0 is always set.
@@ -734,6 +758,11 @@ cut(const MeshView<T, I>& mesh,
     std::vector<T> ls_vertex_vals;
     std::vector<I> mesh_cell_scratch;
     std::vector<I> ls_dof_scratch;
+    LevelSetCell<T, I> ls_cell_scratch;
+    std::vector<int> intersected_ls_indices;
+    std::vector<LevelSetCell<T, I>> intersected_ls_cells;
+    intersected_ls_indices.reserve(static_cast<std::size_t>(nls));
+    intersected_ls_cells.reserve(static_cast<std::size_t>(nls));
 
     for (I ci = 0; ci < ncells; ++ci)
     {
@@ -742,17 +771,16 @@ cut(const MeshView<T, I>& mesh,
 
         // Classify each level set individually; track if any intersects.
         bool any_intersected = false;
-        std::vector<int> intersected_ls_indices;
-        std::vector<LevelSetCell<T, I>> intersected_ls_cells;
-        intersected_ls_indices.reserve(static_cast<std::size_t>(nls));
-        intersected_ls_cells.reserve(static_cast<std::size_t>(nls));
+        intersected_ls_indices.clear();
+        intersected_ls_cells.clear();
         for (int li = 0; li < nls; ++li)
         {
             LevelSetCell<T, I> ls_cell;
             const cell::domain dom = classify_cell_domain_fast(
                 mesh, level_sets[static_cast<std::size_t>(li)], ci, nv,
                 use_bernstein_classification[static_cast<std::size_t>(li)],
-                ls_vertex_vals, mesh_cell_scratch, ls_dof_scratch, &ls_cell);
+                ls_vertex_vals, mesh_cell_scratch, ls_dof_scratch,
+                ls_cell_scratch, &ls_cell);
 
             parent_cells.cell_domains[static_cast<std::size_t>(
                 li * static_cast<int>(ncells) + static_cast<int>(ci))] = dom;
@@ -769,65 +797,74 @@ cut(const MeshView<T, I>& mesh,
         if (!any_intersected)
             continue;
 
-        std::vector<int> all_level_set_indices(static_cast<std::size_t>(nls));
-        std::iota(all_level_set_indices.begin(), all_level_set_indices.end(), 0);
-        std::vector<LevelSetCell<T, I>> all_level_set_cells;
-        all_level_set_cells.reserve(static_cast<std::size_t>(nls));
-        for (int li = 0; li < nls; ++li)
-        {
-            auto ls_cell = make_cell_level_set(level_sets[static_cast<std::size_t>(li)], ci);
-            ls_cell.level_set_id = li;
-            all_level_set_cells.push_back(std::move(ls_cell));
-        }
-
         const int cut_idx = hc.num_cut_cells();
         parent_cells.cell_to_cut_index[static_cast<std::size_t>(ci)] = cut_idx;
 
-        // Build AdaptCell once per cell.
-        AdaptCell<T> ac = make_adapt_cell(mesh, ci);
-        apply_cut_approximation(ac, resolved_options);
-        const bool linear_subcell_level_set =
-            resolved_options.cut_approximation == "iso_p1";
-
-        // Process intersecting level sets recursively (input order).
-        //
+        // A single linear level set is cut directly with the lookup tables;
+        // several level sets or higher order need the Bernstein pipeline.
+        const bool linear_fast_path =
+            nls == 1 && use_linear_fast_path(resolved_options, intersected_ls_cells.front());
+        AdaptCell<T> ac = make_adapt_cell(mesh, ci, /*with_faces=*/!linear_fast_path);
         std::uint64_t cell_active_mask = 0;
-        for (std::size_t k = 0; k < intersected_ls_indices.size(); ++k)
+        if (linear_fast_path)
         {
-            const int li = intersected_ls_indices[k];
-            certify_refine_and_process_ready_cells(
-                    ac, intersected_ls_cells[k], li,
-                    resolved_options.max_refinement_iterations, T(1e-12), T(1e-12),
-                    resolved_options.edge_max_depth,
-                    resolved_options.triangulate_cut_parts
-                        ? resolved_options.triangulation_strategy
-                        : cell::TriangulationStrategy::none,
-                    linear_subcell_level_set);
+            const int li = intersected_ls_indices.front();
+            cut_linear_cell(ac, intersected_ls_cells.front(), li, T(1e-12),
+                            cut_triangulation_strategy(resolved_options));
+            cell_active_mask = std::uint64_t(1) << li;
+        }
+        else
+        {
+            std::vector<int> all_level_set_indices(static_cast<std::size_t>(nls));
+            std::iota(all_level_set_indices.begin(), all_level_set_indices.end(), 0);
+            std::vector<LevelSetCell<T, I>> all_level_set_cells;
+            all_level_set_cells.reserve(static_cast<std::size_t>(nls));
+            for (int li = 0; li < nls; ++li)
+            {
+                auto ls_cell = make_cell_level_set(level_sets[static_cast<std::size_t>(li)], ci);
+                ls_cell.level_set_id = li;
+                all_level_set_cells.push_back(std::move(ls_cell));
+            }
 
-            // New vertices created while processing level set li must be
-            // reclassified for all already-processed level sets.
+            apply_cut_approximation(ac, resolved_options);
+            const bool linear_subcell_level_set =
+                resolved_options.cut_approximation == "iso_p1";
+
+            // Process intersecting level sets recursively (input order).
+            //
+            for (std::size_t k = 0; k < intersected_ls_indices.size(); ++k)
+            {
+                const int li = intersected_ls_indices[k];
+                certify_refine_and_process_ready_cells(
+                        ac, intersected_ls_cells[k], li,
+                        resolved_options.max_refinement_iterations, T(1e-12), T(1e-12),
+                        resolved_options.edge_max_depth,
+                        cut_triangulation_strategy(resolved_options),
+                        linear_subcell_level_set);
+
+                // New vertices created while processing level set li must be
+                // reclassified for all already-processed level sets.
+                refresh_adapt_cell_semantics(
+                    ac,
+                    std::span<const int>(intersected_ls_indices.data(), k + 1),
+                    std::span<const LevelSetCell<T, I>>(intersected_ls_cells.data(), k + 1),
+                    nls,
+                    T(1e-12));
+
+                cell_active_mask |= std::uint64_t(1) << li;
+            }
+
+            // Edges/faces are already current: each certify_refine_and_process_ready_cells
+            // call rebuilds them last, and the semantic refresh only touches vertex signs.
+            recompute_active_level_set_masks(ac, nls);
             refresh_adapt_cell_semantics(
                 ac,
-                std::span<const int>(intersected_ls_indices.data(), k + 1),
-                std::span<const LevelSetCell<T, I>>(intersected_ls_cells.data(), k + 1),
+                std::span<const int>(all_level_set_indices.data(), all_level_set_indices.size()),
+                std::span<const LevelSetCell<T, I>>(all_level_set_cells.data(), all_level_set_cells.size()),
                 nls,
                 T(1e-12));
-
-            cell_active_mask |= std::uint64_t(1) << li;
+            rebuild_zero_entity_inventory(ac);
         }
-
-        // Finalize derived topology/semantic layers used by selection + output.
-        build_edges(ac);
-        if (ac.tdim == 3)
-            build_faces(ac);
-        recompute_active_level_set_masks(ac, nls);
-        refresh_adapt_cell_semantics(
-            ac,
-            std::span<const int>(all_level_set_indices.data(), all_level_set_indices.size()),
-            std::span<const LevelSetCell<T, I>>(all_level_set_cells.data(), all_level_set_cells.size()),
-            nls,
-            T(1e-12));
-        rebuild_zero_entity_inventory(ac);
 
         // Persist only level sets actively changing sign in this parent cell.
         // Non-active level sets may still touch a vertex/face, but they do not
