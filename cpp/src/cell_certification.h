@@ -147,6 +147,22 @@ void fill_all_vertex_signs_from_level_set(AdaptCell<T>& adapt_cell,
                                           int level_set_id,
                                           T zero_tol);
 
+/// Update the sign masks of a level set that was already cut on the
+/// AdaptCell, e.g. after cutting it with a later level set.
+///
+/// The cut replaces the level set by its linear interpolant on the leaves.
+/// For a curved level set, the level set itself can take the opposite sign
+/// near the interface, e.g. at new vertices on leaves next to a straight
+/// interface piece. Vertices of leaves certified negative or positive
+/// therefore take the certified sign, and vertices shared by leaves certified
+/// on both sides lie on the interface. Zero vertices are kept, and only
+/// vertices of leaves the level set was not resolved on are evaluated.
+template <std::floating_point T, std::integral I>
+void fill_vertex_signs_from_certified_leaves(AdaptCell<T>& adapt_cell,
+                                             const LevelSetCell<T, I>& ls_cell,
+                                             int level_set_id,
+                                             T zero_tol);
+
 /// Replace leaf cells marked ready_to_cut by the LUT cut decomposition on the
 /// positive and negative side.
 template <std::floating_point T, std::integral I>

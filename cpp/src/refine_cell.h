@@ -58,7 +58,10 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
 
 /// Replace the current leaf-cell pool and rebuild the leaf-edge pool while
 /// preserving certification state on surviving leaf entities. New leaf edges
-/// and cells are left not_classified.
+/// are left not_classified. A new leaf cell lies inside its source cell and
+/// keeps the source's negative or positive tags; all its other tags, and
+/// every tag for `level_set_id` (the level set whose cut or refinement
+/// produces the update, or -1 for none), are left not_classified.
 template <std::floating_point T>
 void apply_topology_update_preserve_certification(
     AdaptCell<T>& adapt_cell,
@@ -66,7 +69,8 @@ void apply_topology_update_preserve_certification(
     EntityAdjacency&& new_cells,
     std::span<const int> old_cell_ids_for_new_cells,
     std::span<const int> source_cell_ids_for_new_cells = {},
-    std::span<const CellRefinementReason> refinement_reasons_for_new_cells = {});
+    std::span<const CellRefinementReason> refinement_reasons_for_new_cells = {},
+    int level_set_id = -1);
 
 // =====================================================================
 // Invalidation helpers

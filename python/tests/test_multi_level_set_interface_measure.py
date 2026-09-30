@@ -3,17 +3,18 @@
 # This file is part of CutCells
 #
 # SPDX-License-Identifier:    MIT
-"""Interface measures of selections combining several linear level sets.
+"""Interface measures of selections combining several level sets.
 
 A later level set cuts the leaves on both sides of an earlier interface and
 may triangulate the same piece of that interface with different diagonals on
 the two sides, e.g. when it splits a quadrilateral interface piece. Each piece
 must be registered once. Before, the ownership test relied on certification
-tags that are reset for the children of later cuts: pieces were counted from
+tags that were reset for the children of later cuts: pieces were counted from
 both sides, or dropped when the untouched side was positive.
 
 The reference is exact for P1 level sets: per simplex, the planar zero set of
-one level set is clipped by the sign conditions of the others.
+one level set is clipped by the sign conditions of the others. For a curved
+earlier level set, the reference is the cut with that level set alone.
 """
 
 import itertools
@@ -213,3 +214,55 @@ def test_second_level_set_keeps_first_interface():
     assert measure(multi, "a = 0") == pytest.approx(single, rel=1e-12)
     assert measure(multi, "a = 0 and b < 0") + measure(multi, "a = 0 and b > 0") \
         == pytest.approx(single, rel=1e-12)
+
+
+def _ball(x):
+    return sum(xi**2 for xi in x) - 0.49
+
+
+def _parabola(x):
+    return (x[0] - 0.3) ** 2 - 0.8 * x[1] + (0.5 * x[2] ** 2 if len(x) > 2 else 0.0) - 0.1
+
+
+@pytest.mark.parametrize(
+    "cell, n, second, degree, cut_approximation",
+    [
+        ("triangle", 8, _plane, 1, "auto"),
+        ("tetrahedron", 6, _plane, 1, "auto"),
+        ("tetrahedron", 6, _plane, 1, "linear"),
+        # The curved second level set refines leaves of the first one.
+        ("tetrahedron", 6, _parabola, 2, "linear"),
+    ],
+)
+def test_second_level_set_keeps_curved_first_level_set(
+    cell, n, second, degree, cut_approximation
+):
+    """Cutting with a later level set leaves a curved (P2) earlier one unchanged.
+
+    The earlier level set is cut along its linear interpolant on the leaves.
+    The later cut adds vertices next to these straight interface pieces, where
+    the P2 function itself can have the opposite sign. Before, such vertices
+    took that sign: leaves got mixed signs and were dropped from the volumes,
+    and interface pieces were counted from both sides.
+    """
+    mesh, coords, _ = _structured_mesh(cell, n)
+    a = cutcells.create_level_set(mesh, _ball, degree=2, name="a")
+    b = cutcells.create_level_set(mesh, second, degree=degree, name="b")
+
+    def measure(result, expr):
+        return float(np.sum(result[expr].quadrature(order=4, mode="full").weights))
+
+    kwargs = {"triangulate": True, "cut_approximation": cut_approximation}
+    single = cutcells.cut(mesh, a, **kwargs)
+    multi = cutcells.cut(mesh, [a, b], **kwargs)
+
+    volume = 2.0 ** coords.shape[1]
+    parts = [measure(multi, f"a {sa} 0 and b {sb} 0") for sa in "<>" for sb in "<>"]
+    assert sum(parts) == pytest.approx(volume, rel=1e-12)
+
+    for expr in ("a < 0", "a > 0", "a = 0"):
+        assert measure(multi, expr) == pytest.approx(measure(single, expr), rel=1e-12), expr
+    assert measure(multi, "a = 0 and b < 0") + measure(multi, "a = 0 and b > 0") \
+        == pytest.approx(measure(single, "a = 0"), rel=1e-12)
+    assert measure(multi, "b = 0 and a < 0") + measure(multi, "b = 0 and a > 0") \
+        == pytest.approx(measure(multi, "b = 0"), rel=1e-12)

@@ -193,12 +193,11 @@ infer_zero_entity_parent_host(const AdaptCell<T>& ac,
 /// Side of leaf cell `cell_id` with respect to level set `level_set_id`:
 /// -1 (negative), +1 (positive) or 0 (unknown).
 ///
-/// A negative or positive certification tag decides first. Tags are not kept
-/// across level sets, though: cutting or refining a leaf for a later level set
-/// leaves its children unclassified for all earlier level sets, while
-/// untouched leaves keep their tags. Leaves without a sign tag therefore fall
-/// back to their vertex signs, which are refreshed for every level set before
-/// the final zero-entity inventory is built.
+/// A negative or positive certification tag decides first. Children of a
+/// cut or refinement keep such tags of their source leaf, except for the
+/// level set driving the update, which classifies them again. Leaves without
+/// a sign tag, e.g. ones a level set could not be resolved on, fall back to
+/// their vertex signs.
 template <std::floating_point T>
 int leaf_cell_side(const AdaptCell<T>& ac, int cell_id, int level_set_id)
 {
@@ -681,6 +680,32 @@ void fill_vertex_signs(AdaptCell<T>& ac,
 }
 
 // ---------------------------------------------------------------------------
+// inherit_common_vertex_signs
+// ---------------------------------------------------------------------------
+
+template <std::floating_point T>
+void inherit_common_vertex_signs(AdaptCell<T>& ac,
+                                 int vertex_id,
+                                 std::span<const std::int32_t> host_vertices,
+                                 std::uint64_t level_set_mask)
+{
+    std::uint64_t common_zero = level_set_mask;
+    std::uint64_t common_negative = level_set_mask;
+    for (const auto v : host_vertices)
+    {
+        common_zero &= ac.zero_mask_per_vertex[static_cast<std::size_t>(v)];
+        common_negative &= ac.negative_mask_per_vertex[static_cast<std::size_t>(v)];
+    }
+    common_negative &= ~common_zero;
+
+    auto& zero_mask = ac.zero_mask_per_vertex[static_cast<std::size_t>(vertex_id)];
+    auto& negative_mask = ac.negative_mask_per_vertex[static_cast<std::size_t>(vertex_id)];
+    zero_mask |= common_zero;
+    negative_mask &= ~common_zero;
+    negative_mask |= common_negative;
+}
+
+// ---------------------------------------------------------------------------
 // recompute_active_level_set_masks
 // ---------------------------------------------------------------------------
 
@@ -887,6 +912,10 @@ template AdaptCell<float>  make_adapt_cell(const MeshView<float,  long>&, long, 
 
 template void fill_vertex_signs(AdaptCell<double>&, std::span<const double>, int, double);
 template void fill_vertex_signs(AdaptCell<float>&,  std::span<const float>,  int, float);
+template void inherit_common_vertex_signs(AdaptCell<double>&, int,
+                                          std::span<const std::int32_t>, std::uint64_t);
+template void inherit_common_vertex_signs(AdaptCell<float>&, int,
+                                          std::span<const std::int32_t>, std::uint64_t);
 template void recompute_active_level_set_masks(AdaptCell<double>&, int);
 template void recompute_active_level_set_masks(AdaptCell<float>&, int);
 template void rebuild_zero_entity_inventory(AdaptCell<double>&);

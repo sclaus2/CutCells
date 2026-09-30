@@ -289,20 +289,8 @@ void inherit_common_edge_sign_masks(AdaptCell<T>& adapt_cell,
     if (edge_vertices.size() != 2)
         return;
 
-    const auto v0 = static_cast<std::size_t>(edge_vertices[0]);
-    const auto v1 = static_cast<std::size_t>(edge_vertices[1]);
-    const std::uint64_t common_zero =
-        adapt_cell.zero_mask_per_vertex[v0] & adapt_cell.zero_mask_per_vertex[v1];
-    const std::uint64_t common_negative =
-        (adapt_cell.negative_mask_per_vertex[v0]
-         & adapt_cell.negative_mask_per_vertex[v1])
-        & ~common_zero;
-
-    auto& zero_mask = adapt_cell.zero_mask_per_vertex[static_cast<std::size_t>(vertex_id)];
-    auto& negative_mask = adapt_cell.negative_mask_per_vertex[static_cast<std::size_t>(vertex_id)];
-    zero_mask |= common_zero;
-    negative_mask &= ~common_zero;
-    negative_mask |= common_negative;
+    inherit_common_vertex_signs(adapt_cell, vertex_id, edge_vertices,
+                                ~std::uint64_t(0));
 }
 
 template <std::floating_point T, std::integral I>
@@ -1498,6 +1486,74 @@ void fill_all_vertex_signs_from_level_set(AdaptCell<T>& adapt_cell,
 }
 
 // =====================================================================
+// fill_vertex_signs_from_certified_leaves
+// =====================================================================
+
+template <std::floating_point T, std::integral I>
+void fill_vertex_signs_from_certified_leaves(AdaptCell<T>& adapt_cell,
+                                             const LevelSetCell<T, I>& ls_cell,
+                                             int level_set_id,
+                                             T zero_tol)
+{
+    const int tdim = adapt_cell.tdim;
+    const int n_cells = adapt_cell.n_entities(tdim);
+    const int n_vertices = adapt_cell.n_vertices();
+
+    // Bit 0: vertex of a leaf certified negative, bit 1: of one certified positive.
+    std::vector<std::uint8_t> certified_sides(static_cast<std::size_t>(n_vertices), 0);
+    if (level_set_id < adapt_cell.cell_cert_tag_num_level_sets
+        && adapt_cell.cell_cert_tag.size()
+               == static_cast<std::size_t>(adapt_cell.cell_cert_tag_num_level_sets)
+                      * static_cast<std::size_t>(n_cells))
+    {
+        for (int c = 0; c < n_cells; ++c)
+        {
+            const CellCertTag tag = adapt_cell.get_cell_cert_tag(level_set_id, c);
+            const std::uint8_t side = tag == CellCertTag::negative   ? 1
+                                      : tag == CellCertTag::positive ? 2
+                                                                     : 0;
+            if (side == 0)
+                continue;
+            for (const auto v : adapt_cell.entity_to_vertex[tdim][static_cast<std::int32_t>(c)])
+                certified_sides[static_cast<std::size_t>(v)] |= side;
+        }
+    }
+
+    const std::uint64_t bit = std::uint64_t(1) << level_set_id;
+    for (int v = 0; v < n_vertices; ++v)
+    {
+        auto& zero_mask = adapt_cell.zero_mask_per_vertex[static_cast<std::size_t>(v)];
+        auto& negative_mask = adapt_cell.negative_mask_per_vertex[static_cast<std::size_t>(v)];
+        if ((zero_mask & bit) != 0)
+            continue;
+
+        switch (certified_sides[static_cast<std::size_t>(v)])
+        {
+        case 1:
+            negative_mask |= bit;
+            break;
+        case 2:
+            negative_mask &= ~bit;
+            break;
+        case 3:
+            // Shared by certified leaves on both sides: on the interface.
+            zero_mask |= bit;
+            negative_mask &= ~bit;
+            break;
+        default:
+        {
+            std::span<const T> xi(
+                adapt_cell.vertex_coords.data()
+                    + static_cast<std::size_t>(v) * static_cast<std::size_t>(tdim),
+                static_cast<std::size_t>(tdim));
+            set_vertex_sign_for_level_set(
+                adapt_cell, v, level_set_id, ls_cell.value(xi), zero_tol);
+        }
+        }
+    }
+}
+
+// =====================================================================
 // process_ready_to_cut_cells
 // =====================================================================
 
@@ -2042,7 +2098,8 @@ void process_ready_to_cut_cells(AdaptCell<T>& adapt_cell,
         adapt_cell, std::move(out.types), std::move(out.cells),
         std::span<const int>(out.old_cell_ids),
         std::span<const int>(out.source_cell_ids),
-        std::span<const CellRefinementReason>(out.reasons));
+        std::span<const CellRefinementReason>(out.reasons),
+        level_set_id);
 
     for (int c = 0; c < adapt_cell.n_entities(tdim); ++c)
     {
@@ -2515,6 +2572,19 @@ template void fill_all_vertex_signs_from_level_set(AdaptCell<double>&,
 template void fill_all_vertex_signs_from_level_set(AdaptCell<float>&,
                                                    const LevelSetCell<float, long>&,
                                                    int, float);
+
+template void fill_vertex_signs_from_certified_leaves(AdaptCell<double>&,
+                                                      const LevelSetCell<double, int>&,
+                                                      int, double);
+template void fill_vertex_signs_from_certified_leaves(AdaptCell<float>&,
+                                                      const LevelSetCell<float, int>&,
+                                                      int, float);
+template void fill_vertex_signs_from_certified_leaves(AdaptCell<double>&,
+                                                      const LevelSetCell<double, long>&,
+                                                      int, double);
+template void fill_vertex_signs_from_certified_leaves(AdaptCell<float>&,
+                                                      const LevelSetCell<float, long>&,
+                                                      int, float);
 
 template void process_ready_to_cut_cells(AdaptCell<double>&,
                                          const LevelSetCell<double, int>&,

@@ -551,6 +551,23 @@ void fill_vertex_signs(AdaptCell<T>& ac,
                        int ls_index,
                        T tol = T(1e-14));
 
+/// Give a new vertex the level-set signs shared by all vertices of the
+/// entity (edge, face or cell) it is created in.
+///
+/// A level set that was already cut is linear on every leaf, so a sign shared
+/// by the host vertices holds inside the host, and a host lying on the
+/// interface keeps the new vertex on it.
+///
+/// @param ac              AdaptCell whose masks are updated in place.
+/// @param vertex_id       The new vertex.
+/// @param host_vertices   Vertices of the entity containing the new vertex.
+/// @param level_set_mask  Level sets (bits) to inherit.
+template <std::floating_point T>
+void inherit_common_vertex_signs(AdaptCell<T>& ac,
+                                 int vertex_id,
+                                 std::span<const std::int32_t> host_vertices,
+                                 std::uint64_t level_set_mask);
+
 /// Build (or rebuild) entity_to_vertex[1] from all top-dimensional leaf cells.
 ///
 /// Clears any existing 1D entity pool, then re-derives edges by iterating

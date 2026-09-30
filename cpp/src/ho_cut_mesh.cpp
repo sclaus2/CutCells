@@ -11,7 +11,6 @@
 #include <array>
 #include <cmath>
 #include <limits>
-#include <numeric>
 #include <stdexcept>
 #include <vector>
 
@@ -815,17 +814,6 @@ cut(const MeshView<T, I>& mesh,
         }
         else
         {
-            std::vector<int> all_level_set_indices(static_cast<std::size_t>(nls));
-            std::iota(all_level_set_indices.begin(), all_level_set_indices.end(), 0);
-            std::vector<LevelSetCell<T, I>> all_level_set_cells;
-            all_level_set_cells.reserve(static_cast<std::size_t>(nls));
-            for (int li = 0; li < nls; ++li)
-            {
-                auto ls_cell = make_cell_level_set(level_sets[static_cast<std::size_t>(li)], ci);
-                ls_cell.level_set_id = li;
-                all_level_set_cells.push_back(std::move(ls_cell));
-            }
-
             apply_cut_approximation(ac, resolved_options);
             const bool linear_subcell_level_set =
                 resolved_options.cut_approximation == "iso_p1";
@@ -843,26 +831,33 @@ cut(const MeshView<T, I>& mesh,
                         linear_subcell_level_set);
 
                 // New vertices created while processing level set li must be
-                // reclassified for all already-processed level sets.
-                refresh_adapt_cell_semantics(
-                    ac,
-                    std::span<const int>(intersected_ls_indices.data(), k + 1),
-                    std::span<const LevelSetCell<T, I>>(intersected_ls_cells.data(), k + 1),
-                    nls,
-                    T(1e-12));
+                // classified for the level sets cut before. They lie on leaves
+                // those level sets are linear on, so they take the sign
+                // certified there: a curved level set evaluated at them can
+                // contradict its straight interface pieces.
+                for (std::size_t j = 0; j < k; ++j)
+                {
+                    fill_vertex_signs_from_certified_leaves(
+                        ac, intersected_ls_cells[j], intersected_ls_indices[j],
+                        T(1e-12));
+                }
 
                 cell_active_mask |= std::uint64_t(1) << li;
             }
 
+            // Level sets not intersecting this parent cell have one sign on it.
+            for (int li = 0; li < nls; ++li)
+            {
+                if ((cell_active_mask & (std::uint64_t(1) << li)) != 0)
+                    continue;
+                auto ls_cell = make_cell_level_set(level_sets[static_cast<std::size_t>(li)], ci);
+                ls_cell.level_set_id = li;
+                fill_all_vertex_signs_from_level_set(ac, ls_cell, li, T(1e-12));
+            }
+
             // Edges/faces are already current: each certify_refine_and_process_ready_cells
-            // call rebuilds them last, and the semantic refresh only touches vertex signs.
+            // call rebuilds them last, and the sign updates only touch vertex signs.
             recompute_active_level_set_masks(ac, nls);
-            refresh_adapt_cell_semantics(
-                ac,
-                std::span<const int>(all_level_set_indices.data(), all_level_set_indices.size()),
-                std::span<const LevelSetCell<T, I>>(all_level_set_cells.data(), all_level_set_cells.size()),
-                nls,
-                T(1e-12));
             rebuild_zero_entity_inventory(ac);
         }
 

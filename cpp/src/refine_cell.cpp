@@ -200,8 +200,19 @@ bool edge_is_on_single_parent_edge(const AdaptCell<T>& adapt_cell,
     return false;
 }
 
+/// Level sets whose signs a vertex created while refining for `level_set_id`
+/// inherits from its host entity: all but that one, which is evaluated on the
+/// new vertices afterwards.
+inline std::uint64_t inherited_level_sets(int level_set_id)
+{
+    return (level_set_id >= 0 && level_set_id < 64)
+               ? ~(std::uint64_t(1) << level_set_id)
+               : ~std::uint64_t(0);
+}
+
 template <std::floating_point T>
-int append_interpolated_vertex_on_edge(AdaptCell<T>& adapt_cell, int edge_id, T t)
+int append_interpolated_vertex_on_edge(AdaptCell<T>& adapt_cell, int edge_id, T t,
+                                       int level_set_id)
 {
     auto edge_vertices = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(edge_id)];
     if (edge_vertices.size() != 2)
@@ -233,17 +244,22 @@ int append_interpolated_vertex_on_edge(AdaptCell<T>& adapt_cell, int edge_id, T 
         parent_param.assign(1, (T(1) - t) * parent_t0 + t * parent_t1);
     }
 
-    return append_vertex_with_parent_info(
+    const int new_v = append_vertex_with_parent_info(
         adapt_cell,
         std::span<const T>(x),
         parent_dim,
         parent_id,
         std::span<const T>(parent_param),
         edge_id);
+    const std::array<std::int32_t, 2> host = {v0, v1};
+    inherit_common_vertex_signs(adapt_cell, new_v, std::span<const std::int32_t>(host),
+                                inherited_level_sets(level_set_id));
+    return new_v;
 }
 
 template <std::floating_point T>
-int append_cell_center_vertex(AdaptCell<T>& adapt_cell, std::span<const std::int32_t> verts)
+int append_cell_center_vertex(AdaptCell<T>& adapt_cell, std::span<const std::int32_t> verts,
+                              int level_set_id)
 {
     std::vector<T> x(static_cast<std::size_t>(adapt_cell.tdim), T(0));
     const T inv = T(1) / T(static_cast<int>(verts.size()));
@@ -253,13 +269,16 @@ int append_cell_center_vertex(AdaptCell<T>& adapt_cell, std::span<const std::int
             x[static_cast<std::size_t>(d)] +=
                 adapt_cell.vertex_coords[static_cast<std::size_t>(v * adapt_cell.tdim + d)] * inv;
     }
-    return append_vertex_with_parent_info(
+    const int new_v = append_vertex_with_parent_info(
         adapt_cell,
         std::span<const T>(x),
         adapt_cell.tdim,
         adapt_cell.parent_cell_id,
         std::span<const T>(x),
         -1);
+    inherit_common_vertex_signs(adapt_cell, new_v, verts,
+                                inherited_level_sets(level_set_id));
+    return new_v;
 }
 
 template <std::floating_point T>
@@ -403,7 +422,9 @@ void rebuild_leaf_cell_certification(
     std::span<const CellCertTag> old_cell_tags,
     int old_num_level_sets,
     int old_num_cells,
-    std::span<const int> old_cell_ids_for_new_cells)
+    std::span<const int> old_cell_ids_for_new_cells,
+    std::span<const int> source_cell_ids_for_new_cells,
+    int level_set_id)
 {
     const int new_num_cells = adapt_cell.n_entities(adapt_cell.tdim);
     adapt_cell.cell_cert_tag_num_level_sets = old_num_level_sets;
@@ -414,13 +435,34 @@ void rebuild_leaf_cell_certification(
     for (int c = 0; c < new_num_cells; ++c)
     {
         const int old_c = old_cell_ids_for_new_cells[static_cast<std::size_t>(c)];
-        if (old_c < 0 || old_c >= old_num_cells)
+        if (old_c >= 0 && old_c < old_num_cells)
+        {
+            for (int ls = 0; ls < old_num_level_sets; ++ls)
+            {
+                adapt_cell.cell_cert_tag[static_cast<std::size_t>(ls * new_num_cells + c)] =
+                    old_cell_tags[static_cast<std::size_t>(ls * old_num_cells + old_c)];
+            }
+            continue;
+        }
+
+        // A child lies inside its source cell, so a level set certified
+        // negative or positive there keeps that sign. Level sets cut earlier
+        // thus stay certified on the leaves a later level set cuts or refines.
+        const int source_c =
+            (c < static_cast<int>(source_cell_ids_for_new_cells.size()))
+                ? source_cell_ids_for_new_cells[static_cast<std::size_t>(c)]
+                : -1;
+        if (source_c < 0 || source_c >= old_num_cells)
             continue;
 
         for (int ls = 0; ls < old_num_level_sets; ++ls)
         {
-            adapt_cell.cell_cert_tag[static_cast<std::size_t>(ls * new_num_cells + c)] =
-                old_cell_tags[static_cast<std::size_t>(ls * old_num_cells + old_c)];
+            if (ls == level_set_id)
+                continue;
+            const CellCertTag tag =
+                old_cell_tags[static_cast<std::size_t>(ls * old_num_cells + source_c)];
+            if (tag == CellCertTag::negative || tag == CellCertTag::positive)
+                adapt_cell.cell_cert_tag[static_cast<std::size_t>(ls * new_num_cells + c)] = tag;
         }
     }
 }
@@ -578,7 +620,8 @@ void apply_topology_update_preserve_certification(
     EntityAdjacency&& new_cells,
     std::span<const int> old_cell_ids_for_new_cells,
     std::span<const int> source_cell_ids_for_new_cells,
-    std::span<const CellRefinementReason> refinement_reasons_for_new_cells)
+    std::span<const CellRefinementReason> refinement_reasons_for_new_cells,
+    int level_set_id)
 {
     const int tdim = adapt_cell.tdim;
     const CapturedEdgeState<T> old_edge_state = capture_edge_state(adapt_cell);
@@ -624,7 +667,9 @@ void apply_topology_update_preserve_certification(
                                     std::span<const CellCertTag>(old_cell_tags),
                                     old_num_level_sets,
                                     old_num_cells,
-                                    old_cell_ids_for_new_cells);
+                                    old_cell_ids_for_new_cells,
+                                    source_cell_ids_for_new_cells,
+                                    level_set_id);
     clear_topology_caches(adapt_cell);
 
     const int nls = std::max(adapt_cell.cell_cert_tag_num_level_sets,
@@ -719,7 +764,7 @@ bool refine_green_on_multiple_root_edges(AdaptCell<T>& adapt_cell,
     auto ev = adapt_cell.entity_to_vertex[1][static_cast<std::int32_t>(split_edge)];
     const int v0 = ev[0];
     const int v1 = ev[1];
-    const int new_v = append_interpolated_vertex_on_edge(adapt_cell, split_edge, split_t);
+    const int new_v = append_interpolated_vertex_on_edge(adapt_cell, split_edge, split_t, level_set_id);
 
     EntityAdjacency new_cells;
     new_cells.offsets.push_back(0);
@@ -849,7 +894,8 @@ bool refine_green_on_multiple_root_edges(AdaptCell<T>& adapt_cell,
         adapt_cell, std::move(new_types), std::move(new_cells),
         std::span<const int>(old_cell_ids_for_new_cells),
         std::span<const int>(source_cell_ids_for_new_cells),
-        std::span<const CellRefinementReason>(refinement_reasons_for_new_cells));
+        std::span<const CellRefinementReason>(refinement_reasons_for_new_cells),
+        level_set_id);
     return true;
 }
 
@@ -886,7 +932,7 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
         if (it != midpoint_vertex_by_edge.end())
             return it->second;
 
-        const int mid = append_interpolated_vertex_on_edge(adapt_cell, edge_id, T(0.5));
+        const int mid = append_interpolated_vertex_on_edge(adapt_cell, edge_id, T(0.5), level_set_id);
         midpoint_vertex_by_edge[edge_id] = mid;
         return mid;
     };
@@ -1003,7 +1049,7 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
                 local_to_global[static_cast<std::size_t>(4 + le)] =
                     get_midpoint_vertex(it->second);
             }
-            local_to_global[8] = append_cell_center_vertex(adapt_cell, verts);
+            local_to_global[8] = append_cell_center_vertex(adapt_cell, verts, level_set_id);
 
             for (const auto& child : cell::quadrilateral_subdivision_table)
             {
@@ -1098,9 +1144,10 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
                     append_cell_center_vertex(
                         adapt_cell,
                         std::span<const std::int32_t>(face_vertices.data(),
-                                                      face_vertices.size()));
+                                                      face_vertices.size()),
+                        level_set_id);
             }
-            local_to_global[26] = append_cell_center_vertex(adapt_cell, verts);
+            local_to_global[26] = append_cell_center_vertex(adapt_cell, verts, level_set_id);
 
             for (const auto& child : cell::hexahedron_subdivision_table)
             {
@@ -1130,7 +1177,8 @@ bool refine_red_on_ambiguous_cells(AdaptCell<T>& adapt_cell,
         adapt_cell, std::move(new_types), std::move(new_cells),
         std::span<const int>(old_cell_ids_for_new_cells),
         std::span<const int>(source_cell_ids_for_new_cells),
-        std::span<const CellRefinementReason>(refinement_reasons_for_new_cells));
+        std::span<const CellRefinementReason>(refinement_reasons_for_new_cells),
+        level_set_id);
     return true;
 }
 
@@ -1181,13 +1229,15 @@ template void apply_topology_update_preserve_certification(
     EntityAdjacency&&,
     std::span<const int>,
     std::span<const int>,
-    std::span<const CellRefinementReason>);
+    std::span<const CellRefinementReason>,
+    int);
 template void apply_topology_update_preserve_certification(
     AdaptCell<float>&,
     std::vector<cell::type>&&,
     EntityAdjacency&&,
     std::span<const int>,
     std::span<const int>,
-    std::span<const CellRefinementReason>);
+    std::span<const CellRefinementReason>,
+    int);
 
 } // namespace cutcells
