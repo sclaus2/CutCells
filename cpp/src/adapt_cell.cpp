@@ -190,6 +190,58 @@ infer_zero_entity_parent_host(const AdaptCell<T>& ac,
     return {static_cast<std::int8_t>(tdim), static_cast<std::int32_t>(ac.parent_cell_id)};
 }
 
+/// Side of leaf cell `cell_id` with respect to level set `level_set_id`:
+/// -1 (negative), +1 (positive) or 0 (unknown).
+///
+/// A negative or positive certification tag decides first. Tags are not kept
+/// across level sets, though: cutting or refining a leaf for a later level set
+/// leaves its children unclassified for all earlier level sets, while
+/// untouched leaves keep their tags. Leaves without a sign tag therefore fall
+/// back to their vertex signs, which are refreshed for every level set before
+/// the final zero-entity inventory is built.
+template <std::floating_point T>
+int leaf_cell_side(const AdaptCell<T>& ac, int cell_id, int level_set_id)
+{
+    const int n_cells = ac.n_entities(ac.tdim);
+    if (level_set_id < ac.cell_cert_tag_num_level_sets
+        && ac.cell_cert_tag.size()
+               == static_cast<std::size_t>(ac.cell_cert_tag_num_level_sets)
+                      * static_cast<std::size_t>(n_cells))
+    {
+        const CellCertTag tag = ac.get_cell_cert_tag(level_set_id, cell_id);
+        if (tag == CellCertTag::negative)
+            return -1;
+        if (tag == CellCertTag::positive)
+            return 1;
+    }
+
+    const std::uint64_t bit = std::uint64_t(1) << level_set_id;
+    bool has_negative = false;
+    bool has_positive = false;
+    for (const auto v : ac.entity_to_vertex[ac.tdim][static_cast<std::int32_t>(cell_id)])
+    {
+        if ((ac.zero_mask_per_vertex[static_cast<std::size_t>(v)] & bit) != 0)
+            continue;
+        if ((ac.negative_mask_per_vertex[static_cast<std::size_t>(v)] & bit) != 0)
+            has_negative = true;
+        else
+            has_positive = true;
+    }
+    if (has_negative == has_positive)
+        return 0;
+    return has_negative ? -1 : 1;
+}
+
+/// Whether the codim-one zero entity `entity_id` (zero for the level sets in
+/// `mask`) is registered in the zero-entity inventory.
+///
+/// A zero facet is owned by its negative side. The leaves on the two sides of
+/// an interface need not share their facets there: a later level set cutting
+/// both sides may triangulate the same piece of the interface with different
+/// diagonals, and a zero facet on the parent cell boundary is also seen by the
+/// neighbouring parent cell. Registering only facets with a negative incident
+/// leaf therefore counts every piece of the interface once. Facets without an
+/// incident leaf of known side are registered.
 template <std::floating_point T>
 bool register_codim_one_zero_entity(const AdaptCell<T>& ac,
                                     int dim,
@@ -198,37 +250,30 @@ bool register_codim_one_zero_entity(const AdaptCell<T>& ac,
 {
     if (dim != ac.tdim - 1 || !ac.has_connectivity_map(dim, ac.tdim))
         return true;
-    if (ac.cell_cert_tag_num_level_sets <= 0 || ac.cell_cert_tag.empty())
-        return true;
 
     auto adjacent_cells = ac.connectivity[dim][ac.tdim][static_cast<std::int32_t>(entity_id)];
     if (adjacent_cells.empty())
         return true;
 
-    bool has_relevant_level_set = false;
     bool has_negative_side = false;
     bool has_positive_side = false;
-    const int nls = std::min(ac.cell_cert_tag_num_level_sets, 64);
-    for (int ls = 0; ls < nls; ++ls)
+    const int n_cells = ac.n_entities(ac.tdim);
+    for (int ls = 0; ls < 64; ++ls)
     {
-        const std::uint64_t bit = std::uint64_t(1) << ls;
-        if ((mask & bit) == 0)
+        if ((mask & (std::uint64_t(1) << ls)) == 0)
             continue;
 
-        has_relevant_level_set = true;
         for (const auto cell_id : adjacent_cells)
         {
-            if (cell_id < 0 || cell_id >= ac.n_entities(ac.tdim))
+            if (cell_id < 0 || cell_id >= n_cells)
                 continue;
 
-            const CellCertTag tag = ac.get_cell_cert_tag(ls, cell_id);
-            has_negative_side = has_negative_side || tag == CellCertTag::negative;
-            has_positive_side = has_positive_side || tag == CellCertTag::positive;
+            const int side = leaf_cell_side<T>(ac, cell_id, ls);
+            has_negative_side = has_negative_side || side < 0;
+            has_positive_side = has_positive_side || side > 0;
         }
     }
 
-    if (!has_relevant_level_set)
-        return true;
     if (has_negative_side)
         return true;
     return !has_positive_side;
