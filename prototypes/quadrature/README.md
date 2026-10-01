@@ -31,6 +31,9 @@ prototype keeps that shape so a later engine can become another `backend` of
 | `src/generators.h/.cpp` | the algoim-based generators; also compiles `certified.inl`, because algoim's headers can only be included in one translation unit |
 | `src/certified.h/.inl` | the certify-and-bisect engine |
 | `src/vtk_output.h` | point-cloud `.vtu` writer |
+| `src/leaf_mesh.h` | leaf meshes (CSR), VTK Lagrange node order, `.vtu` writer |
+| `src/test_leaf_ordering.cpp` | writes Lagrange cells for checking the node order against VTK |
+| `tools/check_leaves.py` | checks leaf files with VTK (node order, sizes) and renders them; needs vtk and pyvista, e.g. the `vtk-env` environment |
 | `src/exact_reference.h` | exact sphere area and ball volume inside a convex polytope (about 1e-14) |
 | `src/study.cpp` | comparison driver |
 | `src/test_exact_reference.cpp` | checks the exact reference |
@@ -83,8 +86,9 @@ $E/bin/cmake --build build -j 4
 
 Options: `--mesh hex|tet`, `--n`, `--q`, `--centre x,y,z` (default off the
 grid's symmetry, 0.0123,-0.0371,0.0217), `--radius`, `--gen`, `--part`
-(repeatable), `--csv`, `--vtk <prefix>` (point clouds, see VISUALIZATION.md),
-`--plane` (planar level set; every rule must be exact).
+(repeatable), `--csv`, `--vtk <prefix>` (point clouds), `--leaves <prefix>` and
+`--leaf-degree p` (leaf cells of the certify engine as Lagrange cells; see
+VISUALIZATION.md), `--plane` (planar level set; every rule must be exact).
 
 Configure with the environment variables above: without `CONDA_PREFIX`, CMake
 picks Apple's Accelerate, which lacks the LAPACKE symbols algoim needs.

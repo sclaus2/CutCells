@@ -13,6 +13,10 @@
 //   quadrature_study [--mesh hex|tet] [--n 16,32] [--q 3,5] [--centre x,y,z]
 //                    [--radius r] [--gen algoim-auto,alpha-split,...]
 //                    [--part "phi < 0"]... [--csv file] [--plane] [--vtk prefix]
+//                    [--leaves prefix] [--leaf-degree p]
+//
+// --leaves writes the certify engine's leaf cells (Lagrange cells of degree p, 3 by
+// default) for every cut cell, plus the uncut cells of volume parts as linear cells.
 //
 // --plane uses phi = x + 0.3 y - 0.2 z instead of the sphere. Every rule must then
 // be exact: the volume below is 4 and the area 4 sqrt(1.13). Only global errors
@@ -35,6 +39,7 @@
 #include "clipped_box.h"
 #include "exact_reference.h"
 #include "generators.h"
+#include "leaf_mesh.h"
 #include "selection_expr.h"
 #include "vtk_output.h"
 
@@ -55,6 +60,8 @@ struct StudyConfig
     std::string csv;
     bool plane = false; ///< planar level set x + 0.3 y - 0.2 z instead of the sphere
     std::string vtk;    ///< prefix for point-cloud .vtu files, one per run
+    std::string leaves; ///< prefix for leaf-cell .vtu files (certify generators)
+    int leaf_degree = 3;
 };
 
 struct Metrics
@@ -127,6 +134,10 @@ StudyConfig parse_args(int argc, char** argv)
             cfg.plane = true;
         else if (a == "--vtk")
             cfg.vtk = next();
+        else if (a == "--leaves")
+            cfg.leaves = next();
+        else if (a == "--leaf-degree")
+            cfg.leaf_degree = std::stoi(next());
         else
             throw std::runtime_error("unknown argument: " + a);
     }
@@ -339,6 +350,30 @@ int main(int argc, char** argv)
                     std::vector<double> vtk_points, vtk_weights;
                     std::vector<std::int32_t> vtk_cells;
                     std::int32_t cell_index = -1;
+                    const bool want_leaves = !cfg.leaves.empty() && certify;
+                    LeafMesh leaf_mesh, cut_cells; // leaves, and the cut background cells for reference
+                    long incomplete = 0;
+                    auto add_linear_cell = [&](const TestCell& cell, LeafMesh& leaf_mesh)
+                    {
+                        // an uncut cell of a volume part, as a plain VTK cell
+                        const bool hex = cell.box.clips.empty();
+                        const std::vector<Vec3> corners
+                            = hex ? std::vector<Vec3>{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}
+                                  : std::vector<Vec3>{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+                        const std::int32_t first = leaf_mesh.n_points();
+                        for (const Vec3& u : corners)
+                        {
+                            const Vec3 x = physical_point(cell.box, u);
+                            leaf_mesh.connectivity.push_back(leaf_mesh.n_points());
+                            leaf_mesh.points.insert(leaf_mesh.points.end(), x.begin(), x.end());
+                        }
+                        if (!hex && jacobian_determinant(cell.box) < 0)
+                            std::swap(leaf_mesh.connectivity[first + 1], leaf_mesh.connectivity[first + 2]);
+                        leaf_mesh.offsets.push_back(static_cast<std::int32_t>(leaf_mesh.connectivity.size()));
+                        leaf_mesh.types.push_back(hex ? vtk_hexahedron : vtk_tetra);
+                        leaf_mesh.parent.push_back(cell_index);
+                        leaf_mesh.degree.push_back(1);
+                    };
                     for (int i0 = 0; i0 < n; ++i0)
                         for (int i1 = 0; i1 < n; ++i1)
                             for (int i2 = 0; i2 < n; ++i2)
@@ -368,7 +403,16 @@ int main(int argc, char** argv)
                                     if (area <= 0.0)
                                     {
                                         m.sum_uncut += exact_part;
+                                        if (want_leaves && !surface && exact_part > 0.5 * cell.volume)
+                                            add_linear_cell(cell, leaf_mesh);
                                         continue;
+                                    }
+                                    if (want_leaves)
+                                    {
+                                        CertifyStats ls_stats;
+                                        certified_leaves(cell.box, ls, term, cfg.leaf_degree, copt, cell_index, leaf_mesh, ls_stats);
+                                        incomplete += ls_stats.incomplete_leaves;
+                                        add_linear_cell(cell, cut_cells);
                                     }
                                     Rule rule;
                                     GeneratorStats stats;
@@ -416,6 +460,21 @@ int main(int argc, char** argv)
                                 cfg.mesh.c_str(), n, q, gen.c_str(), part.c_str(), m.cut_cells, pts, global, l1, m.max_rel,
                                 m.splits, m.uncertified, us);
                     std::fflush(stdout);
+                    if (want_leaves)
+                    {
+                        const char* slug = kind == PartKind::negative   ? "negative"
+                                           : kind == PartKind::positive ? "positive"
+                                           : kind == PartKind::interface ? "interface"
+                                                                         : "whole";
+                        std::string name = gen;
+                        std::replace(name.begin(), name.end(), ':', '_');
+                        const std::string path = cfg.leaves + "_" + cfg.mesh + "_" + name + "_" + slug + "_n" + std::to_string(n)
+                                                 + "_p" + std::to_string(cfg.leaf_degree) + ".vtu";
+                        write_leaf_mesh(path, leaf_mesh);
+                        write_leaf_mesh(cfg.leaves + "_" + cfg.mesh + "_cut_cells_n" + std::to_string(n) + ".vtu", cut_cells);
+                        std::printf("     leaves: %d cells, %d nodes, %ld incomplete -> %s\n", leaf_mesh.n_cells(),
+                                    leaf_mesh.n_points(), incomplete, path.c_str());
+                    }
                     if (!cfg.vtk.empty())
                     {
                         const char* slug = kind == PartKind::negative   ? "negative"

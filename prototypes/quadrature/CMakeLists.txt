@@ -91,3 +91,6 @@ target_link_libraries(quadrature_study PRIVATE ${LAPACK_LIBRARIES})
 
 add_executable(test_exact_reference src/test_exact_reference.cpp)
 target_include_directories(test_exact_reference PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+add_executable(test_leaf_ordering src/test_leaf_ordering.cpp)
+target_include_directories(test_leaf_ordering PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

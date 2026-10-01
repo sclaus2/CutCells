@@ -11,8 +11,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <limits>
+#include <map>
 #include <vector>
 
 #include "quadrature_multipoly.hpp"
@@ -38,6 +41,8 @@ struct Context
     int q = 3;
     CertifyOptions opt;
     CertifyStats* stats = nullptr;
+    int vis_order = 0;                     ///< > 0: leaf-cell nodes (vis_order + 1 per segment) instead of Gauss points
+    mutable std::array<int, 3> box_ids{}; ///< counters of certified boxes, per level
 };
 
 /// psi(y) = phi(A y + b) (curved), or a . y + c (linear), on level coordinates y.
@@ -75,8 +80,18 @@ struct Bound
     VecD<D - 1> beta{};
 };
 
+/// Where an emitted point sits in the decomposition. Per level (index = number of
+/// free coordinates - 1): the certified box, the segment along its height line and
+/// the node within the segment. Leaf cells are assembled from it.
+struct Tag
+{
+    std::array<int, 3> box{{-1, -1, -1}};
+    std::array<int, 3> segment{{0, 0, 0}};
+    std::array<int, 3> node{{0, 0, 0}};
+};
+
 template <int D>
-using Emit = std::function<void(const VecD<D>&, double)>;
+using Emit = std::function<void(const VecD<D>&, double, const Tag&)>;
 
 enum class LineRule
 {
@@ -466,6 +481,23 @@ bool linear_may_vanish(const Func<D>& f, const VecD<D>& lo, const VecD<D>& hi)
 // Integration by dimension reduction
 // ============================================================================
 
+/// Nodes on a segment [a, b]: Gauss-Legendre points and weights for quadrature, or
+/// vis_order + 1 equispaced points, pulled 1e-5 inside the ends, for leaf cells (closer
+/// to a breakpoint, a root may fall on either side of a bound by rounding).
+template <typename F>
+void segment_nodes(const Context& ctx, double a, double b, F&& f)
+{
+    if (ctx.vis_order > 0)
+    {
+        const double eps = 1e-5;
+        for (int j = 0; j <= ctx.vis_order; ++j)
+            f(j, a + (b - a) * (eps + (1.0 - 2.0 * eps) * j / ctx.vis_order), 0.0);
+        return;
+    }
+    for (int j = 0; j < ctx.q; ++j)
+        f(j, a + (b - a) * algoim::GaussQuad::x(ctx.q, j), (b - a) * algoim::GaussQuad::w(ctx.q, j));
+}
+
 template <int D>
 void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth, LineRule rule);
 
@@ -505,13 +537,21 @@ void integrate<1>(const Context& ctx, Problem<1> p, const Emit<1>& emit, int, Li
         line_roots(ctx, deg, L, U, [&](double t) { return value<1>(ctx, f, {t}); }, nodes);
     }
     std::sort(nodes.begin(), nodes.end());
+    Tag tag;
+    tag.box[0] = ctx.box_ids[0]++;
+    int segment = 0;
     for (std::size_t s = 0; s + 1 < nodes.size(); ++s)
     {
         const double a = nodes[s], b = nodes[s + 1];
         if (b - a <= 1e-15)
             continue;
-        for (int j = 0; j < ctx.q; ++j)
-            emit({a + (b - a) * algoim::GaussQuad::x(ctx.q, j)}, (b - a) * algoim::GaussQuad::w(ctx.q, j));
+        tag.segment[0] = segment++;
+        segment_nodes(ctx, a, b,
+                      [&](int j, double t, double w)
+                      {
+                          tag.node[0] = j;
+                          emit({t}, w, tag);
+                      });
     }
 }
 
@@ -712,7 +752,8 @@ void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth,
             base.funcs.push_back(difference<D>(uppers[i], uppers[j]));
 
     // integrand of the base: the rule along the height line
-    const Emit<D - 1> line = [&, k, certified](const VecD<D - 1>& yb, double w)
+    const int box_id = ctx.box_ids[D - 1]++;
+    const Emit<D - 1> line = [&, k, certified, box_id](const VecD<D - 1>& yb, double w, const Tag& below)
     {
         double L = -infinity, U = infinity;
         for (const Bound<D>& b : lowers)
@@ -756,8 +797,12 @@ void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth,
         if (rule == LineRule::interface)
         {
             // one curved function at the top level: phi; one root per certified line
-            for (double t : nodes)
+            Tag tag = below;
+            tag.box[D - 1] = box_id;
+            for (std::size_t r = 0; r < nodes.size(); ++r)
             {
+                const double t = nodes[r];
+                tag.segment[D - 1] = static_cast<int>(r);
                 const VecD<D> y = insert<D>(yb, k, t);
                 double gn = 0;
                 for (int j = 0; j < D; ++j)
@@ -767,21 +812,28 @@ void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth,
                 }
                 const double dk = std::abs(derivative<D>(ctx, p.funcs.front(), y, k));
                 if (dk > 0)
-                    emit(y, w * std::sqrt(gn) / dk);
+                    emit(y, w * std::sqrt(gn) / dk, tag);
             }
             return;
         }
         nodes.push_back(L);
         nodes.push_back(U);
         std::sort(nodes.begin(), nodes.end());
+        Tag tag = below;
+        tag.box[D - 1] = box_id;
         for (std::size_t s = 0; s + 1 < nodes.size(); ++s)
         {
             const double a = nodes[s], b = nodes[s + 1];
-            if (b - a <= 1e-15)
+            // leaf cells keep degenerate segments so segment numbers stay aligned
+            if (ctx.vis_order == 0 && b - a <= 1e-15)
                 continue;
-            for (int j = 0; j < ctx.q; ++j)
-                emit(insert<D>(yb, k, a + (b - a) * algoim::GaussQuad::x(ctx.q, j)),
-                     w * (b - a) * algoim::GaussQuad::w(ctx.q, j));
+            tag.segment[D - 1] = static_cast<int>(s);
+            segment_nodes(ctx, a, b,
+                          [&](int j, double t, double wt)
+                          {
+                              tag.node[D - 1] = j;
+                              emit(insert<D>(yb, k, t), w * wt, tag);
+                          });
         }
     };
     integrate<D - 1>(ctx, std::move(base), line, 0, LineRule::segments);
@@ -801,25 +853,24 @@ double surface_scale(const Mat3& inv, const Vec3& g)
             y[i] += inv[k][i] * g[k];
     return std::sqrt(y[0] * y[0] + y[1] * y[1] + y[2] * y[2]) / std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
 }
-} // namespace certify_detail
-
-void certified_bisection(const ClippedBox& cell, const LevelSet& ls, const SelectionTerm& term, int q,
-                         const CertifyOptions& opt, Rule& rule, CertifyStats& stats)
+/// Bernstein form of the level set on the cell's unit box.
+struct CellLevelSet
 {
-    using namespace certify_detail;
-    const int extent = ls.degree + 1;
-    std::vector<real> buffer(extent * extent * extent);
-    algoim::xarray<real, 3> phi(buffer.data(), algoim::uvector<int, 3>(extent));
-    algoim::bernstein::bernsteinInterpolate<3>(
-        [&](const algoim::uvector<real, 3>& u) { return ls.value(physical_point(cell, {u(0), u(1), u(2)})); }, phi);
+    std::vector<real> buffer;
+    algoim::xarray<real, 3> phi;
 
-    Context ctx;
-    ctx.phi = &phi;
-    ctx.degree = ls.degree;
-    ctx.q = q;
-    ctx.opt = opt;
-    ctx.stats = &stats;
+    CellLevelSet(const ClippedBox& cell, const LevelSet& ls)
+        : buffer(static_cast<std::size_t>((ls.degree + 1) * (ls.degree + 1) * (ls.degree + 1))),
+          phi(buffer.data(), algoim::uvector<int, 3>(ls.degree + 1))
+    {
+        algoim::bernstein::bernsteinInterpolate<3>(
+            [&](const algoim::uvector<real, 3>& u) { return ls.value(physical_point(cell, {u(0), u(1), u(2)})); }, phi);
+    }
+};
 
+/// The top level: the unit box with the cell's clips and phi itself.
+Problem<3> top_problem(const ClippedBox& cell)
+{
     Problem<3> top;
     top.lo = {0, 0, 0};
     top.hi = {1, 1, 1};
@@ -834,6 +885,21 @@ void certified_bisection(const ClippedBox& cell, const LevelSet& ls, const Selec
         c.d = h.d;
         top.clips.push_back(c);
     }
+    return top;
+}
+} // namespace certify_detail
+
+void certified_bisection(const ClippedBox& cell, const LevelSet& ls, const SelectionTerm& term, int q,
+                         const CertifyOptions& opt, Rule& rule, CertifyStats& stats)
+{
+    using namespace certify_detail;
+    const CellLevelSet cls(cell, ls);
+    Context ctx;
+    ctx.phi = &cls.phi;
+    ctx.degree = ls.degree;
+    ctx.q = q;
+    ctx.opt = opt;
+    ctx.stats = &stats;
 
     const PartKind kind = part_kind(term);
     const double detj = std::abs(jacobian_determinant(cell));
@@ -847,23 +913,163 @@ void certified_bisection(const ClippedBox& cell, const LevelSet& ls, const Selec
     {
         const Mat3 inv = inverse_jacobian(cell);
         integrate<3>(
-            ctx, top, [&](const VecD<3>& u, double w) { append(u, w * detj * surface_scale(inv, phi_gradient(phi, u))); },
+            ctx, top_problem(cell),
+            [&](const VecD<3>& u, double w, const Tag&)
+            { append(u, w * detj * surface_scale(inv, phi_gradient(cls.phi, u))); },
             0, LineRule::interface);
         return;
     }
     integrate<3>(
-        ctx, top,
-        [&](const VecD<3>& u, double w)
+        ctx, top_problem(cell),
+        [&](const VecD<3>& u, double w, const Tag&)
         {
             if (kind != PartKind::whole)
             {
-                const double v = algoim::bernstein::evalBernsteinPoly(phi, uv(u));
+                const double v = algoim::bernstein::evalBernsteinPoly(cls.phi, uv(u));
                 if ((kind == PartKind::negative && !(v < 0)) || (kind == PartKind::positive && !(v > 0)))
                     return;
             }
             append(u, w * detj);
         },
         0, LineRule::segments);
+}
+
+void certified_leaves(const ClippedBox& cell, const LevelSet& ls, const SelectionTerm& term, int degree,
+                      const CertifyOptions& opt, std::int32_t parent, LeafMesh& mesh, CertifyStats& stats)
+{
+    using namespace certify_detail;
+    if (degree < 1)
+        throw std::runtime_error("certified_leaves: degree must be at least 1");
+    const CellLevelSet cls(cell, ls);
+    Context ctx;
+    ctx.phi = &cls.phi;
+    ctx.degree = ls.degree;
+    ctx.q = 1;
+    ctx.vis_order = degree;
+    ctx.opt = opt;
+    ctx.stats = &stats;
+
+    const PartKind kind = part_kind(term);
+    const bool surface = kind == PartKind::interface;
+    const int p1 = degree + 1;
+    const int n_nodes = surface ? p1 * p1 : p1 * p1 * p1;
+
+    struct Leaf
+    {
+        std::vector<Vec3> u;
+        std::vector<char> set;
+        double phi_sum = 0;
+    };
+    std::map<std::array<int, 6>, Leaf> leaves;
+    integrate<3>(
+        ctx, top_problem(cell),
+        [&](const VecD<3>& u, double, const Tag& tag)
+        {
+            const std::array<int, 6> key
+                = {tag.box[0], tag.box[1], tag.box[2], tag.segment[0], tag.segment[1], tag.segment[2]};
+            Leaf& leaf = leaves[key];
+            if (leaf.u.empty())
+            {
+                leaf.u.resize(n_nodes);
+                leaf.set.assign(n_nodes, 0);
+            }
+            const int index = surface ? tag.node[0] + p1 * tag.node[1]
+                                      : tag.node[0] + p1 * (tag.node[1] + p1 * tag.node[2]);
+            if (index < 0 || index >= n_nodes || leaf.set[index])
+                return;
+            leaf.u[index] = u;
+            leaf.set[index] = 1;
+            leaf.phi_sum += algoim::bernstein::evalBernsteinPoly(cls.phi, uv(u));
+        },
+        0, surface ? LineRule::interface : LineRule::segments);
+
+    std::vector<std::int32_t> conn(n_nodes);
+    for (const auto& [key, leaf] : leaves)
+    {
+        if (std::count(leaf.set.begin(), leaf.set.end(), char(1)) != n_nodes)
+        {
+            ++stats.incomplete_leaves; // node counts differed across the leaf
+            static const bool debug = std::getenv("LEAF_DEBUG") != nullptr;
+            if (debug)
+            {
+                std::fprintf(stderr, "incomplete leaf: boxes %d %d %d segments %d %d %d, missing nodes:", key[0], key[1],
+                             key[2], key[3], key[4], key[5]);
+                for (int index = 0; index < n_nodes; ++index)
+                    if (!leaf.set[index])
+                        std::fprintf(stderr, " (%d,%d,%d)", index % p1, (index / p1) % p1, index / (p1 * p1));
+                std::fprintf(stderr, "\n");
+            }
+            continue;
+        }
+        if (!surface && kind != PartKind::whole)
+        {
+            // a volume leaf lies on one side of the level set; nodes on the interface are ~0
+            if ((kind == PartKind::negative && !(leaf.phi_sum < 0)) || (kind == PartKind::positive && !(leaf.phi_sum > 0)))
+                continue;
+        }
+        const std::int32_t first = mesh.n_points();
+        std::vector<Vec3> x(n_nodes);
+        for (int index = 0; index < n_nodes; ++index)
+        {
+            x[index] = physical_point(cell, leaf.u[index]);
+            mesh.points.insert(mesh.points.end(), x[index].begin(), x[index].end());
+        }
+        // Orientation: hexahedra with a positive Jacobian, interface quadrilaterals with
+        // their normal along grad phi. Summing over all corners keeps the sign reliable
+        // for collapsed leaves.
+        auto node = [&](int i, int j, int kk) -> const Vec3& { return x[surface ? i + p1 * j : i + p1 * (j + p1 * kk)]; };
+        auto sub = [](const Vec3& a, const Vec3& b) { return Vec3{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
+        auto cross = [](const Vec3& a, const Vec3& b)
+        { return Vec3{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}; };
+        double orientation = 0;
+        if (surface)
+        {
+            Vec3 normal = {0, 0, 0};
+            for (int c = 0; c < 4; ++c)
+            {
+                const int i0 = (c & 1) * degree, j0 = ((c >> 1) & 1) * degree;
+                const double s = (i0 ? -1.0 : 1.0) * (j0 ? -1.0 : 1.0);
+                const Vec3 n = cross(sub(node(degree - i0, j0, 0), node(i0, j0, 0)), sub(node(i0, degree - j0, 0), node(i0, j0, 0)));
+                for (int d = 0; d < 3; ++d)
+                    normal[d] += s * n[d];
+            }
+            // physical gradient of phi at the leaf centre: J^{-T} grad_u phi
+            const Mat3 inv = inverse_jacobian(cell);
+            const Vec3 gu = phi_gradient(cls.phi, leaf.u[n_nodes / 2]);
+            for (int d = 0; d < 3; ++d)
+            {
+                double gx = 0;
+                for (int e = 0; e < 3; ++e)
+                    gx += inv[e][d] * gu[e];
+                orientation += normal[d] * gx;
+            }
+        }
+        else
+            for (int c = 0; c < 8; ++c)
+            {
+                const int i0 = (c & 1) * degree, j0 = ((c >> 1) & 1) * degree, k0 = ((c >> 2) & 1) * degree;
+                const double s = (i0 ? -1.0 : 1.0) * (j0 ? -1.0 : 1.0) * (k0 ? -1.0 : 1.0);
+                const Vec3 o = node(i0, j0, k0);
+                const Vec3 n = cross(sub(node(degree - i0, j0, k0), o), sub(node(i0, degree - j0, k0), o));
+                const Vec3 e = sub(node(i0, j0, degree - k0), o);
+                orientation += s * (n[0] * e[0] + n[1] * e[1] + n[2] * e[2]);
+            }
+        const bool flip = orientation < 0;
+        if (surface)
+            for (int j = 0; j < p1; ++j)
+                for (int i = 0; i < p1; ++i)
+                    conn[vtk_lagrange_quad_index(flip ? degree - i : i, j, degree)] = first + i + p1 * j;
+        else
+            for (int kk = 0; kk < p1; ++kk)
+                for (int j = 0; j < p1; ++j)
+                    for (int i = 0; i < p1; ++i)
+                        conn[vtk_lagrange_hex_index(flip ? degree - i : i, j, kk, degree)] = first + i + p1 * (j + p1 * kk);
+        mesh.connectivity.insert(mesh.connectivity.end(), conn.begin(), conn.end());
+        mesh.offsets.push_back(static_cast<std::int32_t>(mesh.connectivity.size()));
+        mesh.types.push_back(surface ? vtk_lagrange_quadrilateral : vtk_lagrange_hexahedron);
+        mesh.parent.push_back(parent);
+        mesh.degree.push_back(degree);
+    }
 }
 
 } // namespace cutcells::proto

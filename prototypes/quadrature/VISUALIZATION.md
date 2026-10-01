@@ -17,7 +17,13 @@ where bisection concentrates points, and to find cells with too few points. File
 are ASCII and grow with the point count (n = 6, q = 3, certify: 36 MB for
 phi < 0); binary output is the next step for larger runs.
 
-## 2. Leaf cells of the decomposition (proposed)
+## 2. Leaf cells of the decomposition (implemented)
+
+![Leaf cells, n = 8, certify:0.1](img/leaves_tet_n8.png)
+
+Left: interface leaves of all cut tets. Middle and right: one cut tet with its
+interface leaves and its phi < 0 leaves (shrunk to 0.8). Sphere of radius 0.7,
+Kuhn tets with n = 8, degree 3.
 
 The engine already parametrises every piece it integrates. A volume leaf is a
 column over a column over an interval:
@@ -28,40 +34,59 @@ column over a column over an interval:
 
 Each bound is a box face, a clip plane or a root of a level set, and the
 decomposition guarantees that the same bounds apply across the whole leaf. The
-map s in [0, 1]^3 -> x is the one whose image of the Gauss-Legendre grid is the
-quadrature rule. Running the same recursion with p + 1 Gauss-Lobatto nodes per
-direction instead gives the nodes of a Lagrange hexahedron of order p
-(VTK_LAGRANGE_HEXAHEDRON). An interface leaf is the graph of the root over a
-level-2 leaf: a Lagrange quadrilateral (VTK_LAGRANGE_QUADRILATERAL). ParaView,
-VTK 9 and pyvista render both as curved cells.
+quadrature rule is the image of a Gauss-Legendre grid under the leaf's map;
+`certified_leaves` runs the same recursion with p + 1 equispaced nodes per
+segment instead. These are the nodes of a degree-p Lagrange hexahedron
+(VTK_LAGRANGE_HEXAHEDRON). An interface leaf is the graph of the root of phi
+over a level-2 leaf: a Lagrange quadrilateral (VTK_LAGRANGE_QUADRILATERAL).
+ParaView, VTK 9 and pyvista render both as curved cells.
 
-Why this option:
+How it works:
 
-- **Consistent by construction.** The visual mesh is the integration domain; a
-  gap or an overlap in the picture is a quadrature bug.
-- **Parts come for free.** Each volume leaf has one sign per level set, the sign
-  of its segment. A part such as `result["phi1 < 0 and phi2 > 0"]` is the set
-  of leaves whose signs satisfy the selection term, the same masks the
-  generators already take.
-- **Curved without a mesher.** No separate curved sub-cell construction; the
-  order follows the requested p.
-- **Debug data per leaf**: parent cell, level-set signs, bisection depth,
-  certified or not, the bounds that define it.
+- Every emitted point carries a tag: per level, the certified box, the segment
+  along the height line and the node within the segment. Leaves are assembled
+  from the tags, and their nodes reordered into VTK's Lagrange order.
+- Leaf nodes sit 1e-5 of the segment inside its ends. Right at a breakpoint a
+  root lies on a bound, and rounding can put it on either side; that left 1.5% of
+  the leaves with missing nodes at an inset of 1e-7.
+- Hexahedra are oriented to a positive Jacobian, interface quadrilaterals to a
+  normal along grad phi.
+- A volume leaf lies on one side of each level set, so a part is the set of
+  leaves whose signs satisfy the selection term (decided from the mean of phi
+  over the leaf's nodes).
+
+Usage: `quadrature_study --gen certify:0.1 --part "phi < 0" --part "phi = 0"
+--leaves <prefix> [--leaf-degree p]` writes per part the leaves of every cut
+cell (plus, for volume parts, the uncut cells as linear cells), and the cut
+background cells. `tools/check_leaves.py render` draws the figure above.
+
+Checks (n = 8, Kuhn tets, margin 0.1):
+
+- **Node order:** `test_leaf_ordering` writes cells whose nodes sit at their own
+  parametric coordinates. With VTK 9.6, `tools/check_leaves.py ordering` finds
+  that VTK's interpolation is the identity to 1e-16, for hexahedra and
+  quadrilaterals of degrees 1 to 4.
+- **Geometry:** all 45,536 interface-leaf nodes lie on the sphere to 3.3e-16, and
+  every volume-leaf node is inside the ball.
+- **Coverage:** VTK's own cell sizes, summed, converge to the exact values as the
+  degree grows. VTK measures curved cells by linear subdivision through their
+  nodes, so the difference falls like 1/p^2: volume 2.7e-3, 7.1e-4, 2.0e-4 and
+  area 1.8e-3, 4.5e-4, 1.4e-4 for p = 2, 4, 8. No incomplete leaves and no
+  negative-size cells.
+
+What the pictures show: 627 cut tets give 2,846 interface leaves (4.5 per cut
+tet) and 5,371 volume leaves (8.6). The tet in the figure has 20 interface and 45
+volume leaves, with thin strips crowding one corner: the decomposition is finer
+than the geometry needs. That is the same effect that costs extra quadrature
+points, and the leaf view is the tool to find where it comes from.
 
 Caveats:
 
 - Leaves are columns aligned with the chosen height directions. They do not
   conform across cells; that is fine for display.
 - Segments shrink to zero at tangencies and where three bounds meet, giving
-  collapsed cells. Display is acceptable; leaves below a volume threshold can be
-  dropped.
-- Typical size: 5 to 20 leaves per cut cell, 64 nodes per leaf at p = 3.
-
-Implementation sketch: a second emitter in the same recursion. Each level
-records, instead of Gauss-Legendre points, the index of the interval or segment
-and its two bound functions. At the top level the leaf is evaluated on the
-(p + 1)^3 Gauss-Lobatto grid and its nodes reordered into VTK's Lagrange
-ordering.
+  collapsed cells; display is fine.
+- Files are ASCII: n = 8, degree 3, phi < 0 has 345,000 nodes.
 
 ## 3. Whole meshes and the Python side
 

@@ -5,8 +5,11 @@
 
 #pragma once
 
+#include <cstdint>
+
 #include "clipped_box.h"
 #include "generators.h"
+#include "leaf_mesh.h"
 #include "selection_expr.h"
 
 namespace cutcells::proto
@@ -34,11 +37,20 @@ struct CertifyOptions
 
 struct CertifyStats
 {
-    int bisections = 0;  ///< boxes bisected, all levels
-    int uncertified = 0; ///< boxes integrated without a certified direction (depth limit)
+    int bisections = 0;        ///< boxes bisected, all levels
+    int uncertified = 0;       ///< boxes integrated without a certified direction (depth limit)
+    int incomplete_leaves = 0; ///< leaves dropped because their nodes did not line up
 };
 
 void certified_bisection(const ClippedBox& cell, const LevelSet& ls, const SelectionTerm& term, int q,
                          const CertifyOptions& opt, Rule& rule, CertifyStats& stats);
+
+/// Leaf cells of the same decomposition, for visualisation: every piece that
+/// certified_bisection integrates, as a Lagrange cell of the given degree
+/// (hexahedra for volume parts, quadrilaterals for the interface) whose nodes are
+/// the images of an equispaced grid under the piece's parametrisation. Appended to
+/// @p mesh with @p parent as background cell.
+void certified_leaves(const ClippedBox& cell, const LevelSet& ls, const SelectionTerm& term, int degree,
+                      const CertifyOptions& opt, std::int32_t parent, LeafMesh& mesh, CertifyStats& stats);
 
 } // namespace cutcells::proto
