@@ -1,5 +1,6 @@
 # Results
 
+- v1.1: where the extra bisections on tets come from (at the end)
 - v1: certify-and-bisect (below the v0 section)
 - v0: algoim variants
 
@@ -178,9 +179,138 @@ for 1.36 times the points. Hexes have no clip planes and are unchanged.
 
 ### Next steps
 
-1. Find where the remaining bisections come from: most are not needed for the
-   tet's own geometry (9,056 bisections for 10,750 cut tets at margin 0.25).
-2. Leaf-cell visualisation, see VISUALIZATION.md.
+1. Find where the remaining bisections come from: done in v1.1.
+2. Leaf-cell visualisation: done, see VISUALIZATION.md.
 3. Several level sets: selection terms on more than one level set.
 4. Exact Bernstein conversion instead of interpolation (no LAPACK).
 5. Prisms and pyramids: more clip planes from their reference cells.
+
+## v1.1: where the extra bisections on tets come from (2026-10-01)
+
+At margin 0.25 (n = 32, q = 5) tets needed 9,056 bisections, and 715 boxes
+reached the depth limit, against 31 bisections for hexes. `quadrature_study
+--diagnose` now records every failed certification: its level, the function
+with the smallest margin, what a 9^D sample of the clipped region says about
+that function, and whether one function fails on every axis or each function
+has an axis but no axis suits all of them (a conflict).
+
+### Causes
+
+Tets, n = 16, q = 5, margin 0.25, interface (5,322 bisections and 217 boxes at
+the depth limit):
+
+| Failed certifications | Count |
+| --- | --- |
+| level 2, conflict between phi on a box face and phi on the slanted face | 2,970 bisections and all 217 depth-limit boxes |
+| level 2, one function fails on every axis | 819 |
+| level 3, phi fails on every axis | 1,533 |
+
+**Conflicts at the slanted face.** With height direction u_k at level 3, the
+base of a tet is the triangle u_i, u_j >= 0, u_i + u_j <= 1. Two of its
+functions are phi on the bottom face (u_k = 0) and phi on the slanted face
+(u_k = 1 - u_i - u_j). Their zero curves meet on the hypotenuse, under the edge
+the two faces share. When the reference normal of the sphere is close to
+(e_i + e_k)/sqrt(2), the first curve needs u_i as height direction and the
+second needs u_j. Bisection never separates two curves that meet, so the boxes
+shrink towards the meeting point until the depth limit.
+
+Example, tet 3688 (n = 16): phi on the bottom face has margins (0.02, 0.62) on
+the two axes, phi on the slanted face (0.63, 0.08). Eight bisections later, in a
+box touching the hypotenuse, they are (0.18, 0.97) and (0.96, 0.23). The cell
+ends with 9 bisections, one uncertified box and 250 points.
+
+Hexes have no slanted face: phi on the bottom and on the top face give nearly
+parallel curves, and hexes bisect about 1% of their cut cells.
+
+**Fix: a diagonal frame at level 2** (`CertifyOptions::diagonal_frames`, on by
+default). If no axis certifies, the level-2 problem is rewritten in
+z = (y0 + y1, y1 - y0): the box becomes four clip planes and the functions are
+composed with the linear map, so the rest of the engine is unchanged. With four
+directions 45 degrees apart, two nearly straight curves always leave a usable
+direction while the margin is below sin(22.5 degrees) = 0.38. The frame also
+certifies quarter arcs, whose normals span 90 degrees.
+
+In tet 3688 both functions have margins above 0.5 along (1, 1). The cell then
+needs no bisection and 75 points, with an error of 2.1e-13.
+
+![Tet 998 before and after the diagonal frame](img/leaves_tet998_diagonal_frame.png)
+
+Tets, n = 32, q = 5 (per-cell L1 / worst cell; points per cut tet):
+
+| Variant | Interface | Volume | Points (vol / surf) | Bisections / uncertified |
+| --- | --- | --- | --- | --- |
+| best v0 (`alpha-split`) | 2.1e-7 / 1.1e-3 | 9.7e-11 / 4.9e-6 | 344 / 37 | 654 splits |
+| certify (0.25), axes only (v1) | 3.0e-9 / 7.7e-6 | 1.5e-11 / 5.3e-7 | 469 / 51 | 9,056 / 715 |
+| certify:0.1, diagonal frame | 2.6e-8 / 6.7e-5 | 6.4e-11 / 4.1e-6 | 328 / 35 | 113 / 0 |
+| certify (0.25), diagonal frame | 2.2e-9 / 7.7e-6 | 1.2e-11 / 5.3e-7 | 366 / 39 | 604 / 0 |
+
+The diagonal frame removes 93% of the bisections and every depth-limit box. It
+saves 22% of the points, and the result is slightly more accurate. For the
+interface, 1,882 level-2 boxes use it.
+
+Compared with the best v0 generator, margin 0.25 now costs 6% more points. Its
+per-cell error is 95 times smaller on the interface (worst cell 140 times) and
+8 times smaller on the volume. Margin 0.1 needs fewer points than v0 and is
+still 8 times better on the interface.
+
+Tets end within 1.7 times of hexes per cell (2.2e-9 against 1.3e-9). Hexes are
+unchanged, with 25 bisections instead of 31. Runs made together took 386
+instead of 677 us per cut tet (volume).
+
+Plane exactness still holds (1.6e-14 or better), also with the diagonal frame
+forced on every level-2 box.
+
+One cell gets worse on the coarse n = 8 mesh with q = 3 and margin 0.1: the
+worst volume cell, a cap of 0.7% of its tet, goes from 1.1e-3 to 5.0e-3. The
+diagonal frame certifies it without bisection, with 27 points instead of 81.
+Its error converges with q as expected: 2.4e-5 at q = 5, with 125 points.
+
+### What remains: bounds over the whole box
+
+Of the 604 bisections left at n = 32, 190 are at level 3 (phi itself) and 398
+at level 2 where one function fails on every axis; 16 are conflicts. For most of
+them, sampling finds the margin satisfied near the zero set inside the cell
+(166 of 190 at level 3, 323 of 414 at level 2). The Bernstein bounds cover the
+whole box, which for a tet is 6 times the cell. For a Kuhn tet the box is a
+parallelepiped up to 3.7 h across, against 1.7 h for a hex of the same grid.
+
+`mask_subdivisions = M` certifies on M^D sub-cells instead, counting only those
+that meet the cell and on which the function may vanish. That still guarantees
+at most one root per height line. With M = 4 almost all of these bisections go
+(604 to 70), but they were not wasted: the margin also sets the accuracy.
+
+| Variant (n = 32, q = 5, diagonal frame) | Interface | Volume | Points (vol / surf) | Bisections / uncertified |
+| --- | --- | --- | --- | --- |
+| box bounds, margin 0.25 | 2.2e-9 / 7.7e-6 | 1.2e-11 / 5.3e-7 | 366 / 39 | 604 / 0 |
+| masked (M = 4), margin 0.25 | 9.8e-9 / 1.1e-5 | 3.0e-11 / 2.2e-6 | 335 / 36 | 70 / 0 |
+| masked (M = 4), margin 0.4 | 1.8e-9 / 7.7e-6 | 1.1e-11 / 1.1e-6 | 375 / 40 | 553 / 9 |
+| masked (M = 4), margin 0.5 | 6.7e-10 / 7.7e-6 | 4.2e-12 / 3.0e-7 | 469 / 50 | 3,462 / 209 |
+
+At the same number of points, masked bounds are about as accurate as box bounds
+(margin 0.4 against 0.25), with a worse worst volume cell.
+
+Take the worst masked cell at n = 16, tet 8236, with an interface error of
+1.4e-4 at q = 5:
+
+- The rule is right: the error falls exponentially with q (3.3e-3, 1.4e-4,
+  8.4e-6, 5.6e-7 for q = 3, 5, 7, 9), so the integrand has a nearby
+  singularity.
+- The error sits in the outermost 1D integral. Splitting each segment there into
+  four Gauss pieces gives 1.5e-7; splitting the level-2 segments changes
+  nothing.
+- Box bounds bisect this cell twice and reach 1.9e-11.
+- Counting sub-cells up to half a box away from the cell did not help.
+
+Conclusion: keep bounds over the whole box (`mask_subdivisions = 1`, the
+default) and the diagonal frame. The margin is the accuracy control, not only a
+correctness test. A cheaper accuracy control would have to judge the outer 1D
+integrand directly; only then would masked bounds pay off.
+
+### Next steps
+
+1. Several level sets: selection terms on more than one level set.
+2. Exact Bernstein conversion instead of interpolation (no LAPACK).
+3. Prisms and pyramids: more clip planes from their reference cells.
+4. An accuracy control for the outer 1D integral, so that certification can use
+   masked bounds.
+5. Binary VTK output for larger leaf meshes.

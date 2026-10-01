@@ -23,7 +23,8 @@ phi < 0); binary output is the next step for larger runs.
 
 Left: interface leaves of all cut tets. Middle and right: one cut tet with its
 interface leaves and its phi < 0 leaves (shrunk to 0.8). Sphere of radius 0.7,
-Kuhn tets with n = 8, degree 3.
+Kuhn tets with n = 8, degree 3, with the level-2 diagonal frame (RESULTS.md,
+v1.1).
 
 The engine already parametrises every piece it integrates. A volume leaf is a
 column over a column over an interval:
@@ -74,11 +75,19 @@ Checks (n = 8, Kuhn tets, margin 0.1):
   area 1.8e-3, 4.5e-4, 1.4e-4 for p = 2, 4, 8. No incomplete leaves and no
   negative-size cells.
 
-What the pictures show: 627 cut tets give 2,846 interface leaves (4.5 per cut
-tet) and 5,371 volume leaves (8.6). The tet in the figure has 20 interface and 45
-volume leaves, with thin strips crowding one corner: the decomposition is finer
-than the geometry needs. That is the same effect that costs extra quadrature
-points, and the leaf view is the tool to find where it comes from.
+What the pictures show: 627 cut tets give 2,657 interface leaves (4.2 per cut
+tet) and 4,976 volume leaves (7.9); without the diagonal frame it was 2,846 and
+5,371. The tet in the figure has 20 interface and 44 volume leaves. Its thin
+strips crowding one corner come from eight bisections at level 3: over the whole
+box, which is 6 times the tet, phi has hardly any margin.
+
+The leaf view also shows where most of the extra bisections on tets came from.
+Without the diagonal frame, conflicts at level 2 bisect towards the edge shared
+by a box face and the slanted face. Tet 998 had 31 interface leaves converging
+on a point of that edge; with the frame it has 16, and its interface rule needs
+144 instead of 279 points at q = 3:
+
+![Tet 998 before and after the diagonal frame](img/leaves_tet998_diagonal_frame.png)
 
 Caveats:
 

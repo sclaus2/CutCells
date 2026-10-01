@@ -8,7 +8,7 @@ Needs vtk (and pyvista for `render`), e.g. the vtk-env environment:
 
     python tools/check_leaves.py ordering build/ordering
     python tools/check_leaves.py measure build/leaves/<file>.vtu <exact total>
-    python tools/check_leaves.py render <interface.vtu> <volume.vtu> <out.png> [<cut_cells.vtu>]
+    python tools/check_leaves.py render <interface.vtu> <volume.vtu> <out.png> [<cut_cells.vtu> [<parent>]]
 
 ordering: every file written by test_leaf_ordering holds one Lagrange cell whose
 nodes sit at their own parametric coordinates, so a correct node order makes VTK's
@@ -75,9 +75,11 @@ def measure(path, exact):
     return 0
 
 
-def render(interface_path, volume_path, png, cells_path=None):
+def render(interface_path, volume_path, png, cells_path=None, parent=None):
     """Left: the whole sphere, every interface leaf in its own colour. Middle and
-    right: one cut tet with its interface leaves and its phi < 0 leaves (shrunk)."""
+    right: one cut tet with its interface leaves and its phi < 0 leaves (shrunk).
+    The tet is the given parent, or one near a fixed point of the sphere with many
+    interface leaves."""
     import pyvista as pv
 
     pv.OFF_SCREEN = True
@@ -100,13 +102,20 @@ def render(interface_path, volume_path, png, cells_path=None):
     centre = np.array([0.0123, -0.0371, 0.0217])
     normal = np.array([1.0, -1.0, 0.6]) / np.linalg.norm([1.0, -1.0, 0.6])
     point = centre + 0.7 * normal
-    parents = surface.cell_data["parent"]
-    near = np.linalg.norm(surface.cell_centers().points - point, axis=1) < 0.25
-    candidates, counts = np.unique(parents[near], return_counts=True)
-    parent = candidates[np.argmax(counts)]
+    given = parent is not None
+    if not given:
+        parents = surface.cell_data["parent"]
+        near = np.linalg.norm(surface.cell_centers().points - point, axis=1) < 0.25
+        candidates, counts = np.unique(parents[near], return_counts=True)
+        parent = candidates[np.argmax(counts)]
 
     def of_parent(mesh):
         return mesh.extract_cells(np.where(mesh.cell_data["parent"] == parent)[0])
+
+    if given:
+        # look at the given tet along the sphere normal at its interface leaves
+        normal = of_parent(surface).points.mean(axis=0) - centre
+        normal /= np.linalg.norm(normal)
 
     side = np.cross(normal, [0.0, 0.0, 1.0])
     view = normal + 0.9 * side / np.linalg.norm(side) + np.array([0.0, 0.0, 0.5])
@@ -149,5 +158,6 @@ if __name__ == "__main__":
     if command == "measure":
         sys.exit(measure(sys.argv[2], float(sys.argv[3])))
     if command == "render":
-        sys.exit(render(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) > 5 else None))
+        sys.exit(render(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) > 5 else None,
+                        int(sys.argv[6]) if len(sys.argv) > 6 else None))
     raise SystemExit(__doc__)

@@ -55,7 +55,7 @@ overrides the height direction chosen at dimension N.
 | `split` | `gl-cellmask` plus splitting the box along its longest axis while the best alpha >= 0.99, up to 3 levels; algoim still chooses the axes |
 | `alpha-split` | `alpha` plus the same splitting |
 | `quadgen` | algoim's 2015 engine (interval arithmetic and bisection), CutCells' `"algoim_general"`; hexahedra and spheres only |
-| `certify`, `certify:<margin>` | the new certify-and-bisect engine (`src/certified.inl`), margin 0.25 by default; clip planes handled directly, no resultants; bounds that are never active are pruned |
+| `certify`, `certify:<margin>` | the new certify-and-bisect engine (`src/certified.inl`), margin 0.25 by default; clip planes handled directly, no resultants; bounds that are never active are pruned; at level 2 a diagonal frame is tried before bisecting |
 
 ## Metrics
 
@@ -89,6 +89,12 @@ grid's symmetry, 0.0123,-0.0371,0.0217), `--radius`, `--gen`, `--part`
 (repeatable), `--csv`, `--vtk <prefix>` (point clouds), `--leaves <prefix>` and
 `--leaf-degree p` (leaf cells of the certify engine as Lagrange cells; see
 VISUALIZATION.md), `--plane` (planar level set; every rule must be exact).
+
+For the certify engine: `--diagnose` prints why certification failed (by level,
+blocking function and cause) and the worst cell; `--only <cell>` restricts a run
+to one cell index; `--masks M` and `--no-diagonal` set
+`CertifyOptions::mask_subdivisions` and `diagonal_frames`. With the environment
+variable `CERTIFY_TRACE` set, every box is printed to stderr with its margins.
 
 Configure with the environment variables above: without `CONDA_PREFIX`, CMake
 picks Apple's Accelerate, which lacks the LAPACKE symbols algoim needs.

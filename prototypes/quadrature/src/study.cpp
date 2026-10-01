@@ -14,6 +14,11 @@
 //                    [--radius r] [--gen algoim-auto,alpha-split,...]
 //                    [--part "phi < 0"]... [--csv file] [--plane] [--vtk prefix]
 //                    [--leaves prefix] [--leaf-degree p]
+//                    [--diagnose] [--only cell] [--masks M] [--no-diagonal]
+//
+// --diagnose (certify) prints why bisections happen and the worst cell; --only
+// restricts the run to one cell index; --masks and --no-diagonal set
+// CertifyOptions::mask_subdivisions and diagonal_frames.
 //
 // --leaves writes the certify engine's leaf cells (Lagrange cells of degree p, 3 by
 // default) for every cut cell, plus the uncut cells of volume parts as linear cells.
@@ -30,6 +35,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -62,6 +68,10 @@ struct StudyConfig
     std::string vtk;    ///< prefix for point-cloud .vtu files, one per run
     std::string leaves; ///< prefix for leaf-cell .vtu files (certify generators)
     int leaf_degree = 3;
+    bool diagnose = false; ///< certify: print why bisections happen
+    int only = -1;         ///< restrict the study to this cell index
+    int masks = 1;         ///< certify: CertifyOptions::mask_subdivisions
+    bool diagonal = true;  ///< certify: CertifyOptions::diagonal_frames
 };
 
 struct Metrics
@@ -70,11 +80,17 @@ struct Metrics
     long points = 0;
     long splits = 0;
     long uncertified = 0;
+    long rotations = 0;
     double sum_abs = 0;    ///< sum over cut cells of |generated - exact|
     double sum_gen = 0;    ///< generated part measure over cut cells
     double sum_uncut = 0;  ///< exact part measure over uncut cells
     double max_rel = 0;    ///< worst cell, relative to the cell's exact value
     double seconds = 0;
+    // the worst cell, for --diagnose
+    std::int32_t worst_cell = -1;
+    double worst_exact = 0, worst_value = 0;
+    long worst_points = 0, worst_splits = 0, worst_uncertified = 0;
+    std::vector<std::int32_t> uncertified_cells; ///< cells with uncertified boxes
 };
 
 std::vector<std::string> split_list(const std::string& s)
@@ -138,6 +154,14 @@ StudyConfig parse_args(int argc, char** argv)
             cfg.leaves = next();
         else if (a == "--leaf-degree")
             cfg.leaf_degree = std::stoi(next());
+        else if (a == "--diagnose")
+            cfg.diagnose = true;
+        else if (a == "--only")
+            cfg.only = std::stoi(next());
+        else if (a == "--masks")
+            cfg.masks = std::stoi(next());
+        else if (a == "--no-diagonal")
+            cfg.diagonal = false;
         else
             throw std::runtime_error("unknown argument: " + a);
     }
@@ -219,6 +243,8 @@ int plane_study(const StudyConfig& cfg)
                 CertifyOptions copt;
                 if (certify && gen.find(':') != std::string::npos)
                     copt.margin = std::stod(gen.substr(gen.find(':') + 1));
+                copt.mask_subdivisions = cfg.masks;
+                copt.diagonal_frames = cfg.diagonal;
                 if (gen == "quadgen")
                     continue;
                 const GeneratorOptions opt = certify ? GeneratorOptions{} : generator_preset(gen);
@@ -329,6 +355,9 @@ int main(int argc, char** argv)
                 CertifyOptions copt;
                 if (certify && gen.find(':') != std::string::npos)
                     copt.margin = std::stod(gen.substr(gen.find(':') + 1));
+                copt.diagnose = cfg.diagnose;
+                copt.mask_subdivisions = cfg.masks;
+                copt.diagonal_frames = cfg.diagonal;
                 const GeneratorOptions opt = gen == "quadgen" || certify ? GeneratorOptions{} : generator_preset(gen);
                 for (const std::string& part : cfg.parts)
                 {
@@ -347,6 +376,7 @@ int main(int argc, char** argv)
 
                     const double h = 2.0 / n;
                     Metrics m;
+                    std::map<std::string, long> causes;
                     std::vector<double> vtk_points, vtk_weights;
                     std::vector<std::int32_t> vtk_cells;
                     std::int32_t cell_index = -1;
@@ -382,6 +412,8 @@ int main(int argc, char** argv)
                                 for (const TestCell& cell : grid_cells(cfg.mesh, lo, h, c))
                                 {
                                     ++cell_index;
+                                    if (cfg.only >= 0 && cell_index != cfg.only)
+                                        continue;
                                     double dc = 0;
                                     for (int d = 0; d < 3; ++d)
                                         dc += (cell.centroid[d] - c[d]) * (cell.centroid[d] - c[d]);
@@ -416,6 +448,7 @@ int main(int argc, char** argv)
                                     }
                                     Rule rule;
                                     GeneratorStats stats;
+                                    const long uncertified_before = m.uncertified;
                                     const auto t0 = std::chrono::steady_clock::now();
                                     if (gen == "quadgen")
                                         algoim_quadgen_sphere(cell.box, c, r, term, q, rule);
@@ -425,6 +458,9 @@ int main(int argc, char** argv)
                                         certified_bisection(cell.box, ls, term, q, copt, rule, cs);
                                         stats.splits += cs.bisections;
                                         m.uncertified += cs.uncertified;
+                                        m.rotations += cs.rotations;
+                                        for (const auto& [key, count] : cs.causes)
+                                            causes[key] += count;
                                     }
                                     else
                                         algoim_clipped_box(cell.box, ls, term, q, opt, rule, stats);
@@ -442,14 +478,24 @@ int main(int argc, char** argv)
                                             vtk_weights.push_back(rule.weights[i]);
                                             vtk_cells.push_back(cell_index);
                                         }
+                                    if (m.uncertified > uncertified_before)
+                                        m.uncertified_cells.push_back(cell_index);
                                     ++m.cut_cells;
                                     m.points += rule.n_points();
                                     m.splits += stats.splits;
                                     m.sum_gen += value;
                                     m.sum_abs += std::abs(value - exact_part);
                                     const double floor = surface ? 1e-3 * h * h : 1e-3 * h * h * h;
-                                    if (exact_part > floor)
-                                        m.max_rel = std::max(m.max_rel, std::abs(value - exact_part) / exact_part);
+                                    if (exact_part > floor && std::abs(value - exact_part) / exact_part > m.max_rel)
+                                    {
+                                        m.max_rel = std::abs(value - exact_part) / exact_part;
+                                        m.worst_cell = cell_index;
+                                        m.worst_exact = exact_part;
+                                        m.worst_value = value;
+                                        m.worst_points = rule.n_points();
+                                        m.worst_splits = stats.splits;
+                                        m.worst_uncertified = m.uncertified - uncertified_before;
+                                    }
                                 }
                             }
                     const double global = std::abs(m.sum_gen + m.sum_uncut - total) / scale;
@@ -460,6 +506,25 @@ int main(int argc, char** argv)
                                 cfg.mesh.c_str(), n, q, gen.c_str(), part.c_str(), m.cut_cells, pts, global, l1, m.max_rel,
                                 m.splits, m.uncertified, us);
                     std::fflush(stdout);
+                    if (cfg.diagnose)
+                        std::printf("     %ld level-2 boxes in the diagonal frame\n", m.rotations);
+                    if (cfg.diagnose)
+                        std::printf("     worst cell %d: exact %.6e, rule %.6e, %ld points, %ld bisections, %ld uncertified\n",
+                                    m.worst_cell, m.worst_exact, m.worst_value, m.worst_points, m.worst_splits,
+                                    m.worst_uncertified);
+                    if (cfg.diagnose && !m.uncertified_cells.empty())
+                    {
+                        std::printf("     %zu cells with uncertified boxes:", m.uncertified_cells.size());
+                        for (std::size_t i = 0; i < std::min<std::size_t>(12, m.uncertified_cells.size()); ++i)
+                            std::printf(" %d", m.uncertified_cells[i]);
+                        std::printf("\n");
+                    }
+                    if (!causes.empty())
+                    {
+                        std::printf("     bisections by cause:\n");
+                        for (const auto& [key, count] : causes)
+                            std::printf("       %7ld  %s\n", count, key.c_str());
+                    }
                     if (want_leaves)
                     {
                         const char* slug = kind == PartKind::negative   ? "negative"

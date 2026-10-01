@@ -49,6 +49,7 @@ struct Context
 template <int D>
 struct Func
 {
+    std::uint32_t origin = 1; ///< diagnostics: chain of 4-bit codes, see origin_name
     bool linear = false;
     std::array<VecD<D>, 3> A{};
     Vec3 b{};
@@ -70,6 +71,7 @@ struct Problem
     VecD<D> lo{}, hi{};
     std::vector<Func<D>> funcs;
     std::vector<Half<D>> clips;
+    bool rotated = false; ///< already in the diagonal frame (level 2)
 };
 
 /// y_k = alpha + beta . y' on the base coordinates y'
@@ -78,7 +80,24 @@ struct Bound
 {
     double alpha = 0;
     VecD<D - 1> beta{};
+    int kind = 7; ///< diagnostics: 2/3 box face below/above, 4/5 clip below/above, 6 linear root
 };
+
+/// Origin codes: 1 phi; restricted to 2 lower box face, 3 upper box face, 4 lower
+/// clip, 5 upper clip, 6 linear root, 7 unchanged; new linear functions: 8 switch
+/// of lower bounds, 9 switch of upper bounds, 10 difference of linear roots.
+inline std::string origin_name(std::uint32_t origin)
+{
+    static const char* names[] = {"?", "phi", "box-lo", "box-hi", "clip-lo", "clip-up", "lin-root", "same",
+                                  "switch-lo", "switch-up", "root-diff"};
+    std::vector<std::string> parts;
+    for (; origin != 0; origin >>= 4)
+        parts.push_back(names[std::min<std::uint32_t>(origin & 15u, 10u)]);
+    std::string s;
+    for (auto it = parts.rbegin(); it != parts.rend(); ++it)
+        s += (s.empty() ? "" : "|") + *it;
+    return s;
+}
 
 /// Where an emitted point sits in the decomposition. Per level (index = number of
 /// free coordinates - 1): the certified box, the segment along its height line and
@@ -163,6 +182,7 @@ template <int D>
 Func<D - 1> restrict_to(const Func<D>& f, int k, const Bound<D>& b)
 {
     Func<D - 1> r;
+    r.origin = (f.origin << 4) | static_cast<std::uint32_t>(b.kind);
     r.linear = f.linear;
     for (int jb = 0; jb < D - 1; ++jb)
     {
@@ -186,6 +206,7 @@ template <int D>
 Func<D - 1> difference(const Bound<D>& b1, const Bound<D>& b2)
 {
     Func<D - 1> r;
+    r.origin = b1.kind == 6 ? 10u : (b1.kind == 2 || b1.kind == 4 ? 8u : 9u);
     r.linear = true;
     r.c = b1.alpha - b2.alpha;
     for (int j = 0; j < D - 1; ++j)
@@ -278,6 +299,102 @@ VecD<D> margins(std::vector<real>& coeffs, const algoim::uvector<int, D>& ext, c
     for (int k = 0; k < D; ++k)
         ratio[k] = norm > 0 ? lower[k] / norm : 0.0;
     return ratio;
+}
+
+/// Margins from M^D sub-cells. Only sub-cells that may meet the clipped region and on
+/// which psi may vanish count. If d_k psi has one strict sign on all of them, psi has
+/// at most one root on every height line in the region (consecutive simple roots have
+/// derivatives of opposite sign), and ratio[k] is the smallest local
+/// min|d_k psi| / max|grad psi|. Returns false if no sub-cell counts: the function
+/// does not vanish in the cell and can be dropped.
+template <int D>
+bool local_margins(std::vector<real>& coeffs, const algoim::uvector<int, D>& ext, const VecD<D>& lo, const VecD<D>& hi,
+                   const std::vector<Half<D>>& clips, int M, VecD<D>& ratio)
+{
+    algoim::xarray<real, D> p(coeffs.data(), ext);
+    int size = 1;
+    for (int j = 0; j < D; ++j)
+        size *= ext(j);
+    std::vector<real> sub_buffer(size), d_buffer;
+    algoim::xarray<real, D> sub(sub_buffer.data(), ext);
+    VecD<D> local, scale;
+    std::array<int, D> sign{};
+    local.fill(infinity);
+    for (int j = 0; j < D; ++j)
+        scale[j] = M / (hi[j] - lo[j]);
+    bool relevant = false;
+    int cells = 1;
+    for (int j = 0; j < D; ++j)
+        cells *= M;
+    for (int n = 0; n < cells; ++n)
+    {
+        algoim::uvector<real, D> a, b;
+        VecD<D> ylo, yhi;
+        for (int j = 0, m = n; j < D; ++j, m /= M)
+        {
+            a(j) = real(m % M) / M;
+            b(j) = real(m % M + 1) / M;
+            ylo[j] = lo[j] + (hi[j] - lo[j]) * a(j);
+            yhi[j] = lo[j] + (hi[j] - lo[j]) * b(j);
+        }
+        bool meets = true;
+        for (const Half<D>& h : clips)
+        {
+            double vmin = 0;
+            for (int j = 0; j < D; ++j)
+                vmin += h.c[j] * (h.c[j] >= 0 ? ylo[j] : yhi[j]);
+            meets &= vmin <= h.d + 1e-12;
+        }
+        if (!meets)
+            continue;
+        algoim::bernstein::deCasteljau(p, a, b, sub);
+        if (!may_vanish(sub_buffer))
+            continue;
+        relevant = true;
+        VecD<D> dmin{}, dmax{};
+        std::array<int, D> s{};
+        for (int k = 0; k < D; ++k)
+        {
+            if (ext(k) < 2)
+                continue;
+            algoim::uvector<int, D> e = ext;
+            e(k) -= 1;
+            int dsize = 1;
+            for (int j = 0; j < D; ++j)
+                dsize *= e(j);
+            d_buffer.assign(dsize, 0.0);
+            algoim::xarray<real, D> dk(d_buffer.data(), e);
+            algoim::bernstein::bernsteinDerivative(sub, k, dk);
+            bool pos = true, neg = true;
+            double amin = infinity, amax = 0;
+            for (int i = 0; i < dsize; ++i)
+            {
+                pos &= d_buffer[i] > 0;
+                neg &= d_buffer[i] < 0;
+                amin = std::min(amin, std::abs(d_buffer[i]));
+                amax = std::max(amax, std::abs(d_buffer[i]));
+            }
+            s[k] = pos ? 1 : (neg ? -1 : 0);
+            dmin[k] = (pos || neg) ? amin * scale[k] : 0.0;
+            dmax[k] = amax * scale[k];
+        }
+        double norm = 0;
+        for (int k = 0; k < D; ++k)
+            norm += dmax[k] * dmax[k];
+        norm = std::sqrt(norm);
+        for (int k = 0; k < D; ++k)
+        {
+            // one strict sign shared by all counted sub-cells
+            if (s[k] == 0 || (sign[k] != 0 && sign[k] != s[k]))
+                sign[k] = 2;
+            else if (sign[k] == 0)
+                sign[k] = s[k];
+            local[k] = std::min(local[k], norm > 0 ? dmin[k] / norm : 0.0);
+        }
+    }
+    for (int k = 0; k < D; ++k)
+        ratio[k] = (relevant && (sign[k] == 1 || sign[k] == -1)) ? local[k] : 0.0;
+    return relevant;
 }
 
 /// Root of g in (a, b) given a sign change; bisection with secant steps (Illinois).
@@ -481,6 +598,133 @@ bool linear_may_vanish(const Func<D>& f, const VecD<D>& lo, const VecD<D>& hi)
 // Integration by dimension reduction
 // ============================================================================
 
+/// Why did certification fail? Sample the clipped region on a 9^D grid and look at
+/// the function with the smallest margin for the chosen axis near its zero set.
+template <int D>
+void diagnose_failure(const Context& ctx, const Problem<D>& p, const std::vector<int>& curved,
+                      const std::vector<VecD<D>>& ratios, int k, double best, int depth)
+{
+    std::size_t blocker = 0;
+    for (std::size_t i = 1; i < ratios.size(); ++i)
+        if (ratios[i][k] < ratios[blocker][k])
+            blocker = i;
+    const Func<D>& f = p.funcs[curved[blocker]];
+    const int G = 9;
+    std::vector<VecD<D>> points;
+    std::array<int, D> idx{};
+    const int total = static_cast<int>(std::pow(G, D));
+    for (int n = 0; n < total; ++n)
+    {
+        int m = n;
+        VecD<D> y;
+        for (int j = 0; j < D; ++j)
+        {
+            idx[j] = m % G;
+            m /= G;
+            y[j] = p.lo[j] + (p.hi[j] - p.lo[j]) * (idx[j] + 0.5) / G;
+        }
+        bool inside = true;
+        for (const Half<D>& h : p.clips)
+        {
+            double sum = 0;
+            for (int j = 0; j < D; ++j)
+                sum += h.c[j] * y[j];
+            inside &= sum <= h.d;
+        }
+        if (inside)
+            points.push_back(y);
+    }
+    std::vector<double> values(points.size());
+    double vmax = 0;
+    bool pos = false, neg = false;
+    for (std::size_t i = 0; i < points.size(); ++i)
+    {
+        values[i] = value<D>(ctx, f, points[i]);
+        vmax = std::max(vmax, std::abs(values[i]));
+        pos |= values[i] > 0;
+        neg |= values[i] < 0;
+    }
+    std::string category;
+    if (!(pos && neg))
+        category = "zero set outside the cell";
+    else
+    {
+        VecD<D> rmin;
+        rmin.fill(infinity);
+        for (std::size_t i = 0; i < points.size(); ++i)
+        {
+            if (std::abs(values[i]) > 0.2 * vmax)
+                continue;
+            VecD<D> g;
+            double norm = 0;
+            for (int j = 0; j < D; ++j)
+            {
+                g[j] = derivative<D>(ctx, f, points[i], j);
+                norm += g[j] * g[j];
+            }
+            norm = std::sqrt(norm);
+            for (int j = 0; j < D && norm > 0; ++j)
+                rmin[j] = std::min(rmin[j], std::abs(g[j]) / norm);
+        }
+        double other = 0;
+        for (int j = 0; j < D; ++j)
+            other = std::max(other, rmin[j]);
+        if (rmin[k] >= ctx.opt.margin)
+            category = "margin holds near the zero set in the cell";
+        else if (other >= ctx.opt.margin)
+            category = "another axis has the margin there";
+        else
+            category = "margin fails near the zero set in the cell";
+    }
+    const std::string key = "level " + std::to_string(D) + " | " + origin_name(f.origin) + " | "
+                            + (best > 0 ? "bound below margin" : "no certain sign") + " | " + category;
+    ++ctx.stats->causes[key];
+    ++ctx.stats->causes["level " + std::to_string(D) + " | depth " + std::to_string(depth)];
+
+    // From the certified bounds alone: does one function fail on every axis, or does
+    // each function have an axis but no axis suits all (a conflict)?
+    std::string axes;
+    for (std::size_t i = 0; i < ratios.size() && axes.empty(); ++i)
+    {
+        double top = 0;
+        for (int j = 0; j < D; ++j)
+            top = std::max(top, ratios[i][j]);
+        if (top < ctx.opt.margin)
+            axes = "one function fails on every axis: " + origin_name(p.funcs[curved[i]].origin);
+    }
+    if (axes.empty())
+    {
+        std::vector<std::string> names;
+        for (int j = 0; j < D; ++j)
+        {
+            std::size_t b = 0;
+            for (std::size_t i = 1; i < ratios.size(); ++i)
+                if (ratios[i][j] < ratios[b][j])
+                    b = i;
+            names.push_back(origin_name(p.funcs[curved[b]].origin));
+        }
+        std::sort(names.begin(), names.end());
+        names.erase(std::unique(names.begin(), names.end()), names.end());
+        axes = "conflict:";
+        for (const std::string& n : names)
+            axes += " " + n;
+    }
+    // is the box cut by the boundary of the clipped region?
+    bool cut = false;
+    for (const Half<D>& h : p.clips)
+    {
+        double vmin = 0, vmax = 0;
+        for (int j = 0; j < D; ++j)
+        {
+            vmin += h.c[j] * (h.c[j] >= 0 ? p.lo[j] : p.hi[j]);
+            vmax += h.c[j] * (h.c[j] >= 0 ? p.hi[j] : p.lo[j]);
+        }
+        cut |= vmin < h.d - 1e-12 && vmax > h.d + 1e-12;
+    }
+    ++ctx.stats->causes["axes | level " + std::to_string(D) + (depth >= ctx.opt.max_depth ? " | at depth limit" : " | before limit")
+                        + " | " + axes + (cut ? " | box cut by a face" : " | box inside")];
+}
+
 /// Nodes on a segment [a, b]: Gauss-Legendre points and weights for quadrature, or
 /// vis_order + 1 equispaced points, pulled 1e-5 inside the ends, for leaf cells (closer
 /// to a breakpoint, a root may fall on either side of a bound by rounding).
@@ -555,15 +799,26 @@ void integrate<1>(const Context& ctx, Problem<1> p, const Emit<1>& emit, int, Li
     }
 }
 
+/// The functions of a (tightened) problem that may vanish in it, their direction
+/// margins and the best height direction.
 template <int D>
-void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth, LineRule rule)
+struct Analysis
 {
-    if (!tighten<D>(p.lo, p.hi, p.clips))
-        return;
-
-    // keep the functions that may vanish on the box, with their direction margins
     std::vector<Func<D>> funcs;
     std::vector<VecD<D>> ratios;
+    std::vector<int> curved; ///< index in funcs of each entry of ratios
+    int k = 0;
+    double best = -1;
+    bool certified = false;
+};
+
+template <int D>
+Analysis<D> analyse(const Context& ctx, const Problem<D>& p)
+{
+    Analysis<D> an;
+    std::vector<Func<D>>& funcs = an.funcs;
+    std::vector<VecD<D>>& ratios = an.ratios;
+    std::vector<int>& curved = an.curved;
     std::vector<real> coeffs;
     algoim::uvector<int, D> ext;
     for (const Func<D>& f : p.funcs)
@@ -575,30 +830,126 @@ void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth,
             continue;
         }
         bernstein_form<D>(ctx, f, p.lo, p.hi, coeffs, ext);
-        if (!may_vanish(coeffs))
-            continue;
+        VecD<D> ratio{};
+        if (ctx.opt.mask_subdivisions > 1)
+        {
+            if (!local_margins<D>(coeffs, ext, p.lo, p.hi, p.clips, ctx.opt.mask_subdivisions, ratio))
+                continue; // no zero of this function inside the cell
+        }
+        else
+        {
+            if (!may_vanish(coeffs))
+                continue;
+            ratio = margins<D>(coeffs, ext, p.lo, p.hi);
+        }
+        curved.push_back(static_cast<int>(funcs.size()));
         funcs.push_back(f);
-        ratios.push_back(margins<D>(coeffs, ext, p.lo, p.hi));
+        ratios.push_back(ratio);
     }
-    if (rule == LineRule::interface && funcs.empty())
-        return; // the level set does not cross this box
-    p.funcs = std::move(funcs);
-
     // height direction: the best certified margin over all curved functions
-    int k = 0;
-    double best = -1;
     for (int kk = 0; kk < D; ++kk)
     {
         double score = 1.0;
         for (const VecD<D>& r : ratios)
             score = std::min(score, r[kk]);
-        if (score > best || (score == best && p.hi[kk] - p.lo[kk] > p.hi[k] - p.lo[k]))
+        if (score > an.best || (score == an.best && p.hi[kk] - p.lo[kk] > p.hi[an.k] - p.lo[an.k]))
         {
-            best = score;
-            k = kk;
+            an.best = score;
+            an.k = kk;
         }
     }
-    const bool certified = ratios.empty() || (best > 0 && best >= ctx.opt.margin);
+    an.certified = ratios.empty() || (an.best > 0 && an.best >= ctx.opt.margin);
+    return an;
+}
+
+/// A level-2 problem in the diagonal frame y = T z, T = [[1/2, -1/2], [1/2, 1/2]]:
+/// z_0 runs along (1, 1) and z_1 along (-1, 1). The box becomes four clips.
+inline Problem<2> rotate_diagonal(const Problem<2>& p)
+{
+    auto transpose_times = [](const VecD<2>& c) { return VecD<2>{0.5 * (c[0] + c[1]), 0.5 * (c[1] - c[0])}; };
+    Problem<2> r;
+    r.rotated = true;
+    for (const Half<2>& h : p.clips)
+        r.clips.push_back({transpose_times(h.c), h.d});
+    for (int j = 0; j < 2; ++j)
+    {
+        VecD<2> e{};
+        e[j] = 1.0;
+        r.clips.push_back({transpose_times(e), p.hi[j]});
+        e[j] = -1.0;
+        r.clips.push_back({transpose_times(e), -p.lo[j]});
+    }
+    // z_0 = y_0 + y_1, z_1 = y_1 - y_0
+    r.lo = {p.lo[0] + p.lo[1], p.lo[1] - p.hi[0]};
+    r.hi = {p.hi[0] + p.hi[1], p.hi[1] - p.lo[0]};
+    for (const Func<2>& f : p.funcs)
+    {
+        Func<2> g = f;
+        if (f.linear)
+            g.a = transpose_times(f.a);
+        else
+            for (int i = 0; i < 3; ++i)
+                g.A[i] = transpose_times(f.A[i]);
+        r.funcs.push_back(g);
+    }
+    return r;
+}
+
+template <int D>
+void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth, LineRule rule)
+{
+    if (!tighten<D>(p.lo, p.hi, p.clips))
+        return;
+
+    // keep the functions that may vanish on the box, with their direction margins
+    Analysis<D> an = analyse<D>(ctx, p);
+    if (rule == LineRule::interface && an.funcs.empty())
+        return; // the level set does not cross this box
+    p.funcs = an.funcs;
+    const std::vector<VecD<D>>& ratios = an.ratios;
+    const std::vector<int>& curved = an.curved;
+    const int k = an.k;
+    const double best = an.best;
+    const bool certified = an.certified;
+
+    // Level 2: two functions whose zero curves meet (on a face of a tet, say) may each
+    // need a different axis, and no bisection separates them. A diagonal frame often
+    // suits both.
+    if constexpr (D == 2)
+    {
+        if (!certified && ctx.opt.diagonal_frames && !p.rotated)
+        {
+            Problem<2> r = rotate_diagonal(p);
+            if (tighten<2>(r.lo, r.hi, r.clips) && analyse<2>(ctx, r).certified)
+            {
+                ++ctx.stats->rotations;
+                const Emit<2> back = [&emit](const VecD<2>& z, double w, const Tag& tag)
+                { emit({0.5 * (z[0] - z[1]), 0.5 * (z[0] + z[1])}, 0.5 * w, tag); };
+                integrate<2>(ctx, std::move(r), back, depth, rule);
+                return;
+            }
+        }
+    }
+    static const bool trace = std::getenv("CERTIFY_TRACE") != nullptr;
+    if (trace)
+    {
+        std::fprintf(stderr, "%*slevel %d depth %d box", 2 * (3 - D), "", D, depth);
+        for (int j = 0; j < D; ++j)
+            std::fprintf(stderr, " [%.4f, %.4f]", p.lo[j], p.hi[j]);
+        std::fprintf(stderr, " k %d %s, %zu clips\n", k, certified ? "certified" : "FAILED", p.clips.size());
+        for (std::size_t i = 0; i < ratios.size(); ++i)
+        {
+            std::fprintf(stderr, "%*s  %-22s ratios", 2 * (3 - D), "", origin_name(p.funcs[curved[i]].origin).c_str());
+            for (int j = 0; j < D; ++j)
+                std::fprintf(stderr, " %.3f", ratios[i][j]);
+            std::fprintf(stderr, "\n");
+        }
+        for (const Func<D>& f : p.funcs)
+            if (f.linear)
+                std::fprintf(stderr, "%*s  %-22s linear\n", 2 * (3 - D), "", origin_name(f.origin).c_str());
+    }
+    if (!certified && ctx.opt.diagnose)
+        diagnose_failure<D>(ctx, p, curved, ratios, k, best, depth);
     if (!certified)
     {
         if (depth < ctx.opt.max_depth)
@@ -632,6 +983,8 @@ void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth,
         Bound<D> l, u;
         l.alpha = p.lo[k];
         u.alpha = p.hi[k];
+        l.kind = 2;
+        u.kind = 3;
         lowers.push_back(l);
         uppers.push_back(u);
     }
@@ -649,6 +1002,7 @@ void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth,
         }
         Bound<D> b;
         b.alpha = h.d / ck;
+        b.kind = ck > 0 ? 5 : 4;
         for (int jb = 0; jb < D - 1; ++jb)
             b.beta[jb] = -h.c[jb < k ? jb : jb + 1] / ck;
         (ck > 0 ? uppers : lowers).push_back(b);
@@ -723,6 +1077,7 @@ void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth,
         if (f.linear && std::abs(f.a[k]) > tiny)
         {
             Bound<D> r;
+            r.kind = 6;
             r.alpha = -f.c / f.a[k];
             for (int jb = 0; jb < D - 1; ++jb)
                 r.beta[jb] = -f.a[jb < k ? jb : jb + 1] / f.a[k];
