@@ -89,6 +89,19 @@ target_include_directories(quadrature_study PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(quadrature_study PRIVATE ${LAPACK_LIBRARIES})
 
+add_executable(quadrature_robustness
+  src/robustness.cpp
+  src/clipped_box.cpp
+  src/generators.cpp
+  ${CUTCELLS_ROOT}/cpp/src/selection_expr.cpp)
+target_include_directories(quadrature_robustness PRIVATE
+  ${CMAKE_BINARY_DIR}/algoim_ext
+  ${ALGOIM_DIR}
+  ${CUTCELLS_ROOT}/third_party/lapacke_compat
+  ${CUTCELLS_ROOT}/cpp/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(quadrature_robustness PRIVATE ${LAPACK_LIBRARIES})
+
 add_executable(test_exact_reference src/test_exact_reference.cpp)
 target_include_directories(test_exact_reference PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

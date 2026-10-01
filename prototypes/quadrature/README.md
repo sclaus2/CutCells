@@ -34,8 +34,10 @@ prototype keeps that shape so a later engine can become another `backend` of
 | `src/leaf_mesh.h` | leaf meshes (CSR), VTK Lagrange node order, `.vtu` writer |
 | `src/test_leaf_ordering.cpp` | writes Lagrange cells for checking the node order against VTK |
 | `tools/check_leaves.py` | checks leaf files with VTK (node order, sizes) and renders them; needs vtk and pyvista, e.g. the `vtk-env` environment |
-| `src/exact_reference.h` | exact sphere area and ball volume inside a convex polytope (about 1e-14) |
+| `src/exact_reference.h` | exact sphere area and ball volume inside a convex polytope (about 1e-14); convex polytope cut by a plane |
 | `src/study.cpp` | comparison driver |
+| `src/robustness.cpp` | robustness driver: degenerate placements, scaling, several components, singular points; every cell, checked against exact values (RESULTS.md, v1.2) |
+| `src/test_mesh.h` | the test meshes (hexes and Kuhn tets of [-1, 1]^3) |
 | `src/test_exact_reference.cpp` | checks the exact reference |
 | `CMakeLists.txt` | also writes a patched copy of algoim's `quadrature_multipoly.hpp` to the build tree; `third_party/` is untouched |
 

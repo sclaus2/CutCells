@@ -34,6 +34,21 @@ using VecD = std::array<double, D>;
 constexpr double tiny = 1e-14;
 constexpr double infinity = std::numeric_limits<double>::infinity();
 
+/// Euclidean norm without underflow or overflow: phi may be scaled by any factor.
+template <std::size_t N>
+double scaled_norm(const std::array<double, N>& v)
+{
+    double m = 0;
+    for (double x : v)
+        m = std::max(m, std::abs(x));
+    if (m == 0 || !std::isfinite(m))
+        return m;
+    double s = 0;
+    for (double x : v)
+        s += (x / m) * (x / m);
+    return m * std::sqrt(s);
+}
+
 struct Context
 {
     const algoim::xarray<real, 3>* phi = nullptr; ///< Bernstein form of phi on the cell's unit box
@@ -43,6 +58,8 @@ struct Context
     CertifyStats* stats = nullptr;
     int vis_order = 0;                     ///< > 0: leaf-cell nodes (vis_order + 1 per segment) instead of Gauss points
     mutable std::array<int, 3> box_ids{}; ///< counters of certified boxes, per level
+    double phi_scale = 0;                  ///< largest |Bernstein coefficient| of phi on the cell
+    mutable int bisections = 0;            ///< bisections so far in this cell (CertifyOptions::max_bisections)
 };
 
 /// psi(y) = phi(A y + b) (curved), or a . y + c (linear), on level coordinates y.
@@ -291,10 +308,7 @@ VecD<D> margins(std::vector<real>& coeffs, const algoim::uvector<int, D>& ext, c
         lower[k] = (pos || neg) ? amin * scale : 0.0;
         upper[k] = amax * scale;
     }
-    double norm = 0;
-    for (int k = 0; k < D; ++k)
-        norm += upper[k] * upper[k];
-    norm = std::sqrt(norm);
+    const double norm = scaled_norm(upper);
     VecD<D> ratio{};
     for (int k = 0; k < D; ++k)
         ratio[k] = norm > 0 ? lower[k] / norm : 0.0;
@@ -378,10 +392,7 @@ bool local_margins(std::vector<real>& coeffs, const algoim::uvector<int, D>& ext
             dmin[k] = (pos || neg) ? amin * scale[k] : 0.0;
             dmax[k] = amax * scale[k];
         }
-        double norm = 0;
-        for (int k = 0; k < D; ++k)
-            norm += dmax[k] * dmax[k];
-        norm = std::sqrt(norm);
+        const double norm = scaled_norm(dmax);
         for (int k = 0; k < D; ++k)
         {
             // one strict sign shared by all counted sub-cells
@@ -656,13 +667,9 @@ void diagnose_failure(const Context& ctx, const Problem<D>& p, const std::vector
             if (std::abs(values[i]) > 0.2 * vmax)
                 continue;
             VecD<D> g;
-            double norm = 0;
             for (int j = 0; j < D; ++j)
-            {
                 g[j] = derivative<D>(ctx, f, points[i], j);
-                norm += g[j] * g[j];
-            }
-            norm = std::sqrt(norm);
+            const double norm = scaled_norm(g);
             for (int j = 0; j < D && norm > 0; ++j)
                 rmin[j] = std::min(rmin[j], std::abs(g[j]) / norm);
         }
@@ -830,6 +837,13 @@ Analysis<D> analyse(const Context& ctx, const Problem<D>& p)
             continue;
         }
         bernstein_form<D>(ctx, f, p.lo, p.hi, coeffs, ext);
+        // phi vanishes identically here (phi = 0 on a face, say): only rounding noise is
+        // left, which would block certification; it has no root inside the region
+        double cmax = 0;
+        for (real v : coeffs)
+            cmax = std::max(cmax, std::abs(v));
+        if (cmax <= 1e-12 * ctx.phi_scale)
+            continue;
         VecD<D> ratio{};
         if (ctx.opt.mask_subdivisions > 1)
         {
@@ -952,8 +966,9 @@ void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth,
         diagnose_failure<D>(ctx, p, curved, ratios, k, best, depth);
     if (!certified)
     {
-        if (depth < ctx.opt.max_depth)
+        if (depth < ctx.opt.max_depth && ctx.bisections < ctx.opt.max_bisections)
         {
+            ++ctx.bisections;
             ++ctx.stats->bisections;
             int axis = 0;
             for (int j = 1; j < D; ++j)
@@ -1159,15 +1174,12 @@ void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth,
                 const double t = nodes[r];
                 tag.segment[D - 1] = static_cast<int>(r);
                 const VecD<D> y = insert<D>(yb, k, t);
-                double gn = 0;
+                VecD<D> grad;
                 for (int j = 0; j < D; ++j)
-                {
-                    const double dj = derivative<D>(ctx, p.funcs.front(), y, j);
-                    gn += dj * dj;
-                }
-                const double dk = std::abs(derivative<D>(ctx, p.funcs.front(), y, k));
+                    grad[j] = derivative<D>(ctx, p.funcs.front(), y, j);
+                const double dk = std::abs(grad[k]);
                 if (dk > 0)
-                    emit(y, w * std::sqrt(gn) / dk, tag);
+                    emit(y, w * scaled_norm(grad) / dk, tag);
             }
             return;
         }
@@ -1202,11 +1214,15 @@ Vec3 phi_gradient(const algoim::xarray<real, 3>& phi, const Vec3& u)
 
 double surface_scale(const Mat3& inv, const Vec3& g)
 {
+    // the ratio does not depend on the scale of g; normalise it first
+    const double m = scaled_norm(g);
+    if (!(m > 0))
+        return 0.0;
     Vec3 y = {0, 0, 0};
     for (int i = 0; i < 3; ++i)
         for (int k = 0; k < 3; ++k)
-            y[i] += inv[k][i] * g[k];
-    return std::sqrt(y[0] * y[0] + y[1] * y[1] + y[2] * y[2]) / std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+            y[i] += inv[k][i] * g[k] / m;
+    return scaled_norm(y);
 }
 /// Bernstein form of the level set on the cell's unit box.
 struct CellLevelSet
@@ -1220,6 +1236,14 @@ struct CellLevelSet
     {
         algoim::bernstein::bernsteinInterpolate<3>(
             [&](const algoim::uvector<real, 3>& u) { return ls.value(physical_point(cell, {u(0), u(1), u(2)})); }, phi);
+    }
+
+    double scale() const
+    {
+        double m = 0;
+        for (real v : buffer)
+            m = std::max(m, std::abs(v));
+        return m;
     }
 };
 
@@ -1251,6 +1275,7 @@ void certified_bisection(const ClippedBox& cell, const LevelSet& ls, const Selec
     const CellLevelSet cls(cell, ls);
     Context ctx;
     ctx.phi = &cls.phi;
+    ctx.phi_scale = cls.scale();
     ctx.degree = ls.degree;
     ctx.q = q;
     ctx.opt = opt;
@@ -1298,6 +1323,7 @@ void certified_leaves(const ClippedBox& cell, const LevelSet& ls, const Selectio
     const CellLevelSet cls(cell, ls);
     Context ctx;
     ctx.phi = &cls.phi;
+    ctx.phi_scale = cls.scale();
     ctx.degree = ls.degree;
     ctx.q = 1;
     ctx.vis_order = degree;

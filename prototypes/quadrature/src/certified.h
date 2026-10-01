@@ -34,6 +34,11 @@ struct CertifyOptions
 {
     double margin = 0.25; ///< required |d_k psi| / |grad psi| on the box
     int max_depth = 8;    ///< bisections allowed per level along a branch
+    /// Bisections allowed per cell, all levels and branches together. Beyond it boxes
+    /// are integrated uncertified (roots isolated in full): the cost stays bounded where
+    /// certification cannot succeed, e.g. two sheets of phi closer than the depth limit
+    /// resolves, or a singular point.
+    int max_bisections = 256;
     bool prune_bounds = true; ///< drop bounds that are never active on the base region
     bool diagnose = false;    ///< record why each bisection happened (CertifyStats::causes)
     /// Level 2: if no axis certifies, try the diagonal frame before bisecting. On a

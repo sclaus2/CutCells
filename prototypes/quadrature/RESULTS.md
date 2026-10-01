@@ -1,6 +1,7 @@
 # Results
 
-- v1.1: where the extra bisections on tets come from (at the end)
+- v1.2: robustness (at the end)
+- v1.1: where the extra bisections on tets come from
 - v1: certify-and-bisect (below the v0 section)
 - v0: algoim variants
 
@@ -314,3 +315,112 @@ integrand directly; only then would masked bounds pay off.
 4. An accuracy control for the outer 1D integral, so that certification can use
    masked bounds.
 5. Binary VTK output for larger leaf meshes.
+
+## v1.2: robustness (2026-10-01)
+
+`quadrature_robustness` hands every cell of [-1, 1]^3, cut or not, to each
+generator and checks the rules: exceptions and non-finite values, negative
+weights, points outside the cell, volume points on the wrong side of phi or
+interface points off it (by more than 1e-9 h), per-cell errors against exact
+values, totals, and time per cell.
+
+- Batch 1 (n = 16): spheres and planes placed on the grid so that they pass
+  through vertices, touch faces, cut tiny caps or lie in faces; phi scaled by
+  1e+-150 and 1e+-200.
+- Batch 2 (n = 8): several components, close roots and singular points. Per-cell
+  exact values exist for products of spheres; for cones, the double root and the
+  torus only the totals are known.
+
+q = 3 throughout. "algoim" is today's backend (2022 engine, AutoMixed); "algoim
+GL" uses Gauss-Legendre throughout. New exact references (`test_exact_reference`):
+convex polytopes cut by a plane, including faces lying in it, and spheres through
+vertices, tangent to faces and with a 1e-6 cap. All sum to their closed forms
+within 1e-13.
+
+### Fixed in the prototype
+
+| Problem | Seen in | Fix |
+| --- | --- | --- |
+| Underflow in the margin norm: no box certified, 600 times the time, non-finite interface weights | phi times 1e-200 | norms without underflow or overflow (`scaled_norm`); rules now identical to the unscaled ones |
+| phi = 0 on a face: its restriction is rounding noise, so certification failed and every box bisected to the depth limit (exact volumes, 300 times slower) | planes in grid faces and in slanted tet faces | drop functions whose Bernstein coefficients are below 1e-12 of phi's on the cell |
+| No bound on the work per cell: up to 186 s in one tet | products of spheres, thin shells, the double root | at most 256 bisections per cell (`max_bisections`); beyond that, boxes are integrated uncertified |
+
+After the fixes, the sphere study (n = 16, q = 5) and plane exactness are unchanged.
+
+### Placements on the grid (n = 16)
+
+Tets: per-cell L1 for volume / interface, then cells with an error above 1e-4 h^3
+or 1e-4 h^2 (volume / interface).
+
+| Case | prototype (0.25) | algoim | algoim GL |
+| --- | --- | --- | --- |
+| off the grid (baseline) | 1.7e-7 / 3.8e-6; 0 / 0 | 4.9e-5 / 3.3e-4; 33 / 96 | 1.9e-6 / 2.5e-4; 1 / 77 |
+| centre on a vertex, tangent to grid planes at 6 vertices | 1.0e-7 / 2.5e-6; 0 / 0 | 1.3e-3 / 1.5e-3; 168 / 216 | 1.0e-5 / 9.4e-4; 6 / 126 |
+| through 12 vertices | 5.5e-8 / 1.1e-6; 0 / 0 | 4.3e-4 / 7.6e-4; 174 / 198 | 1.9e-6 / 3.8e-4; 0 / 90 |
+| tangent to a grid plane inside a face | 1.0e-7 / 2.3e-6; 0 / 0 | 7.6e-5 / 4.2e-4; 43 / 106 | 1.6e-6 / 3.5e-4; 1 / 75 |
+| cap of height 1e-12 | 1.0e-7 / 2.3e-6; 0 / 0 | 6.6e-5 / 4.2e-4; 43 / 106 | 1.6e-6 / 3.5e-4; 1 / 75 |
+
+- No generator failed, and none put points outside a cell or on the wrong side.
+- The prototype bisects near tangencies (4,812 bisections and 48 uncertified
+  boxes for the vertex-tangent sphere on tets) and stays the most accurate.
+- On hexes every generator matches algoim's 2015 engine, except today's backend
+  (24 bad cells for the vertex-tangent sphere).
+- Planes through vertices and edges, and slivers 1e-12 thick: every generator is
+  exact for the volume. Next to the slivers, algoim returns non-finite interface
+  weights in 512 tets.
+
+### Degenerate input
+
+| Case | prototype | algoim |
+| --- | --- | --- |
+| phi times 1e+-150 | identical to phi | identical to phi |
+| phi times 1e+-200 | identical to phi (after the fix) | volume L1 1e-2 with 556 to 2,387 bad cells; interface non-finite in 274 to 4,940 cells, or empty |
+| plane in grid faces, hexes | exact volumes (after the fix) | exact volumes |
+| plane in grid faces, tets | exact volumes (after the fix) | volume errors up to 0.17 h^3 in 512 to 1,024 tets; 512 non-finite interface cells |
+| plane in slanted tet faces | exact volumes (after the fix) | volume errors up to 0.17 h^3 in 256 tets; 480 non-finite interface cells |
+
+An interface lying in mesh faces belongs to no cell in either engine. On hexes
+neither reports any of it; on tets the prototype reports about a third, chosen by
+rounding. The engine needs an explicit owner, which is an open question in the
+hand-off note.
+
+### Several components and singular points (n = 8)
+
+Hex / tet. The prototype runs at margin 0.25 with the bisection budget.
+
+| Case | prototype | algoim |
+| --- | --- | --- |
+| two balls touching at a point (degree 4) | volume L1 3.8e-6 / 6.5e-6; interface 1.5e-4 / 1.3e-3 with 1 / 11 bad cells; 0.9 / 1.3 ms per cell | volume 2.8e-3 / 2.1e-3 with 33 / 65 bad cells; interface 1.5e-2 / 3.8e-3 with 51 / 114 bad cells; 1.5 / 19 ms per cell, up to 9.5 s in one cell |
+| the same, gap 1e-6 | as touching | as touching; up to 189 s in one cell |
+| torus R = 0.5, r = 0.2 (degree 4), totals | volume 3.8e-6 / 1.1e-6, area 3.0e-5 / 8.7e-5; 0.5 / 1.3 ms per cell | volume 3.9e-3 / 1.5e-3, area 1.6e-2 / 3.3e-3; 19 / 27 ms per cell |
+| cone, apex inside a cell, totals | volume 5.8e-6 / 2.2e-6, area 5.9e-5 / 5.5e-4; 880 points per cut tet | volume 3.0e-4 / 4.0e-4, area 6.3e-3 / 5.5e-4; 110 points per cut tet |
+| shell 1e-3 thick (degree 4) | volume L1 2.8e-2 / 1.1e-2; interface 3.8e-2 / 2.4e-2 with 53 / 117 bad cells; 11 ms per cell | volume 3.2e-3 / 3.0e-3; interface 5.4e-3 with 67 bad cells (hex); 63 to 117 ms per cell |
+| phi = (x - a)^2: zero, with zero gradient, on a plane | no volume (correct); interface 0 to 6% of the plane; 3 to 6 ms per cell | no volume; interface 0 to 17% of the plane; 0.3 to 2.8 ms per cell |
+
+- With the apex on a vertex the cone behaves the same. Near the apex both engines
+  put points just outside the cone: the prototype 286 and algoim 808 to 1,210, out
+  of about 300,000 volume points on tets.
+- The thin shell is the prototype's real weak spot. Certification needs at most
+  one root per height line and function, and two sheets 1e-3 apart cannot be
+  separated before the depth limit. Without the budget the prototype matches
+  algoim there (hex: volume 1.0e-3; interface 5.9e-3 with 16 bad cells), but takes
+  121 ms per cell and up to 4 s in one cell.
+
+### Findings
+
+1. **After three fixes, the prototype is at least as robust as algoim on these
+   tests.** It has no crash, no non-finite value and no point outside a cell. It
+   is more accurate than algoim everywhere except the thin shell. algoim fails on
+   scaled level sets (1e+-200), on planes in tet faces (wrong volumes, NaN weights)
+   and on degree-4 products (errors of 1e-3 to 1e-2, up to minutes in one cell).
+2. **The prototype's weak spots:**
+   - A level set with two sheets in one cell. This needs a multi-root
+     certification (simple roots instead of one root per line) or algoim-style
+     discriminants.
+   - An interface lying in mesh faces, which needs an owner.
+   - Many points near singular points: 8 times algoim's near a cone apex.
+3. **Caveat:** on tets, algoim's results go through the clipped-box wrapper, as
+   CutCells' backend does today. On hexes they are algoim's own.
+
+Run with `quadrature_robustness [--case ...] [--mesh tet,hex] [--n 16] [--q 3]
+[--gen ...]`; `--list` prints the cases.

@@ -299,6 +299,115 @@ inline double ball_volume(const std::vector<Face>& faces, double r, double area)
   return s / 3.0;
 }
 
+// ---- polytope cut by a plane ----
+
+// Area of a planar loop.
+inline double loop_area(const std::vector<V3>& loop)
+{
+  V3 nn{0, 0, 0};
+  for (size_t i = 0; i < loop.size(); ++i)
+    nn = add(nn, cross(loop[i], loop[(i + 1) % loop.size()]));
+  return 0.5 * norm(nn);
+}
+
+// Convex polytope cut by the plane a . x = b (a need not be a unit vector): the volume
+// where a . x < b and the area of the cut. If a face lies in the plane, the polytope
+// is on one side of it: the cut is empty and the face's area is reported apart.
+struct PlaneCut
+{
+  double volume_below = 0;
+  double cut_area = 0;
+  double face_in_plane = 0;
+};
+
+inline PlaneCut plane_cut(const std::vector<Face>& faces, const V3& a, double b)
+{
+  const double an = norm(a);
+  const V3 n = mul(1.0 / an, a);
+  const double d = b / an;
+  double extent = 0, full = 0;
+  V3 c{0, 0, 0};
+  int cnt = 0;
+  for (const auto& f : faces)
+  {
+    full += f.d * loop_area(f.loop);
+    for (const auto& v : f.loop)
+    {
+      extent = std::max(extent, norm(v));
+      c = add(c, v);
+      ++cnt;
+    }
+  }
+  full /= 3.0;
+  c = mul(1.0 / cnt, c);
+  const double tol = 1e-13 * std::max(extent, 1.0);
+  PlaneCut out;
+  for (const auto& f : faces)
+  {
+    bool in_plane = true;
+    for (const auto& v : f.loop)
+      in_plane &= std::abs(dot(n, v) - d) <= tol;
+    if (in_plane)
+    {
+      out.face_in_plane = loop_area(f.loop);
+      out.volume_below = dot(n, c) < d ? full : 0.0;
+      return out;
+    }
+  }
+  // clip every face to a . x <= b (points within tol of the plane count as on it)
+  double vol = 0;
+  std::vector<V3> cap;
+  for (const auto& f : faces)
+  {
+    std::vector<V3> clipped;
+    const size_t m = f.loop.size();
+    for (size_t i = 0; i < m; ++i)
+    {
+      const V3& p = f.loop[i];
+      const V3& q = f.loop[(i + 1) % m];
+      const double sp = dot(n, p) - d, sq = dot(n, q) - d;
+      if (sp <= tol)
+        clipped.push_back(p);
+      if (std::abs(sp) <= tol)
+        cap.push_back(p);
+      if ((sp < -tol && sq > tol) || (sp > tol && sq < -tol))
+      {
+        const V3 x = add(p, mul(sp / (sp - sq), sub(q, p)));
+        clipped.push_back(x);
+        cap.push_back(x);
+      }
+    }
+    if (clipped.size() >= 3)
+      vol += f.d * loop_area(clipped);
+  }
+  // the cut: a convex polygon in the plane, its points sorted by angle
+  std::vector<V3> pts;
+  for (const auto& x : cap)
+  {
+    bool seen = false;
+    for (const auto& y : pts)
+      seen |= norm(sub(x, y)) <= 10 * tol;
+    if (!seen)
+      pts.push_back(x);
+  }
+  double area = 0;
+  if (pts.size() >= 3)
+  {
+    V3 m{0, 0, 0};
+    for (const auto& x : pts)
+      m = add(m, x);
+    m = mul(1.0 / pts.size(), m);
+    V3 t0 = std::abs(n[0]) < 0.9 ? V3{1, 0, 0} : V3{0, 1, 0};
+    const V3 e1 = unit(cross(n, t0)), e2 = cross(n, e1);
+    std::sort(pts.begin(), pts.end(), [&](const V3& x, const V3& y)
+              { return std::atan2(dot(sub(x, m), e2), dot(sub(x, m), e1)) < std::atan2(dot(sub(y, m), e2), dot(sub(y, m), e1)); });
+    area = loop_area(pts);
+  }
+  out.cut_area = area;
+  out.volume_below = (vol + d * area) / 3.0;
+  return out;
+}
+
 // Tetrahedron helper
 inline std::vector<Face> tet_faces(const std::array<V3, 4>& X)
 {
