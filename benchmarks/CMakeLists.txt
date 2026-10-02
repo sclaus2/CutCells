@@ -80,4 +80,5 @@ if(CUTCELLS_WITH_ALGOIM)
   target_compile_definitions(benchmarks_algoim INTERFACE CUTCELLS_WITH_ALGOIM=1)
 endif()
 
+enable_testing()
 add_subdirectory(quadrays)

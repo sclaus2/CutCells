@@ -119,3 +119,11 @@ endfunction()
 
 quadrays_benchmark(quadrays_study study.cpp)
 quadrays_benchmark(quadrays_robustness_report robustness_report.cpp)
+
+# algoim's quadrature on the parts of the front end (formerly the library's
+# backend='algoim'), and its checks
+if(CUTCELLS_WITH_ALGOIM)
+  add_executable(mesh_part_algoim_check mesh_part_algoim_check.cpp mesh_part_algoim.cpp)
+  target_link_libraries(mesh_part_algoim_check PRIVATE CUTCELLS::cutcells quadrays_algoim)
+  add_test(NAME mesh_part_algoim_check COMMAND mesh_part_algoim_check)
+endif()

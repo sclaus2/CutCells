@@ -12,7 +12,7 @@
 #include <stdexcept>
 
 #include "../quadrature_tables.h"
-#include "../triangulation.h"
+#include "triangulation.h"
 
 namespace cutcells::lut
 {

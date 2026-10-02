@@ -7,10 +7,11 @@
 //  - the templates' quadrilaterals and hexahedra are boxes in Basix order;
 //  - lut::cut_cell on triangles, quadrilaterals, tetrahedra and hexahedra,
 //    templates of order 1 to 3, against exact measures of planes (a closed
-//    form on simplices, Kuhn simplices for quadrilaterals and hexahedra), in
-//    double and float;
-//  - two planes in one cell: the four sides add up to the cell, and the
-//    zero set of one splits into its two sides of the other;
+//    form on simplices, Kuhn simplices for quadrilaterals and hexahedra), whole
+//    and split into simplices (classical and midpoint), in double and float;
+//  - two planes in one cell: the four sides add up to the cell, the zero
+//    set of one splits into its two sides of the other, and the curve where
+//    both vanish has its exact length;
 //  - planes through template vertices and faces: the interface is counted
 //    once;
 //  - parts of the analytic sphere: errors fall as (h / k)^2 with the
@@ -19,16 +20,16 @@
 // Exits non-zero on failure.
 
 #include <cutcells/cell_types.h>
-#include <cutcells/iso_refine.h>
 #include <cutcells/level_set.h>
 #include <cutcells/lut/cell_pieces.h>
+#include <cutcells/lut/iso_refine.h>
 #include <cutcells/lut/piece_rules.h>
+#include <cutcells/lut/triangulation.h>
 #include <cutcells/part/cut_result.h>
 #include <cutcells/part/mesh_part.h>
 #include <cutcells/part/output.h>
 #include <cutcells/quadrays/analytic.h>
 #include <cutcells/reference_cell.h>
-#include <cutcells/triangulation.h>
 
 #include <cmath>
 #include <cstdio>
@@ -62,37 +63,73 @@ void check(bool ok, const std::string& what)
 // Exact measures of a plane in a simplex
 // ============================================================================
 
-/// The measures of {phi < 0} and {phi = 0} in a simplex of dimension n and
-/// volume @p volume, for the linear phi with distinct values v at its vertices
-/// and gradient norm @p grad: volume * F(0) and grad * volume * F'(0) with
-/// F(c) = sum over v_i < c of (v_i - c)^n / prod_{j != i} (v_i - v_j).
-std::pair<double, double> simplex_measures(const std::vector<double>& v, double volume, double grad)
+using P3 = std::array<double, 3>;
+
+P3 sub(const P3& a, const P3& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
+
+P3 cross(const P3& a, const P3& b)
 {
-    const int n = static_cast<int>(v.size()) - 1;
-    double below = 0, interface = 0;
-    for (int i = 0; i <= n; ++i)
-    {
-        if (!(v[i] < 0))
-            continue;
-        double denominator = 1;
-        for (int j = 0; j <= n; ++j)
-            if (j != i)
-                denominator *= v[i] - v[j];
-        below += std::pow(v[i], n) / denominator;
-        interface -= n * std::pow(v[i], n - 1) / denominator;
-    }
-    return {volume * below, grad * volume * interface};
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
 }
 
-double simplex_volume(const std::vector<double>& x, int n)
+double norm(const P3& a) { return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); }
+
+double triangle_measure(const P3& a, const P3& b, const P3& c) { return 0.5 * norm(cross(sub(b, a), sub(c, a))); }
+
+double tet_volume(const P3& a, const P3& b, const P3& c, const P3& d)
 {
-    if (n == 2)
-        return 0.5 * std::abs((x[2] - x[0]) * (x[5] - x[1]) - (x[4] - x[0]) * (x[3] - x[1]));
-    const double a[3] = {x[3] - x[0], x[4] - x[1], x[5] - x[2]}, b[3] = {x[6] - x[0], x[7] - x[1], x[8] - x[2]},
-                 c[3] = {x[9] - x[0], x[10] - x[1], x[11] - x[2]};
-    return std::abs(a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-                    + a[2] * (b[0] * c[1] - b[1] * c[0]))
-           / 6;
+    const P3 n = cross(sub(b, a), sub(c, a)), e = sub(d, a);
+    return std::abs(n[0] * e[0] + n[1] * e[1] + n[2] * e[2]) / 6;
+}
+
+/// The measures of {phi < 0} and {phi = 0} in a triangle or tetrahedron (2D
+/// points get z = 0) for the linear phi with values v at its vertices (none
+/// exactly 0), from the clipped simplex itself: no division between close
+/// values, unlike the divided-difference formula.
+std::pair<double, double> simplex_measures(const std::vector<P3>& x, const std::vector<double>& v)
+{
+    const int n = static_cast<int>(x.size()) - 1;
+    std::vector<int> below, above;
+    for (int i = 0; i <= n; ++i)
+        (v[static_cast<std::size_t>(i)] < 0 ? below : above).push_back(i);
+    auto root = [&](int a, int b)
+    {
+        const double t = v[static_cast<std::size_t>(a)] / (v[static_cast<std::size_t>(a)] - v[static_cast<std::size_t>(b)]);
+        P3 p;
+        for (int d = 0; d < 3; ++d)
+            p[d] = x[static_cast<std::size_t>(a)][d] + t * (x[static_cast<std::size_t>(b)][d] - x[static_cast<std::size_t>(a)][d]);
+        return p;
+    };
+    const double volume = n == 2 ? triangle_measure(x[0], x[1], x[2]) : tet_volume(x[0], x[1], x[2], x[3]);
+    if (below.empty())
+        return {0.0, 0.0};
+    if (above.empty())
+        return {volume, 0.0};
+    // the corner cut off at a lone vertex
+    auto corner = [&](int lone, const std::vector<int>& others)
+    {
+        std::vector<P3> r;
+        for (const int o : others)
+            r.push_back(root(lone, o));
+        const double interface = n == 2 ? norm(sub(r[1], r[0])) : triangle_measure(r[0], r[1], r[2]);
+        const double piece = n == 2 ? triangle_measure(x[static_cast<std::size_t>(lone)], r[0], r[1])
+                                    : tet_volume(x[static_cast<std::size_t>(lone)], r[0], r[1], r[2]);
+        return std::pair<double, double>{piece, interface};
+    };
+    if (below.size() == 1)
+        return corner(below[0], above);
+    if (above.size() == 1)
+    {
+        const auto [piece, interface] = corner(above[0], below);
+        return {volume - piece, interface};
+    }
+    // two vertices on each side of a tetrahedron: a wedge between them
+    const int i = below[0], j = below[1], p = above[0], q = above[1];
+    const P3 ip = root(i, p), iq = root(i, q), jp = root(j, p), jq = root(j, q);
+    const P3 &xi = x[static_cast<std::size_t>(i)], &xj = x[static_cast<std::size_t>(j)];
+    // wedge (i, ip, iq | j, jp, jq) in three tetrahedra
+    const double wedge = tet_volume(xi, iq, ip, xj) + tet_volume(ip, xj, jq, jp) + tet_volume(ip, iq, jq, xj);
+    return {wedge, triangle_measure(ip, iq, jq) + triangle_measure(ip, jq, jp)};
 }
 
 /// Exact measures of {g.x + c < 0} and {g.x + c = 0} in a reference cell,
@@ -113,25 +150,24 @@ std::pair<double, double> exact_measures(cell::type type, const std::vector<doub
         int ids[8] = {0, 1, 2, 3, 4, 5, 6, 7};
         cell::triangulation(type, ids, simplices);
     }
-    double grad = 0;
-    for (const double gi : g)
-        grad += gi * gi;
-    grad = std::sqrt(grad);
     double below = 0, interface = 0;
     for (const std::vector<int>& s : simplices)
     {
-        std::vector<double> x, v;
+        std::vector<P3> x;
+        std::vector<double> v;
         for (const int i : s)
         {
+            P3 p = {0, 0, 0};
             double value = c;
             for (int d = 0; d < tdim; ++d)
             {
-                x.push_back(ref[static_cast<std::size_t>(i * tdim + d)]);
-                value += g[static_cast<std::size_t>(d)] * ref[static_cast<std::size_t>(i * tdim + d)];
+                p[d] = ref[static_cast<std::size_t>(i * tdim + d)];
+                value += g[static_cast<std::size_t>(d)] * p[d];
             }
+            x.push_back(p);
             v.push_back(value);
         }
-        const auto [b, a] = simplex_measures(v, simplex_volume(x, tdim), grad);
+        const auto [b, a] = simplex_measures(x, v);
         below += b;
         interface += a;
     }
@@ -170,17 +206,17 @@ double measure(cell::type type, const lut::Pieces<double>& pieces, const std::fu
 
 double measure_below(cell::type type, const lut::Pieces<double>& pieces)
 {
-    return measure(type, pieces, [&](std::size_t p) { return pieces.zero[p] < 0 && (pieces.negative[p] & 1); });
+    return measure(type, pieces, [&](std::size_t p) { return pieces.zero[p] == 0 && (pieces.negative[p] & 1); });
 }
 
 double measure_above(cell::type type, const lut::Pieces<double>& pieces)
 {
-    return measure(type, pieces, [&](std::size_t p) { return pieces.zero[p] < 0 && (pieces.positive[p] & 1); });
+    return measure(type, pieces, [&](std::size_t p) { return pieces.zero[p] == 0 && (pieces.positive[p] & 1); });
 }
 
 double measure_zero(cell::type type, const lut::Pieces<double>& pieces)
 {
-    return measure(type, pieces, [&](std::size_t p) { return pieces.zero[p] == 0; });
+    return measure(type, pieces, [&](std::size_t p) { return pieces.zero[p] == 1; });
 }
 
 /// The values of g.x + c at the template's vertices.
@@ -201,6 +237,45 @@ std::vector<double> template_values(cell::type type, int k, const std::vector<do
 
 const std::vector<cell::type> cell_types
     = {cell::type::triangle, cell::type::quadrilateral, cell::type::tetrahedron, cell::type::hexahedron};
+
+/// Two planes in one cell: the curve where both vanish (a point in 2D, of
+/// measure 1), on templates of order 1 to 3. In the tetrahedron the line
+/// x = 0.3, y = 0.2 lies on x + y = 0.5, a face between sub-cells of the
+/// order 2 template, and is counted once.
+void test_curves()
+{
+    struct Case
+    {
+        cell::type type;
+        std::vector<double> ga;
+        double ca;
+        std::vector<double> gb;
+        double cb;
+        double exact;
+    };
+    const std::vector<Case> cases = {
+        {cell::type::hexahedron, {1, 0, 0.2}, -0.4, {-0.1, 1, 0}, -0.5, std::sqrt(1 + 0.04 + 0.0004)},
+        {cell::type::tetrahedron, {1, 0, 0}, -0.3, {0, 1, 0}, -0.2, 0.5},
+        {cell::type::triangle, {1, 0}, -0.3, {0, 1}, -0.2, 1.0},
+        {cell::type::quadrilateral, {1, 0}, -0.3, {0, 1}, -0.6, 1.0},
+    };
+    for (const Case& c : cases)
+    {
+        double worst = 0;
+        for (int k = 1; k <= 3; ++k)
+        {
+            std::vector<double> values = template_values(c.type, k, c.ga, c.ca);
+            const std::vector<double> vb = template_values(c.type, k, c.gb, c.cb);
+            values.insert(values.end(), vb.begin(), vb.end());
+            lut::Pieces<double> pieces;
+            lut::cut_cell<double>(c.type, k, values, 2, 3, true, cell::TriangulationStrategy::none, pieces);
+            const double curve = measure(c.type, pieces, [&](std::size_t p) { return pieces.zero[p] == 3; });
+            worst = std::max(worst, std::abs(curve - c.exact));
+        }
+        std::printf("curve of two planes in a %s: worst error %.1e\n", cell::cell_type_to_str(c.type).c_str(), worst);
+        check(worst < 1e-13, "curve of two planes in a " + cell::cell_type_to_str(c.type));
+    }
+}
 
 /// The sub-cells of the quadrilateral and hexahedron templates are boxes with
 /// vertex 0 at their lower corner, in Basix order, as cut_cell assumes.
@@ -239,7 +314,9 @@ void test_planes()
         const double volume = reference_volume(type);
         double worst = 0;
         for (int k = 1; k <= 3; ++k)
-            for (const bool triangulate : {false, true})
+            for (const cell::TriangulationStrategy triangulation :
+                 {cell::TriangulationStrategy::none, cell::TriangulationStrategy::classical,
+                  cell::TriangulationStrategy::midpoint})
                 for (int trial = 0; trial < 40; ++trial)
                 {
                     std::vector<double> g(static_cast<std::size_t>(tdim));
@@ -251,14 +328,14 @@ void test_planes()
                     }
                     c += 0.2 * normal(rng);
                     lut::Pieces<double> pieces;
-                    lut::cut_cell<double>(type, k, template_values(type, k, g, c), 1, 1, triangulate, pieces);
+                    lut::cut_cell<double>(type, k, template_values(type, k, g, c), 1, 1, false, triangulation, pieces);
                     const auto [below, area] = exact_measures(type, g, c);
                     worst = std::max({worst, std::abs(measure_below(type, pieces) - below),
                                       std::abs(measure_above(type, pieces) - (volume - below)),
                                       std::abs(measure_zero(type, pieces) - area)});
                 }
         std::printf("planes in a %s: worst error %.1e\n", cell::cell_type_to_str(type).c_str(), worst);
-        check(worst < 1e-12, "planes in a " + cell::cell_type_to_str(type));
+        check(worst < 1e-13, "planes in a " + cell::cell_type_to_str(type));
     }
 }
 
@@ -274,7 +351,8 @@ void test_float()
         const double c = -0.21;
         const std::vector<double> v = template_values(type, 2, g, c);
         lut::Pieces<float> pieces;
-        lut::cut_cell<float>(type, 2, std::vector<float>(v.begin(), v.end()), 1, 0, false, pieces);
+        lut::cut_cell<float>(type, 2, std::vector<float>(v.begin(), v.end()), 1, 0, false, cell::TriangulationStrategy::none,
+                              pieces);
         lut::CellMap<float> map;
         map.type = type;
         map.gdim = tdim;
@@ -334,14 +412,14 @@ void test_two_planes()
                     values.insert(values.end(), v.begin(), v.end());
                 }
                 lut::Pieces<double> pieces;
-                lut::cut_cell<double>(type, k, values, 2, 1, false, pieces);
+                lut::cut_cell<double>(type, k, values, 2, 1, false, cell::TriangulationStrategy::none, pieces);
                 double sides = 0, below_first = 0;
                 for (const std::uint64_t below_bits : {0, 1, 2, 3})
                 {
                     const double w = measure(type, pieces,
                                              [&](std::size_t p)
                                              {
-                                                 return pieces.zero[p] < 0 && pieces.negative[p] == below_bits
+                                                 return pieces.zero[p] == 0 && pieces.negative[p] == below_bits
                                                         && pieces.positive[p] == (3 & ~below_bits);
                                              });
                     sides += w;
@@ -349,15 +427,15 @@ void test_two_planes()
                 }
                 // the zero set of the first plane on both sides of the second
                 const double zero_split
-                    = measure(type, pieces, [&](std::size_t p) { return pieces.zero[p] == 0 && (pieces.negative[p] & 2); })
+                    = measure(type, pieces, [&](std::size_t p) { return pieces.zero[p] == 1 && (pieces.negative[p] & 2); })
                       + measure(type, pieces,
-                                [&](std::size_t p) { return pieces.zero[p] == 0 && (pieces.positive[p] & 2); });
+                                [&](std::size_t p) { return pieces.zero[p] == 1 && (pieces.positive[p] & 2); });
                 const auto [below, area] = exact_measures(type, ga, ca);
                 worst = std::max({worst, std::abs(sides - volume), std::abs(below_first - below),
                                   std::abs(zero_split - area)});
             }
         std::printf("two planes in a %s: worst error %.1e\n", cell::cell_type_to_str(type).c_str(), worst);
-        check(worst < 1e-12, "two planes in a " + cell::cell_type_to_str(type));
+        check(worst < 1e-13, "two planes in a " + cell::cell_type_to_str(type));
     }
 }
 
@@ -394,7 +472,8 @@ void test_planes_through_vertices()
                     g[0] = sign;
                     const double c = -sign * j / (2.0 * k);
                     lut::Pieces<double> pieces;
-                    lut::cut_cell<double>(type, k, template_values(type, k, g, c), 1, 1, false, pieces);
+                    lut::cut_cell<double>(type, k, template_values(type, k, g, c), 1, 1, false, cell::TriangulationStrategy::none,
+                                          pieces);
                     const auto [lower, area] = axis_measures(type, j / (2.0 * k));
                     const double below = sign > 0 ? lower : volume - lower;
                     worst = std::max({worst, std::abs(measure_below(type, pieces) - below),
@@ -404,7 +483,7 @@ void test_planes_through_vertices()
             }
         std::printf("planes through template vertices in a %s: worst error %.1e\n",
                     cell::cell_type_to_str(type).c_str(), worst);
-        check(worst < 1e-12, "planes through template vertices in a " + cell::cell_type_to_str(type));
+        check(worst < 1e-13, "planes through template vertices in a " + cell::cell_type_to_str(type));
     }
 }
 
@@ -506,6 +585,7 @@ int main()
     test_planes();
     test_float();
     test_two_planes();
+    test_curves();
     test_planes_through_vertices();
     test_template_order();
     test_crossing_level_sets();

@@ -1,3 +1,6 @@
+"""HOMeshPart output from the lookup tables (the former straight backend):
+visualisation meshes, selection expressions and rules on straight pieces."""
+
 from pathlib import Path
 
 import numpy as np
@@ -189,45 +192,6 @@ def test_structured_hex_quadratic_sphere_interface_has_no_boundary_edges():
     assert nonmanifold_edges == []
 
 
-def _assert_zero_edges_have_only_zero_vertices(adapt_cell):
-    zero_masks = np.asarray(adapt_cell.zero_mask_per_vertex, dtype=np.uint64)
-    edge_connectivity = np.asarray(adapt_cell.edge_connectivity, dtype=np.int32)
-    edge_offsets = np.asarray(adapt_cell.edge_offsets, dtype=np.int32)
-    zero_entity_dim = np.asarray(adapt_cell.zero_entity_dim, dtype=np.uint8)
-    zero_entity_id = np.asarray(adapt_cell.zero_entity_id, dtype=np.int32)
-
-    for dim, entity_id in zip(zero_entity_dim, zero_entity_id):
-        if int(dim) != 1:
-            continue
-        verts = edge_connectivity[edge_offsets[entity_id] : edge_offsets[entity_id + 1]]
-        assert all(zero_masks[vertex_id] & 1 for vertex_id in verts)
-
-
-def _assert_vertex_provenance_is_populated(adapt_cell, parent_cell_id: int):
-    parent_dim = np.asarray(adapt_cell.vertex_parent_dim, dtype=np.int8)
-    parent_id = np.asarray(adapt_cell.vertex_parent_id, dtype=np.int32)
-    parent_offsets = np.asarray(adapt_cell.vertex_parent_param_offset, dtype=np.int32)
-    parent_params = np.asarray(adapt_cell.vertex_parent_param, dtype=np.float64)
-
-    assert len(parent_dim) == adapt_cell.num_vertices()
-    assert len(parent_id) == adapt_cell.num_vertices()
-    assert len(parent_offsets) == adapt_cell.num_vertices() + 1
-
-    for vertex_id, dim in enumerate(parent_dim):
-        dim = int(dim)
-        begin = int(parent_offsets[vertex_id])
-        end = int(parent_offsets[vertex_id + 1])
-        params = parent_params[begin:end]
-        assert dim >= 0
-        assert int(parent_id[vertex_id]) >= 0
-        assert len(params) == dim
-        if dim == adapt_cell.tdim:
-            assert int(parent_id[vertex_id]) == parent_cell_id
-        if dim == 1:
-            assert np.all(params >= -1.0e-12)
-            assert np.all(params <= 1.0 + 1.0e-12)
-
-
 def test_triangle_lut_triangulated_quad_connects_uncut_edge_vertices_to_adjacent_roots():
     vertex_coordinates = np.array(
         [
@@ -373,97 +337,7 @@ def test_mesh_part_string_selection_supports_surface_or():
     assert len(np.asarray(union_mesh.types)) > 0
 
 
-def test_triangulated_tetra_prism_midpoints_keep_masks_and_source_edges():
-    mesh = _single_tetra_mesh()
-    ls = cutcells.create_level_set(
-        mesh,
-        lambda X: X[0] + X[1] - 0.6,
-        degree=1,
-        name="phi",
-    )
-
-    result = cutcells.cut(mesh, ls, triangulate=True, triangulation="midpoint")
-    adapt_cell = result.adapt_cell(0)
-    parent_cell_id = int(np.asarray(result.parent_cell_ids, dtype=np.int32)[0])
-
-    source_edges = np.asarray(adapt_cell.vertex_source_edge_id, dtype=np.int32)
-    zero_masks = np.asarray(adapt_cell.zero_mask_per_vertex, dtype=np.uint64)
-    negative_masks = np.asarray(adapt_cell.negative_mask_per_vertex, dtype=np.uint64)
-    vertex_coords = np.asarray(adapt_cell.vertex_coords, dtype=np.float64)
-
-    # The first four vertices are the original tetra vertices. All vertices
-    # inserted by one-root localization or prism triangulation must retain an
-    # originating leaf edge so subsequent topology updates can preserve masks.
-    assert np.all(source_edges[4:] >= 0)
-    _assert_vertex_provenance_is_populated(adapt_cell, parent_cell_id)
-
-    phi = vertex_coords[:, 0] + vertex_coords[:, 1] - 0.6
-    for vertex_id in range(vertex_coords.shape[0]):
-        is_zero = bool(zero_masks[vertex_id] & 1)
-        is_negative = bool(negative_masks[vertex_id] & 1)
-        assert not (is_zero and is_negative)
-        if not is_zero:
-            assert is_negative == bool(phi[vertex_id] < 0.0)
-
-    _assert_zero_edges_have_only_zero_vertices(adapt_cell)
-
-
-def test_triangulated_triangle_quad_midpoint_keeps_masks_and_parent_edge():
-    mesh = _single_triangle_mesh()
-    ls = cutcells.create_level_set(
-        mesh,
-        lambda X: 0.1 - 0.2 * X[0] - 0.1 * X[1],
-        degree=1,
-        name="phi",
-    )
-
-    result = cutcells.cut(mesh, ls, triangulate=True, triangulation="midpoint")
-    adapt_cell = result.adapt_cell(0)
-    parent_cell_id = int(np.asarray(result.parent_cell_ids, dtype=np.int32)[0])
-
-    source_edges = np.asarray(adapt_cell.vertex_source_edge_id, dtype=np.int32)
-    parent_dim = np.asarray(adapt_cell.vertex_parent_dim, dtype=np.int8)
-    parent_id = np.asarray(adapt_cell.vertex_parent_id, dtype=np.int32)
-    parent_offsets = np.asarray(adapt_cell.vertex_parent_param_offset, dtype=np.int32)
-    parent_params = np.asarray(adapt_cell.vertex_parent_param, dtype=np.float64)
-    zero_masks = np.asarray(adapt_cell.zero_mask_per_vertex, dtype=np.uint64)
-    negative_masks = np.asarray(adapt_cell.negative_mask_per_vertex, dtype=np.uint64)
-    vertex_coords = np.asarray(adapt_cell.vertex_coords, dtype=np.float64)
-
-    # Vertices 3 and 4 are one-root vertices; vertex 5 is the triangulation
-    # midpoint on the uncut parent edge of the triangle-derived quadrilateral.
-    assert np.all(source_edges[3:] >= 0)
-    assert int(parent_dim[5]) == 1
-    assert int(parent_id[5]) == int(source_edges[5])
-    begin = int(parent_offsets[5])
-    end = int(parent_offsets[6])
-    np.testing.assert_allclose(parent_params[begin:end], [0.5])
-    _assert_vertex_provenance_is_populated(adapt_cell, parent_cell_id)
-
-    ls_cell = cutcells.make_cell_level_set(ls, parent_cell_id)
-    phi = np.array(
-        [
-            cutcells.evaluate_bernstein(
-                ls_cell.cell_type,
-                ls_cell.bernstein_order,
-                np.asarray(ls_cell.bernstein_coeffs),
-                vertex_coords[vertex_id],
-            )
-            for vertex_id in range(vertex_coords.shape[0])
-        ],
-        dtype=np.float64,
-    )
-    for vertex_id in range(vertex_coords.shape[0]):
-        is_zero = bool(zero_masks[vertex_id] & 1)
-        is_negative = bool(negative_masks[vertex_id] & 1)
-        assert not (is_zero and is_negative)
-        if not is_zero:
-            assert is_negative == bool(phi[vertex_id] < 0.0)
-
-    _assert_zero_edges_have_only_zero_vertices(adapt_cell)
-
-
-def test_interface_output_reflects_adaptcell_quad_leaf():
+def test_tetrahedron_interface_is_one_quadrilateral():
     mesh = _single_tetra_mesh()
     ls = cutcells.create_level_set(
         mesh,
@@ -485,7 +359,7 @@ def test_interface_output_reflects_adaptcell_quad_leaf():
     assert len(quad_boundary) == 4
 
 
-def test_triangle_volume_output_reflects_adaptcell_quad_leaf():
+def test_triangle_volume_piece_is_one_quadrilateral():
     mesh = _single_triangle_mesh()
     ls = cutcells.create_level_set(
         mesh,
@@ -641,7 +515,7 @@ def test_hexahedron_sphere_cell_interface_is_not_counted_from_both_sides():
     np.testing.assert_allclose(q.weights.sum(), direct_area, atol=1.0e-12)
 
 
-def test_iso_p1_hexahedron_sphere_exports_generated_zero_faces():
+def test_iso_p1_hexahedron_sphere_interface():
     mesh = _structured_hex_mesh(2)
     radius = 0.8
     ls = cutcells.create_level_set(
@@ -663,7 +537,8 @@ def test_iso_p1_hexahedron_sphere_exports_generated_zero_faces():
     q = interface.quadrature(order=3, mode="cut_only")
     weights = np.asarray(q.weights, dtype=np.float64)
 
+    # one rule per cut cell
     assert result.num_cut_cells == 8
-    assert np.asarray(q.parent_map).size > result.num_cut_cells
+    assert np.asarray(q.parent_map).size == result.num_cut_cells
     assert weights.sum() > 1.0
     assert np.asarray(q.points).size == weights.size * mesh.tdim

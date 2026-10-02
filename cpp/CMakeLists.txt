@@ -7,9 +7,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(BUILD_SHARED_LIBS "Build CutCells with shared libraries." ON)
-option(CUTCELLS_WITH_ALGOIM
-  "Enable the optional Algoim-backed quadrature implementation."
-  OFF)
 option(CUTCELLS_ENABLE_IPO
   "Enable interprocedural optimization in release builds when supported."
   OFF)
@@ -20,143 +17,9 @@ include(CheckIPOSupported)
 
 add_subdirectory(src)
 
-if(CUTCELLS_WITH_ALGOIM)
-  set(CUTCELLS_ALGOIM_DIR
-      "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/algoim")
-  set(CUTCELLS_LAPACKE_COMPAT_DIR
-      "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lapacke_compat")
-  if(NOT EXISTS "${CUTCELLS_ALGOIM_DIR}/algoim/quadrature_general.hpp")
-    message(FATAL_ERROR
-      "CUTCELLS_WITH_ALGOIM=ON requires the vendored Algoim headers at "
-      "${CUTCELLS_ALGOIM_DIR}/algoim")
-  endif()
-  if(NOT EXISTS "${CUTCELLS_ALGOIM_DIR}/algoim/quadrature_multipoly.hpp")
-    message(FATAL_ERROR
-      "CUTCELLS_WITH_ALGOIM=ON requires Algoim quadrature_multipoly.hpp")
-  endif()
-  if(NOT EXISTS "${CUTCELLS_LAPACKE_COMPAT_DIR}/lapacke.h")
-    message(FATAL_ERROR
-      "CUTCELLS_WITH_ALGOIM=ON requires the local LAPACKE compatibility header")
-  endif()
-
-  set(CUTCELLS_ALGOIM_LAPACK_LIBRARIES "" CACHE STRING
-    "BLAS/LAPACK libraries for the Algoim-backed quadrature backend")
-  if(NOT CUTCELLS_ALGOIM_LAPACK_LIBRARIES)
-    set(_cutcells_lapack_hints)
-    foreach(_cutcells_prefix IN LISTS CMAKE_PREFIX_PATH)
-      list(APPEND _cutcells_lapack_hints "${_cutcells_prefix}")
-    endforeach()
-
-    if(_cutcells_lapack_hints)
-      find_library(CUTCELLS_BLAS_LIBRARY
-        NAMES blas openblas
-        PATHS ${_cutcells_lapack_hints}
-        PATH_SUFFIXES lib
-        NO_DEFAULT_PATH)
-      find_library(CUTCELLS_LAPACK_LIBRARY
-        NAMES lapack
-        PATHS ${_cutcells_lapack_hints}
-        PATH_SUFFIXES lib
-        NO_DEFAULT_PATH)
-      find_library(CUTCELLS_LAPACKE_LIBRARY
-        NAMES lapacke
-        PATHS ${_cutcells_lapack_hints}
-        PATH_SUFFIXES lib
-        NO_DEFAULT_PATH)
-    endif()
-
-    if(CUTCELLS_BLAS_LIBRARY)
-      list(APPEND CUTCELLS_ALGOIM_LAPACK_LIBRARIES
-        "${CUTCELLS_BLAS_LIBRARY}")
-    endif()
-    if(CUTCELLS_LAPACKE_LIBRARY)
-      list(APPEND CUTCELLS_ALGOIM_LAPACK_LIBRARIES
-        "${CUTCELLS_LAPACKE_LIBRARY}")
-    endif()
-    if(CUTCELLS_LAPACK_LIBRARY)
-      list(APPEND CUTCELLS_ALGOIM_LAPACK_LIBRARIES
-        "${CUTCELLS_LAPACK_LIBRARY}")
-    endif()
-  endif()
-
-  if(NOT CUTCELLS_ALGOIM_LAPACK_LIBRARIES)
-    find_package(LAPACK REQUIRED)
-    list(APPEND CUTCELLS_ALGOIM_LAPACK_LIBRARIES ${LAPACK_LIBRARIES})
-  endif()
-  if(NOT CUTCELLS_ALGOIM_LAPACK_LIBRARIES)
-    message(FATAL_ERROR
-      "CUTCELLS_WITH_ALGOIM=ON requires LAPACK/LAPACKE libraries")
-  endif()
-
-  include(CheckCXXSourceCompiles)
-  set(_cutcells_saved_required_includes "${CMAKE_REQUIRED_INCLUDES}")
-  set(_cutcells_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
-  set(CMAKE_REQUIRED_INCLUDES
-      "${CUTCELLS_LAPACKE_COMPAT_DIR};${CUTCELLS_ALGOIM_DIR}")
-  set(CMAKE_REQUIRED_LIBRARIES ${CUTCELLS_ALGOIM_LAPACK_LIBRARIES})
-  check_cxx_source_compiles([=[
-    #include <algoim/quadrature_general.hpp>
-
-    struct Phi
-    {
-      template <typename T>
-      T operator()(const algoim::uvector<T, 2>& x) const
-      {
-        return x(0) + x(1) - T(0.5);
-      }
-
-      template <typename T>
-      algoim::uvector<T, 2> grad(const algoim::uvector<T, 2>&) const
-      {
-        return algoim::uvector<T, 2>(T(1), T(1));
-      }
-    };
-
-    int main()
-    {
-      auto rule = algoim::quadGen<2>(
-          Phi{}, algoim::HyperRectangle<double, 2>(0.0, 1.0),
-          -1, -1, 2);
-      return rule.nodes.empty() ? 1 : 0;
-    }
-  ]=] CUTCELLS_ALGOIM_GENERAL_COMPILES)
-  if(NOT CUTCELLS_ALGOIM_GENERAL_COMPILES)
-    message(FATAL_ERROR
-      "CUTCELLS_WITH_ALGOIM=ON but Algoim quadrature_general.hpp did not compile")
-  endif()
-  check_cxx_source_compiles([=[
-    #include <unordered_map>
-    #include <algoim/quadrature_multipoly.hpp>
-
-    int main()
-    {
-      double coeffs[4] = {-1.0, 1.0, 1.0, 1.0};
-      algoim::xarray<algoim::real, 2> phi(
-          coeffs, algoim::uvector<int, 2>(2, 2));
-      algoim::ImplicitPolyQuadrature<2> q(phi);
-      double sum = 0.0;
-      q.integrate(algoim::AutoMixed, 2, [&](const auto&, algoim::real w) {
-        sum += w;
-      });
-      return sum <= 0.0 ? 1 : 0;
-    }
-  ]=] CUTCELLS_ALGOIM_MULTIPOLY_COMPILES)
-  set(CMAKE_REQUIRED_INCLUDES "${_cutcells_saved_required_includes}")
-  set(CMAKE_REQUIRED_LIBRARIES "${_cutcells_saved_required_libraries}")
-  if(NOT CUTCELLS_ALGOIM_MULTIPOLY_COMPILES)
-    message(FATAL_ERROR
-      "CUTCELLS_WITH_ALGOIM=ON but Algoim quadrature_multipoly.hpp did not compile/link")
-  endif()
-
-  target_include_directories(cutcells SYSTEM PRIVATE
-    "${CUTCELLS_LAPACKE_COMPAT_DIR}"
-    "${CUTCELLS_ALGOIM_DIR}")
-  target_link_libraries(cutcells PRIVATE ${CUTCELLS_ALGOIM_LAPACK_LIBRARIES})
-  target_compile_definitions(cutcells PRIVATE CUTCELLS_HAS_ALGOIM=1)
-  target_compile_definitions(cutcells PRIVATE CUTCELLS_HAS_ALGOIM_MULTIPOLY=1)
-endif()
-
 set(CUTCELLS_BUILD_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
+# Rewritten on every configure, so headers that moved or went leave nothing behind
+file(REMOVE_RECURSE "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells")
 file(MAKE_DIRECTORY "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells")
 # A header keeps its path below src/, in the build tree and when installed:
 # src/quadrays/rules.h becomes <cutcells/quadrays/rules.h>.
@@ -173,6 +36,9 @@ foreach(_cutcells_header IN LISTS HEADERS)
 endforeach()
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/src/generated"
   DESTINATION "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells"
+  FILES_MATCHING PATTERN "*.h")
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/src/lut/generated"
+  DESTINATION "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells/lut"
   FILES_MATCHING PATTERN "*.h")
 
 find_package(OpenMP QUIET COMPONENTS CXX)
@@ -199,9 +65,13 @@ if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
 
-# Install generated headers produced at build time (tables, etc.)
+# Install the generated tables: quadrature rules, and the lookup tables
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cutcells
+  COMPONENT Development
+  FILES_MATCHING PATTERN "*.h")
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/lut/generated
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cutcells/lut
   COMPONENT Development
   FILES_MATCHING PATTERN "*.h")
 
@@ -221,12 +91,7 @@ install(FILES
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/THIRD_PARTY_NOTICES.md"
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/VTK-Copyright.txt"
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/Basix-LICENSE.txt"
-  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/algoim/UPSTREAM_COMMIT"
-  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/algoim/PATCHES.md"
   DESTINATION ${_cutcells_license_install_dir})
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/algoim/LICENSE"
-  DESTINATION ${_cutcells_license_install_dir}
-  RENAME Algoim-LICENSE.txt)
 
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(CutCellsConfigVersion.cmake

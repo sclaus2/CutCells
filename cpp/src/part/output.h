@@ -8,8 +8,8 @@
 #include <concepts>
 #include <string>
 
-#include "../cut_mesh.h"
 #include "../lut/cell_pieces.h"
+#include "../lut/cut_mesh.h"
 #include "../quadrature.h"
 #include "../quadrays/engine.h"
 #include "../quadrays/leaves.h"
@@ -38,9 +38,9 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
 /// @brief Quadrature rules of a part from the lookup tables: the selected
 /// straight pieces of each cut cell (lut::cut_cell, with the level sets that
 /// cut the cell and that the expression names).
-/// @throws std::invalid_argument for cells other than triangles,
-///         quadrilaterals, tetrahedra and hexahedra, and for parts where two
-///         level sets vanish
+/// @throws std::invalid_argument for cells other than intervals, triangles,
+///         quadrilaterals, tetrahedra and hexahedra, and for parts where
+///         three level sets vanish
 template <std::floating_point T, std::integral I>
 quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                                                 const lut::Options& options);

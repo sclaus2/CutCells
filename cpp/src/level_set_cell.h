@@ -9,7 +9,6 @@
 #include <span>
 #include <vector>
 
-#include "adapt_cell.h"
 #include "cell_types.h"
 #include "level_set.h"
 #include "mesh_view.h"
@@ -52,13 +51,13 @@ struct LevelSetCell
     int nodal_order = 0;
 };
 
-/// Create a LevelSetCell and AdaptCell for a single background cell.
+/// Create the LevelSetCell of a single background cell: its Bernstein
+/// coefficients on the reference cell.
 ///
 /// @param global_ls      The global level set function.
-/// @param mesh           The background mesh.
 /// @param cell_id        Index of the background cell to process.
 ///
-/// @return A pair of (LevelSetCell, AdaptCell) initialized for the given cell.
+/// @return The LevelSetCell of the given cell.
 template <std::floating_point T, std::integral I = int>
 LevelSetCell<T, I>
 make_cell_level_set(const LevelSetFunction<T, I>& global_ls,

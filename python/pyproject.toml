@@ -33,9 +33,6 @@ sdist.include = [
     "/third_party/THIRD_PARTY_NOTICES.md",
     "/third_party/VTK-Copyright.txt",
     "/third_party/Basix-LICENSE.txt",
-    "/third_party/algoim/LICENSE",
-    "/third_party/algoim/UPSTREAM_COMMIT",
-    "/third_party/algoim/PATCHES.md",
 ]
 sdist.exclude = [
     ".pytest_cache/",
@@ -45,7 +42,4 @@ wheel.license-files = [
     "third_party/THIRD_PARTY_NOTICES.md",
     "third_party/VTK-Copyright.txt",
     "third_party/Basix-LICENSE.txt",
-    "third_party/algoim/LICENSE",
-    "third_party/algoim/UPSTREAM_COMMIT",
-    "third_party/algoim/PATCHES.md",
 ]

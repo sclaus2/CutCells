@@ -6,8 +6,8 @@
 
 #include "quadrature.h"
 #include "quadrature_tables.h"
-#include "cut_cell.h"
-#include "triangulation.h"
+#include "lut/cut_cell.h"
+#include "lut/triangulation.h"
 #include "cell_flags.h"
 #include "mapping.h"
 #include "reference_cell.h"

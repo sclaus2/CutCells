@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <tuple>
 
+#include "../bernstein.h"
 #include "../cell_topology.h"
 #include "../reference_cell.h"
 #include "cell_source.h"
@@ -149,6 +150,88 @@ void find_zero_faces(const MeshView<T, I>& mesh, CellSource<T, I>& cs, I cell_id
     }
 }
 
+/// The facets of a cell classified by its Bernstein coefficients (2D cells,
+/// prisms, pyramids) on which level set l vanishes, appended to @p entries:
+/// the level set is 0 up to the tolerance on the facet's lattice of its
+/// degree, which fixes the polynomial on the facet.
+template <std::floating_point T, std::integral I>
+void find_zero_facets(const MeshView<T, I>& mesh, const LevelSetCell<T, I>& ls_cell, I cell_id, int l,
+                      cell::domain dom, std::vector<I>& node_scratch, std::vector<FaceEntry<I>>& entries)
+{
+    const cell::type type = mesh.cell_type(cell_id);
+    const int tdim = cell::get_tdim(type);
+    const std::span<const T> c(ls_cell.bernstein_coeffs);
+    T scale = T(0);
+    for (const T x : c)
+        scale = std::max(scale, std::abs(x));
+    if (tdim < 2 || !(scale > T(0)))
+        return;
+    const T tol = quadrays::scaled_tolerance<T>(1e-12) * scale;
+    const int degree = ls_cell.bernstein_order, p = std::max(degree, 1);
+    const std::vector<T> ref = cell::reference_vertices<T>(type);
+    auto value = [&](const T* x) { return bernstein::evaluate<T>(type, degree, c, std::span<const T>(x, tdim)); };
+    const std::span<const I> nodes = mesh.cell_nodes(cell_id, node_scratch);
+    std::array<T, 3> x{}, centroid{}, inner{}, g{};
+    for (int f = 0; f < num_facets(type); ++f)
+    {
+        const std::span<const int> fv = facet_vertices(type, f);
+        const cell::type ft = facet_type(type, f);
+        // the lattice a + i/p (b - a) + j/p (c - a)
+        const T* a = ref.data() + fv[0] * tdim;
+        const T* b = ref.data() + fv[1] * tdim;
+        const T* e = fv.size() > 2 ? ref.data() + fv[2] * tdim : a;
+        const int nj = ft == cell::type::interval ? 0 : p;
+        bool zero = true;
+        for (int j = 0; zero && j <= nj; ++j)
+            for (int i = 0; zero && i <= p; ++i)
+            {
+                if (ft == cell::type::triangle && i + j > p)
+                    continue;
+                for (int d = 0; d < tdim; ++d)
+                    x[d] = a[d] + T(i) / T(p) * (b[d] - a[d]) + T(j) / T(p) * (e[d] - a[d]);
+                zero = std::abs(value(x.data())) <= tol;
+            }
+        if (!zero)
+            continue;
+
+        FaceEntry<I> entry;
+        entry.level_set = l;
+        entry.cell = cell_id;
+        entry.local = f;
+        if (dom == cell::domain::inside)
+            entry.side = -1;
+        else if (dom == cell::domain::outside)
+            entry.side = 1;
+        else
+        {
+            // a cut cell: the derivative into the cell at the facet's centroid
+            centroid.fill(T(0));
+            inner.fill(T(0));
+            const int nv = cell::get_num_vertices(type);
+            for (const int v : fv)
+                for (int d = 0; d < tdim; ++d)
+                    centroid[d] += ref[static_cast<std::size_t>(v * tdim + d)] / T(fv.size());
+            for (int v = 0; v < nv; ++v)
+                for (int d = 0; d < tdim; ++d)
+                    inner[d] += ref[static_cast<std::size_t>(v * tdim + d)] / T(nv);
+            bernstein::gradient<T>(type, degree, c, std::span<const T>(centroid.data(), tdim),
+                                   std::span<T>(g.data(), tdim));
+            T dd = T(0);
+            for (int d = 0; d < tdim; ++d)
+                dd += g[d] * (inner[d] - centroid[d]);
+            entry.side = dd < -tol ? -1 : (dd > tol ? 1 : 0);
+        }
+        entry.key.fill(std::numeric_limits<I>::max());
+        for (std::size_t k = 0; k < fv.size(); ++k)
+        {
+            const int local_vertex = mesh.vtk_vertex_order ? cell::basix_to_vtk_vertex(type, fv[k]) : fv[k];
+            entry.key[k] = nodes[static_cast<std::size_t>(local_vertex)];
+        }
+        std::sort(entry.key.begin(), entry.key.end());
+        entries.push_back(entry);
+    }
+}
+
 } // namespace
 
 template <std::floating_point T, std::integral I>
@@ -174,6 +257,7 @@ CutResult<T, I> cut(const MeshView<T, I>& mesh, std::span<const LevelSetFunction
     std::vector<FaceEntry<I>> entries;
     CellSource<T, I> cs;
     LevelSetCell<T, I> scratch;
+    std::vector<I> nodes;
     for (I c = 0; c < static_cast<I>(r.num_cells); ++c)
     {
         bool any_cut = false;
@@ -188,7 +272,10 @@ CutResult<T, I> cut(const MeshView<T, I>& mesh, std::span<const LevelSetFunction
                 find_zero_faces(mesh, cs, c, l, dom, entries);
             }
             else
+            {
                 dom = coefficient_domain(ls, c, scratch);
+                find_zero_facets(mesh, scratch, c, l, dom, nodes, entries);
+            }
             r.domains[static_cast<std::size_t>(l) * static_cast<std::size_t>(r.num_cells)
                       + static_cast<std::size_t>(c)]
                 = dom;

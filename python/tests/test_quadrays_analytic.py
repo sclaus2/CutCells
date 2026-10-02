@@ -105,11 +105,12 @@ def test_cells_are_classified_by_the_analytic_level_set(kind, degree):
     its faces: all vertices of all cells lie outside, so a P1 interpolant sees
     no ball at all, and the caps lie away from every vertex. The cells are
     classified by the level set's own bounds, so quadrays finds them for any
-    degree; the straight backend integrates the interpolant."""
+    degree; the lookup tables see the level set at the template's vertices.
+    Dense sampling finds the same 18 tetrahedra crossed."""
     centre, radius = [0.25, 0.25, 0.25], 0.26
     mesh = box_mesh(kind, 4)
     result = cutcells.cut(mesh, cutcells.analytic_sphere(centre, radius), degree=degree)
-    assert result.num_cut_cells == (7 if kind == "hex" else 24)
+    assert result.num_cut_cells == (7 if kind == "hex" else 18)
     volume = result["phi < 0"].quadrature(order=5, mode="full", backend="quadrays")
     area = result["phi = 0"].quadrature(order=5, mode="cut_only", backend="quadrays")
     assert np.sum(volume.weights) == pytest.approx(4.0 / 3.0 * math.pi * radius**3, rel=1e-6)

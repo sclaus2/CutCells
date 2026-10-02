@@ -16,7 +16,7 @@
 #include <vector>
 #include <span>
 
-#include "cut_cell.h"
+#include "lut/cut_cell.h"
 
 namespace cutcells::io
 {

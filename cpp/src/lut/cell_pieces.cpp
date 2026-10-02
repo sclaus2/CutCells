@@ -7,15 +7,16 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
-#include "../cut_cell.h"
-#include "../iso_refine.h"
-#include "../triangulation.h"
+#include "cut_cell.h"
+#include "iso_refine.h"
+#include "triangulation.h"
 #include "piece_rules.h"
 
 namespace cutcells::lut
@@ -125,13 +126,13 @@ int sign_class(std::span<const T> v)
     return negative && positive ? 0 : (negative ? -1 : 1);
 }
 
-/// One straight cell of the arrangement and its sides.
+/// One straight cell of the arrangement, its sides and the zero sets it lies in.
 template <std::floating_point T>
 struct Leaf
 {
     cell::type type = cell::type::point;
     std::vector<T> x; ///< reference coordinates, tdim per vertex
-    std::uint64_t negative = 0, positive = 0;
+    std::uint64_t negative = 0, positive = 0, zero = 0;
 };
 
 /// The cells of a part that the lookup tables cut from a cell of type
@@ -140,7 +141,7 @@ struct Leaf
 /// triangles and tetrahedra give their quadrilaterals in cyclic (VTK) order.
 template <std::floating_point T>
 void append_part(const cell::CutCell<T>& part, cell::type cut_type, int tdim, std::uint64_t negative,
-                 std::uint64_t positive, std::vector<Leaf<T>>& out)
+                 std::uint64_t positive, std::uint64_t zero, std::vector<Leaf<T>>& out)
 {
     const bool cyclic_quadrilaterals = cut_type == cell::type::triangle || cut_type == cell::type::tetrahedron;
     for (int q = 0; q < cell::num_cells(part); ++q)
@@ -157,6 +158,7 @@ void append_part(const cell::CutCell<T>& part, cell::type cut_type, int tdim, st
         }
         leaf.negative = negative;
         leaf.positive = positive;
+        leaf.zero = zero;
         out.push_back(std::move(leaf));
     }
 }
@@ -178,12 +180,12 @@ void snap_values(std::vector<T>& v)
 }
 
 /// Split a leaf by level set i (its interpolant on the sub-cell), both sides
-/// kept and tagged. The tables cut parallelograms and parallelepipeds exactly;
-/// other quadrilaterals and hexahedra, which earlier cuts leave, are cut as
-/// simplices.
+/// kept and tagged; with @p add_zero also its zero set in the leaf. The tables
+/// cut parallelograms and parallelepipeds exactly; other quadrilaterals and
+/// hexahedra, which earlier cuts leave, are cut as simplices.
 template <std::floating_point T>
-void cut_leaf(Leaf<T>& leaf, const SubCell<T>& s, const T* sub_values, int i, bool triangulate,
-              std::vector<Leaf<T>>& out)
+void cut_leaf(Leaf<T>& leaf, const SubCell<T>& s, const T* sub_values, int i, bool add_zero,
+              cell::TriangulationStrategy triangulation, std::vector<Leaf<T>>& out)
 {
     const int dim = s.tdim;
     const std::uint64_t bit = std::uint64_t(1) << i;
@@ -209,10 +211,10 @@ void cut_leaf(Leaf<T>& leaf, const SubCell<T>& s, const T* sub_values, int i, bo
             = leaf.type == cell::type::hexahedron ? cell::type::tetrahedron : cell::type::triangle;
         for (const std::vector<int>& t : simplices)
         {
-            Leaf<T> piece{simplex, {}, leaf.negative, leaf.positive};
+            Leaf<T> piece{simplex, {}, leaf.negative, leaf.positive, leaf.zero};
             for (const int j : t)
                 piece.x.insert(piece.x.end(), leaf.x.begin() + j * dim, leaf.x.begin() + (j + 1) * dim);
-            cut_leaf(piece, s, sub_values, i, triangulate, out);
+            cut_leaf(piece, s, sub_values, i, add_zero, triangulation, out);
         }
         return;
     }
@@ -220,23 +222,36 @@ void cut_leaf(Leaf<T>& leaf, const SubCell<T>& s, const T* sub_values, int i, bo
     {
         cell::CutCell<T> part;
         cell::cut<T>(leaf.type, std::span<const T>(leaf.x), dim, std::span<const T>(v), below ? "phi<0" : "phi>0",
-                     part, triangulate);
-        append_part(part, leaf.type, dim, leaf.negative | (below ? bit : 0), leaf.positive | (below ? 0 : bit), out);
+                     part, triangulation);
+        append_part(part, leaf.type, dim, leaf.negative | (below ? bit : 0), leaf.positive | (below ? 0 : bit),
+                    leaf.zero, out);
+    }
+    if (add_zero)
+    {
+        cell::CutCell<T> part;
+        cell::cut<T>(leaf.type, std::span<const T>(leaf.x), dim, std::span<const T>(v), "phi=0", part, triangulation);
+        append_part(part, leaf.type, dim, leaf.negative, leaf.positive, leaf.zero | bit, out);
     }
 }
 
-/// Split every leaf by level set i.
+/// Split every leaf by level set i; the leaves in one zero set of
+/// @p curve_sets also give their part in i's zero set if i is in it too.
 template <std::floating_point T>
-void cut_leaves(std::vector<Leaf<T>>& leaves, const SubCell<T>& s, const T* sub_values, int i, bool triangulate)
+void cut_leaves(std::vector<Leaf<T>>& leaves, const SubCell<T>& s, const T* sub_values, int i,
+                std::uint64_t curve_sets, cell::TriangulationStrategy triangulation)
 {
     std::vector<Leaf<T>> out;
     for (Leaf<T>& leaf : leaves)
-        cut_leaf(leaf, s, sub_values, i, triangulate, out);
+    {
+        const bool add_zero = ((curve_sets >> i) & 1) && std::popcount(leaf.zero) == 1
+                              && i > std::countr_zero(leaf.zero);
+        cut_leaf(leaf, s, sub_values, i, add_zero, triangulation, out);
+    }
     leaves = std::move(out);
 }
 
 template <std::floating_point T>
-void append_leaves(const std::vector<Leaf<T>>& leaves, int zero, Pieces<T>& out)
+void append_leaves(const std::vector<Leaf<T>>& leaves, Pieces<T>& out)
 {
     for (const Leaf<T>& leaf : leaves)
     {
@@ -245,7 +260,7 @@ void append_leaves(const std::vector<Leaf<T>>& leaves, int zero, Pieces<T>& out)
         out.types.push_back(leaf.type);
         out.negative.push_back(leaf.negative);
         out.positive.push_back(leaf.positive);
-        out.zero.push_back(zero);
+        out.zero.push_back(leaf.zero);
     }
 }
 
@@ -270,19 +285,21 @@ bool affine_values(const T* v, int tdim)
 }
 
 /// The pieces of one sub-cell: its volume cut by one level set after the
-/// other, and the zero sets asked for, cut by the other level sets.
+/// other, and the zero sets asked for, cut by the other level sets (with
+/// @p curves also where two of them vanish).
 /// @param sv  the level sets at the sub-cell's vertices, level set by level set
 template <std::floating_point T>
 void cut_sub_cell(cell::type type, int tdim, const std::vector<T>& x, const std::vector<T>& sv, int n_level_sets,
-                  std::uint64_t zero_sets, bool triangulate, Pieces<T>& out)
+                  std::uint64_t zero_sets, bool curves, cell::TriangulationStrategy triangulation, Pieces<T>& out)
 {
     const int nv = cell::get_num_vertices(type);
+    const std::uint64_t curve_sets = curves ? zero_sets : 0;
     SubCell<T> s;
     make_sub_cell(type, tdim, x.data(), s);
-    std::vector<Leaf<T>> leaves(1, Leaf<T>{type, x, 0, 0});
+    std::vector<Leaf<T>> leaves(1, Leaf<T>{type, x, 0, 0, 0});
     for (int i = 0; i < n_level_sets; ++i)
-        cut_leaves(leaves, s, sv.data() + i * nv, i, triangulate);
-    append_leaves(leaves, -1, out);
+        cut_leaves(leaves, s, sv.data() + i * nv, i, 0, triangulation);
+    append_leaves(leaves, out);
 
     for (int i = 0; i < n_level_sets; ++i)
     {
@@ -293,13 +310,13 @@ void cut_sub_cell(cell::type type, int tdim, const std::vector<T>& x, const std:
         if (sign_class(std::span<const T>(v)) != 0)
             continue;
         cell::CutCell<T> part;
-        cell::cut<T>(type, std::span<const T>(x), tdim, std::span<const T>(v), "phi=0", part, triangulate);
+        cell::cut<T>(type, std::span<const T>(x), tdim, std::span<const T>(v), "phi=0", part, triangulation);
         leaves.clear();
-        append_part(part, type, tdim, 0, 0, leaves);
+        append_part(part, type, tdim, 0, 0, std::uint64_t(1) << i, leaves);
         for (int j = 0; j < n_level_sets; ++j)
             if (j != i)
-                cut_leaves(leaves, s, sv.data() + j * nv, j, triangulate);
-        append_leaves(leaves, i, out);
+                cut_leaves(leaves, s, sv.data() + j * nv, j, curve_sets, triangulation);
+        append_leaves(leaves, out);
     }
 }
 
@@ -312,7 +329,7 @@ std::span<const double> template_vertices(cell::type cell_type, int template_ord
 
 template <std::floating_point T>
 void cut_cell(cell::type cell_type, int template_order, std::span<const T> values, int n_level_sets,
-              std::uint64_t zero_sets, bool triangulate, Pieces<T>& out)
+              std::uint64_t zero_sets, bool curves, cell::TriangulationStrategy triangulation, Pieces<T>& out)
 {
     if (n_level_sets < 1 || n_level_sets > 64)
         throw std::invalid_argument("lut: give 1 to 64 level sets");
@@ -343,7 +360,7 @@ void cut_cell(cell::type cell_type, int template_order, std::span<const T> value
                 affine = affine_values(sv.data() + i * vpc, tdim);
         if (affine)
         {
-            cut_sub_cell(type, tdim, x, sv, n_level_sets, zero_sets, triangulate, out);
+            cut_sub_cell(type, tdim, x, sv, n_level_sets, zero_sets, curves, triangulation, out);
             continue;
         }
         // multilinear values: the hexahedron's tables for both sides do not fit
@@ -361,7 +378,7 @@ void cut_cell(cell::type cell_type, int template_order, std::span<const T> value
             for (int i = 0; i < n_level_sets; ++i)
                 for (const int j : t)
                     svs.push_back(sv[static_cast<std::size_t>(i * vpc + j)]);
-            cut_sub_cell(simplex, tdim, xs, svs, n_level_sets, zero_sets, triangulate, out);
+            cut_sub_cell(simplex, tdim, xs, svs, n_level_sets, zero_sets, curves, triangulation, out);
         }
     }
 }
@@ -370,8 +387,9 @@ void cut_cell(cell::type cell_type, int template_order, std::span<const T> value
 // Explicit instantiations
 // ============================================================================
 
-template void cut_cell<float>(cell::type, int, std::span<const float>, int, std::uint64_t, bool, Pieces<float>&);
+template void cut_cell<float>(cell::type, int, std::span<const float>, int, std::uint64_t, bool,
+                              cell::TriangulationStrategy, Pieces<float>&);
 template void cut_cell<double>(cell::type, int, std::span<const double>, int, std::uint64_t, bool,
-                               Pieces<double>&);
+                               cell::TriangulationStrategy, Pieces<double>&);
 
 } // namespace cutcells::lut

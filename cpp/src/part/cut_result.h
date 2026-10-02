@@ -12,15 +12,34 @@
 #include <vector>
 
 #include "../cell_flags.h"
+#include "../cell_topology.h"
 #include "../cell_types.h"
 #include "../level_set.h"
 #include "../mesh_view.h"
 
-/// The front end without AdaptCell: every cell classified by every level set,
-/// mesh parts selected by expressions, and their quadrature and visualisation
-/// by backend. It replaces HOCutResult and HOMeshPart (phase 5).
+/// The front end: every cell classified by every level set, mesh parts
+/// selected by expressions, and their quadrature and visualisation by backend.
 namespace cutcells::part
 {
+
+/// The facets of a cell: its faces in 3D, its edges in 2D.
+inline int num_facets(cell::type type)
+{
+    return cell::get_tdim(type) == 3 ? cell::num_faces(type) : cell::num_edges(type);
+}
+
+/// The vertices of facet @p f (Basix numbering of the cell).
+inline std::span<const int> facet_vertices(cell::type type, int f)
+{
+    if (cell::get_tdim(type) == 3)
+        return cell::face_vertices(type, f);
+    return std::span<const int>(cell::edges(type)[static_cast<std::size_t>(f)]);
+}
+
+inline cell::type facet_type(cell::type type, int f)
+{
+    return cell::get_tdim(type) == 3 ? cell::face_type(type, f) : cell::type::interval;
+}
 
 /// Options of cut().
 struct ClassifyOptions
@@ -44,10 +63,10 @@ struct CutResult
     std::vector<cell::domain> domains;
     /// Cells that some level set cuts, ascending.
     std::vector<I> cut_cells;
-    /// Faces in the zero set of a level set, each once: level set, owning
-    /// cell, and the face in that cell (Basix numbering). The owner is the
-    /// cell on the negative side, or the lower cell index if neither or both
-    /// sides are negative.
+    /// Facets (faces in 3D, edges in 2D) in the zero set of a level set, each
+    /// once: level set, owning cell, and the facet in that cell (Basix
+    /// numbering). The owner is the cell on the negative side, or the lower
+    /// cell index if neither or both sides are negative.
     std::vector<int> zero_face_level_sets;
     std::vector<I> zero_face_cells;
     std::vector<std::int8_t> zero_face_local;

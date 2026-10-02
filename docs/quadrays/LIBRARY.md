@@ -20,12 +20,12 @@ library (below).
 | `source.h/.cpp` | the level set of a cell as the engine reads it: a Bernstein form or an analytic level set; values, gradients, Taylor bounds on affine images, roots on lines |
 | `adapters/shapeforest_tape.h` | ShapeForest tapes (register code) run on every scalar type of `taylor.h`; no build dependency |
 
-The front end of phase 3, `cutcells.part`, uses quadrays without AdaptCell
-(`FRONTEND.md`). From Python, `part.quadrature(order, mode, backend="quadrays")` uses it, with
-`order` Gauss-Legendre points per segment as for `backend="algoim"`; uncut cells
-of volume parts get the straight rules of degree `order`. `quadrays_quadrature`
-and `quadrays_leaves` take a `QuadraysOptions`; `quadrays_cell_rules` and
-`quadrays_cell_leaves` work on one cell.
+The front end (`cutcells.cut`, `cutcells.part`; `FRONTEND.md`) integrates with
+quadrays when a part's quadrature asks for `backend="quadrays"`, with `order`
+Gauss-Legendre points per segment of each height line; whole cells and faces in
+a zero set get the reference rules exact for degree 2 order - 1.
+`quadrays_quadrature` and `quadrays_leaves` take a part and a `QuadraysOptions`;
+`quadrays_cell_rules` and `quadrays_cell_leaves` work on one cell.
 
 ## Differences from the prototype
 
@@ -101,9 +101,10 @@ From Python:
 - `cutcells.cut(mesh, level_set, degree=2)` and `create_level_set(mesh, level_set,
   degree)`: tetrahedra and hexahedra are classified as inside, outside or cut by
   the level set's own bounds (`cell_sign` in `source.h`: Taylor models over the
-  cell, its corners, bisection), and `backend="quadrays"` integrates it. The
-  interpolant of degree `degree` only feeds today's AdaptCells, which the straight
-  and algoim backends and the straight visualisation use;
+  cell, its corners, bisection), and `backend="quadrays"` integrates it. Until
+  phase 5 the interpolant of degree `degree` fed the AdaptCells of the straight
+  and algoim backends; since then the lookup tables also read the analytic level
+  set itself, at their template's vertices;
 - `quadrays_cell_rules` and `quadrays_cell_leaves` take an `AnalyticLevelSet` in
   place of the degree and the Bernstein coefficients.
 
@@ -150,7 +151,7 @@ for the plane 1e-12 from faces on tets); scaled level sets give the unscaled tot
 A ball of radius 0.26 about the centre of a cell of side 0.5 reaches 0.01 into
 its six neighbours: every vertex lies outside it, so a P1 interpolant sees no ball
 at all, and the caps lie away from all vertices. `cut()` finds the 7 cut hexahedra
-(24 tetrahedra) for any degree, and quadrays integrates the ball to 5e-11 (volume)
+(24 tetrahedra; 18 since phase 3 bounds tetrahedra themselves) for any degree, and quadrays integrates the ball to 5e-11 (volume)
 and 6e-10 (area) on hexahedra, 1e-10 and 2e-9 on tetrahedra; the straight backend
 on the same cut sees no ball with degree 1 and 37% (hexahedra) or 54%
 (tetrahedra) of it with degree 2. On

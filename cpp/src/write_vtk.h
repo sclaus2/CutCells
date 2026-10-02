@@ -9,8 +9,8 @@
 #include <concepts>
 #include <cstdint>
 #include <vector>
-#include "cut_cell.h"
-#include "cut_mesh.h"
+#include "lut/cut_cell.h"
+#include "lut/cut_mesh.h"
 #include "reference_cell.h"
 #include "level_set.h"
 

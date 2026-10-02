@@ -1,0 +1,102 @@
+# Copyright (c) 2026 ONERA
+# Authors: Susanne Claus
+# This file is part of CutCells
+# SPDX-License-Identifier: MIT
+"""cutcells.cut on a mesh: the front end of cutcells.part under the names of
+HOCutResult and HOMeshPart, with the lookup tables as the default backend and
+the keywords of the former cut()."""
+
+import numpy as np
+import pytest
+
+import cutcells
+
+
+def single_triangle_mesh():
+    coords = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float64)
+    return cutcells.MeshView(coords, np.array([0, 1, 2], dtype=np.int32), np.array([0, 3], dtype=np.int32),
+                             np.array([5], dtype=np.int32), tdim=2)
+
+
+def single_tetra_mesh():
+    coords = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    return cutcells.MeshView(coords, np.array([0, 1, 2, 3], dtype=np.int32), np.array([0, 4], dtype=np.int32),
+                             np.array([10], dtype=np.int32), tdim=3)
+
+
+def test_names_and_defaults():
+    mesh = single_triangle_mesh()
+    ls = cutcells.create_level_set(mesh, lambda x: x[0] + x[1] - 0.3, degree=1, name="phi")
+    for result in (cutcells.cut(mesh, ls), cutcells.ho_cut(mesh, ls)):
+        assert isinstance(result, cutcells.HOCutResult) and isinstance(result, cutcells.part.CutResult)
+        assert result.backend == "lut" and isinstance(result.options, cutcells.LutOptions)
+        assert result.num_cut_cells == 1 and result.num_level_sets == 1
+        np.testing.assert_array_equal(np.asarray(result.parent_cell_ids), np.array([0]))
+        assert np.asarray(result.cell_domains).shape == (1, 1)
+        negative, interface = result["phi < 0"], result["phi = 0"]
+        assert isinstance(negative, cutcells.HOMeshPart) and negative.backend == "lut"
+        np.testing.assert_array_equal(np.asarray(negative.cut_cell_ids), np.array([0]))
+        np.testing.assert_array_equal(np.asarray(interface.cut_cell_ids), np.array([0]))
+        assert np.sum(negative.quadrature(order=1).weights) == pytest.approx(0.5 * 0.3**2, rel=1e-14)
+        assert np.sum(interface.quadrature(order=1).weights) == pytest.approx(0.3 * np.sqrt(2.0), rel=1e-14)
+    # the front end itself defaults to quadrays
+    assert cutcells.part.cut(mesh, ls).backend == "quadrays"
+
+
+def test_backend_per_call_and_per_result():
+    mesh = single_tetra_mesh()
+    # a ball strictly inside the tetrahedron
+    ls = cutcells.create_level_set(
+        mesh, lambda x: (x[0] - 0.22) ** 2 + (x[1] - 0.22) ** 2 + (x[2] - 0.22) ** 2 - 0.12**2, degree=2, name="phi")
+    result = cutcells.cut(mesh, ls)
+    part = result["phi < 0"]
+    exact = 4.0 / 3.0 * np.pi * 0.12**3
+    straight = np.sum(part.quadrature(order=2).weights)
+    assert np.sum(part.quadrature(order=2, backend="straight").weights) == straight
+    curved = np.sum(part.quadrature(order=5, backend="quadrays").weights)
+    assert curved == pytest.approx(exact, rel=1e-5)
+    assert abs(straight / exact - 1) > 1e-3
+    # a result's backend applies to the parts selected afterwards
+    result.backend = "quadrays"
+    assert result.options is None
+    assert np.sum(result["phi < 0"].quadrature(order=5).weights) == curved
+    assert type(result["phi < 0"].visualization_mesh()).__name__.startswith("QuadraysLeafMesh")
+    with pytest.raises(ValueError, match="benchmarks"):
+        part.quadrature(backend="algoim")
+    with pytest.raises(TypeError, match="LutOptions"):
+        cutcells.cut(mesh, ls, options=cutcells.QuadraysOptions())
+
+
+def test_quadratic_interior_intersection_is_found():
+    """A ball inside a tetrahedron whose vertices are all outside it: the
+    bounds of the P2 level set find the cut, and quadrays integrates it."""
+    mesh = single_tetra_mesh()
+
+    def ball(x):
+        return (x[0] - 0.2) ** 2 + (x[1] - 0.2) ** 2 + (x[2] - 0.2) ** 2 - 0.09
+
+    ls = cutcells.create_level_set(mesh, ball, degree=2, name="phi")
+    assert np.all(np.array([ball(v) for v in np.asarray(mesh.coordinates)]) > 0.0)
+    assert np.min(np.asarray(cutcells.make_cell_level_set(ls, 0).bernstein_coeffs)) < 0.0
+    result = cutcells.cut(mesh, ls)
+    assert result.num_cut_cells == 1
+    np.testing.assert_array_equal(np.asarray(result["phi = 0"].cut_cell_ids), np.array([0]))
+    assert np.sum(result["phi < 0"].quadrature(order=4, backend="quadrays").weights) > 0.0
+
+
+def test_legacy_keywords():
+    mesh = single_tetra_mesh()
+    ls = cutcells.create_level_set(mesh, lambda x: x[0] + x[1] - 0.6, degree=1, name="phi")
+    result = cutcells.cut(mesh, ls, triangulate=True, triangulation="midpoint", cut_approximation="iso_p1",
+                          cut_approximation_order=2)
+    options = result.options
+    assert (options.template_order, options.triangulate, options.triangulation) == (2, True, "midpoint")
+    cells = result["phi < 0"].visualization_mesh(mode="cut_only")
+    assert set(np.unique(cells.vtk_types)) == {10}
+    total = np.sum(result["phi < 0"].quadrature(order=1).weights)
+    assert total == pytest.approx(np.sum(cutcells.cut(mesh, ls)["phi < 0"].quadrature(order=1).weights), rel=1e-14)
+    phi = cutcells.analytic_sphere([0.2, 0.2, 0.2], 0.25)
+    named = cutcells.cut(mesh, phi, name="ball", degree=3)
+    assert named.level_set_names == ["ball"] and named.options.template_order == 3
+    with pytest.raises(ValueError, match="name or names"):
+        cutcells.cut(mesh, phi, name="a", names=["b"])

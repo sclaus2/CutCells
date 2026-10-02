@@ -67,51 +67,31 @@ def _collect_unique_edges(cut_cell):
 
 
 def _classify_new_edges(ls_cell, base_cut, triangulated_cut):
+    """The edges the triangulation adds, against the linear level set: in its
+    zero set (both ends 0), or crossing it inside (ends of opposite sign)."""
     base_edges = _collect_unique_edges(base_cut)
     triangulated_edges = _collect_unique_edges(triangulated_cut)
+
+    def phi(x):
+        return float(
+            cutcells.evaluate_bernstein(
+                ls_cell.cell_type,
+                ls_cell.bernstein_order,
+                np.asarray(ls_cell.bernstein_coeffs),
+                np.asarray(x, dtype=np.float64),
+            )
+        )
 
     records = []
     for key in sorted(set(triangulated_edges) - set(base_edges)):
         xa, xb = triangulated_edges[key]
-        coeffs = np.asarray(
-            cutcells.restrict_edge_bernstein_exact(
-                ls_cell.cell_type,
-                ls_cell.bernstein_order,
-                np.asarray(ls_cell.bernstein_coeffs),
-                np.asarray(xa, dtype=np.float64),
-                np.asarray(xb, dtype=np.float64),
-            ),
-            dtype=np.float64,
-        )
-        tag, _ = cutcells.classify_edge_roots(
-            coeffs,
-            zero_tol=1.0e-12,
-            sign_tol=1.0e-12,
-            max_depth=20,
-        )
-        phi_a = float(
-            cutcells.evaluate_bernstein(
-                ls_cell.cell_type,
-                ls_cell.bernstein_order,
-                np.asarray(ls_cell.bernstein_coeffs),
-                np.asarray(xa, dtype=np.float64),
-            )
-        )
-        phi_b = float(
-            cutcells.evaluate_bernstein(
-                ls_cell.cell_type,
-                ls_cell.bernstein_order,
-                np.asarray(ls_cell.bernstein_coeffs),
-                np.asarray(xb, dtype=np.float64),
-            )
-        )
-        has_zero_endpoint = abs(phi_a) <= 1.0e-12 or abs(phi_b) <= 1.0e-12
+        phi_a, phi_b = phi(xa), phi(xb)
+        zero_a, zero_b = abs(phi_a) <= 1.0e-12, abs(phi_b) <= 1.0e-12
         records.append(
             {
-                "tag": tag,
-                "has_zero_endpoint": has_zero_endpoint,
-                "has_interior_root": tag == cutcells.EdgeRootTag.multiple_roots
-                or (tag == cutcells.EdgeRootTag.one_root and not has_zero_endpoint),
+                "zero": zero_a and zero_b,
+                "has_zero_endpoint": zero_a or zero_b,
+                "has_interior_root": not (zero_a or zero_b) and phi_a * phi_b < 0.0,
             }
         )
 
@@ -183,9 +163,7 @@ def test_triangulated_tetra_cut_edges_are_classified_against_zero_level_set():
 
         edge_records = _classify_new_edges(ls_cell, base_cut, triangulated_cut)
         assert len(edge_records) == exp["new_edge_count"]
-        assert sum(record["tag"] == cutcells.EdgeRootTag.zero for record in edge_records) == exp[
-            "zero_tag_count"
-        ]
+        assert sum(record["zero"] for record in edge_records) == exp["zero_tag_count"]
         assert sum(record["has_zero_endpoint"] for record in edge_records) == exp[
             "zero_endpoint_count"
         ]
@@ -206,9 +184,7 @@ def test_triangulated_tetra_cut_edges_are_classified_against_zero_level_set():
 
         midpoint_edge_records = _classify_new_edges(ls_cell, base_cut, midpoint_cut)
         assert len(midpoint_edge_records) == exp["midpoint_new_edge_count"]
-        assert sum(record["tag"] == cutcells.EdgeRootTag.zero for record in midpoint_edge_records) == exp[
-            "zero_tag_count"
-        ]
+        assert sum(record["zero"] for record in midpoint_edge_records) == exp["zero_tag_count"]
         assert sum(record["has_zero_endpoint"] for record in midpoint_edge_records) == exp[
             "midpoint_zero_endpoint_count"
         ]

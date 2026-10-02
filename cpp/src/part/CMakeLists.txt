@@ -3,7 +3,7 @@
 # This file is part of CutCells
 # SPDX-License-Identifier: MIT
 
-# part: the front end without AdaptCell (namespace cutcells::part): cells
+# part: the front end (namespace cutcells::part): cells
 # classified by level sets, mesh parts by selection expressions, their
 # quadrature and visualisation by backend. Sources join the cutcells target;
 # the headers go back to cpp/src/CMakeLists.txt and are installed under

@@ -75,7 +75,7 @@ struct LevelSetMeshData
   cell::type uniform_cell_type = cell::type::point;
   bool has_uniform_cell_type = false;
 
-  // Provenance aligned with AdaptCell:
+  // Provenance of each dof, the entity of its cell it lies on:
   // 0 = parent vertex, 1 = parent edge, 2 = parent face, 3 = parent cell interior.
   std::vector<int8_t> dof_parent_dim;
   std::vector<int32_t> dof_parent_id;
@@ -205,10 +205,9 @@ struct LevelSetFunction
   std::shared_ptr<const void> owner;
 
   // Optional analytic level set in physical coordinates (quadrays/analytic.h).
-  // It classifies tetrahedra and hexahedra as inside, outside or cut by its
-  // own bounds, and the quadrays backend integrates it. The Pk interpolant in
-  // dof_values feeds the AdaptCells of cut cells, which the straight and
-  // algoim backends and the straight visualisation use.
+  // part::cut classifies tetrahedra and hexahedra by its own bounds; quadrays
+  // integrates it and the lookup tables read its values at their templates.
+  // A Pk interpolant in dof_values is used by neither.
   std::shared_ptr<const quadrays::AnalyticLevelSet> analytic;
 
   bool has_value() const
@@ -311,13 +310,11 @@ LevelSetFunction<T, I> create_level_set_function(
     std::span<const T> dof_values,
     std::string name = "phi");
 
-/// @brief An analytic level set with its Pk interpolant.
+/// @brief An analytic level set with its Pk interpolant of degree @p degree.
 ///
-/// cut() classifies tetrahedra and hexahedra with @p analytic's own bounds,
-/// and the quadrays backend integrates @p analytic. The interpolant of degree
-/// @p degree feeds the AdaptCells of cut cells (straight and algoim backends,
-/// straight visualisation) and classifies other cell types. value() and
-/// grad() evaluate @p analytic.
+/// part::cut classifies and both backends integrate @p analytic itself on
+/// tetrahedra and hexahedra; the interpolant is there for callers that need a
+/// finite-element function. value() and grad() evaluate @p analytic.
 template <std::floating_point T, std::integral I = int>
 LevelSetFunction<T, I> create_level_set_function(
     const MeshView<T, I>& mesh,
@@ -325,9 +322,9 @@ LevelSetFunction<T, I> create_level_set_function(
     int degree,
     std::string name = "phi");
 
-/// @brief An analytic level set alone, without an interpolant, for the front
-/// end of part/ (part::cut), which classifies and integrates with its bounds.
-/// value() and grad() evaluate it in @p gdim coordinates.
+/// @brief An analytic level set alone, without an interpolant, for part::cut,
+/// which classifies and integrates with its bounds. value() and grad()
+/// evaluate it in @p gdim coordinates.
 template <std::floating_point T, std::integral I = int>
 LevelSetFunction<T, I> create_level_set_function(
     std::shared_ptr<const quadrays::AnalyticLevelSet> analytic,

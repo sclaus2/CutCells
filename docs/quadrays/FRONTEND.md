@@ -1,20 +1,20 @@
-# The front end without AdaptCell (phases 3 and 4)
+# The front end (phases 3 to 5)
 
-`cpp/src/part/`, namespace `cutcells::part`, Python `cutcells.part`. It classifies
-cells by their level sets, selects mesh parts by expressions, and hands their
-quadrature and visualisation to a backend: quadrays, or the lookup tables on
-Pk-iso-P1 templates (`cpp/src/lut/`, phase 4). It needs no AdaptCell and no
-interpolant of an analytic level set. It sits beside `HOCutResult` and
-`HOMeshPart` until it replaces them (phase 5).
+`cpp/src/part/`, namespace `cutcells::part`, Python `cutcells.cut` and
+`cutcells.part`. It classifies cells by their level sets, selects mesh parts by
+expressions, and hands their quadrature and visualisation to a backend:
+quadrays, or the lookup tables on Pk-iso-P1 templates (`cpp/src/lut/`, phase 4).
+It needs no interpolant of an analytic level set. Since phase 5 it is the only
+front end: AdaptCell, its certification and `HOCutResult`/`HOMeshPart` of old
+are gone, and those names now denote this front end's classes.
 
 ```python
 import cutcells
 
-result = cutcells.part.cut(mesh, cutcells.analytic_sphere([0, 0, 0], 0.7))
-rules = result["phi < 0"].quadrature(order=5, backend="quadrays")
-result["phi = 0"].write_vtu("sphere.vtu", mode="cut_only", degree=3)
-straight = result["phi < 0"].quadrature(order=2, backend="lut",
-                                        options=cutcells.LutOptions(template_order=3))
+result = cutcells.cut(mesh, cutcells.analytic_sphere([0, 0, 0], 0.7))
+rules = result["phi < 0"].quadrature(order=2)                     # lookup tables
+curved = result["phi < 0"].quadrature(order=5, backend="quadrays")
+result["phi = 0"].write_vtu("sphere.vtu", mode="cut_only")
 ```
 
 `cut(mesh, level_sets)` takes LevelSetFunctions with dof values (Pk) and
@@ -84,12 +84,15 @@ level sets per cell.
 
 ## Faces lying in a zero set
 
-Where a level set vanishes on a whole mesh face (a plane through grid faces),
-no cell is cut there, and no engine integrated that interface before. `cut()`
-finds such faces (the level set is 0 at the face's vertices and, by its bounds,
-on the face) and gives each to one cell: the cell on its negative side (by its
-domain, or for a cut cell by the derivative into the cell), else the lower cell
-index. An interface part then integrates the face once, with the reference
+Where a level set vanishes on a whole mesh facet (a plane through grid faces, a
+line through grid edges in 2D), no cell is cut there, and no engine integrated
+that interface before. `cut()` finds such facets and gives each to one cell:
+the cell on its negative side (by its domain, or for a cut cell by the
+derivative into the cell), else the lower cell index. On tetrahedra and
+hexahedra the level set is 0 at the face's vertices and, by its bounds, on the
+face; on the cells classified by Bernstein coefficients (2D cells, prisms,
+pyramids, phase 5) it is 0 on the facet's lattice of its degree, which fixes
+the polynomial there. An interface part then integrates the face once, with the reference
 rule of the face merged into the owner's rule, and shows it as a linear face.
 For the plane x = 0.25 at n = 8 that is 64 quadrilaterals or 128 triangles, and
 the interface measures 4 to rounding, as do the volumes below and above it.
@@ -160,11 +163,11 @@ What the tables need, found on the way:
   products: the Gram determinant lost half the digits on the slivers next to
   values moved off 0 (6.6e-10 instead of 2e-15).
 
-### Against today's straight backend
+### Against the straight backend of AdaptCell
 
-`cutcells.cut(mesh, level_sets)[expr].quadrature(order, backend="straight")`
-refines cut cells with the same iso-Pk templates and cuts them with the same
-tables. On [-1, 1]^3 and [-1, 1]^2 at n = 6 and 8 the lookup tables give every
+The straight backend that phase 5 removed refined cut cells with the same
+iso-Pk templates and cut them with the same tables. Its numbers for these cases
+are kept in `python/tests/test_part_lut.py`. On [-1, 1]^3 and [-1, 1]^2 at n = 6 and 8 the lookup tables give every
 cell the same measure and first moments, to 1e-15, for P1 and P2 spheres
 (circles) on hexahedra, tetrahedra, quadrilaterals and triangles, volumes and
 interfaces, and for a P2 sphere and a plane crossing in cells on tetrahedra,
@@ -208,15 +211,61 @@ for the classification and both rules (best of three, load average 6 to 8):
 | same, P3 | 2.20 + 0.17 | 0.06 + 0.52 |
 
 The lookup tables cut the cells when the rules are asked for, on every call;
-the straight backend reads the pieces AdaptCell made in `cut`.
+the straight backend read the pieces AdaptCell had made in `cut`.
+
+### Curves and points
+
+Where a part's terms name two zero sets ("a = 0 and b = 0": curves in 3D,
+points in 2D), the zero pieces of the first are also cut by the zero set of the
+second; every piece carries the mask of the zero sets it lies in. A curve on a
+face between two sub-cells is counted once, by the sub-cell below the second
+level set. Two planes give their line, in every cell type and template order, to
+5e-15 (`cpp/tests/lut/test_lut.cpp`).
+
+## Phase 5: AdaptCell retired
+
+- **Removed from the library:** `adapt_cell`, `refine_cell`, `entity_numbering`,
+  `cell_certification`, `edge_certification`, `ho_cut_mesh` (`HOCutCells`,
+  `ParentCellClassification`, the AdaptCell `cut`) and `ho_mesh_part_output`.
+  `iso_refine` keeps its templates without `apply_iso_refine`, and
+  `level_set_cell` no longer includes AdaptCell.
+- **Moved:** the lookup tables (`cut_<cell>`, their generated tables,
+  `triangulation`, the midpoint splits, `cell_subdivision`, `cut_cell`,
+  `cut_mesh`, `iso_refine`) into `cpp/src/lut/` (installed under
+  `include/cutcells/lut/`); `algoim_quadrature` and `edge_root` into
+  `benchmarks/quadrays/` as `mesh_part_algoim` (`benchmarks::algoim_rules` on
+  the front end's parts, checked by `mesh_part_algoim_check` with
+  `CUTCELLS_WITH_ALGOIM`). The library no longer includes algoim or links
+  LAPACK.
+- **Python:** `cutcells.cut(mesh, level_sets)` (and `ho_cut`) is `part.cut`
+  with the lookup tables as the default backend ("straight" names them too) and
+  the keywords of the former cut(): `triangulate`, `triangulation`
+  ('classical', 'midpoint'), `cut_approximation` ('auto', 'linear', 'iso_p1')
+  with `cut_approximation_order`, `degree` (the template order for analytic
+  level sets) and `name`. `result.backend` and `result.options` set the default
+  of the parts selected afterwards; a call can name another. `HOCutResult` and
+  `HOMeshPart` are `part.CutResult` and `part.MeshPart`, with `parent_cell_ids`,
+  `cell_domains`, `num_level_sets`, `cut_cell_ids` and `uncut_cell_ids` kept.
+  Gone: `AdaptCell`, `adapt_cell()`, the certification and refinement
+  functions, their tags, the AdaptCell tuning keywords
+  (`max_refinement_iterations`, `edge_max_depth`, `linear_fast_path`) and the
+  algoim backends.
+- **Behaviour:** one rule per cell (the straight backend gave one per piece);
+  the lookup tables' `order` counts Gauss points per direction (rules exact for
+  degree 2 order - 1, the straight backend took the degree); hexahedra with
+  multilinear values fill their cells exactly (above); 1D meshes and curves go
+  through the lookup tables.
+- **Fixed on the way:** `create_level_set_mesh_data(mesh, degree)` gave intervals
+  their vertex dofs twice.
 
 ## Limits
 
 - quadrays: affine cells, tetrahedra and hexahedra in 3D, one level set per
   cell (2D cells, prisms, pyramids and several level sets per cell come in
   phase 6).
-- The lookup tables: triangles, quadrilaterals, tetrahedra and hexahedra (the
-  cells of the iso-P1 templates), affine or multilinear cell maps; volumes and
-  interfaces, not the sets where two level sets vanish.
+- The lookup tables: intervals, triangles, quadrilaterals, tetrahedra and
+  hexahedra (the cells of the iso-P1 templates), affine or multilinear cell
+  maps; volumes, interfaces and the curves (points in 2D) where two level sets
+  vanish.
 - Analytic level sets: tetrahedra and hexahedra in 3D.
 - Pk level sets need dof values; level sets with nodal values only are refused.

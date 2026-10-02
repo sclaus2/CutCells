@@ -26,7 +26,8 @@ Basix is licensed under the MIT License.
 ## Algoim
 
 CutCells vendors a pinned snapshot of Algoim under `third_party/algoim`
-for the optional Algoim-backed quadrature implementation.
+for the comparison drivers in `benchmarks/`; the library and the Python
+package do not contain it.
 
 Algoim is licensed under a BSD-style license.
 

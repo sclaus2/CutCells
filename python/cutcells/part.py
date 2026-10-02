@@ -2,7 +2,7 @@
 # Authors: Susanne Claus
 # This file is part of CutCells
 # SPDX-License-Identifier: MIT
-"""The front end without AdaptCell.
+"""The front end.
 
 ``cut(mesh, level_sets)`` classifies every cell by every level set, Pk
 (LevelSetFunction with dof values) or analytic (AnalyticLevelSet), by the level
@@ -19,7 +19,9 @@ quadrays (options QuadraysOptions), or the lookup tables on Pk-iso-P1 templates,
     straight = result["phi < 0"].quadrature(order=2, backend="lut",
                                             options=cutcells.LutOptions(template_order=3))
 
-It sits beside HOCutResult and HOMeshPart until it replaces them (phase 5).
+``cutcells.cut`` is the same with the lookup tables as the default backend and
+the keywords of the former cut(); CutResult and MeshPart are also named
+HOCutResult and HOMeshPart.
 """
 
 from ._cutcellscpp import part as _part

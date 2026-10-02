@@ -5,7 +5,7 @@
 // SPDX-License-Identifier:    MIT
 #pragma once
 
-#include "cut_cell.h"
+#include "lut/cut_cell.h"
 #include "cell_types.h"
 
 #include <vector>

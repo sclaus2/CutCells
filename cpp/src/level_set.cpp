@@ -600,8 +600,7 @@ template <std::floating_point T, std::integral I>
 void append_interval_cell_dofs(const MeshView<T, I>& mesh, LevelSetMeshData<T, I>& out,
                                I cell_id, const std::vector<I>& verts, int degree)
 {
-  out.cell_dofs.push_back(verts[0]);
-  out.cell_dofs.push_back(verts[1]);
+  // the vertex dofs are already in (append_cell_dofs)
   if (degree == 1)
     return;
 

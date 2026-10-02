@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 import cutcells
 
@@ -136,3 +137,21 @@ def test_make_cell_level_set_matches_generated_mesh_data_without_provenance():
         np.asarray(ls_cell_from_arrays.bernstein_coeffs),
         np.asarray(ls_cell_generated.bernstein_coeffs),
     )
+
+
+def test_create_level_set_mesh_data_interval_dofs():
+    """Intervals get their two vertex dofs once, then the interior ones."""
+    coords = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], dtype=np.float64)
+    mesh = cutcells.MeshView(coords, np.array([0, 1, 1, 2], dtype=np.int32), np.array([0, 2, 4], dtype=np.int32),
+                             np.array([3, 3], dtype=np.int32), tdim=1)
+    p1 = cutcells.create_level_set_mesh_data(mesh, 1)
+    np.testing.assert_array_equal(np.asarray(p1.cell_dofs), [0, 1, 1, 2])
+    p2 = cutcells.create_level_set_mesh_data(mesh, 2)
+    np.testing.assert_array_equal(np.asarray(p2.cell_offsets), [0, 3, 6])
+    # the level set of intervals embedded in 2D, cut at x = 0.3
+    ls = cutcells.create_level_set(mesh, lambda x: x[0] - 0.3, degree=1, name="phi")
+    result = cutcells.cut(mesh, ls)
+    assert np.sum(result["phi < 0"].quadrature(order=1).weights) == pytest.approx(0.3, rel=1e-14)
+    root = result["phi = 0"].quadrature(order=1)
+    np.testing.assert_allclose(np.asarray(root.points), [0.3], rtol=1e-14)
+    np.testing.assert_allclose(np.asarray(root.weights), [1.0], rtol=1e-14)

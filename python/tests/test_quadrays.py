@@ -109,8 +109,8 @@ def test_cell_rules_and_stats():
     assert np.sum(rules32.weights) == pytest.approx(0.5**3 / 6, rel=1e-6)
 
 
-def test_unsupported_selections_are_refused():
+def test_terms_on_one_level_set():
     mesh = box_mesh("hex", 2)
     result = cutcells.cut(mesh, cutcells.create_level_set(mesh, plane, degree=1, name="phi"))
-    with pytest.raises(RuntimeError, match="one term"):
-        result["phi < 0 or phi > 0"].quadrature(order=3, backend="quadrays")
+    rules = result["phi < 0 or phi > 0"].quadrature(order=3, backend="quadrays")
+    assert np.sum(rules.weights) == pytest.approx(8.0, rel=1e-13)

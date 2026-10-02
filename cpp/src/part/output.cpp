@@ -151,9 +151,9 @@ void check_lut(const MeshPart<T, I>& part, const lut::Options& options)
         throw std::invalid_argument("part: the template order of the lookup tables goes from 1 to 4 "
                                     "(0: from the level sets)");
     const CutResult<T, I>& r = *part.result;
-    if (r.num_cells > 0 && part.dim < cell::get_tdim(r.mesh->cell_type(I(0))) - 1)
-        throw std::invalid_argument("part: the lookup tables give volumes and interfaces, not the sets "
-                                    "where two level sets vanish");
+    if (r.num_cells > 0 && part.dim < cell::get_tdim(r.mesh->cell_type(I(0))) - 2)
+        throw std::invalid_argument("part: the lookup tables give volumes, interfaces and the curves where two "
+                                    "level sets vanish, not where three do");
 }
 
 /// The map of a cell from its vertices in Basix order.
@@ -161,11 +161,12 @@ template <std::floating_point T, std::integral I>
 void cell_map(const MeshView<T, I>& mesh, I cell_id, lut::CellMap<T>& map, std::vector<I>& scratch)
 {
     map.type = mesh.cell_type(cell_id);
-    if (map.type != cell::type::triangle && map.type != cell::type::quadrilateral
-        && map.type != cell::type::tetrahedron && map.type != cell::type::hexahedron)
+    if (map.type != cell::type::interval && map.type != cell::type::triangle
+        && map.type != cell::type::quadrilateral && map.type != cell::type::tetrahedron
+        && map.type != cell::type::hexahedron)
     {
-        throw std::invalid_argument("part: the lookup tables take triangles, quadrilaterals, tetrahedra and "
-                                    "hexahedra");
+        throw std::invalid_argument("part: the lookup tables take intervals, triangles, quadrilaterals, "
+                                    "tetrahedra and hexahedra");
     }
     map.gdim = mesh.gdim;
     cell_vertex_coords_basix(mesh, cell_id, map.vertices, scratch);
@@ -191,16 +192,14 @@ std::span<const T> piece_vertices(const lut::Pieces<T>& pieces, int p)
                  static_cast<std::size_t>(pieces.offsets[p + 1] - pieces.offsets[p]) * tdim);
 }
 
-/// Whether a term holds on piece @p p: by the piece's sides for the level sets
-/// cutting the cell, by the cell's domains for the others.
+/// Whether a term holds on piece @p p: the piece lies in exactly the zero sets
+/// the term names, and on its sides for the other level sets that cut the
+/// cell; the cell's domains decide for the level sets that do not.
 template <std::floating_point T, std::integral I>
 bool term_on_piece(const SelectionTerm& term, const CutResult<T, I>& r, I cell_id, const LutCell<T>& lc, int p)
 {
-    const int zero = lc.pieces.zero[static_cast<std::size_t>(p)];
-    // volume pieces answer the terms without zero clause, a zero piece those with its own
-    if ((term.zero_required == 0) != (zero < 0))
-        return false;
     const std::uint64_t all = term.negative_required | term.positive_required | term.zero_required;
+    std::uint64_t zero = 0;
     for (int l = 0; l < r.n_level_sets(); ++l)
     {
         const std::uint64_t bit = std::uint64_t(1) << l;
@@ -216,13 +215,9 @@ bool term_on_piece(const SelectionTerm& term, const CutResult<T, I>& r, I cell_i
                 return false;
             continue;
         }
-        const int j = static_cast<int>(it - lc.level_sets.begin());
-        const std::uint64_t local = std::uint64_t(1) << j;
+        const std::uint64_t local = std::uint64_t(1) << (it - lc.level_sets.begin());
         if (term.zero_required & bit)
-        {
-            if (zero != j)
-                return false;
-        }
+            zero |= local;
         else if (term.negative_required & bit)
         {
             if (!(lc.pieces.negative[static_cast<std::size_t>(p)] & local))
@@ -231,7 +226,7 @@ bool term_on_piece(const SelectionTerm& term, const CutResult<T, I>& r, I cell_i
         else if (!(lc.pieces.positive[static_cast<std::size_t>(p)] & local))
             return false;
     }
-    return true;
+    return lc.pieces.zero[static_cast<std::size_t>(p)] == zero;
 }
 
 /// The pieces of a cut cell: the template of the options' order (by default
@@ -303,7 +298,8 @@ void lut_cell(const MeshPart<T, I>& part, I cell_id, const lut::CellMap<T>& map,
         return;
     }
     lut::cut_cell<T>(map.type, k, std::span<const T>(lc.values), static_cast<int>(lc.level_sets.size()),
-                     part.dim < tdim ? zero_sets : 0, options.triangulate, lc.pieces);
+                     part.dim < tdim ? zero_sets : 0, part.dim == tdim - 2,
+                     options.triangulate ? options.triangulation : cell::TriangulationStrategy::none, lc.pieces);
     lc.selected.assign(static_cast<std::size_t>(lc.pieces.n_pieces()), 0);
     for (int p = 0; p < lc.pieces.n_pieces(); ++p)
         for (const SelectionTerm& term : part.expr.terms)
@@ -314,15 +310,16 @@ void lut_cell(const MeshPart<T, I>& part, I cell_id, const lut::CellMap<T>& map,
             }
 }
 
-/// Face @p f of a cell in the cell's reference coordinates.
+/// Facet @p f of a cell (a face in 3D, an edge in 2D) in the cell's reference
+/// coordinates.
 template <std::floating_point T>
-void reference_face(cell::type type, int f, std::vector<T>& face)
+void reference_facet(cell::type type, int f, std::vector<T>& facet)
 {
     const std::vector<T> ref = cell::reference_vertices<T>(type);
     const int tdim = cell::get_tdim(type);
-    face.clear();
-    for (const int v : cell::face_vertices(type, f))
-        face.insert(face.end(), ref.begin() + v * tdim, ref.begin() + (v + 1) * tdim);
+    facet.clear();
+    for (const int v : facet_vertices(type, f))
+        facet.insert(facet.end(), ref.begin() + v * tdim, ref.begin() + (v + 1) * tdim);
 }
 
 template <std::floating_point T>
@@ -487,9 +484,9 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
             else if (entries[i].kind == 1)
             {
                 const int f = r.zero_face_local[static_cast<std::size_t>(entries[i].index)];
-                reference_face(map.type, f, face);
-                lut::append_piece_rule(map, cell::face_type(map.type, f), std::span<const T>(face), degree,
-                                       rules._points, rules._weights);
+                reference_facet(map.type, f, face);
+                lut::append_piece_rule(map, facet_type(map.type, f), std::span<const T>(face), degree, rules._points,
+                                       rules._weights);
             }
             else
             {
@@ -540,9 +537,9 @@ mesh::CutMesh<T> visualization_mesh(const MeshPart<T, I>& part, bool include_unc
         {
             const int f = r.zero_face_local[static_cast<std::size_t>(e.index)];
             x.clear();
-            for (const int v : cell::face_vertices(map.type, f))
+            for (const int v : facet_vertices(map.type, f))
                 x.insert(x.end(), map.vertices.begin() + v * map.gdim, map.vertices.begin() + (v + 1) * map.gdim);
-            append_cell(out, cell::face_type(map.type, f), std::span<const T>(x), parent);
+            append_cell(out, facet_type(map.type, f), std::span<const T>(x), parent);
         }
         else
             append_cell(out, map.type, std::span<const T>(map.vertices), parent);

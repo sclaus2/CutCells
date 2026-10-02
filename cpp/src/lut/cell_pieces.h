@@ -11,10 +11,11 @@
 #include <vector>
 
 #include "../cell_types.h"
+#include "triangulation.h"
 
 /// The lookup-table backend: a cut cell is subdivided by a Pk-iso-P1 template,
 /// and each sub-cell is cut by the lookup tables (cut_<cell>) with the P1
-/// interpolants of the level sets. (The lookup tables move here in phase 5.)
+/// interpolants of the level sets.
 namespace cutcells::lut
 {
 
@@ -26,6 +27,8 @@ struct Options
     int template_order = 0;
     /// Split the cut pieces into simplices.
     bool triangulate = false;
+    /// How, when triangulate is set: classical or midpoint (cell::cut).
+    cell::TriangulationStrategy triangulation = cell::TriangulationStrategy::classical;
 };
 
 /// Straight pieces of one cell, each with the side of every cutting level set
@@ -39,7 +42,7 @@ struct Pieces
     std::vector<cell::type> types;
     std::vector<std::uint64_t> negative; ///< bit i: the piece lies where level set i < 0
     std::vector<std::uint64_t> positive; ///< bit i: where level set i > 0 (or touches 0 from above)
-    std::vector<int> zero;               ///< i if the piece lies in level set i's zero set, -1 if a volume piece
+    std::vector<std::uint64_t> zero;     ///< bit i: the piece lies in level set i's zero set (0: a volume piece)
 
     int n_pieces() const { return static_cast<int>(types.size()); }
 };
@@ -60,13 +63,16 @@ std::span<const double> template_vertices(cell::type cell_type, int template_ord
 /// tables of both sides do not fit together. A value within 64 eps max|v| of 0 on a cell counts
 /// as positive: the level set touches 0 from above there, and intersections
 /// land on the vertex. With bit i of @p zero_sets, the pieces of level set i's
-/// zero set are added, cut by the other level sets.
+/// zero set are added, cut by the other level sets; with @p curves also the
+/// pieces where two of those level sets vanish.
 ///
-/// @param values  the level sets at the template's vertices,
-///                values[i * n_template_vertices + v]
-/// @param out     pieces in the cell's reference coordinates (cleared first)
+/// @param values         the level sets at the template's vertices,
+///                       values[i * n_template_vertices + v]
+/// @param triangulation  how the tables split cut pieces into simplices
+///                       (none: they keep prisms, pyramids, ...)
+/// @param out            pieces in the cell's reference coordinates (cleared first)
 template <std::floating_point T>
 void cut_cell(cell::type cell_type, int template_order, std::span<const T> values, int n_level_sets,
-              std::uint64_t zero_sets, bool triangulate, Pieces<T>& out);
+              std::uint64_t zero_sets, bool curves, cell::TriangulationStrategy triangulation, Pieces<T>& out);
 
 } // namespace cutcells::lut
