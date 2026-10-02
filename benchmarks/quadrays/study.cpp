@@ -7,9 +7,13 @@
 //
 // Test problem: sphere |x - centre| = radius in [-1, 1]^3, meshed with n^3 hexahedra
 // or 6 n^3 Kuhn tetrahedra. Parts are selected with the same expressions as
-// HOCutResult, e.g. "phi < 0", "phi > 0", "phi = 0". The level set reaches
-// quadrays as Bernstein coefficients on each cell, as from a finite-element
-// level set; algoim's generators interpolate the sphere on their boxes.
+// HOCutResult, e.g. "phi < 0", "phi > 0", "phi = 0". By default the level set
+// reaches quadrays as Bernstein coefficients on each cell, as from a
+// finite-element level set; algoim's generators interpolate the sphere on their
+// boxes. With --analytic or --tape it is an analytic level set instead
+// (quadrays/analytic.h): a C++ functor (distance |x - c| - r or quadratic
+// |x - c|^2 - r^2) or a ShapeForest tape file (cutcells.shapeforest.write_tape),
+// which quadrays and algoim's 2015 engine (quadgen) evaluate themselves.
 //
 // Usage:
 //   quadrays_study [--mesh hex|tet] [--n 16,32] [--q 3,5] [--centre x,y,z]
@@ -17,10 +21,11 @@
 //                  [--part "phi < 0"]... [--csv file] [--plane] [--vtk prefix]
 //                  [--leaves prefix] [--leaf-degree p]
 //                  [--diagnose] [--only cell] [--masks M] [--no-diagonal]
+//                  [--analytic distance|quadratic] [--tape file]
 //
 // Generators: quadrays (margin 0.25) or quadrays:<margin>; with
 // CUTCELLS_WITH_ALGOIM also algoim-auto, algoim-gl, gl-cellmask, alpha, split,
-// alpha-split and quadgen (hex only).
+// alpha-split and quadgen (hex only). Analytic level sets: quadrays and quadgen.
 //
 // Metrics per run: per-cell L1 (sum over cut cells of |cell error|, relative to
 // the ball volume or the sphere area), worst cell (relative to the cell's exact
@@ -46,11 +51,14 @@
 #include <string>
 #include <vector>
 
+#include <cutcells/quadrays/adapters/shapeforest_tape.h>
+#include <cutcells/quadrays/analytic.h>
 #include <cutcells/quadrays/leaves.h>
 #include <cutcells/quadrays/rules.h>
 #include <cutcells/selection_expr.h>
 
 #include "exact_reference.h"
+#include "sphere_functors.h"
 #include "test_mesh.h"
 
 #ifdef CUTCELLS_WITH_ALGOIM
@@ -81,6 +89,8 @@ struct StudyConfig
     int only = -1;
     int masks = 1;
     bool diagonal = true;
+    std::string analytic; ///< "", "distance" or "quadratic"
+    std::string tape;     ///< ShapeForest tape file of the sphere
 };
 
 struct Metrics
@@ -170,6 +180,14 @@ StudyConfig parse_args(int argc, char** argv)
             cfg.masks = std::stoi(next());
         else if (a == "--no-diagonal")
             cfg.diagonal = false;
+        else if (a == "--analytic")
+        {
+            cfg.analytic = next();
+            if (cfg.analytic != "distance" && cfg.analytic != "quadratic")
+                throw std::runtime_error("--analytic takes distance or quadratic");
+        }
+        else if (a == "--tape")
+            cfg.tape = next();
         else
             throw std::runtime_error("unknown argument: " + a);
     }
@@ -349,6 +367,30 @@ int main(int argc, char** argv)
     auto phi = [&](const V3& x)
     { return (x[0] - c[0]) * (x[0] - c[0]) + (x[1] - c[1]) * (x[1] - c[1]) + (x[2] - c[2]) * (x[2] - c[2]) - r * r; };
 
+    // analytic level sets: a functor or a tape through the interface
+    const SphereDistance distance = {c, r};
+    const SphereQuadratic quadratic = {c, r};
+    shapeforest::Tape tape;
+    const shapeforest::TapeLevelSet tape_functor = {&tape};
+    AnalyticLevelSet analytic;
+    const bool is_analytic = !cfg.analytic.empty() || !cfg.tape.empty();
+    if (!cfg.tape.empty())
+    {
+        tape = shapeforest::read_tape(cfg.tape);
+        analytic = analytic_level_set(tape_functor);
+        std::printf("Level set: the ShapeForest tape %s (%d instructions).\n", cfg.tape.c_str(), tape.n_instructions());
+    }
+    else if (cfg.analytic == "distance")
+    {
+        analytic = analytic_level_set(distance);
+        std::printf("Level set: the signed distance |x - c| - r as a C++ functor.\n");
+    }
+    else if (cfg.analytic == "quadratic")
+    {
+        analytic = analytic_level_set(quadratic);
+        std::printf("Level set: |x - c|^2 - r^2 as a C++ functor.\n");
+    }
+
     std::ofstream csv;
     if (!cfg.csv.empty())
     {
@@ -373,6 +415,11 @@ int main(int argc, char** argv)
                     continue;
                 }
                 const bool quad = is_quadrays(gen);
+                if (is_analytic && !quad && gen != "quadgen")
+                {
+                    std::printf("(%s skipped: analytic level sets go to quadrays and quadgen only)\n", gen.c_str());
+                    continue;
+                }
 #ifndef CUTCELLS_WITH_ALGOIM
                 if (!quad)
                 {
@@ -439,31 +486,45 @@ int main(int argc, char** argv)
                                             append_linear_cell<double>(cell.type, cell.vertices, cell_index, leaf_mesh);
                                         continue;
                                     }
-                                    if (quad)
+                                    if (quad && !is_analytic)
                                         cell_coefficients(cell, 2, phi, coeffs);
                                     if (want_leaves)
                                     {
                                         ClippedBox<double> box;
                                         BoxBernstein<double> form;
                                         make_clipped_box<double>(cell.type, cell.vertices, 3, box);
-                                        cell_bernstein_on_box<double>(cell.type, 2, coeffs, form);
                                         Stats leaf_stats;
-                                        append_leaves<double>(box, form, part, cfg.leaf_degree, opt, cell_index, leaf_mesh,
-                                                              leaf_stats);
+                                        if (is_analytic)
+                                            append_leaves<double>(box, analytic_source(analytic, box), part,
+                                                                  cfg.leaf_degree, opt, cell_index, leaf_mesh, leaf_stats);
+                                        else
+                                        {
+                                            cell_bernstein_on_box<double>(cell.type, 2, coeffs, form);
+                                            append_leaves<double>(box, form, part, cfg.leaf_degree, opt, cell_index,
+                                                                  leaf_mesh, leaf_stats);
+                                        }
                                         stats_all.incomplete_leaves += leaf_stats.incomplete_leaves;
                                         append_linear_cell<double>(cell.type, cell.vertices, cell_index, cut_cells);
                                     }
                                     quadrature::QuadratureRules<double> rule;
                                     Stats stats;
                                     const auto t0 = std::chrono::steady_clock::now();
-                                    if (quad)
+                                    if (quad && is_analytic)
+                                        append_cell_rules<double>(cell.type, cell.vertices, analytic, term, 0, q, opt, 0,
+                                                                  rule, stats);
+                                    else if (quad)
                                         quadrays_rule(cell, 2, coeffs, term, q, opt, rule, stats);
 #ifdef CUTCELLS_WITH_ALGOIM
                                     else
                                     {
                                         ClippedBox<double> box;
                                         make_clipped_box<double>(cell.type, cell.vertices, 3, box);
-                                        if (gen == "quadgen")
+                                        if (gen == "quadgen" && !cfg.tape.empty())
+                                            benchmarks::algoim_quadgen_tape(box, tape, term, q, rule);
+                                        else if (gen == "quadgen" && is_analytic)
+                                            benchmarks::algoim_quadgen_functor(box, {c[0], c[1], c[2]}, r,
+                                                                               cfg.analytic == "distance", term, q, rule);
+                                        else if (gen == "quadgen")
                                             benchmarks::algoim_quadgen_sphere(box, {c[0], c[1], c[2]}, r, term, q, rule);
                                         else
                                         {

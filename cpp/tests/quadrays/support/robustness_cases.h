@@ -152,39 +152,67 @@ inline double sq_dist(const V3& x, const V3& c)
     return (x[0] - c[0]) * (x[0] - c[0]) + (x[1] - c[1]) * (x[1] - c[1]) + (x[2] - c[2]) * (x[2] - c[2]);
 }
 
-inline double phi(const Case& c, const V3& x)
+/// phi of a case at x, for every scalar type of quadrays/taylor.h: double for
+/// values, Dual and Taylor models for the analytic interface.
+template <typename V>
+V case_value(const Case& c, const std::array<V, 3>& x)
 {
-    double v = 0;
+    auto sq = [&x](const V3& p)
+    {
+        const V a = x[0] - p[0], b = x[1] - p[1], d = x[2] - p[2];
+        return a * a + b * b + d * d;
+    };
+    V v;
     switch (c.shape)
     {
     case Shape::sphere:
-        v = sq_dist(x, c.centre) - c.radius * c.radius;
+        v = sq(c.centre) - c.radius * c.radius;
         break;
     case Shape::plane:
-        v = c.normal[0] * x[0] + c.normal[1] * x[1] + c.normal[2] * x[2] - c.offset;
+        v = x[0] * c.normal[0] + x[1] * c.normal[1] + x[2] * c.normal[2] - c.offset;
         break;
     case Shape::two_spheres:
-        v = (sq_dist(x, c.centre) - c.radius * c.radius) * (sq_dist(x, c.centre2) - c.radius2 * c.radius2);
+        v = (sq(c.centre) - c.radius * c.radius) * (sq(c.centre2) - c.radius2 * c.radius2);
         break;
     case Shape::shell:
-        v = (sq_dist(x, c.centre) - c.radius * c.radius) * (sq_dist(x, c.centre) - c.radius2 * c.radius2);
+        v = (sq(c.centre) - c.radius * c.radius) * (sq(c.centre) - c.radius2 * c.radius2);
         break;
     case Shape::cone:
-        v = (x[0] - c.centre[0]) * (x[0] - c.centre[0]) + (x[1] - c.centre[1]) * (x[1] - c.centre[1])
-            - 0.25 * (x[2] - c.centre[2]) * (x[2] - c.centre[2]);
+    {
+        const V a = x[0] - c.centre[0], b = x[1] - c.centre[1], d = x[2] - c.centre[2];
+        v = a * a + b * b - 0.25 * (d * d);
         break;
+    }
     case Shape::double_root:
-        v = (x[0] - c.centre[0]) * (x[0] - c.centre[0]);
+    {
+        const V a = x[0] - c.centre[0];
+        v = a * a;
         break;
+    }
     case Shape::torus:
     {
-        const double R = c.radius, r = c.radius2, a = sq_dist(x, c.centre) + R * R - r * r;
-        v = a * a - 4 * R * R * ((x[0] - c.centre[0]) * (x[0] - c.centre[0]) + (x[1] - c.centre[1]) * (x[1] - c.centre[1]));
+        const double R = c.radius, r = c.radius2;
+        const V a = sq(c.centre) + (R * R - r * r), u = x[0] - c.centre[0], w = x[1] - c.centre[1];
+        v = a * a - (u * u + w * w) * (4 * R * R);
         break;
     }
     }
-    return c.scale * v;
+    return v * c.scale;
 }
+
+inline double phi(const Case& c, const V3& x) { return case_value(c, x); }
+
+/// A case as an algoim-style functor, for quadrays/analytic.h.
+struct CaseLevelSet
+{
+    const Case* c = nullptr;
+
+    template <typename V>
+    V operator()(const std::array<V, 3>& x) const
+    {
+        return case_value(*c, x);
+    }
+};
 
 inline double gradient_norm(const Case& c, const V3& x)
 {

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "cell_types.h"
+#include "reference_cell.h"
 #include "row_view.h"
 
 namespace cutcells
@@ -179,5 +180,24 @@ struct MeshView
     throw std::runtime_error("MeshView::cell_type not available");
   }
 };
+
+/// @brief Vertex coordinates of a cell in Basix order, flat, gdim per vertex.
+/// @param scratch  node indices, for meshes whose rows are not contiguous
+template <std::floating_point T, std::integral I>
+void cell_vertex_coords_basix(const MeshView<T, I>& mesh, I cell_id, std::vector<T>& coords,
+                              std::vector<I>& scratch)
+{
+  const cell::type ctype = mesh.cell_type(cell_id);
+  const int nv = cell::get_num_vertices(ctype);
+  const std::span<const I> nodes = mesh.cell_nodes(cell_id, scratch);
+  coords.resize(static_cast<std::size_t>(nv * mesh.gdim));
+  for (int v = 0; v < nv; ++v)
+  {
+    const int local = mesh.vtk_vertex_order ? cell::basix_to_vtk_vertex(ctype, v) : v;
+    const T* x = mesh.node(nodes[static_cast<std::size_t>(local)]);
+    for (int d = 0; d < mesh.gdim; ++d)
+      coords[static_cast<std::size_t>(v * mesh.gdim + d)] = x[d];
+  }
+}
 
 } // namespace cutcells

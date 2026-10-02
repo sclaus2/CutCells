@@ -6,6 +6,8 @@
 #include "ho_cut_mesh.h"
 #include "cell_certification.h"
 #include "edge_certification.h"
+#include "quadrays/analytic.h"
+#include "quadrays/source.h"
 
 #include <algorithm>
 #include <array>
@@ -93,6 +95,26 @@ cell::domain classify_cell_domain_fast(const MeshView<T, I>& mesh,
                                        LevelSetCell<T, I>& ls_cell_scratch,
                                        LevelSetCell<T, I>* intersected_ls_cell)
 {
+    // An analytic level set decides by its own bounds (Taylor models over the
+    // cell, bisected); its interpolant only feeds the AdaptCell of a cut cell.
+    const cell::type ctype = mesh.cell_type(cell_id);
+    if (ls.analytic && mesh.gdim == 3
+        && (ctype == cell::type::tetrahedron || ctype == cell::type::hexahedron))
+    {
+        thread_local std::vector<T> vertex_coords;
+        thread_local quadrays::ClippedBox<T> box;
+        cell_vertex_coords_basix(mesh, cell_id, vertex_coords, mesh_cell_scratch);
+        quadrays::make_clipped_box<T>(ctype, std::span<const T>(vertex_coords), 3, box);
+        const int sign = quadrays::cell_sign(box, *ls.analytic);
+        if (sign > 0)
+            return cell::domain::outside;
+        if (sign < 0)
+            return cell::domain::inside;
+        if (intersected_ls_cell != nullptr)
+            make_cell_level_set(ls, cell_id, *intersected_ls_cell);
+        return cell::domain::intersected;
+    }
+
     if (use_bernstein_classification)
     {
         LevelSetCell<T, I>& ls_cell = ls_cell_scratch;

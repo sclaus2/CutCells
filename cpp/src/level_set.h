@@ -16,6 +16,11 @@
 #include "cell_types.h"
 #include "mesh_view.h"
 
+namespace cutcells::quadrays
+{
+struct AnalyticLevelSet;
+}
+
 namespace cutcells
 {
 
@@ -199,6 +204,13 @@ struct LevelSetFunction
   // Optional keep-alive anchor for Python / external memory.
   std::shared_ptr<const void> owner;
 
+  // Optional analytic level set in physical coordinates (quadrays/analytic.h).
+  // It classifies tetrahedra and hexahedra as inside, outside or cut by its
+  // own bounds, and the quadrays backend integrates it. The Pk interpolant in
+  // dof_values feeds the AdaptCells of cut cells, which the straight and
+  // algoim backends and the straight visualisation use.
+  std::shared_ptr<const quadrays::AnalyticLevelSet> analytic;
+
   bool has_value() const
   {
     return static_cast<bool>(value_fn);
@@ -297,6 +309,20 @@ template <std::floating_point T, std::integral I = int>
 LevelSetFunction<T, I> create_level_set_function(
     LevelSetMeshData<T, I> mesh_data,
     std::span<const T> dof_values,
+    std::string name = "phi");
+
+/// @brief An analytic level set with its Pk interpolant.
+///
+/// cut() classifies tetrahedra and hexahedra with @p analytic's own bounds,
+/// and the quadrays backend integrates @p analytic. The interpolant of degree
+/// @p degree feeds the AdaptCells of cut cells (straight and algoim backends,
+/// straight visualisation) and classifies other cell types. value() and
+/// grad() evaluate @p analytic.
+template <std::floating_point T, std::integral I = int>
+LevelSetFunction<T, I> create_level_set_function(
+    const MeshView<T, I>& mesh,
+    std::shared_ptr<const quadrays::AnalyticLevelSet> analytic,
+    int degree,
     std::string name = "phi");
 
 template <std::floating_point T, std::integral I = int>

@@ -14,6 +14,8 @@
 #include <nanobind/stl/map.h>
 #include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/pair.h>
+#include <algorithm>
+#include <array>
 #include <span>
 #include <type_traits>
 #include <stdexcept>
@@ -41,6 +43,8 @@
 #include <cutcells/mesh_view.h>
 #include <cutcells/quadrature.h>
 #include <cutcells/quadrature_tables.h>
+#include <cutcells/quadrays/adapters/shapeforest_tape.h>
+#include <cutcells/quadrays/analytic.h>
 #include <cutcells/quadrays/leaves.h>
 #include <cutcells/quadrays/rules.h>
 #include <cutcells/reference_cell.h>
@@ -152,6 +156,387 @@ std::shared_ptr<void> make_owner_from_objects(nb::object a = nb::object(),
   owner->c = std::move(c);
   owner->d = std::move(d);
   return owner;
+}
+
+// ============================================================================
+// Analytic level sets (quadrays/analytic.h)
+// ============================================================================
+
+/// An analytic level set as Python holds it. The interface struct is shared
+/// with the level-set functions and cut results made from it; whoever made it
+/// keeps its context alive through the shared pointer.
+struct PyAnalyticLevelSet
+{
+  std::shared_ptr<const quadrays::AnalyticLevelSet> phi;
+};
+
+/// The interface struct and the data its context points to, in one allocation.
+template <typename Data>
+struct AnalyticHolder
+{
+  quadrays::AnalyticLevelSet phi;
+  Data data;
+};
+
+template <typename Data>
+PyAnalyticLevelSet share_analytic(std::shared_ptr<AnalyticHolder<Data>> holder)
+{
+  const quadrays::AnalyticLevelSet* phi = &holder->phi;
+  return PyAnalyticLevelSet{std::shared_ptr<const quadrays::AnalyticLevelSet>(std::move(holder), phi)};
+}
+
+/// Python objects, released with the GIL held wherever the last owner goes.
+struct PythonObjects
+{
+  std::vector<nb::object> objects;
+
+  PythonObjects() = default;
+  PythonObjects(const PythonObjects&) = delete;
+  PythonObjects& operator=(const PythonObjects&) = delete;
+  ~PythonObjects()
+  {
+    if (!Py_IsInitialized())
+    {
+      for (nb::object& o : objects)
+        o.release(); // the interpreter is gone
+      return;
+    }
+    nb::gil_scoped_acquire gil;
+    objects.clear();
+  }
+};
+
+/// Python callables behind an AnalyticLevelSet: objects[0..3] are value,
+/// gradient, box_bounds and taylor_bounds (None if absent), objects[4] is
+/// numpy.ascontiguousarray.
+struct PythonCallbacks
+{
+  PythonObjects keep;
+};
+
+nb::object numpy_copy(const double* data, std::size_t rows, std::size_t cols = 0)
+{
+  std::vector<double> v(data, data + rows * std::max<std::size_t>(cols, 1));
+  if (cols == 0)
+    return nb::cast(as_nbarray(std::move(v)));
+  return nb::cast(as_nbarray(std::move(v), {rows, cols}));
+}
+
+/// The result of a Python callback as contiguous doubles: @p n of them, or
+/// @p value_only of them if that is not 0. Returns 1, or 2 for value_only.
+int read_doubles(const PythonCallbacks& cb, const nb::object& result, double* out, std::size_t n,
+                 const char* what, std::size_t value_only = 0)
+{
+  const nb::object array = cb.keep.objects[4](result, "float64");
+  const auto a = nb::cast<nb::ndarray<const double, nb::numpy, nb::c_contig>>(array);
+  if (a.size() != n && (value_only == 0 || a.size() != value_only))
+  {
+    throw std::runtime_error(std::string("AnalyticLevelSet: ") + what + " must return "
+                             + std::to_string(n) + " numbers"
+                             + (value_only != 0 ? " (or " + std::to_string(value_only) + " for the value alone)" : ""));
+  }
+  std::copy(a.data(), a.data() + a.size(), out);
+  return a.size() == n ? 1 : 2;
+}
+
+double python_value(const double* x, void* context)
+{
+  nb::gil_scoped_acquire gil;
+  const auto& cb = *static_cast<const PythonCallbacks*>(context);
+  try
+  {
+    return nb::cast<double>(cb.keep.objects[0](numpy_copy(x, 3)));
+  }
+  catch (const nb::python_error& e)
+  {
+    throw std::runtime_error(std::string("AnalyticLevelSet value: ") + e.what());
+  }
+}
+
+double python_gradient(const double* x, double* grad, void* context)
+{
+  nb::gil_scoped_acquire gil;
+  const auto& cb = *static_cast<const PythonCallbacks*>(context);
+  try
+  {
+    read_doubles(cb, cb.keep.objects[1](numpy_copy(x, 3)), grad, 3, "gradient");
+    return nb::cast<double>(cb.keep.objects[0](numpy_copy(x, 3)));
+  }
+  catch (const nb::python_error& e)
+  {
+    throw std::runtime_error(std::string("AnalyticLevelSet gradient: ") + e.what());
+  }
+}
+
+int python_box_bounds(const double* lo, const double* hi, double* b, void* context)
+{
+  nb::gil_scoped_acquire gil;
+  const auto& cb = *static_cast<const PythonCallbacks*>(context);
+  try
+  {
+    const nb::object r = cb.keep.objects[2](numpy_copy(lo, 3), numpy_copy(hi, 3));
+    if (r.is_none())
+      return 0;
+    return read_doubles(cb, r, b, 8, "box_bounds", 2);
+  }
+  catch (const nb::python_error& e)
+  {
+    throw std::runtime_error(std::string("AnalyticLevelSet box_bounds: ") + e.what());
+  }
+}
+
+int python_taylor_bounds(const double* centre, const double* axes, int m, double* models, void* context)
+{
+  nb::gil_scoped_acquire gil;
+  const auto& cb = *static_cast<const PythonCallbacks*>(context);
+  try
+  {
+    const nb::object r = cb.keep.objects[3](numpy_copy(centre, 3), numpy_copy(axes, 3, m));
+    if (r.is_none())
+      return 0;
+    return read_doubles(cb, r, models, static_cast<std::size_t>((m + 1) * (m + 2)), "taylor_bounds",
+                        static_cast<std::size_t>(m + 2));
+  }
+  catch (const nb::python_error& e)
+  {
+    throw std::runtime_error(std::string("AnalyticLevelSet taylor_bounds: ") + e.what());
+  }
+}
+
+/// A capsule's struct, copied, and the capsule that keeps its context alive.
+struct CapsuleSource
+{
+  PythonObjects keep;
+};
+
+/// A ShapeForest tape and the functor that runs it.
+struct TapeSource
+{
+  quadrays::shapeforest::Tape tape;
+  quadrays::shapeforest::TapeLevelSet functor;
+};
+
+/// The sphere |x - c| - r (distance) or |x - c|^2 - r^2 as a C++ functor.
+struct SphereFunctor
+{
+  std::array<double, 3> c = {0, 0, 0};
+  double r = 0;
+  bool distance = true;
+
+  template <typename V>
+  V operator()(const std::array<V, 3>& x) const
+  {
+    using std::sqrt;
+    const V dx = x[0] - c[0], dy = x[1] - c[1], dz = x[2] - c[2];
+    const V q = dx * dx + dy * dy + dz * dz;
+    return distance ? sqrt(q) - r : q - r * r;
+  }
+};
+
+constexpr const char* analytic_capsule_name = "cutcells.AnalyticLevelSet";
+
+/// Point coordinates padded to 3.
+std::array<double, 3> point3(const std::vector<double>& x)
+{
+  if (x.size() < 1 || x.size() > 3)
+    throw std::invalid_argument("AnalyticLevelSet: a point has 1 to 3 coordinates");
+  std::array<double, 3> p = {0, 0, 0};
+  std::copy(x.data(), x.data() + x.size(), p.begin());
+  return p;
+}
+
+void declare_analytic(nb::module_& m)
+{
+  nb::class_<PyAnalyticLevelSet>(m, "AnalyticLevelSet",
+      "An analytic level set in physical coordinates for the quadrays backend: "
+      "values, gradients, and bounds of both over boxes, as in algoim. Made from "
+      "Python callables (slow, for experiments), from a capsule holding a "
+      "cutcells.AnalyticLevelSet struct of function pointers (fast, for compiled "
+      "geometry libraries), from a ShapeForest tape (cutcells.shapeforest) or by "
+      "analytic_sphere. cut() accepts it.")
+      .def(
+          "__init__",
+          [](PyAnalyticLevelSet* self, nb::callable value, nb::callable gradient, nb::callable box_bounds,
+             nb::object taylor_bounds)
+          {
+            auto holder = std::make_shared<AnalyticHolder<PythonCallbacks>>();
+            holder->data.keep.objects = {value, gradient, box_bounds, taylor_bounds,
+                                         nb::module_::import_("numpy").attr("ascontiguousarray")};
+            quadrays::AnalyticLevelSet& phi = holder->phi;
+            phi.context = &holder->data;
+            phi.value = python_value;
+            phi.gradient = python_gradient;
+            phi.box_bounds = python_box_bounds;
+            phi.taylor_bounds = taylor_bounds.is_none() ? nullptr : python_taylor_bounds;
+            new (self) PyAnalyticLevelSet(share_analytic(std::move(holder)));
+          },
+          nb::arg("value"), nb::arg("gradient"), nb::arg("box_bounds"), nb::arg("taylor_bounds") = nb::none(),
+          "value(x) -> float and gradient(x) -> 3 numbers at a point x (3 coordinates); "
+          "box_bounds(lo, hi) -> 8 numbers (phi in [b0, b1], d phi/dx_i in [b(2+2i), b(3+2i)]), "
+          "2 if only the value has bounds, or None; optional taylor_bounds(centre, axes) -> "
+          "(m+1, m+2) array of first-order Taylor models (alpha, beta_0..beta_{m-1}, eps) of "
+          "phi and of d phi/dt_j over {centre + axes t : t in [-1, 1]^m}, axes of shape (3, m), "
+          "its first row if only the value has a model, or None.")
+      .def_static(
+          "from_capsule",
+          [](nb::capsule capsule)
+          {
+            const char* name = PyCapsule_GetName(capsule.ptr());
+            if (name == nullptr || std::string_view(name) != analytic_capsule_name)
+            {
+              throw std::invalid_argument(std::string("AnalyticLevelSet.from_capsule: the capsule must be named ")
+                                          + analytic_capsule_name);
+            }
+            const auto* src = static_cast<const quadrays::AnalyticLevelSet*>(PyCapsule_GetPointer(capsule.ptr(), name));
+            if (src == nullptr || src->value == nullptr || src->gradient == nullptr || src->box_bounds == nullptr)
+            {
+              throw std::invalid_argument(
+                  "AnalyticLevelSet.from_capsule: the struct needs value, gradient and box_bounds");
+            }
+            auto holder = std::make_shared<AnalyticHolder<CapsuleSource>>();
+            holder->phi = *src;
+            holder->data.keep.objects = {nb::borrow(capsule)};
+            return share_analytic(std::move(holder));
+          },
+          nb::arg("capsule"),
+          "An AnalyticLevelSet from a capsule named 'cutcells.AnalyticLevelSet' that points "
+          "to the C struct of quadrays/analytic.h: void* context, then the function pointers "
+          "value, gradient, box_bounds and taylor_bounds (may be NULL). The struct is copied; "
+          "the capsule is kept alive, so it may own the context.")
+      .def_prop_ro(
+          "capsule",
+          [](const PyAnalyticLevelSet& self)
+          {
+            auto* keep = new std::shared_ptr<const quadrays::AnalyticLevelSet>(self.phi);
+            PyObject* capsule = PyCapsule_New(
+                const_cast<quadrays::AnalyticLevelSet*>(keep->get()), analytic_capsule_name,
+                [](PyObject* c)
+                {
+                  delete static_cast<std::shared_ptr<const quadrays::AnalyticLevelSet>*>(PyCapsule_GetContext(c));
+                });
+            if (capsule == nullptr)
+            {
+              delete keep;
+              throw nb::python_error();
+            }
+            PyCapsule_SetContext(capsule, keep);
+            return nb::steal<nb::capsule>(capsule);
+          },
+          "A capsule named 'cutcells.AnalyticLevelSet' pointing to the C struct; it keeps "
+          "this level set alive.")
+      .def_prop_ro("has_taylor_bounds",
+                   [](const PyAnalyticLevelSet& self) { return self.phi->taylor_bounds != nullptr; })
+      .def(
+          "value",
+          [](const PyAnalyticLevelSet& self, const std::vector<double>& x)
+          {
+            const std::array<double, 3> p = point3(x);
+            return self.phi->value(p.data(), self.phi->context);
+          },
+          nb::arg("x"), "phi at a point.")
+      .def(
+          "gradient",
+          [](const PyAnalyticLevelSet& self, const std::vector<double>& x)
+          {
+            const std::array<double, 3> p = point3(x);
+            std::vector<double> g(3);
+            self.phi->gradient(p.data(), g.data(), self.phi->context);
+            return as_nbarray(std::move(g));
+          },
+          nb::arg("x"), "Gradient of phi at a point.")
+      .def(
+          "box_bounds",
+          [](const PyAnalyticLevelSet& self, const std::vector<double>& lo, const std::vector<double>& hi)
+              -> nb::object
+          {
+            const std::array<double, 3> l = point3(lo), h = point3(hi);
+            std::vector<double> b(8);
+            const int status = self.phi->box_bounds(l.data(), h.data(), b.data(), self.phi->context);
+            if (status == 0)
+              return nb::none();
+            if (status == 2)
+              b.resize(2);
+            return nb::cast(as_nbarray(std::move(b)));
+          },
+          nb::arg("lo"), nb::arg("hi"),
+          "Bounds over the box [lo, hi]: phi in [b0, b1], d phi/dx_i in [b(2+2i), b(3+2i)]; "
+          "only [b0, b1] if the gradient has no bound there, None if the value has none.")
+      .def(
+          "taylor_bounds",
+          [](const PyAnalyticLevelSet& self, const nb::ndarray<const double, nb::numpy, nb::c_contig>& centre,
+             const nb::ndarray<const double, nb::numpy, nb::c_contig>& axes) -> nb::object
+          {
+            if (centre.size() != 3 || axes.ndim() != 2 || axes.shape(0) != 3 || axes.shape(1) < 1
+                || axes.shape(1) > 3)
+              throw std::invalid_argument("taylor_bounds: centre has 3 entries, axes the shape (3, m), m <= 3");
+            const int mm = static_cast<int>(axes.shape(1));
+            std::vector<double> models(static_cast<std::size_t>((mm + 1) * (mm + 2)));
+            const int status = quadrays::parallelepiped_bounds(*self.phi, centre.data(), axes.data(), mm,
+                                                               models.data());
+            if (status == 0)
+              return nb::none();
+            const std::size_t rows = status == 2 ? 1 : static_cast<std::size_t>(mm + 1);
+            models.resize(rows * static_cast<std::size_t>(mm + 2));
+            return nb::cast(as_nbarray(std::move(models), {rows, static_cast<std::size_t>(mm + 2)}));
+          },
+          nb::arg("centre"), nb::arg("axes"),
+          "First-order Taylor models of phi and of d phi/dt_j over {centre + axes t : t in "
+          "[-1, 1]^m}: rows (alpha, beta_0..beta_{m-1}, eps); from box_bounds if the level "
+          "set has no taylor_bounds. Only the first row if the derivatives have no model "
+          "there, None if the value has none.");
+
+  m.def(
+      "analytic_sphere",
+      [](const std::vector<double>& centre, double radius, bool signed_distance)
+      {
+        auto holder = std::make_shared<AnalyticHolder<SphereFunctor>>();
+        holder->data.c = point3(centre);
+        holder->data.r = radius;
+        holder->data.distance = signed_distance;
+        holder->phi = quadrays::analytic_level_set(holder->data);
+        return share_analytic(std::move(holder));
+      },
+      nb::arg("centre"), nb::arg("radius"), nb::arg("signed_distance") = true,
+      "The sphere as a compiled analytic level set: |x - centre| - radius, or "
+      "|x - centre|^2 - radius^2 with signed_distance=False.");
+
+  m.def(
+      "analytic_level_set_from_tape",
+      [](const nb::ndarray<const std::uint8_t, nb::numpy, nb::shape<-1>, nb::c_contig>& op,
+         const ndarray1<std::int32_t>& a, const ndarray1<std::int32_t>& b, const ndarray1<std::int32_t>& c,
+         const ndarray1<std::int32_t>& out, const ndarray1<double>& imm, int n_registers, int output,
+         const ndarray1<std::int32_t>& inputs, const ndarray1<std::int32_t>& extra_registers,
+         const ndarray1<double>& extra_values)
+      {
+        auto holder = std::make_shared<AnalyticHolder<TapeSource>>();
+        quadrays::shapeforest::Tape& t = holder->data.tape;
+        auto copy = [](const auto& array, auto& vec) { vec.assign(array.data(), array.data() + array.size()); };
+        copy(op, t.op);
+        copy(a, t.a);
+        copy(b, t.b);
+        copy(c, t.c);
+        copy(out, t.out);
+        copy(imm, t.imm);
+        copy(extra_registers, t.extra_registers);
+        copy(extra_values, t.extra_values);
+        if (inputs.size() != 3)
+          throw std::invalid_argument("analytic_level_set_from_tape: inputs has the x, y and z registers");
+        for (int i = 0; i < 3; ++i)
+          t.inputs[i] = inputs(i);
+        t.n_registers = n_registers;
+        t.output = output;
+        quadrays::shapeforest::prepare_tape(t);
+        holder->data.functor.tape = &t;
+        holder->phi = quadrays::analytic_level_set(holder->data.functor);
+        return share_analytic(std::move(holder));
+      },
+      nb::arg("op"), nb::arg("a"), nb::arg("b"), nb::arg("c"), nb::arg("out"), nb::arg("imm"),
+      nb::arg("n_registers"), nb::arg("output"), nb::arg("inputs"), nb::arg("extra_registers"),
+      nb::arg("extra_values"),
+      "An analytic level set from the arrays of a ShapeForest tape (one entry per "
+      "instruction; inputs: the registers of x, y and z; extra_registers/extra_values: "
+      "registers preset to constants). cutcells.shapeforest.analytic_level_set builds "
+      "the arrays from a shape.");
 }
 
 // Convert CSR connectivity+offset arrays into VTK packed cells layout
@@ -1262,6 +1647,21 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
       "Interpolate a batched callable phi(X) at higher-order level-set dof coordinates.");
 
   m.def(
+      "create_level_set",
+      [](const MeshViewT& mesh, const PyAnalyticLevelSet& phi, int degree, const std::string& name)
+      {
+        nb::gil_scoped_release release;
+        return cutcells::create_level_set_function<T, int>(mesh, phi.phi, degree, name);
+      },
+      nb::arg("mesh"),
+      nb::arg("phi"),
+      nb::arg("degree"),
+      nb::arg("name") = "phi",
+      "A level set from an AnalyticLevelSet. cut() classifies tetrahedra and "
+      "hexahedra by its own bounds and backend='quadrays' integrates it; its "
+      "interpolant of the given degree feeds the straight and algoim backends.");
+
+  m.def(
       "interpolate_level_set",
       [](const MeshViewT& mesh, nb::callable phi, int degree,
          const std::string& name)
@@ -2072,6 +2472,35 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
         nb::arg("edge_max_depth") = 20,
         nb::arg("linear_fast_path") = true,
         "Cut a MeshView with a single LevelSetFunction.\n"
+        "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
+
+    m.def("cut",
+        [](const MeshViewT& mesh, const PyAnalyticLevelSet& phi, bool triangulate,
+           const std::string& cut_approximation, int cut_approximation_order,
+           const std::string& triangulation, int max_refinement_iterations,
+           int edge_max_depth, bool linear_fast_path, int degree, const std::string& name) {
+            nb::gil_scoped_release release;
+            auto owned_ls = std::make_shared<LevelSetT>(
+                cutcells::create_level_set_function<T, int>(mesh, phi.phi, degree, name));
+            auto options = make_cut_options(
+                triangulate, triangulation, cut_approximation, cut_approximation_order,
+                max_refinement_iterations, edge_max_depth, linear_fast_path);
+            auto [hc, parent_cells] = cutcells::cut(mesh, *owned_ls, options);
+            return HOCutResult{mesh, std::move(hc), std::move(parent_cells), owned_ls};
+        },
+        nb::arg("mesh"), nb::arg("level_set"), nb::arg("triangulate") = false,
+        nb::arg("cut_approximation") = "auto",
+        nb::arg("cut_approximation_order") = 1,
+        nb::arg("triangulation") = "classical",
+        nb::arg("max_refinement_iterations") = 8,
+        nb::arg("edge_max_depth") = 20,
+        nb::arg("linear_fast_path") = true,
+        nb::arg("degree") = 2,
+        nb::arg("name") = "phi",
+        "Cut a MeshView with an AnalyticLevelSet. Tetrahedra and hexahedra are "
+        "classified as inside, outside or cut by its own bounds, and "
+        "backend='quadrays' integrates it. Its interpolant of the given degree "
+        "only feeds the straight and algoim backends and the straight visualisation.\n"
         "Returns an HOCutResult; use result[\"phi < 0\"] to select parts.");
 
     m.def("cut",
@@ -2995,6 +3424,48 @@ void declare_quadrays(nb::module_& m, const std::string& type)
         nb::arg("level_set_name") = "phi",
         "Leaf cells of one part of one cell, as quadrays_cell_rules takes it.");
 
+  m.def(("quadrays_cell_rules_" + type).c_str(),
+        [cell_part](cell::type cell_type, const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords,
+                    const PyAnalyticLevelSet& level_set, const std::string& selection, int q,
+                    const qr::Options& options, const std::string& level_set_name)
+        {
+          qr::ClippedBox<T> box;
+          qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()), 3, box);
+          const qr::Part part = cell_part(selection, level_set_name);
+          quadrature::QuadratureRules<T> rules;
+          qr::Stats stats;
+          {
+            nb::gil_scoped_release release;
+            qr::append_rules(box, qr::analytic_source(*level_set.phi, box), part, q, options, 0, rules, stats);
+          }
+          return std::make_pair(std::move(rules), std::move(stats));
+        },
+        nb::arg("cell_type"), nb::arg("vertex_coords"), nb::arg("level_set"), nb::arg("selection"),
+        nb::arg("q") = 3, nb::arg("options") = qr::Options{}, nb::arg("level_set_name") = "phi",
+        "Quadrature rule of one part of one cell for an AnalyticLevelSet. Returns "
+        "(QuadratureRules, QuadraysStats).");
+
+  m.def(("quadrays_cell_leaves_" + type).c_str(),
+        [cell_part](cell::type cell_type, const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords,
+                    const PyAnalyticLevelSet& level_set, const std::string& selection, int leaf_degree,
+                    const qr::Options& options, const std::string& level_set_name)
+        {
+          qr::ClippedBox<T> box;
+          qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()), 3, box);
+          const qr::Part part = cell_part(selection, level_set_name);
+          LeafMeshT leaves;
+          qr::Stats stats;
+          {
+            nb::gil_scoped_release release;
+            qr::append_leaves(box, qr::analytic_source(*level_set.phi, box), part, leaf_degree, options, 0,
+                              leaves, stats);
+          }
+          return leaves;
+        },
+        nb::arg("cell_type"), nb::arg("vertex_coords"), nb::arg("level_set"), nb::arg("selection"),
+        nb::arg("leaf_degree") = 3, nb::arg("options") = qr::Options{}, nb::arg("level_set_name") = "phi",
+        "Leaf cells of one part of one cell for an AnalyticLevelSet.");
+
   m.def(("write_quadrays_leaves_" + type).c_str(),
         [](const std::string& filename, const LeafMeshT& leaves)
         {
@@ -3141,6 +3612,7 @@ NB_MODULE(_cutcellscpp, m)
   declare_certification<float>(m, "float32");
   declare_certification<double>(m, "float64");
 
+  declare_analytic(m);
   declare_ho_cut<float>(m, "float32");
   declare_ho_cut<double>(m, "float64");
 

@@ -5,7 +5,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <concepts>
 #include <limits>
 #include <span>
@@ -127,9 +129,45 @@ void margins(const BoxBernstein<T>& p, std::span<const T> lengths, std::span<T> 
 template <std::floating_point T>
 T evaluate_1d(std::span<const T> c, T s);
 
+/// @brief Root of @p g in the bracket [lo, hi] where its values @p glo and @p ghi
+/// have opposite signs: secant steps that halve the stale end's value when one
+/// end is kept twice (Illinois), bisection when a step leaves the bracket.
+template <std::floating_point T, typename G>
+T illinois_root(const G& g, T lo, T hi, T glo, T ghi)
+{
+    const T tol = scaled_tolerance<T>(4e-16);
+    int side = 0;
+    for (int it = 0; it < 200; ++it)
+    {
+        T x = (lo * ghi - hi * glo) / (ghi - glo);
+        if (!(x > lo && x < hi))
+            x = T(0.5) * (lo + hi);
+        const T gx = g(x);
+        if (gx == T(0) || hi - lo <= tol * std::max(T(1), std::abs(x)))
+            return x;
+        if ((gx > T(0)) == (ghi > T(0)))
+        {
+            hi = x;
+            ghi = gx;
+            if (side == -1)
+                glo *= T(0.5);
+            side = -1;
+        }
+        else
+        {
+            lo = x;
+            glo = gx;
+            if (side == 1)
+                ghi *= T(0.5);
+            side = 1;
+        }
+    }
+    return T(0.5) * (lo + hi);
+}
+
 /// @brief Root of the univariate polynomial with Bernstein coefficients @p c on [a, b]
 /// inside the bracket [lo, hi] subset of [a, b], where its values @p glo and
-/// @p ghi have opposite signs: bisection with secant steps (Illinois).
+/// @p ghi have opposite signs (illinois_root).
 template <std::floating_point T>
 T bracketed_root(std::span<const T> c, T a, T b, T lo, T hi, T glo, T ghi);
 

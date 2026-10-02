@@ -15,6 +15,7 @@
 #include "box_bernstein.h"
 #include "clipped_box.h"
 #include "engine.h"
+#include "source.h"
 
 namespace cutcells::quadrays
 {
@@ -50,8 +51,14 @@ struct LeafMesh
 /// Jacobian, and quadrilaterals for the interface, with their normal along
 /// grad phi. A picture of the leaves shows exactly what is integrated.
 ///
+/// @param phi          the cell's level set (bernstein_source, analytic_source)
 /// @param parent_cell  background cell of the leaves
 /// @param stats        counts leaves dropped because their nodes did not line up
+template <std::floating_point T>
+void append_leaves(const ClippedBox<T>& cell, const Source<T>& phi, Part part, int degree, const Options& opt,
+                   std::int32_t parent_cell, LeafMesh<T>& mesh, Stats& stats);
+
+/// @brief append_leaves for a Bernstein form on the cell's box (cell_bernstein_on_box).
 template <std::floating_point T>
 void append_leaves(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int degree,
                    const Options& opt, std::int32_t parent_cell, LeafMesh<T>& mesh, Stats& stats);

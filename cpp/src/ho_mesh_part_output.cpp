@@ -947,13 +947,15 @@ std::pair<int, quadrays::Part> quadrays_selection(const HOMeshPart<T, I>& part)
 }
 
 /// The parent cell of a cut cell as a clipped box and its level set as a
-/// Bernstein form on the box.
+/// source: the analytic level set if the level-set function has one,
+/// otherwise its Bernstein form on the box (stored in @p form).
 template <std::floating_point T, std::integral I>
 I quadrays_cut_cell(const HOMeshPart<T, I>& part,
                     std::int32_t cut_id,
                     int level_set,
                     quadrays::ClippedBox<T>& box,
-                    quadrays::BoxBernstein<T>& phi)
+                    quadrays::BoxBernstein<T>& form,
+                    quadrays::Source<T>& phi)
 {
     const auto& cut_cells = *part.cut_cells;
     const I parent_cell_id =
@@ -971,10 +973,13 @@ I quadrays_cut_cell(const HOMeshPart<T, I>& part,
         throw std::runtime_error(
             "The quadrays backend found no level-set data for a cut cell");
     }
-    if (ls_cell->bernstein_coeffs.empty())
+    const quadrays::AnalyticLevelSet* analytic =
+        ls_cell->global_level_set != nullptr ? ls_cell->global_level_set->analytic.get() : nullptr;
+    if (analytic == nullptr && ls_cell->bernstein_coeffs.empty())
     {
         throw std::runtime_error(
-            "The quadrays backend needs level sets with Bernstein coefficients");
+            "The quadrays backend needs level sets with Bernstein coefficients "
+            "or an analytic level set");
     }
 
     const int nv = cell::get_num_vertices(ls_cell->cell_type);
@@ -987,9 +992,15 @@ I quadrays_cut_cell(const HOMeshPart<T, I>& part,
         vertices = std::span<const T>(vertex_storage);
     }
     quadrays::make_clipped_box(ls_cell->cell_type, vertices, part.mesh->gdim, box);
+    if (analytic != nullptr)
+    {
+        phi = quadrays::analytic_source(*analytic, box);
+        return parent_cell_id;
+    }
     quadrays::cell_bernstein_on_box(
         ls_cell->cell_type, ls_cell->bernstein_order,
-        std::span<const T>(ls_cell->bernstein_coeffs), phi);
+        std::span<const T>(ls_cell->bernstein_coeffs), form);
+    phi = quadrays::bernstein_source(form);
     return parent_cell_id;
 }
 
@@ -1010,11 +1021,12 @@ quadrature::QuadratureRules<T> quadrays_quadrature_rules(
     rules._tdim = part.mesh->tdim;
     rules._offset.push_back(0);
     quadrays::ClippedBox<T> box;
-    quadrays::BoxBernstein<T> phi;
+    quadrays::BoxBernstein<T> form;
+    quadrays::Source<T> phi;
     quadrays::Stats stats;
     for (const std::int32_t cut_id : part.cut_cell_ids)
     {
-        const I parent_cell_id = quadrays_cut_cell(part, cut_id, level_set, box, phi);
+        const I parent_cell_id = quadrays_cut_cell(part, cut_id, level_set, box, form, phi);
         quadrays::append_rules(box, phi, qpart, order, options,
                                static_cast<std::int32_t>(parent_cell_id), rules, stats);
     }
@@ -1048,11 +1060,12 @@ quadrays::LeafMesh<T> quadrays_leaves(const HOMeshPart<T, I>& part,
 
     quadrays::LeafMesh<T> leaves;
     quadrays::ClippedBox<T> box;
-    quadrays::BoxBernstein<T> phi;
+    quadrays::BoxBernstein<T> form;
+    quadrays::Source<T> phi;
     quadrays::Stats stats;
     for (const std::int32_t cut_id : part.cut_cell_ids)
     {
-        const I parent_cell_id = quadrays_cut_cell(part, cut_id, level_set, box, phi);
+        const I parent_cell_id = quadrays_cut_cell(part, cut_id, level_set, box, form, phi);
         quadrays::append_leaves(box, phi, qpart, degree, options,
                                 static_cast<std::int32_t>(parent_cell_id), leaves, stats);
     }

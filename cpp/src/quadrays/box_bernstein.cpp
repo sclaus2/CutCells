@@ -840,35 +840,7 @@ template <std::floating_point T>
 T bracketed_root(std::span<const T> c, T a, T b, T lo, T hi, T glo, T ghi)
 {
     const T length = b - a;
-    auto g = [&](T x) { return evaluate_1d(c, (x - a) / length); };
-    const T tol = scaled_tolerance<T>(4e-16);
-    int side = 0;
-    for (int it = 0; it < 200; ++it)
-    {
-        T x = (lo * ghi - hi * glo) / (ghi - glo);
-        if (!(x > lo && x < hi))
-            x = T(0.5) * (lo + hi);
-        const T gx = g(x);
-        if (gx == T(0) || hi - lo <= tol * std::max(T(1), std::abs(x)))
-            return x;
-        if ((gx > T(0)) == (ghi > T(0)))
-        {
-            hi = x;
-            ghi = gx;
-            if (side == -1)
-                glo *= T(0.5);
-            side = -1;
-        }
-        else
-        {
-            lo = x;
-            glo = gx;
-            if (side == 1)
-                ghi *= T(0.5);
-            side = 1;
-        }
-    }
-    return T(0.5) * (lo + hi);
+    return illinois_root([&](T x) { return evaluate_1d(c, (x - a) / length); }, lo, hi, glo, ghi);
 }
 
 namespace

@@ -696,3 +696,12 @@ env CONDA_PREFIX=$E CC=$E/bin/clang CXX=$E/bin/clang++ $E/bin/cmake -S benchmark
 
 Without `CONDA_PREFIX`, CMake picks Apple's Accelerate, which lacks the
 LAPACKE symbols algoim needs.
+
+The Python tests run against a package built into the build tree, so nothing
+is installed into the environment.  Without `--upgrade`, pip keeps the files of
+an earlier build in the target directory:
+
+```bash
+env CONDA_PREFIX=$E CMAKE_PREFIX_PATH="$PWD/build-quadrays/install:$E" CMAKE_ARGS="-DCMAKE_OSX_DEPLOYMENT_TARGET=13.4" CC=$E/bin/clang CXX=$E/bin/clang++ CXXFLAGS="-D_LIBCPP_ENABLE_EXPERIMENTAL -D_LIBCPP_HAS_NO_EXPERIMENTAL_TZDB -D_LIBCPP_HAS_NO_EXPERIMENTAL_SYNCSTREAM -D_LIBCPP_HAS_NO_INCOMPLETE_PSTL" $E/bin/python -m pip install --no-build-isolation --no-deps --force-reinstall --upgrade -C build-dir=$PWD/build-quadrays/python-build --target $PWD/build-quadrays/python ./python
+PYTHONPATH=$PWD/build-quadrays/python $E/bin/python -m pytest python/tests
+```

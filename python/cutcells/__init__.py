@@ -279,6 +279,9 @@ quadrays_cell_leaves_float64 = _cutcellscpp.quadrays_cell_leaves_float64
 write_quadrays_leaves = _cutcellscpp.write_quadrays_leaves
 write_quadrays_leaves_float32 = _cutcellscpp.write_quadrays_leaves_float32
 write_quadrays_leaves_float64 = _cutcellscpp.write_quadrays_leaves_float64
+AnalyticLevelSet = _cutcellscpp.AnalyticLevelSet
+analytic_sphere = _cutcellscpp.analytic_sphere
+analytic_level_set_from_tape = _cutcellscpp.analytic_level_set_from_tape
 
 from .mesh_utils import (
     cutmesh_to_pyvista,

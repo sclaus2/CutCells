@@ -16,6 +16,7 @@
 
 #include "cell_topology.h"
 #include "cell_types.h"
+#include "quadrays/analytic.h"
 #include "reference_cell.h"
 
 namespace cutcells
@@ -1271,6 +1272,56 @@ LevelSetFunction<T, I> create_level_set_function_view(
   return ls;
 }
 
+template <std::floating_point T, std::integral I>
+LevelSetFunction<T, I> create_level_set_function(
+    const MeshView<T, I>& mesh,
+    std::shared_ptr<const quadrays::AnalyticLevelSet> analytic,
+    int degree,
+    std::string name)
+{
+  if (!analytic || analytic->value == nullptr)
+    throw std::invalid_argument("create_level_set_function: the analytic level set has no value function");
+  if (mesh.gdim < 1 || mesh.gdim > 3)
+    throw std::invalid_argument("create_level_set_function: gdim must be 1, 2 or 3");
+
+  LevelSetMeshData<T, I> mesh_data = create_level_set_mesh_data<T, I>(mesh, degree, T(-1));
+  const int gdim = mesh_data.gdim;
+  const std::size_t n = static_cast<std::size_t>(mesh_data.num_dofs());
+  std::vector<T> values(n);
+  for (std::size_t d = 0; d < n; ++d)
+  {
+    double x[3] = {0, 0, 0};
+    const T* xd = mesh_data.dof_coordinate(static_cast<I>(d));
+    for (int i = 0; i < gdim; ++i)
+      x[i] = xd[i];
+    values[d] = static_cast<T>(analytic->value(x, analytic->context));
+  }
+
+  LevelSetFunction<T, I> ls = create_level_set_function<T, I>(
+      std::move(mesh_data), std::span<const T>(values), std::move(name));
+  ls.analytic = analytic;
+  ls.value_fn = [analytic, gdim](const T* x, I) -> T
+  {
+    double xd[3] = {0, 0, 0};
+    for (int i = 0; i < gdim; ++i)
+      xd[i] = x[i];
+    return static_cast<T>(analytic->value(xd, analytic->context));
+  };
+  if (analytic->gradient != nullptr)
+  {
+    ls.grad_fn = [analytic, gdim](const T* x, I, T* g)
+    {
+      double xd[3] = {0, 0, 0}, gd[3];
+      for (int i = 0; i < gdim; ++i)
+        xd[i] = x[i];
+      analytic->gradient(xd, gd, analytic->context);
+      for (int i = 0; i < gdim; ++i)
+        g[i] = static_cast<T>(gd[i]);
+    };
+  }
+  return ls;
+}
+
 template LevelSetMeshData<float, int> create_level_set_mesh_data(
     const MeshView<float, int>& mesh, int degree, float merge_tol);
 template LevelSetMeshData<double, int> create_level_set_mesh_data(
@@ -1341,6 +1392,17 @@ template LevelSetFunction<float, int> create_level_set_function(
 template LevelSetFunction<double, int> create_level_set_function(
     LevelSetMeshData<double, int> mesh_data,
     std::span<const double> dof_values,
+    std::string name);
+
+template LevelSetFunction<float, int> create_level_set_function(
+    const MeshView<float, int>& mesh,
+    std::shared_ptr<const quadrays::AnalyticLevelSet> analytic,
+    int degree,
+    std::string name);
+template LevelSetFunction<double, int> create_level_set_function(
+    const MeshView<double, int>& mesh,
+    std::shared_ptr<const quadrays::AnalyticLevelSet> analytic,
+    int degree,
     std::string name);
 
 template LevelSetFunction<float, int> create_level_set_function_view(

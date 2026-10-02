@@ -17,8 +17,11 @@
 // than the cells, which then hold two sheets, the engine's known weak spot:
 // they take the checks only, as do the double root and the thin shells, which
 // are left to benchmarks/quadrays/robustness_report.
+// The cases run twice: as Bernstein coefficients and as analytic level sets
+// through quadrays/analytic.h (Taylor-model bounds).
 // Exits non-zero on failure.
 
+#include <cutcells/quadrays/analytic.h>
 #include <cutcells/quadrays/rules.h>
 #include <cutcells/selection_expr.h>
 
@@ -45,11 +48,14 @@ struct Run
     double total = 0, exact_total = 0, l1 = 0;
 };
 
-Run run_case(const Case& c, const std::string& mesh, int n, const SelectionTerm& term, const Options& opt)
+Run run_case(const Case& c, const std::string& mesh, int n, const SelectionTerm& term, const Options& opt,
+             bool analytic)
 {
     const double h = 2.0 / n;
     const bool surface = part_of(term) == Part::interface;
     std::vector<double> coeffs;
+    const CaseLevelSet functor = {&c};
+    const AnalyticLevelSet phi_analytic = analytic_level_set(functor);
     Run r;
     for (int i0 = 0; i0 < n; ++i0)
         for (int i1 = 0; i1 < n; ++i1)
@@ -64,9 +70,15 @@ Run run_case(const Case& c, const std::string& mesh, int n, const SelectionTerm&
                     Stats stats;
                     try
                     {
-                        cell_coefficients(cell, degree(c), [&c](const V3& x) { return phi(c, x); }, coeffs);
-                        append_cell_rules<double>(cell.type, cell.vertices, degree(c), coeffs, term, 0, 3, opt, 0, rule,
-                                                  stats);
+                        if (analytic)
+                            append_cell_rules<double>(cell.type, cell.vertices, phi_analytic, term, 0, 3, opt, 0, rule,
+                                                      stats);
+                        else
+                        {
+                            cell_coefficients(cell, degree(c), [&c](const V3& x) { return phi(c, x); }, coeffs);
+                            append_cell_rules<double>(cell.type, cell.vertices, degree(c), coeffs, term, 0, 3, opt, 0,
+                                                      rule, stats);
+                        }
                     }
                     catch (const std::exception&)
                     {
@@ -95,53 +107,56 @@ int main()
 {
     const Options opt;
     int failures = 0;
-    std::map<std::string, double> baseline; // unscaled sphere totals by mesh and part
-    for (const Case& c : all_cases())
+    std::map<std::string, double> baseline; // unscaled sphere totals by source, mesh and part
+    for (const bool analytic : {false, true})
     {
-        if (c.shape == Shape::double_root || c.shape == Shape::shell)
-            continue; // weak spots, see the report
-        const bool batch2 = c.shape != Shape::sphere && c.shape != Shape::plane;
-        const int n = batch2 ? 4 : 8;
-        for (const std::string mesh : {"tet", "hex"})
-            for (const std::string part_text : {"phi < 0", "phi = 0"})
-            {
-                SelectionExpr expr = parse_selection_expr(part_text);
-                compile_selection_expr(expr, {"phi"});
-                const SelectionTerm& term = expr.terms.front();
-                const bool surface = part_of(term) == Part::interface;
-                const Run r = run_case(c, mesh, n, term, opt);
-
-                std::vector<std::string> problems;
-                if (r.fail + r.negative + r.outside + r.side > 0)
-                    problems.push_back("fail/neg/out/side " + std::to_string(r.fail) + "/" + std::to_string(r.negative)
-                                       + "/" + std::to_string(r.outside) + "/" + std::to_string(r.side));
-                if (r.max_bisections > opt.max_bisections)
-                    problems.push_back(std::to_string(r.max_bisections) + " bisections in one cell");
-                const bool known = c.shape == Shape::sphere || c.shape == Shape::plane || c.shape == Shape::two_spheres;
-                const double l1 = r.exact_total > 0 ? r.l1 / r.exact_total : r.l1;
-                if (known && !batch2 && l1 > 1e-4)
-                    problems.push_back("per-cell L1 " + std::to_string(l1));
-                const std::string key = mesh + part_text;
-                if (c.name == "sphere")
-                    baseline[key] = r.total;
-                if (c.scale != 1.0 && std::abs(r.total - baseline[key]) > 1e-12 * baseline[key])
-                    problems.push_back("total differs from the unscaled sphere");
-                if (c.shape == Shape::cone || c.shape == Shape::torus)
+        for (const Case& c : all_cases())
+        {
+            if (c.shape == Shape::double_root || c.shape == Shape::shell)
+                continue; // weak spots, see the report
+            const bool batch2 = c.shape != Shape::sphere && c.shape != Shape::plane;
+            const int n = batch2 ? 4 : 8;
+            for (const std::string mesh : {"tet", "hex"})
+                for (const std::string part_text : {"phi < 0", "phi = 0"})
                 {
-                    const double exact = exact_totals(c)[surface ? 1 : 0];
-                    const double tol = c.shape == Shape::cone && surface ? 2e-2 : 1e-3;
-                    if (std::abs(r.total - exact) > tol * exact)
-                        problems.push_back("total off by " + std::to_string(std::abs(r.total - exact) / exact));
-                }
+                    SelectionExpr expr = parse_selection_expr(part_text);
+                    compile_selection_expr(expr, {"phi"});
+                    const SelectionTerm& term = expr.terms.front();
+                    const bool surface = part_of(term) == Part::interface;
+                    const Run r = run_case(c, mesh, n, term, opt, analytic);
 
-                std::string message;
-                for (const std::string& p : problems)
-                    message += " " + p + ";";
-                std::printf("%-22s %-4s %-8s n = %d: L1 %.1e, max bisections per cell %d%s%s\n", c.name.c_str(),
-                            mesh.c_str(), part_text.c_str(), n, known ? l1 : 0.0, r.max_bisections,
-                            problems.empty() ? "" : " FAILED:", message.c_str());
-                failures += !problems.empty();
-            }
+                    std::vector<std::string> problems;
+                    if (r.fail + r.negative + r.outside + r.side > 0)
+                        problems.push_back("fail/neg/out/side " + std::to_string(r.fail) + "/" + std::to_string(r.negative)
+                                           + "/" + std::to_string(r.outside) + "/" + std::to_string(r.side));
+                    if (r.max_bisections > opt.max_bisections)
+                        problems.push_back(std::to_string(r.max_bisections) + " bisections in one cell");
+                    const bool known = c.shape == Shape::sphere || c.shape == Shape::plane || c.shape == Shape::two_spheres;
+                    const double l1 = r.exact_total > 0 ? r.l1 / r.exact_total : r.l1;
+                    if (known && !batch2 && l1 > 1e-4)
+                        problems.push_back("per-cell L1 " + std::to_string(l1));
+                    const std::string key = (analytic ? "analytic " : "") + mesh + part_text;
+                    if (c.name == "sphere")
+                        baseline[key] = r.total;
+                    if (c.scale != 1.0 && std::abs(r.total - baseline[key]) > 1e-12 * baseline[key])
+                        problems.push_back("total differs from the unscaled sphere");
+                    if (c.shape == Shape::cone || c.shape == Shape::torus)
+                    {
+                        const double exact = exact_totals(c)[surface ? 1 : 0];
+                        const double tol = c.shape == Shape::cone && surface ? 2e-2 : 1e-3;
+                        if (std::abs(r.total - exact) > tol * exact)
+                            problems.push_back("total off by " + std::to_string(std::abs(r.total - exact) / exact));
+                    }
+
+                    std::string message;
+                    for (const std::string& p : problems)
+                        message += " " + p + ";";
+                    std::printf("%-9s %-22s %-4s %-8s n = %d: L1 %.1e, max bisections per cell %d%s%s\n",
+                                analytic ? "analytic" : "Bernstein", c.name.c_str(), mesh.c_str(), part_text.c_str(), n,
+                                known ? l1 : 0.0, r.max_bisections, problems.empty() ? "" : " FAILED:", message.c_str());
+                    failures += !problems.empty();
+                }
+        }
     }
     return failures == 0 ? 0 : 1;
 }

@@ -12,6 +12,7 @@
 #include <string>
 
 #include <cutcells/quadrature.h>
+#include <cutcells/quadrays/adapters/shapeforest_tape.h>
 #include <cutcells/quadrays/clipped_box.h>
 #include <cutcells/selection_expr.h>
 
@@ -60,6 +61,20 @@ void algoim_clipped_box(const ClippedBox<double>& cell, const LevelSet& ls, cons
 /// for the level set |x - centre|^2 - radius^2.
 void algoim_quadgen_sphere(const ClippedBox<double>& cell, const Vec3<double>& centre, double radius,
                            const SelectionTerm& term, int q, quadrature::QuadratureRules<double>& rule);
+
+/// algoim's 2015 engine on an unclipped box for the sphere as an algoim-style
+/// functor of physical coordinates (sphere_functors.h): the signed distance
+/// |x - centre| - radius if @p distance, otherwise |x - centre|^2 - radius^2.
+/// Its bounds go through quadrays' Taylor models, the arithmetic quadrays uses
+/// for the same functor: algoim's own sqrt leaves out part of the remainder.
+void algoim_quadgen_functor(const ClippedBox<double>& cell, const Vec3<double>& centre, double radius,
+                            bool distance, const SelectionTerm& term, int q,
+                            quadrature::QuadratureRules<double>& rule);
+
+/// algoim's 2015 engine on an unclipped box for a ShapeForest tape, as for
+/// algoim_quadgen_functor.
+void algoim_quadgen_tape(const ClippedBox<double>& cell, const shapeforest::Tape& tape, const SelectionTerm& term,
+                         int q, quadrature::QuadratureRules<double>& rule);
 
 /// Named generator presets: algoim-auto, algoim-gl, gl-cellmask, alpha, split, alpha-split.
 GeneratorOptions generator_preset(const std::string& name);

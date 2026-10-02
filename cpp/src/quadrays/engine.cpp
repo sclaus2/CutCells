@@ -134,8 +134,8 @@ std::string origin_name(std::uint32_t origin)
 template <std::floating_point T>
 struct Context
 {
-    const BoxBernstein<T>* phi = nullptr; ///< the level set on the cell's unit box
-    T phi_scale = 0;                      ///< largest |Bernstein coefficient| of phi
+    Source<T> phi;  ///< the level set on the cell's unit box
+    T phi_scale = 0; ///< size of phi (reference_magnitude)
     Options opt;
     T margin = 0;
     Stats* stats = nullptr;
@@ -223,7 +223,7 @@ T value(const Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& y)
         return s;
     }
     const Vec3<T> u = to_u<T, D>(f, y);
-    return evaluate(*ctx.phi, std::span<const T>(u));
+    return evaluate(ctx.phi, std::span<const T>(u));
 }
 
 template <std::floating_point T, int D>
@@ -233,7 +233,7 @@ T derivative_along(const Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>&
         return f.a[k];
     const Vec3<T> u = to_u<T, D>(f, y);
     Vec3<T> g;
-    gradient(*ctx.phi, std::span<const T>(u), std::span<T>(g));
+    gradient(ctx.phi, std::span<const T>(u), std::span<T>(g));
     T s = T(0);
     for (int i = 0; i < 3; ++i)
         s += g[i] * f.A[i][k];
@@ -318,7 +318,7 @@ void bernstein_form(Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& lo, 
         }
         origin[i] = o;
     }
-    restrict_affine(*ctx.phi, std::span<const T>(origin), std::span<const T>(matrix), D, out,
+    restrict_affine(*ctx.phi.bernstein, std::span<const T>(origin), std::span<const T>(matrix), D, out,
                     ctx.form_work[D]);
 }
 
@@ -336,8 +336,69 @@ void line_form(Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& y0, int k
         origin[i] = o;
         column[i] = snap(f.A[i][k]) * (U - L);
     }
-    restrict_affine(*ctx.phi, std::span<const T>(origin), std::span<const T>(column), 1, out,
+    restrict_affine(*ctx.phi.bernstein, std::span<const T>(origin), std::span<const T>(column), 1, out,
                     ctx.line_work[D]);
+}
+
+/// The line y = y0 + t e_k of a level as u = u0 + t dir in box coordinates.
+template <typename T, int D>
+void box_line(const Func<T, D>& f, const VecD<T, D>& y0, int k, Vec3<T>& u0, Vec3<T>& dir)
+{
+    u0 = to_u<T, D>(f, y0);
+    for (int i = 0; i < 3; ++i)
+        dir[i] = f.A[i][k];
+}
+
+/// Bounds of a curved function on [lo, hi] for an analytic level set, from
+/// Taylor models of phi on the affine image of the box (the map to physical
+/// space is affine, so the models represent it exactly). Sets the sign of the
+/// function if it is certain, the direction margins as margins() does from
+/// Bernstein coefficients, and the largest |psi|. Without derivative bounds
+/// no direction is certified; without any bound nothing is certain.
+template <std::floating_point T, int D>
+void analytic_bounds(const Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& lo, const VecD<T, D>& hi,
+                     int& sign, VecD<T, D>& ratio, T& magnitude)
+{
+    std::array<T, 3> origin;
+    std::array<T, 3 * D> matrix;
+    VecD<T, D> lengths;
+    for (int j = 0; j < D; ++j)
+        lengths[j] = hi[j] - lo[j];
+    for (int i = 0; i < 3; ++i)
+    {
+        T o = f.b[i];
+        for (int j = 0; j < D; ++j)
+        {
+            o += f.A[i][j] * lo[j];
+            matrix[i * D + j] = f.A[i][j] * lengths[j];
+        }
+        origin[i] = o;
+    }
+    AffineBounds<T> b;
+    if (!affine_bounds(ctx.phi, std::span<const T>(origin), std::span<const T>(matrix), D, b))
+    {
+        sign = 0;
+        ratio.fill(T(0));
+        magnitude = infinity<T>;
+        return;
+    }
+    sign = b.sign;
+    magnitude = b.magnitude;
+    if (!b.has_derivatives)
+    {
+        ratio.fill(T(0));
+        return;
+    }
+    // derivatives with respect to y_j = lo_j + lengths_j s_j
+    VecD<T, D> lower, upper;
+    for (int j = 0; j < D; ++j)
+    {
+        lower[j] = b.lower[j] / lengths[j];
+        upper[j] = b.upper[j] / lengths[j];
+    }
+    const T norm = scaled_norm(std::span<const T>(upper));
+    for (int j = 0; j < D; ++j)
+        ratio[j] = norm > T(0) ? lower[j] / norm : T(0);
 }
 
 /// Margins from M^D sub-cells. Only sub-cells that may meet the clipped region and
@@ -575,6 +636,25 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p)
         {
             if (linear_may_vanish<T, D>(f, p.lo, p.hi))
                 an.funcs.push_back(f);
+            continue;
+        }
+        if (ctx.phi.is_analytic())
+        {
+            int sign = 0;
+            VecD<T, D> ratio{};
+            T magnitude = T(0);
+            analytic_bounds<T, D>(ctx, f, p.lo, p.hi, sign, ratio, magnitude);
+            // phi = 0 on a face, say: no root inside the region
+            if (magnitude <= zero_function_tol<T> * ctx.phi_scale)
+                continue;
+            if (sign != 0)
+            {
+                an.dropped_sign = sign;
+                continue;
+            }
+            an.curved.push_back(static_cast<int>(an.funcs.size()));
+            an.funcs.push_back(f);
+            an.ratios.push_back(ratio);
             continue;
         }
         bernstein_form<T, D>(ctx, f, p.lo, p.hi, form);
@@ -833,6 +913,14 @@ void integrate_line(Context<T>& ctx, const Problem<T, 1>& p, const Emit& emit)
             }
             continue;
         }
+        if (ctx.phi.is_analytic())
+        {
+            Vec3<T> u0, dir;
+            box_line<T, 1>(f, VecD<T, 1>{T(0)}, 0, u0, dir);
+            line_roots(ctx.phi, std::span<const T>(u0), std::span<const T>(dir), L, U,
+                       zero_function_tol<T> * ctx.phi_scale, nodes);
+            continue;
+        }
         line_form<T, 1>(ctx, f, VecD<T, 1>{L}, 0, L, U, ctx.line[1]);
         isolate_roots(std::span<const T>(ctx.line[1].coeffs), L, U, nodes, ctx.root_work[1]);
     }
@@ -1042,7 +1130,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
         std::vector<T>& nodes = ctx.nodes[D];
         nodes.clear();
         const VecD<T, D> yL = insert<T, D>(yb, k, L);
-        bool curved_line = false; // at the top level: the form of phi on this line is in ctx.line[3]
+        bool curved_line = false; // at the top level, for Bernstein forms: phi on this line is in ctx.line[3]
         for (const Func<T, D>& f : p.funcs)
         {
             if (f.linear)
@@ -1058,8 +1146,24 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                 }
                 continue;
             }
-            line_form<T, D>(ctx, f, yL, k, L, U, ctx.line[D]);
             curved_line = true;
+            if (ctx.phi.is_analytic())
+            {
+                Vec3<T> u0, dir;
+                box_line<T, D>(f, insert<T, D>(yb, k, T(0)), k, u0, dir);
+                if (certified)
+                {
+                    const T gl = value<T, D>(ctx, f, yL), gu = value<T, D>(ctx, f, insert<T, D>(yb, k, U));
+                    if (gl != T(0) && gu != T(0) && (gl > T(0)) != (gu > T(0)))
+                        nodes.push_back(
+                            line_root(ctx.phi, std::span<const T>(u0), std::span<const T>(dir), L, U, gl, gu));
+                }
+                else
+                    line_roots(ctx.phi, std::span<const T>(u0), std::span<const T>(dir), L, U,
+                               zero_function_tol<T> * ctx.phi_scale, nodes);
+                continue;
+            }
+            line_form<T, D>(ctx, f, yL, k, L, U, ctx.line[D]);
             const std::span<const T> c(ctx.line[D].coeffs);
             if (certified)
             {
@@ -1084,7 +1188,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                     tag.segment[D - 1] = static_cast<int>(r);
                     const VecD<T, D> y = insert<T, D>(yb, k, nodes[r]);
                     Vec3<T> g;
-                    gradient(*ctx.phi, std::span<const T>(y), std::span<T>(g));
+                    gradient(ctx.phi, std::span<const T>(y), std::span<T>(g));
                     const T dk = std::abs(g[k]);
                     if (!(dk > T(0)))
                         continue;
@@ -1121,12 +1225,12 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                                       if (ctx.part == Part::negative || ctx.part == Part::positive)
                                       {
                                           T v;
-                                          if (curved_line)
+                                          if (curved_line && !ctx.phi.is_analytic())
                                               v = evaluate_1d(std::span<const T>(ctx.line[3].coeffs), (t - L) / (U - L));
-                                          else if (dropped_sign != 0)
+                                          else if (!curved_line && dropped_sign != 0)
                                               v = T(dropped_sign);
                                           else
-                                              v = evaluate(*ctx.phi, std::span<const T>(y));
+                                              v = evaluate(ctx.phi, std::span<const T>(y));
                                           if ((ctx.part == Part::negative && !(v < T(0)))
                                               || (ctx.part == Part::positive && !(v > T(0))))
                                               return;
@@ -1186,17 +1290,19 @@ void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth
 /// The engine on one cell: the top level is the unit box with the cell's clips
 /// and phi itself.
 template <std::floating_point T>
-void run(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int q, int vis_order,
+void run(const ClippedBox<T>& cell, const Source<T>& phi, Part part, int q, int vis_order,
          const Options& opt, CellPoints<T>& out, Stats& stats)
 {
-    if (phi.dim != 3)
+    if ((phi.bernstein == nullptr) == (phi.analytic == nullptr))
+        throw std::invalid_argument("quadrays: a source is a Bernstein form or an analytic level set");
+    if (phi.bernstein != nullptr && phi.bernstein->dim != 3)
         throw std::invalid_argument("quadrays: the level set must be a form in 3 variables");
     if (vis_order == 0 && q < 1)
         throw std::invalid_argument("quadrays: at least one Gauss point per segment is needed");
 
     thread_local Context<T> ctx;
-    ctx.phi = &phi;
-    ctx.phi_scale = max_abs(std::span<const T>(phi.coeffs));
+    ctx.phi = phi;
+    ctx.phi_scale = reference_magnitude(phi);
     ctx.opt = opt;
     ctx.margin = static_cast<T>(opt.margin);
     ctx.stats = &stats;
@@ -1235,25 +1341,47 @@ void run(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int q
 } // namespace
 
 template <std::floating_point T>
-void integrate(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int q,
-               const Options& opt, CellPoints<T>& out, Stats& stats)
+void integrate(const ClippedBox<T>& cell, const Source<T>& phi, Part part, int q, const Options& opt,
+               CellPoints<T>& out, Stats& stats)
 {
     run(cell, phi, part, q, 0, opt, out, stats);
 }
 
 template <std::floating_point T>
-void leaf_nodes(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int degree,
-                const Options& opt, CellPoints<T>& out, Stats& stats)
+void integrate(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int q,
+               const Options& opt, CellPoints<T>& out, Stats& stats)
+{
+    run(cell, bernstein_source(phi), part, q, 0, opt, out, stats);
+}
+
+template <std::floating_point T>
+void leaf_nodes(const ClippedBox<T>& cell, const Source<T>& phi, Part part, int degree, const Options& opt,
+                CellPoints<T>& out, Stats& stats)
 {
     if (degree < 1)
         throw std::invalid_argument("quadrays: leaf cells need degree 1 or more");
     run(cell, phi, part, 0, degree, opt, out, stats);
 }
 
+template <std::floating_point T>
+void leaf_nodes(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int degree,
+                const Options& opt, CellPoints<T>& out, Stats& stats)
+{
+    leaf_nodes(cell, bernstein_source(phi), part, degree, opt, out, stats);
+}
+
 // ============================================================================
 // Explicit instantiations
 // ============================================================================
 
+template void integrate<float>(const ClippedBox<float>&, const Source<float>&, Part, int, const Options&,
+                               CellPoints<float>&, Stats&);
+template void integrate<double>(const ClippedBox<double>&, const Source<double>&, Part, int, const Options&,
+                                CellPoints<double>&, Stats&);
+template void leaf_nodes<float>(const ClippedBox<float>&, const Source<float>&, Part, int, const Options&,
+                                CellPoints<float>&, Stats&);
+template void leaf_nodes<double>(const ClippedBox<double>&, const Source<double>&, Part, int, const Options&,
+                                 CellPoints<double>&, Stats&);
 template void integrate<float>(const ClippedBox<float>&, const BoxBernstein<float>&, Part, int,
                                const Options&, CellPoints<float>&, Stats&);
 template void integrate<double>(const ClippedBox<double>&, const BoxBernstein<double>&, Part, int,

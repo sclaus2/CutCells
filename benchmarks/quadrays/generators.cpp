@@ -10,12 +10,15 @@
 #include <cstdint>
 #include <deque>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include <cutcells/quadrays/engine.h>
+#include <cutcells/quadrays/taylor.h>
 
 #include "quadrature_general.hpp"
 #include "quadrature_multipoly.hpp"
+#include "sphere_functors.h"
 
 namespace cutcells::quadrays::benchmarks
 {
@@ -349,6 +352,149 @@ struct SphereInBox
         return g;
     }
 };
+
+/// An algoim-style functor of physical coordinates as algoim's level-set
+/// functor on the cell's unit box, x = origin + jac u. algoim passes its
+/// Interval<3> (Taylor models with the half-widths delta kept apart); they are
+/// converted to quadrays' Taylor<double, 3> and back. A lost bound gives an
+/// interval without sign.
+template <typename F>
+struct FunctorInBox
+{
+    using Interval = algoim::Interval<3>;
+    using TM = Taylor<double, 3>;
+
+    const F* f = nullptr;
+    V3 origin;
+    M3 jac;
+    double sign = 1;
+
+    static TM to_taylor(const Interval& a)
+    {
+        TM t(a.alpha);
+        for (int j = 0; j < 3; ++j)
+            t.beta[j] = a.beta(j) * Interval::delta(j);
+        t.eps = a.eps;
+        return t;
+    }
+
+    static Interval from_taylor(const TM& t)
+    {
+        algoim::uvector<real, 3> beta;
+        for (int j = 0; j < 3; ++j)
+            beta(j) = Interval::delta(j) > 0 ? t.beta[j] / Interval::delta(j) : 0.0;
+        return Interval(t.alpha, beta, t.eps);
+    }
+
+    static Interval no_sign() { return Interval(0.0, algoim::uvector<real, 3>(0.0), 1e300); }
+
+    template <typename V, typename S>
+    std::array<V, 3> physical(const algoim::uvector<S, 3>& u) const
+    {
+        std::array<V, 3> x;
+        for (int i = 0; i < 3; ++i)
+        {
+            V xi(origin[i]);
+            for (int k = 0; k < 3; ++k)
+            {
+                if constexpr (std::is_same_v<S, real>)
+                    xi = xi + V(jac[i][k] * u(k));
+                else
+                    xi = xi + to_taylor(u(k)) * jac[i][k];
+            }
+            x[i] = xi;
+        }
+        return x;
+    }
+
+    template <typename S>
+    S operator()(const algoim::uvector<S, 3>& u) const
+    {
+        if constexpr (std::is_same_v<S, real>)
+            return sign * (*f)(physical<double>(u));
+        else
+        {
+            try
+            {
+                return from_taylor((*f)(physical<TM>(u)) * sign);
+            }
+            catch (const std::domain_error&)
+            {
+                return no_sign();
+            }
+        }
+    }
+
+    template <typename S>
+    algoim::uvector<S, 3> grad(const algoim::uvector<S, 3>& u) const
+    {
+        using W = std::conditional_t<std::is_same_v<S, real>, double, TM>;
+        const std::array<W, 3> xv = physical<W>(u);
+        std::array<Dual<W, 3>, 3> x;
+        for (int i = 0; i < 3; ++i)
+        {
+            x[i].v = xv[i];
+            for (int k = 0; k < 3; ++k)
+                x[i].d[k] = W(jac[i][k]);
+        }
+        algoim::uvector<S, 3> g;
+        if constexpr (std::is_same_v<S, real>)
+        {
+            const Dual<double, 3> r = (*f)(x);
+            for (int k = 0; k < 3; ++k)
+                g(k) = sign * r.d[k];
+        }
+        else
+        {
+            try
+            {
+                const Dual<TM, 3> r = (*f)(x);
+                for (int k = 0; k < 3; ++k)
+                    g(k) = from_taylor(r.d[k] * sign);
+            }
+            catch (const std::domain_error&)
+            {
+                for (int k = 0; k < 3; ++k)
+                    g(k) = no_sign();
+            }
+        }
+        return g;
+    }
+};
+
+/// algoim's 2015 engine on the unit box of an unclipped cell for a functor.
+template <typename F>
+void quadgen_functor(const ClippedBox<double>& cell, const F& f, const SelectionTerm& term, int q,
+                     quadrature::QuadratureRules<double>& rule)
+{
+    if (!cell.clips.empty())
+        throw std::runtime_error("algoim_quadgen: clipped boxes are not supported");
+    const Part kind = part_of(term);
+    if (kind == Part::whole)
+        throw std::runtime_error("algoim_quadgen: part 'whole' is not supported");
+    const std::size_t start = rule._weights.size();
+    FunctorInBox<F> phi;
+    phi.f = &f;
+    phi.origin = cell.origin;
+    phi.jac = cell.jacobian;
+    phi.sign = kind == Part::positive ? -1.0 : 1.0;
+    const double detj = std::abs(jacobian_determinant(cell));
+    const algoim::HyperRectangle<real, 3> unit(algoim::uvector<real, 3>(0.0), algoim::uvector<real, 3>(1.0));
+    const bool surface = kind == Part::interface;
+    const auto qr = algoim::quadGen<3>(phi, unit, surface ? 3 : -1, -1, q);
+    const M3 inv = inverse_jacobian(cell);
+    for (const auto& node : qr.nodes)
+    {
+        double w = node.w * detj;
+        if (surface)
+        {
+            const auto g = phi.template grad<real>(node.x);
+            w *= surface_factor(inv, {g(0), g(1), g(2)});
+        }
+        append_point(cell, to_vec(node.x), w, rule);
+    }
+    finish_rule(rule, start);
+}
 } // namespace
 
 void algoim_clipped_box(const ClippedBox<double>& cell, const LevelSet& ls, const SelectionTerm& term, int q,
@@ -406,6 +552,21 @@ void algoim_quadgen_sphere(const ClippedBox<double>& cell, const V3& centre, dou
         append_point(cell, u, w, rule);
     }
     finish_rule(rule, start);
+}
+
+void algoim_quadgen_functor(const ClippedBox<double>& cell, const V3& centre, double radius, bool distance,
+                            const SelectionTerm& term, int q, quadrature::QuadratureRules<double>& rule)
+{
+    if (distance)
+        quadgen_functor(cell, support::SphereDistance{{centre[0], centre[1], centre[2]}, radius}, term, q, rule);
+    else
+        quadgen_functor(cell, support::SphereQuadratic{{centre[0], centre[1], centre[2]}, radius}, term, q, rule);
+}
+
+void algoim_quadgen_tape(const ClippedBox<double>& cell, const shapeforest::Tape& tape, const SelectionTerm& term,
+                         int q, quadrature::QuadratureRules<double>& rule)
+{
+    quadgen_functor(cell, shapeforest::TapeLevelSet{&tape}, term, q, rule);
 }
 
 GeneratorOptions generator_preset(const std::string& name)

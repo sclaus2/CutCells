@@ -10,9 +10,11 @@
 #include <span>
 
 #include "../quadrature.h"
+#include "analytic.h"
 #include "box_bernstein.h"
 #include "clipped_box.h"
 #include "engine.h"
+#include "source.h"
 
 /// quadrays: height-function quadrature on cut cells.
 ///
@@ -31,13 +33,18 @@ namespace cutcells::quadrays
 /// has points.
 ///
 /// @param cell         the cell as a clipped box (make_clipped_box)
-/// @param phi          the cell's level set on its box (cell_bernstein_on_box)
+/// @param phi          the cell's level set (bernstein_source, analytic_source)
 /// @param part         the selected part (part_of)
 /// @param q            Gauss-Legendre points per segment of each height line
 /// @param opt          engine options
 /// @param parent_cell  background cell of the rule
 /// @param rules        output, appended to
 /// @param stats        counters, accumulated
+template <std::floating_point T>
+void append_rules(const ClippedBox<T>& cell, const Source<T>& phi, Part part, int q, const Options& opt,
+                  std::int32_t parent_cell, quadrature::QuadratureRules<T>& rules, Stats& stats);
+
+/// @brief append_rules for a Bernstein form on the cell's box (cell_bernstein_on_box).
 template <std::floating_point T>
 void append_rules(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int q,
                   const Options& opt, std::int32_t parent_cell,
@@ -57,5 +64,13 @@ void append_cell_rules(cell::type cell_type, std::span<const T> vertex_coords, i
                        std::span<const T> coeffs, const SelectionTerm& term, int level_set, int q,
                        const Options& opt, std::int32_t parent_cell,
                        quadrature::QuadratureRules<T>& rules, Stats& stats);
+
+/// @brief Quadrature rule of one part of one cell given by its type and
+/// vertices, for an analytic level set in physical coordinates, appended to
+/// @p rules.
+template <std::floating_point T>
+void append_cell_rules(cell::type cell_type, std::span<const T> vertex_coords, const AnalyticLevelSet& phi,
+                       const SelectionTerm& term, int level_set, int q, const Options& opt,
+                       std::int32_t parent_cell, quadrature::QuadratureRules<T>& rules, Stats& stats);
 
 } // namespace cutcells::quadrays

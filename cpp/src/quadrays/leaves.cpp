@@ -17,8 +17,8 @@ namespace cutcells::quadrays
 {
 
 template <std::floating_point T>
-void append_leaves(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int degree,
-                   const Options& opt, std::int32_t parent_cell, LeafMesh<T>& mesh, Stats& stats)
+void append_leaves(const ClippedBox<T>& cell, const Source<T>& phi, Part part, int degree, const Options& opt,
+                   std::int32_t parent_cell, LeafMesh<T>& mesh, Stats& stats)
 {
     thread_local CellPoints<T> nodes;
     nodes.points.clear();
@@ -150,6 +150,13 @@ void append_leaves(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part p
 }
 
 template <std::floating_point T>
+void append_leaves(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int degree,
+                   const Options& opt, std::int32_t parent_cell, LeafMesh<T>& mesh, Stats& stats)
+{
+    append_leaves(cell, bernstein_source(phi), part, degree, opt, parent_cell, mesh, stats);
+}
+
+template <std::floating_point T>
 void append_linear_cell(cell::type cell_type, std::span<const T> vertex_coords,
                         std::int32_t parent_cell, LeafMesh<T>& mesh)
 {
@@ -195,6 +202,10 @@ void write_leaves(const std::string& filename, const LeafMesh<T>& mesh)
 // Explicit instantiations
 // ============================================================================
 
+template void append_leaves<float>(const ClippedBox<float>&, const Source<float>&, Part, int, const Options&,
+                                   std::int32_t, LeafMesh<float>&, Stats&);
+template void append_leaves<double>(const ClippedBox<double>&, const Source<double>&, Part, int, const Options&,
+                                    std::int32_t, LeafMesh<double>&, Stats&);
 template void append_leaves<float>(const ClippedBox<float>&, const BoxBernstein<float>&, Part, int,
                                    const Options&, std::int32_t, LeafMesh<float>&, Stats&);
 template void append_leaves<double>(const ClippedBox<double>&, const BoxBernstein<double>&, Part, int,
