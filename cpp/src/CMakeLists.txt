@@ -15,6 +15,7 @@ target_include_directories(cutcells PUBLIC
 add_subdirectory(quadrays)
 add_subdirectory(lut)
 add_subdirectory(part)
+add_subdirectory(compression)
 
 set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_types.h
@@ -58,6 +59,7 @@ set(HEADERS
   ${QUADRAYS_HEADERS}
   ${LUT_HEADERS}
   ${PART_HEADERS}
+  ${COMPRESSION_HEADERS}
   PARENT_SCOPE)
 
 target_sources(cutcells PRIVATE

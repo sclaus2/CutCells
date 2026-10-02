@@ -19,6 +19,7 @@ library (below).
 | `taylor.h` | first-order Taylor models with rigorous remainders (sqrt, log, exp, sin, cos, division), `Dual<V, N>` for derivatives, branch helpers for abs, min and max |
 | `source.h/.cpp` | the level set of a cell as the engine reads it: a Bernstein form or an analytic level set; values, gradients, Taylor bounds on affine images, roots on lines |
 | `adapters/shapeforest_tape.h` | ShapeForest tapes (register code) run on every scalar type of `taylor.h`; no build dependency |
+| `../compression/compress.h/.cpp` | positive rules reduced to at most as many points as a polynomial space has moments (below) |
 
 The front end of phase 3, `cutcells.part`, uses quadrays without AdaptCell
 (`FRONTEND.md`). From Python, `part.quadrature(order, mode, backend="quadrays")` uses it, with
@@ -190,6 +191,47 @@ Two things made that cell work:
   n = 8 needs 3,300 to 3,800 bisections, with an end vertex 7,300 to 9,300 (the box
   is less skewed). Choosing the vertex is one way to tighter bounds on tets
   (phase 6).
+
+## Compressed rules (2026-10-02)
+
+quadrays certifies boxes and puts q^D points in each, so a cut cell ends with
+hundreds or thousands of points, all of which the assembler visits.
+`cpp/src/compression/` (namespace `cutcells::compression`) shrinks any positive
+rule to at most as many points as a polynomial space has moments, with
+positive weights that integrate that space exactly as the original rule did
+(Caratheodory-Tchakaloff). For Q_k elements on affine hexahedra the stiffness
+and mass integrands lie in Q_2k, so `compress_rules(rules, 2k)` changes
+nothing in the assembled matrices up to rounding; on affine tetrahedra with
+P_k elements use `space="total"`. Outside the space, a compressed rule is less
+accurate than the original rule.
+
+The points are recombined in groups (Tchernychova and Lyons): 2M groups of
+consecutive points, each replaced by its weighted mean moment vector, are
+reduced to M by a Caratheodory step, which halves the points; the last at most
+2M points are reduced directly. A Caratheodory step takes the null space from
+a pivoted Householder QR, P [-R11^-1 R12; I], and moves the weights along one
+null vector at a time until a weight reaches 0. The basis is Legendre on the
+points' bounding box; directions the points do not resolve (a piece flat in
+one coordinate) drop out of the rank, and such pieces keep fewer points. A
+least-squares solve on the chosen points polishes the weights if they stay
+positive. Rules with a negative weight are copied; rules run in parallel with
+OpenMP.
+
+Turbine blade, h = 3 cm hexahedra, the DOLFINx Q4 interpolant of the
+ShapeForest level set, 1,774 cut cells, Q_4 (125 moments). Errors are per cell
+against quadrays at q = 8, relative to the cell volume; times on an i7-7920HQ
+under load:
+
+| Rule | Points per cut cell | Volume error | Time |
+| --- | --- | --- | --- |
+| Algoim, q = 4 (CutFEMx) | 323 | 4.4e-3 | 314 s |
+| quadrays, q = 4 | 2,149 | 1.6e-5 | 3.3 s |
+| quadrays, q = 4, compressed | 100 | 1.6e-5 | + 5.1 s (14.8 s on one thread) |
+| quadrays, q = 4, margin 0.02 | 827 | 3.3e-4 | 1.0 s |
+| quadrays, q = 4, margin 0.02, compressed | 97 | 3.3e-4 | + 3.0 s (13.1 s on one thread) |
+
+A random Q_4 polynomial integrates to the same value before and after
+compression (largest moment residual 1e-11 of a rule's weight).
 
 ## Build and run
 
