@@ -259,6 +259,26 @@ write_level_set_vtu = _cutcellscpp.write_level_set_vtu
 ho_cut = _cutcellscpp.ho_cut
 HOCutResult = _cutcellscpp.HOCutResult
 HOMeshPart = _cutcellscpp.HOMeshPart
+QuadraysOptions = _cutcellscpp.QuadraysOptions
+QuadraysStats = _cutcellscpp.QuadraysStats
+QuadraysLeafMesh = _cutcellscpp.QuadraysLeafMesh
+QuadraysLeafMesh_float32 = _cutcellscpp.QuadraysLeafMesh_float32
+QuadraysLeafMesh_float64 = _cutcellscpp.QuadraysLeafMesh_float64
+quadrays_quadrature = _cutcellscpp.quadrays_quadrature
+quadrays_quadrature_float32 = _cutcellscpp.quadrays_quadrature_float32
+quadrays_quadrature_float64 = _cutcellscpp.quadrays_quadrature_float64
+quadrays_leaves = _cutcellscpp.quadrays_leaves
+quadrays_leaves_float32 = _cutcellscpp.quadrays_leaves_float32
+quadrays_leaves_float64 = _cutcellscpp.quadrays_leaves_float64
+quadrays_cell_rules = _cutcellscpp.quadrays_cell_rules
+quadrays_cell_rules_float32 = _cutcellscpp.quadrays_cell_rules_float32
+quadrays_cell_rules_float64 = _cutcellscpp.quadrays_cell_rules_float64
+quadrays_cell_leaves = _cutcellscpp.quadrays_cell_leaves
+quadrays_cell_leaves_float32 = _cutcellscpp.quadrays_cell_leaves_float32
+quadrays_cell_leaves_float64 = _cutcellscpp.quadrays_cell_leaves_float64
+write_quadrays_leaves = _cutcellscpp.write_quadrays_leaves
+write_quadrays_leaves_float32 = _cutcellscpp.write_quadrays_leaves_float32
+write_quadrays_leaves_float64 = _cutcellscpp.write_quadrays_leaves_float64
 
 from .mesh_utils import (
     cutmesh_to_pyvista,

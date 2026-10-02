@@ -13,6 +13,7 @@
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/map.h>
 #include <nanobind/stl/shared_ptr.h>
+#include <nanobind/stl/pair.h>
 #include <span>
 #include <type_traits>
 #include <stdexcept>
@@ -40,6 +41,8 @@
 #include <cutcells/mesh_view.h>
 #include <cutcells/quadrature.h>
 #include <cutcells/quadrature_tables.h>
+#include <cutcells/quadrays/leaves.h>
+#include <cutcells/quadrays/rules.h>
 #include <cutcells/reference_cell.h>
 #include <cutcells/refine_cell.h>
 #include <cutcells/triangulation.h>
@@ -1985,7 +1988,9 @@ void declare_ho_cut(nb::module_& m, const std::string& type)
             nb::arg("order") = 3,
             nb::arg("mode") = "full",
             nb::arg("backend") = "straight",
-            "Return quadrature rules for an HOMeshPart, preserving AdaptCell topology.")
+            "Return quadrature rules for an HOMeshPart, preserving AdaptCell topology. "
+            "backend: 'straight', 'algoim', 'algoim_general' or 'quadrays'; for 'algoim' "
+            "and 'quadrays', order counts Gauss points per segment.")
         .def(
             "write_vtu",
             [](const PartT& self,
@@ -2842,6 +2847,175 @@ void declare_write_vtk(nb::module_& m)
 
 } // namespace
 
+template <typename T>
+void declare_quadrays(nb::module_& m, const std::string& type)
+{
+  namespace qr = cutcells::quadrays;
+  using LeafMeshT = qr::LeafMesh<T>;
+  using PartT = cutcells::HOMeshPart<T, int>;
+
+  std::string leaf_name = "QuadraysLeafMesh_" + type;
+  nb::class_<LeafMeshT>(m, leaf_name.c_str(),
+      "Cells for visualisation: the leaves of the quadrays decomposition as VTK "
+      "Lagrange cells, and whole cells as linear VTK cells (CSR layout).")
+      .def(nb::init<>())
+      .def_prop_ro("points",
+          [](const LeafMeshT& self) {
+            return nb::ndarray<const T, nb::numpy>(
+                self.points.data(), {self.points.size() / 3, 3},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal, "Physical node coordinates, shape (n_points, 3).")
+      .def_prop_ro("connectivity",
+          [](const LeafMeshT& self) {
+            return nb::ndarray<const std::int32_t, nb::numpy>(
+                self.connectivity.data(), {self.connectivity.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal, "Node indices of all cells, in VTK's node order.")
+      .def_prop_ro("offsets",
+          [](const LeafMeshT& self) {
+            return nb::ndarray<const std::int32_t, nb::numpy>(
+                self.offsets.data(), {self.offsets.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal, "CSR offsets, shape (n_cells + 1,).")
+      .def_prop_ro("vtk_types",
+          [](const LeafMeshT& self) {
+            return nb::ndarray<const std::uint8_t, nb::numpy>(
+                self.vtk_types.data(), {self.vtk_types.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal, "VTK cell type per cell.")
+      .def_prop_ro("parent",
+          [](const LeafMeshT& self) {
+            return nb::ndarray<const std::int32_t, nb::numpy>(
+                self.parent.data(), {self.parent.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal, "Background cell per cell.")
+      .def_prop_ro("degree",
+          [](const LeafMeshT& self) {
+            return nb::ndarray<const std::int32_t, nb::numpy>(
+                self.degree.data(), {self.degree.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal, "Polynomial degree per cell (1 for linear cells).")
+      .def("n_points", &LeafMeshT::n_points)
+      .def("n_cells", &LeafMeshT::n_cells);
+
+  m.def(("quadrays_quadrature_" + type).c_str(),
+        [](const PartT& part, int order, const std::string& mode, const qr::Options& options)
+        {
+          const bool cut_only = part_mode_is_cut_only(mode);
+          nb::gil_scoped_release release;
+          return cutcells::output::quadrays_quadrature_rules(part, order, !cut_only, options);
+        },
+        nb::arg("part"), nb::arg("order") = 3, nb::arg("mode") = "full",
+        nb::arg("options") = qr::Options{},
+        "Quadrature rules of a mesh part from the quadrays engine, as "
+        "part.quadrature(order, mode, backend='quadrays') with engine options. "
+        "order: Gauss-Legendre points per segment of each height line.");
+
+  m.def(("quadrays_leaves_" + type).c_str(),
+        [](const PartT& part, int degree, const std::string& mode, const qr::Options& options)
+        {
+          const bool cut_only = part_mode_is_cut_only(mode);
+          nb::gil_scoped_release release;
+          return cutcells::output::quadrays_leaves(part, degree, !cut_only, options);
+        },
+        nb::arg("part"), nb::arg("degree") = 3, nb::arg("mode") = "full",
+        nb::arg("options") = qr::Options{},
+        "Leaf cells of a mesh part: the pieces the quadrays engine integrates in "
+        "its cut cells as Lagrange cells of the given degree; with mode 'full', "
+        "the uncut cells of volume parts as linear cells.");
+
+  // one cell given by its type, vertices and level-set Bernstein coefficients
+  auto cell_inputs = [](cell::type cell_type, const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords,
+                        int degree, const ndarray1<T>& coeffs, qr::ClippedBox<T>& box,
+                        qr::BoxBernstein<T>& phi)
+  {
+    qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()), 3, box);
+    qr::cell_bernstein_on_box<T>(cell_type, degree, std::span<const T>(coeffs.data(), coeffs.size()), phi);
+  };
+  auto cell_part = [](const std::string& selection, const std::string& name)
+  {
+    cutcells::SelectionExpr expr = cutcells::parse_selection_expr(selection);
+    cutcells::compile_selection_expr(expr, {name});
+    if (expr.terms.size() != 1)
+      throw std::runtime_error("quadrays: one selection term per call");
+    return qr::part_of(expr.terms.front(), 0);
+  };
+
+  m.def(("quadrays_cell_rules_" + type).c_str(),
+        [cell_inputs, cell_part](cell::type cell_type,
+                                 const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords, int degree,
+                                 const ndarray1<T>& bernstein_coeffs, const std::string& selection, int q,
+                                 const qr::Options& options, const std::string& level_set_name)
+        {
+          qr::ClippedBox<T> box;
+          qr::BoxBernstein<T> phi;
+          cell_inputs(cell_type, vertex_coords, degree, bernstein_coeffs, box, phi);
+          const qr::Part part = cell_part(selection, level_set_name);
+          quadrature::QuadratureRules<T> rules;
+          qr::Stats stats;
+          {
+            nb::gil_scoped_release release;
+            qr::append_rules(box, phi, part, q, options, 0, rules, stats);
+          }
+          return std::make_pair(std::move(rules), std::move(stats));
+        },
+        nb::arg("cell_type"), nb::arg("vertex_coords"), nb::arg("degree"), nb::arg("bernstein_coeffs"),
+        nb::arg("selection"), nb::arg("q") = 3, nb::arg("options") = qr::Options{},
+        nb::arg("level_set_name") = "phi",
+        "Quadrature rule of one part of one cell (tetrahedron or hexahedron) from "
+        "its vertices (Basix order) and the Bernstein coefficients of its level set "
+        "(CutCells' order). Returns (QuadratureRules, QuadraysStats).");
+
+  m.def(("quadrays_cell_leaves_" + type).c_str(),
+        [cell_inputs, cell_part](cell::type cell_type,
+                                 const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords, int degree,
+                                 const ndarray1<T>& bernstein_coeffs, const std::string& selection,
+                                 int leaf_degree, const qr::Options& options, const std::string& level_set_name)
+        {
+          qr::ClippedBox<T> box;
+          qr::BoxBernstein<T> phi;
+          cell_inputs(cell_type, vertex_coords, degree, bernstein_coeffs, box, phi);
+          const qr::Part part = cell_part(selection, level_set_name);
+          LeafMeshT leaves;
+          qr::Stats stats;
+          {
+            nb::gil_scoped_release release;
+            qr::append_leaves(box, phi, part, leaf_degree, options, 0, leaves, stats);
+          }
+          return leaves;
+        },
+        nb::arg("cell_type"), nb::arg("vertex_coords"), nb::arg("degree"), nb::arg("bernstein_coeffs"),
+        nb::arg("selection"), nb::arg("leaf_degree") = 3, nb::arg("options") = qr::Options{},
+        nb::arg("level_set_name") = "phi",
+        "Leaf cells of one part of one cell, as quadrays_cell_rules takes it.");
+
+  m.def(("write_quadrays_leaves_" + type).c_str(),
+        [](const std::string& filename, const LeafMeshT& leaves)
+        {
+          nb::gil_scoped_release release;
+          qr::write_leaves(filename, leaves);
+        },
+        nb::arg("filename"), nb::arg("leaves"),
+        "Write leaf cells to a .vtu file (VTK 9.1 node order, with HigherOrderDegrees "
+        "and the cell data parent_id).");
+
+  if constexpr (std::is_same_v<T, double>)
+  {
+    m.attr("QuadraysLeafMesh") = m.attr(leaf_name.c_str());
+    m.attr("quadrays_quadrature") = m.attr("quadrays_quadrature_float64");
+    m.attr("quadrays_leaves") = m.attr("quadrays_leaves_float64");
+    m.attr("quadrays_cell_rules") = m.attr("quadrays_cell_rules_float64");
+    m.attr("quadrays_cell_leaves") = m.attr("quadrays_cell_leaves_float64");
+    m.attr("write_quadrays_leaves") = m.attr("write_quadrays_leaves_float64");
+  }
+}
+
 NB_MODULE(_cutcellscpp, m)
 {
   // Create module for C++ wrappers
@@ -2984,4 +3158,34 @@ NB_MODULE(_cutcellscpp, m)
 
   declare_write_vtk<float>(m);
   declare_write_vtk<double>(m);
+
+  // ---- quadrays: height-function quadrature ----
+  nb::class_<cutcells::quadrays::Options>(m, "QuadraysOptions",
+      "Options of the quadrays engine.")
+      .def(nb::init<>())
+      .def_rw("margin", &cutcells::quadrays::Options::margin,
+              "Required |d_k psi| / |grad psi| on a box for a height direction; "
+              "also the accuracy control.")
+      .def_rw("max_depth", &cutcells::quadrays::Options::max_depth,
+              "Bisections allowed per level along a branch.")
+      .def_rw("max_bisections", &cutcells::quadrays::Options::max_bisections,
+              "Bisections allowed per cell; beyond it boxes are integrated uncertified.")
+      .def_rw("prune_bounds", &cutcells::quadrays::Options::prune_bounds,
+              "Drop bounds of the height lines that are never active.")
+      .def_rw("diagonal_frames", &cutcells::quadrays::Options::diagonal_frames,
+              "Level 2: try the diagonal frame before bisecting.")
+      .def_rw("mask_subdivisions", &cutcells::quadrays::Options::mask_subdivisions,
+              "M > 1: margins from M^D sub-cells; 1: bounds on the whole box.")
+      .def_rw("diagnose", &cutcells::quadrays::Options::diagnose,
+              "Record why each bisection happened in QuadraysStats.causes.");
+  nb::class_<cutcells::quadrays::Stats>(m, "QuadraysStats",
+      "Counters of quadrays engine runs.")
+      .def(nb::init<>())
+      .def_ro("bisections", &cutcells::quadrays::Stats::bisections)
+      .def_ro("uncertified", &cutcells::quadrays::Stats::uncertified)
+      .def_ro("rotations", &cutcells::quadrays::Stats::rotations)
+      .def_ro("incomplete_leaves", &cutcells::quadrays::Stats::incomplete_leaves)
+      .def_ro("causes", &cutcells::quadrays::Stats::causes);
+  declare_quadrays<float>(m, "float32");
+  declare_quadrays<double>(m, "float64");
 }

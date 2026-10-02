@@ -628,7 +628,8 @@ namespace cutcells::io
                             const std::span<const int> vtk_types,
                             int gdim,
                             const std::span<const std::int32_t> parent_map,
-                            const std::span<const std::int32_t> subdivision_depth)
+                            const std::span<const std::int32_t> subdivision_depth,
+                            const std::span<const std::int32_t> degrees)
     {
         if (gdim < 1 || gdim > 3)
             throw std::runtime_error("write_lagrange_vtk: gdim must be 1, 2, or 3");
@@ -646,13 +647,22 @@ namespace cutcells::io
         };
         check_cell_data(parent_map, "parent_map");
         check_cell_data(subdivision_depth, "subdivision_depth");
+        check_cell_data(degrees, "degrees");
+
+        // Lagrange quadrilaterals (70), hexahedra (72) and wedges (73) in the
+        // node order of VTK 9.1 and later need file version 2.2
+        bool new_order = false;
+        for (const int type : vtk_types)
+            new_order |= type == 70 || type == 72 || type == 73;
 
         std::ofstream ofs(filename.c_str(), std::ios::out);
         if (!ofs)
             throw std::runtime_error("write_lagrange_vtk: unable to open file " + filename);
+        ofs.precision(17); // curved cells: node positions matter to rounding
 
         ofs << "<?xml version=\"1.0\"?>\n"
-            << "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" byte_order=\""
+            << "<VTKFile type=\"UnstructuredGrid\" version=\""
+            << (new_order ? "2.2" : "0.1") << "\" byte_order=\""
             << vtk_byte_order() << "\">\n"
             << "\t<UnstructuredGrid>\n"
             << "\t\t<Piece NumberOfPoints=\"" << num_points
@@ -671,9 +681,12 @@ namespace cutcells::io
         ofs << "</DataArray>\n"
             << "\t\t\t</Points>\n";
 
-        if (!parent_map.empty() || !subdivision_depth.empty())
+        if (!parent_map.empty() || !subdivision_depth.empty() || !degrees.empty())
         {
-            ofs << "\t\t\t<CellData>\n";
+            if (degrees.empty())
+                ofs << "\t\t\t<CellData>\n";
+            else
+                ofs << "\t\t\t<CellData HigherOrderDegrees=\"HigherOrderDegrees\">\n";
             auto write_i32_data = [&ofs](std::span<const std::int32_t> data,
                                          const char* name)
             {
@@ -687,6 +700,19 @@ namespace cutcells::io
             };
             write_i32_data(parent_map, "parent_id");
             write_i32_data(subdivision_depth, "subdivision_depth");
+            if (!degrees.empty())
+            {
+                // per cell and direction; quadrilaterals have none along the third
+                ofs << "\t\t\t  <DataArray type=\"Float64\" Name=\"HigherOrderDegrees\""
+                    << " NumberOfComponents=\"3\" format=\"ascii\">";
+                for (int c = 0; c < num_cells; ++c)
+                {
+                    const int d = degrees[static_cast<std::size_t>(c)];
+                    const int type = vtk_types[static_cast<std::size_t>(c)];
+                    ofs << d << " " << d << " " << (type == 70 || type == 69 ? 0 : d) << " ";
+                }
+                ofs << "</DataArray>\n";
+            }
             ofs << "\t\t\t</CellData>\n";
         }
 

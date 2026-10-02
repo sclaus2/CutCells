@@ -15,6 +15,8 @@
 #include "cut_mesh.h"
 #include "ho_cut_mesh.h"
 #include "quadrature.h"
+#include "quadrays/engine.h"
+#include "quadrays/leaves.h"
 
 namespace cutcells::output
 {
@@ -23,7 +25,8 @@ enum class QuadratureBackend
 {
     Straight,
     AlgoimBernstein,
-    AlgoimGeneral
+    AlgoimGeneral,
+    Quadrays
 };
 
 struct SelectedZeroEntityInfo
@@ -54,6 +57,29 @@ quadrature::QuadratureRules<T> quadrature_rules(const HOMeshPart<T, I>& part,
                                                 int order,
                                                 bool include_uncut_cells,
                                                 QuadratureBackend backend);
+
+/// @brief Quadrature rules of a part from the quadrays engine.
+///
+/// Cut cells get the engine's rules, with @p order Gauss-Legendre points per
+/// segment of each height line (as `order` counts points for backend
+/// "algoim"); uncut cells of volume parts get the straight rules of degree
+/// @p order. The selection must be one term on one level set, whose cells
+/// carry Bernstein coefficients; parent cells are tetrahedra or hexahedra.
+template <std::floating_point T, std::integral I = int>
+quadrature::QuadratureRules<T> quadrays_quadrature_rules(
+    const HOMeshPart<T, I>& part,
+    int order,
+    bool include_uncut_cells,
+    const quadrays::Options& options = {});
+
+/// @brief Leaf cells of a part: every piece the quadrays engine integrates in
+/// a cut cell, as a Lagrange cell of the given degree, and, for volume parts
+/// with @p include_uncut_cells, the uncut cells as linear cells.
+template <std::floating_point T, std::integral I = int>
+quadrays::LeafMesh<T> quadrays_leaves(const HOMeshPart<T, I>& part,
+                                      int degree,
+                                      bool include_uncut_cells,
+                                      const quadrays::Options& options = {});
 
 template <std::floating_point T, std::integral I = int>
 std::vector<std::pair<std::string, quadrature::QuadratureRules<T>>>

@@ -103,6 +103,61 @@ namespace cutcells::io
                              const cutcells::LevelSetFunction<double>& ls,
                              std::string field_name = "phi");
 
+    /// @brief Position of node (i, j, k), 0 <= i, j, k <= p, of a degree-p
+    /// Lagrange hexahedron in VTK's node order (vertices, edges, faces,
+    /// interior), as in VTK 9.1 and later.
+    inline int vtk_lagrange_hexahedron_index(int i, int j, int k, int p)
+    {
+        const bool ib = i == 0 || i == p, jb = j == 0 || j == p, kb = k == 0 || k == p;
+        const int nb = int(ib) + int(jb) + int(kb);
+        if (nb == 3)
+            return (i ? (j ? 2 : 1) : (j ? 3 : 0)) + (k ? 4 : 0);
+        int offset = 8;
+        if (nb == 2)
+        {
+            if (!ib)
+                return (i - 1) + (j ? 2 * (p - 1) : 0) + (k ? 4 * (p - 1) : 0) + offset;
+            if (!jb)
+                return (j - 1) + (i ? (p - 1) : 3 * (p - 1)) + (k ? 4 * (p - 1) : 0) + offset;
+            offset += 8 * (p - 1);
+            return (k - 1) + (p - 1) * (i ? (j ? 2 : 1) : (j ? 3 : 0)) + offset;
+        }
+        offset += 12 * (p - 1);
+        const int f = (p - 1) * (p - 1);
+        if (nb == 1)
+        {
+            if (ib)
+                return (j - 1) + (p - 1) * (k - 1) + (i ? f : 0) + offset;
+            offset += 2 * f;
+            if (jb)
+                return (i - 1) + (p - 1) * (k - 1) + (j ? f : 0) + offset;
+            offset += 2 * f;
+            return (i - 1) + (p - 1) * (j - 1) + (k ? f : 0) + offset;
+        }
+        offset += 6 * f;
+        return offset + (i - 1) + (p - 1) * ((j - 1) + (p - 1) * (k - 1));
+    }
+
+    /// @brief Position of node (i, j), 0 <= i, j <= p, of a degree-p Lagrange
+    /// quadrilateral in VTK's node order.
+    inline int vtk_lagrange_quadrilateral_index(int i, int j, int p)
+    {
+        const bool ib = i == 0 || i == p, jb = j == 0 || j == p;
+        if (ib && jb)
+            return i ? (j ? 2 : 1) : (j ? 3 : 0);
+        const int offset = 4;
+        if (!ib && jb)
+            return (i - 1) + (j ? 2 * (p - 1) : 0) + offset;
+        if (ib && !jb)
+            return (j - 1) + (i ? (p - 1) : 3 * (p - 1)) + offset;
+        return offset + 4 * (p - 1) + (i - 1) + (p - 1) * (j - 1);
+    }
+
+    /// @brief Write cells in VTK's Lagrange (or linear) node order to a .vtu file.
+    ///
+    /// Files with Lagrange quadrilaterals, hexahedra or wedges are written as
+    /// version 2.2, which tells VTK that their node order is the one of VTK 9.1
+    /// and later. @p degrees, when given, is written as HigherOrderDegrees.
     void write_lagrange_vtk(std::string filename,
                             const std::span<const double> point_coords,
                             const std::span<const int> connectivity,
@@ -110,7 +165,8 @@ namespace cutcells::io
                             const std::span<const int> vtk_types,
                             int gdim,
                             const std::span<const std::int32_t> parent_map = {},
-                            const std::span<const std::int32_t> subdivision_depth = {});
+                            const std::span<const std::int32_t> subdivision_depth = {},
+                            const std::span<const std::int32_t> degrees = {});
 
     template <std::floating_point T>
     void write_lagrange_vtk(std::string filename,
@@ -120,7 +176,8 @@ namespace cutcells::io
                             const std::span<const int> vtk_types,
                             int gdim,
                             const std::span<const std::int32_t> parent_map = {},
-                            const std::span<const std::int32_t> subdivision_depth = {})
+                            const std::span<const std::int32_t> subdivision_depth = {},
+                            const std::span<const std::int32_t> degrees = {})
     {
         std::vector<double> coords_d(point_coords.begin(), point_coords.end());
         write_lagrange_vtk(
@@ -131,6 +188,7 @@ namespace cutcells::io
             vtk_types,
             gdim,
             parent_map,
-            subdivision_depth);
+            subdivision_depth,
+            degrees);
     }
 }

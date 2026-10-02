@@ -9,11 +9,13 @@
 #include "cell_topology.h"
 #include "mapping.h"
 #include "quadrature_tables.h"
+#include "quadrays/rules.h"
 #include "reference_cell.h"
 #include "triangulation.h"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -917,7 +919,156 @@ T entity_reference_measure(cell::type cell_type,
              cell_type, reference_vertices.data(), parent_tdim);
 }
 
+// ============================================================================
+// quadrays backend
+// ============================================================================
+
+/// The level set a part's single selection term constrains, and what it selects.
+template <std::floating_point T, std::integral I>
+std::pair<int, quadrays::Part> quadrays_selection(const HOMeshPart<T, I>& part)
+{
+    if (!part.mesh)
+        throw std::runtime_error("HOMeshPart is not attached to a mesh");
+    if (part.expr.terms.size() != 1)
+    {
+        throw std::runtime_error(
+            "The quadrays backend supports selections with one term");
+    }
+    const SelectionTerm& term = part.expr.terms.front();
+    const std::uint64_t bits =
+        term.zero_required | term.negative_required | term.positive_required;
+    if (bits == 0 || (bits & (bits - 1)) != 0)
+    {
+        throw std::runtime_error(
+            "The quadrays backend supports selections on one level set");
+    }
+    const int level_set = std::countr_zero(bits);
+    return {level_set, quadrays::part_of(term, level_set)};
+}
+
+/// The parent cell of a cut cell as a clipped box and its level set as a
+/// Bernstein form on the box.
+template <std::floating_point T, std::integral I>
+I quadrays_cut_cell(const HOMeshPart<T, I>& part,
+                    std::int32_t cut_id,
+                    int level_set,
+                    quadrays::ClippedBox<T>& box,
+                    quadrays::BoxBernstein<T>& phi)
+{
+    const auto& cut_cells = *part.cut_cells;
+    const I parent_cell_id =
+        cut_cells.parent_cell_ids[static_cast<std::size_t>(cut_id)];
+    const int begin = cut_cells.ls_offsets.at(static_cast<std::size_t>(cut_id));
+    const int end = cut_cells.ls_offsets.at(static_cast<std::size_t>(cut_id + 1));
+    const LevelSetCell<T, I>* ls_cell = nullptr;
+    for (int i = begin; i < end; ++i)
+    {
+        if (cut_cells.level_set_cells[static_cast<std::size_t>(i)].level_set_id == level_set)
+            ls_cell = &cut_cells.level_set_cells[static_cast<std::size_t>(i)];
+    }
+    if (ls_cell == nullptr)
+    {
+        throw std::runtime_error(
+            "The quadrays backend found no level-set data for a cut cell");
+    }
+    if (ls_cell->bernstein_coeffs.empty())
+    {
+        throw std::runtime_error(
+            "The quadrays backend needs level sets with Bernstein coefficients");
+    }
+
+    const int nv = cell::get_num_vertices(ls_cell->cell_type);
+    std::vector<T> vertex_storage;
+    std::span<const T> vertices(ls_cell->parent_vertex_coords);
+    if (ls_cell->parent_vertex_coords.size()
+        != static_cast<std::size_t>(nv * part.mesh->gdim))
+    {
+        vertex_storage = parent_cell_vertex_coords_basix(*part.mesh, parent_cell_id);
+        vertices = std::span<const T>(vertex_storage);
+    }
+    quadrays::make_clipped_box(ls_cell->cell_type, vertices, part.mesh->gdim, box);
+    quadrays::cell_bernstein_on_box(
+        ls_cell->cell_type, ls_cell->bernstein_order,
+        std::span<const T>(ls_cell->bernstein_coeffs), phi);
+    return parent_cell_id;
+}
+
 } // namespace
+
+template <std::floating_point T, std::integral I>
+quadrature::QuadratureRules<T> quadrays_quadrature_rules(
+    const HOMeshPart<T, I>& part,
+    int order,
+    bool include_uncut_cells,
+    const quadrays::Options& options)
+{
+    const auto [level_set, qpart] = quadrays_selection(part);
+    if ((!part.cut_cells || !part.parent_cells) && !part.cut_cell_ids.empty())
+        throw std::runtime_error("HOMeshPart cut entities require cut-cell storage");
+
+    quadrature::QuadratureRules<T> rules;
+    rules._tdim = part.mesh->tdim;
+    rules._offset.push_back(0);
+    quadrays::ClippedBox<T> box;
+    quadrays::BoxBernstein<T> phi;
+    quadrays::Stats stats;
+    for (const std::int32_t cut_id : part.cut_cell_ids)
+    {
+        const I parent_cell_id = quadrays_cut_cell(part, cut_id, level_set, box, phi);
+        quadrays::append_rules(box, phi, qpart, order, options,
+                               static_cast<std::int32_t>(parent_cell_id), rules, stats);
+    }
+
+    if (include_uncut_cells && qpart != quadrays::Part::interface
+        && !part.uncut_cell_ids.empty())
+    {
+        HOMeshPart<T, I> uncut_part = part;
+        uncut_part.cut_cell_ids.clear();
+        const auto uncut = quadrature_rules(uncut_part, order, /*include_uncut_cells=*/true);
+        const std::int32_t shift = static_cast<std::int32_t>(rules._weights.size());
+        rules._points.insert(rules._points.end(), uncut._points.begin(), uncut._points.end());
+        rules._weights.insert(rules._weights.end(), uncut._weights.begin(), uncut._weights.end());
+        for (std::size_t r = 1; r < uncut._offset.size(); ++r)
+            rules._offset.push_back(shift + uncut._offset[r]);
+        rules._parent_map.insert(rules._parent_map.end(), uncut._parent_map.begin(),
+                                 uncut._parent_map.end());
+    }
+    return rules;
+}
+
+template <std::floating_point T, std::integral I>
+quadrays::LeafMesh<T> quadrays_leaves(const HOMeshPart<T, I>& part,
+                                      int degree,
+                                      bool include_uncut_cells,
+                                      const quadrays::Options& options)
+{
+    const auto [level_set, qpart] = quadrays_selection(part);
+    if ((!part.cut_cells || !part.parent_cells) && !part.cut_cell_ids.empty())
+        throw std::runtime_error("HOMeshPart cut entities require cut-cell storage");
+
+    quadrays::LeafMesh<T> leaves;
+    quadrays::ClippedBox<T> box;
+    quadrays::BoxBernstein<T> phi;
+    quadrays::Stats stats;
+    for (const std::int32_t cut_id : part.cut_cell_ids)
+    {
+        const I parent_cell_id = quadrays_cut_cell(part, cut_id, level_set, box, phi);
+        quadrays::append_leaves(box, phi, qpart, degree, options,
+                                static_cast<std::int32_t>(parent_cell_id), leaves, stats);
+    }
+    if (include_uncut_cells && qpart != quadrays::Part::interface
+        && part.dim == part.mesh->tdim)
+    {
+        for (const I cell_id : part.uncut_cell_ids)
+        {
+            const auto vertices = parent_cell_vertex_coords_basix(*part.mesh, cell_id);
+            quadrays::append_linear_cell(part.mesh->cell_type(cell_id),
+                                         std::span<const T>(vertices),
+                                         static_cast<std::int32_t>(cell_id), leaves);
+        }
+    }
+    return leaves;
+}
 
 template <std::floating_point T, std::integral I>
 std::vector<SelectedZeroEntityInfo> selected_zero_entity_infos(
@@ -1018,10 +1169,12 @@ QuadratureBackend quadrature_backend_from_string(std::string_view backend)
         return QuadratureBackend::AlgoimBernstein;
     if (backend == "algoim_general")
         return QuadratureBackend::AlgoimGeneral;
+    if (backend == "quadrays")
+        return QuadratureBackend::Quadrays;
 
     throw std::runtime_error(
         "Unknown quadrature backend '" + std::string(backend)
-        + "'. Expected 'straight', 'algoim', or 'algoim_general'.");
+        + "'. Expected 'straight', 'algoim', 'algoim_general' or 'quadrays'.");
 }
 
 template <std::floating_point T, std::integral I>
@@ -1038,6 +1191,8 @@ quadrature::QuadratureRules<T> quadrature_rules(const HOMeshPart<T, I>& part,
         return algoim_quadrature_rules(part, order, include_uncut_cells);
     case QuadratureBackend::AlgoimGeneral:
         return algoim_general_quadrature_rules(part, order, include_uncut_cells);
+    case QuadratureBackend::Quadrays:
+        return quadrays_quadrature_rules(part, order, include_uncut_cells);
     }
 
     throw std::runtime_error("Unhandled quadrature backend");
@@ -1055,6 +1210,7 @@ paired_quadrature_rules(
     {
     case QuadratureBackend::Straight:
     case QuadratureBackend::AlgoimGeneral:
+    case QuadratureBackend::Quadrays:
     {
         std::vector<std::pair<std::string, quadrature::QuadratureRules<T>>> out;
         out.reserve(parts.size());
@@ -1203,6 +1359,24 @@ template std::vector<std::pair<std::string, quadrature::QuadratureRules<float>>>
 paired_quadrature_rules(
     const std::vector<std::pair<std::string, HOMeshPart<float, long>>>&,
     int, bool, QuadratureBackend);
+
+template quadrature::QuadratureRules<double> quadrays_quadrature_rules(
+    const HOMeshPart<double, int>&, int, bool, const quadrays::Options&);
+template quadrature::QuadratureRules<float> quadrays_quadrature_rules(
+    const HOMeshPart<float, int>&, int, bool, const quadrays::Options&);
+template quadrature::QuadratureRules<double> quadrays_quadrature_rules(
+    const HOMeshPart<double, long>&, int, bool, const quadrays::Options&);
+template quadrature::QuadratureRules<float> quadrays_quadrature_rules(
+    const HOMeshPart<float, long>&, int, bool, const quadrays::Options&);
+
+template quadrays::LeafMesh<double> quadrays_leaves(
+    const HOMeshPart<double, int>&, int, bool, const quadrays::Options&);
+template quadrays::LeafMesh<float> quadrays_leaves(
+    const HOMeshPart<float, int>&, int, bool, const quadrays::Options&);
+template quadrays::LeafMesh<double> quadrays_leaves(
+    const HOMeshPart<double, long>&, int, bool, const quadrays::Options&);
+template quadrays::LeafMesh<float> quadrays_leaves(
+    const HOMeshPart<float, long>&, int, bool, const quadrays::Options&);
 
 template std::pair<std::vector<int>, std::vector<double>> volume_fractions(
     const HOMeshPart<double, int>&);

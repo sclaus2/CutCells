@@ -99,3 +99,23 @@ if(CUTCELLS_WITH_ALGOIM)
       "not compile or link (see CMakeFiles/CMakeConfigureLog.yaml)")
   endif()
 endif()
+
+# ============================================================================
+# Drivers
+# ============================================================================
+set(QUADRAYS_SUPPORT_DIR "${CUTCELLS_SOURCE_DIR}/cpp/tests/quadrays/support")
+
+# quadrays_benchmark(<name> <source>): a driver linked to the installed CutCells
+# and, with CUTCELLS_WITH_ALGOIM, to algoim's generators.
+function(quadrays_benchmark name source)
+  add_executable(${name} ${source})
+  target_include_directories(${name} PRIVATE "${QUADRAYS_SUPPORT_DIR}")
+  target_link_libraries(${name} PRIVATE CUTCELLS::cutcells)
+  if(CUTCELLS_WITH_ALGOIM)
+    target_sources(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/generators.cpp")
+    target_link_libraries(${name} PRIVATE quadrays_algoim)
+  endif()
+endfunction()
+
+quadrays_benchmark(quadrays_study study.cpp)
+quadrays_benchmark(quadrays_robustness_report robustness_report.cpp)

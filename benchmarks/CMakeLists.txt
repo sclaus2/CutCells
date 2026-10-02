@@ -65,9 +65,10 @@ if(CUTCELLS_WITH_ALGOIM)
       "${CUTCELLS_ALGOIM_DIR}")
   endif()
 
-  # Prefer the active conda environment's liblapack/libblas over Accelerate.
+  # Prefer the active conda environment's liblapack/libblas over Accelerate;
+  # cached, so that reconfiguring without CONDA_PREFIX keeps the choice.
   if(NOT DEFINED BLA_VENDOR AND DEFINED ENV{CONDA_PREFIX})
-    set(BLA_VENDOR Generic)
+    set(BLA_VENDOR Generic CACHE STRING "BLAS/LAPACK vendor searched by FindLAPACK")
   endif()
   find_package(LAPACK REQUIRED)
 
