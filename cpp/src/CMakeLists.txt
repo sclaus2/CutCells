@@ -10,6 +10,10 @@ target_include_directories(cutcells PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
 
+# Sub-folders add their sources to the cutcells target and return their
+# headers (installed under include/cutcells/<folder>/).
+add_subdirectory(quadrays)
+
 set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_types.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_flags.h
@@ -49,6 +53,7 @@ set(HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/utils.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_tikz.h
   ${CMAKE_CURRENT_SOURCE_DIR}/write_vtk.h
+  ${QUADRAYS_HEADERS}
   PARENT_SCOPE)
 
 target_sources(cutcells PRIVATE

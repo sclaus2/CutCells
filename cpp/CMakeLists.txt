@@ -13,6 +13,7 @@ option(CUTCELLS_WITH_ALGOIM
 option(CUTCELLS_ENABLE_IPO
   "Enable interprocedural optimization in release builds when supported."
   OFF)
+option(BUILD_TESTING "Build the C++ tests in cpp/tests (run with ctest)." OFF)
 
 include(GNUInstallDirs)
 include(CheckIPOSupported)
@@ -157,10 +158,18 @@ endif()
 
 set(CUTCELLS_BUILD_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
 file(MAKE_DIRECTORY "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells")
+# A header keeps its path below src/, in the build tree and when installed:
+# src/quadrays/rules.h becomes <cutcells/quadrays/rules.h>.
 foreach(_cutcells_header IN LISTS HEADERS)
-  get_filename_component(_cutcells_header_name "${_cutcells_header}" NAME)
-  file(WRITE "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells/${_cutcells_header_name}"
+  file(RELATIVE_PATH _cutcells_header_path
+       "${CMAKE_CURRENT_SOURCE_DIR}/src" "${_cutcells_header}")
+  get_filename_component(_cutcells_header_dir "${_cutcells_header_path}"
+                         DIRECTORY)
+  file(WRITE "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells/${_cutcells_header_path}"
        "#pragma once\n#include \"${_cutcells_header}\"\n")
+  install(FILES "${_cutcells_header}"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/cutcells/${_cutcells_header_dir}"
+    COMPONENT Development)
 endforeach()
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/src/generated"
   DESTINATION "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells"
@@ -185,10 +194,10 @@ target_include_directories(cutcells PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
-
-install(FILES ${HEADERS}
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cutcells
-  COMPONENT Development)
+if(BUILD_TESTING)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
 
 # Install generated headers produced at build time (tables, etc.)
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/generated
