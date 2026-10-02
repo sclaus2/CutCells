@@ -60,6 +60,9 @@ struct Context
     mutable std::array<int, 3> box_ids{}; ///< counters of certified boxes, per level
     double phi_scale = 0;                  ///< largest |Bernstein coefficient| of phi on the cell
     mutable int bisections = 0;            ///< bisections so far in this cell (CertifyOptions::max_bisections)
+    const Tape* tape = nullptr;            ///< analytic level set: evaluate it instead of phi's Bernstein form
+    Vec3 x0{};                             ///< with a tape: the cell's map x = x0 + jac u
+    Mat3 jac{};
 };
 
 /// psi(y) = phi(A y + b) (curved), or a . y + c (linear), on level coordinates y.
@@ -151,6 +154,28 @@ Vec3 to_u(const Func<D>& f, const VecD<D>& y)
     return u;
 }
 
+/// Physical point of box coordinates u (tape level sets).
+Vec3 to_x(const Context& ctx, const Vec3& u)
+{
+    Vec3 x = ctx.x0;
+    for (int i = 0; i < 3; ++i)
+        for (int k = 0; k < 3; ++k)
+            x[i] += ctx.jac[i][k] * u[k];
+    return x;
+}
+
+/// Gradient of phi with respect to the box coordinates u (tape level sets).
+Vec3 tape_gradient_u(const Context& ctx, const Vec3& u)
+{
+    Vec3 gx;
+    value_gradient(*ctx.tape, to_x(ctx, u), gx);
+    Vec3 gu = {0, 0, 0};
+    for (int i = 0; i < 3; ++i)
+        for (int m = 0; m < 3; ++m)
+            gu[i] += gx[m] * ctx.jac[m][i];
+    return gu;
+}
+
 template <int D>
 double value(const Context& ctx, const Func<D>& f, const VecD<D>& y)
 {
@@ -161,6 +186,8 @@ double value(const Context& ctx, const Func<D>& f, const VecD<D>& y)
             s += f.a[j] * y[j];
         return s;
     }
+    if (ctx.tape)
+        return tape_value(*ctx.tape, to_x(ctx, to_u<D>(f, y)));
     return algoim::bernstein::evalBernsteinPoly(*ctx.phi, uv(to_u<D>(f, y)));
 }
 
@@ -169,6 +196,14 @@ double derivative(const Context& ctx, const Func<D>& f, const VecD<D>& y, int k)
 {
     if (f.linear)
         return f.a[k];
+    if (ctx.tape)
+    {
+        const Vec3 gu = tape_gradient_u(ctx, to_u<D>(f, y));
+        double s = 0;
+        for (int i = 0; i < 3; ++i)
+            s += gu[i] * f.A[i][k];
+        return s;
+    }
     const auto g = algoim::bernstein::evalBernsteinPolyGradient(*ctx.phi, uv(to_u<D>(f, y)));
     double s = 0;
     for (int i = 0; i < 3; ++i)
@@ -492,6 +527,121 @@ void line_roots(const Context& ctx, int deg, double a, double b, const std::func
 }
 
 // ============================================================================
+// Tape level sets: bounds from first-order Taylor models
+// ============================================================================
+
+/// Bounds of psi(y) = phi(x0 + jac (A y + b)) and of its derivatives on [lo, hi],
+/// from algoim::Interval<D> (value at the centre, gradient, remainder): the affine
+/// map from the box to physical space is represented exactly. Sets may_vanish, the
+/// direction margins (as margins() does from Bernstein coefficients) and the
+/// largest |psi|. A lost bound (sqrt or division near zero) makes nothing certain.
+template <int D>
+void tape_bounds(const Context& ctx, const Func<D>& f, const VecD<D>& lo, const VecD<D>& hi, bool& may_vanish,
+                 VecD<D>& ratio, double& magnitude)
+{
+    using TM = algoim::Interval<D>;
+    for (int j = 0; j < D; ++j)
+        TM::delta(j) = 0.5 * (hi[j] - lo[j]);
+    std::array<Dual<TM, D>, 3> x;
+    for (int i = 0; i < 3; ++i)
+    {
+        double centre = ctx.x0[i];
+        for (int a = 0; a < 3; ++a)
+            centre += ctx.jac[i][a] * f.b[a];
+        algoim::uvector<real, D> beta;
+        for (int j = 0; j < D; ++j)
+        {
+            double m = 0;
+            for (int a = 0; a < 3; ++a)
+                m += ctx.jac[i][a] * f.A[a][j];
+            beta(j) = m;
+            centre += m * 0.5 * (lo[j] + hi[j]);
+        }
+        x[i].v = TM(centre, beta);
+        for (int j = 0; j < D; ++j)
+            x[i].d[j] = TM(beta(j));
+    }
+    thread_local std::vector<Dual<TM, D>> regs;
+    try
+    {
+        const Dual<TM, D> r = evaluate(*ctx.tape, x, regs);
+        may_vanish = r.v.sign() == 0;
+        magnitude = std::abs(r.v.alpha) + r.v.maxDeviation();
+        VecD<D> lower{}, upper{};
+        for (int k = 0; k < D; ++k)
+        {
+            const double dev = r.d[k].maxDeviation();
+            upper[k] = std::abs(r.d[k].alpha) + dev;
+            lower[k] = r.d[k].sign() != 0 ? std::abs(r.d[k].alpha) - dev : 0.0;
+        }
+        const double norm = scaled_norm(upper);
+        for (int k = 0; k < D; ++k)
+            ratio[k] = norm > 0 ? lower[k] / norm : 0.0;
+    }
+    catch (const std::domain_error&)
+    {
+        may_vanish = true;
+        ratio.fill(0.0);
+        magnitude = infinity;
+    }
+}
+
+/// Roots of t -> phi(p + t v) on (a, b), isolated with Taylor models: none where
+/// the value has a certain sign, at most one where the derivative has; bisection
+/// otherwise, down to 2^-40 of the segment.
+void tape_line_roots(const Context& ctx, const Vec3& p, const Vec3& v, double a, double b, std::vector<double>& out,
+                     int depth = 0)
+{
+    using TM = algoim::Interval<1>;
+    TM::delta(0) = 0.5 * (b - a);
+    const double c = 0.5 * (a + b);
+    std::array<Dual<TM, 1>, 3> x;
+    for (int i = 0; i < 3; ++i)
+    {
+        x[i].v = TM(p[i] + v[i] * c, algoim::uvector<real, 1>(v[i]));
+        x[i].d[0] = TM(v[i]);
+    }
+    thread_local std::vector<Dual<TM, 1>> regs;
+    int value_sign = 0, slope_sign = 0;
+    try
+    {
+        const Dual<TM, 1> r = evaluate(*ctx.tape, x, regs);
+        value_sign = r.v.sign();
+        slope_sign = r.d[0].sign();
+    }
+    catch (const std::domain_error&)
+    {
+    }
+    if (value_sign != 0)
+        return;
+    const auto g = [&](double t) { return tape_value(*ctx.tape, {p[0] + t * v[0], p[1] + t * v[1], p[2] + t * v[2]}); };
+    if (slope_sign != 0 || depth >= 40)
+    {
+        const double ga = g(a), gb = g(b);
+        if (ga != 0.0 && gb != 0.0 && (ga > 0) != (gb > 0))
+            out.push_back(bracketed_root(g, a, b, ga, gb));
+        return;
+    }
+    const double m = 0.5 * (a + b);
+    tape_line_roots(ctx, p, v, a, m, out, depth + 1);
+    tape_line_roots(ctx, p, v, m, b, out, depth + 1);
+}
+
+/// The line y = y0 + t e_k of a level as p + t v in physical space.
+template <int D>
+void physical_line(const Context& ctx, const Func<D>& f, const VecD<D>& y0, int k, Vec3& p, Vec3& v)
+{
+    p = to_x(ctx, to_u<D>(f, y0));
+    for (int i = 0; i < 3; ++i)
+    {
+        v[i] = 0;
+        for (int a = 0; a < 3; ++a)
+            v[i] += ctx.jac[i][a] * f.A[a][k];
+    }
+}
+
+
+// ============================================================================
 // Clipped boxes
 // ============================================================================
 
@@ -785,6 +935,13 @@ void integrate<1>(const Context& ctx, Problem<1> p, const Emit<1>& emit, int, Li
         for (int i = 0; i < 3; ++i)
             if (std::abs(f.A[i][0]) > tiny)
                 deg += ctx.degree;
+        if (ctx.tape)
+        {
+            Vec3 p0, v;
+            physical_line<1>(ctx, f, {0.0}, 0, p0, v);
+            tape_line_roots(ctx, p0, v, L, U, nodes);
+            continue;
+        }
         line_roots(ctx, deg, L, U, [&](double t) { return value<1>(ctx, f, {t}); }, nodes);
     }
     std::sort(nodes.begin(), nodes.end());
@@ -834,6 +991,19 @@ Analysis<D> analyse(const Context& ctx, const Problem<D>& p)
         {
             if (linear_may_vanish<D>(f, p.lo, p.hi))
                 funcs.push_back(f);
+            continue;
+        }
+        if (ctx.tape)
+        {
+            bool may = false;
+            double magnitude = 0;
+            VecD<D> ratio{};
+            tape_bounds<D>(ctx, f, p.lo, p.hi, may, ratio, magnitude);
+            if (!may || magnitude <= 1e-12 * ctx.phi_scale)
+                continue; // no zero in the box, or phi = 0 on a face
+            curved.push_back(static_cast<int>(funcs.size()));
+            funcs.push_back(f);
+            ratios.push_back(ratio);
             continue;
         }
         bernstein_form<D>(ctx, f, p.lo, p.hi, coeffs, ext);
@@ -1157,6 +1327,13 @@ void integrate(const Context& ctx, Problem<D> p, const Emit<D>& emit, int depth,
             }
             else
             {
+                if (ctx.tape)
+                {
+                    Vec3 p0, v;
+                    physical_line<D>(ctx, f, insert<D>(yb, k, 0.0), k, p0, v);
+                    tape_line_roots(ctx, p0, v, L, U, nodes);
+                    continue;
+                }
                 int deg = 0;
                 for (int i = 0; i < 3; ++i)
                     if (std::abs(f.A[i][k]) > tiny)
@@ -1231,9 +1408,18 @@ struct CellLevelSet
     algoim::xarray<real, 3> phi;
 
     CellLevelSet(const ClippedBox& cell, const LevelSet& ls)
-        : buffer(static_cast<std::size_t>((ls.degree + 1) * (ls.degree + 1) * (ls.degree + 1))),
-          phi(buffer.data(), algoim::uvector<int, 3>(ls.degree + 1))
+        : buffer(ls.tape ? 1 : static_cast<std::size_t>((ls.degree + 1) * (ls.degree + 1) * (ls.degree + 1))),
+          phi(buffer.data(), algoim::uvector<int, 3>(ls.tape ? 1 : ls.degree + 1))
     {
+        if (ls.tape)
+        {
+            // a tape is evaluated directly; its scale is the largest |phi| at the box corners
+            buffer[0] = 0;
+            for (int c = 0; c < 8; ++c)
+                buffer[0] = std::max(buffer[0], std::abs(tape_value(*ls.tape, physical_point(cell, {double(c & 1),
+                                                                         double((c >> 1) & 1), double((c >> 2) & 1)}))));
+            return;
+        }
         algoim::bernstein::bernsteinInterpolate<3>(
             [&](const algoim::uvector<real, 3>& u) { return ls.value(physical_point(cell, {u(0), u(1), u(2)})); }, phi);
     }
@@ -1246,6 +1432,32 @@ struct CellLevelSet
         return m;
     }
 };
+
+/// Context for a cell: phi's Bernstein form, or the tape and the cell's map.
+Context cell_context(const ClippedBox& cell, const LevelSet& ls, const CellLevelSet& cls, const CertifyOptions& opt,
+                     CertifyStats& stats)
+{
+    Context ctx;
+    ctx.phi = &cls.phi;
+    ctx.phi_scale = cls.scale();
+    ctx.degree = ls.degree;
+    ctx.opt = opt;
+    ctx.stats = &stats;
+    ctx.tape = ls.tape;
+    ctx.x0 = cell.origin;
+    ctx.jac = cell.jacobian;
+    return ctx;
+}
+
+double phi_at(const Context& ctx, const CellLevelSet& cls, const Vec3& u)
+{
+    return ctx.tape ? tape_value(*ctx.tape, to_x(ctx, u)) : algoim::bernstein::evalBernsteinPoly(cls.phi, uv(u));
+}
+
+Vec3 gradient_at(const Context& ctx, const CellLevelSet& cls, const Vec3& u)
+{
+    return ctx.tape ? tape_gradient_u(ctx, u) : phi_gradient(cls.phi, u);
+}
 
 /// The top level: the unit box with the cell's clips and phi itself.
 Problem<3> top_problem(const ClippedBox& cell)
@@ -1273,13 +1485,8 @@ void certified_bisection(const ClippedBox& cell, const LevelSet& ls, const Selec
 {
     using namespace certify_detail;
     const CellLevelSet cls(cell, ls);
-    Context ctx;
-    ctx.phi = &cls.phi;
-    ctx.phi_scale = cls.scale();
-    ctx.degree = ls.degree;
+    Context ctx = cell_context(cell, ls, cls, opt, stats);
     ctx.q = q;
-    ctx.opt = opt;
-    ctx.stats = &stats;
 
     const PartKind kind = part_kind(term);
     const double detj = std::abs(jacobian_determinant(cell));
@@ -1295,7 +1502,7 @@ void certified_bisection(const ClippedBox& cell, const LevelSet& ls, const Selec
         integrate<3>(
             ctx, top_problem(cell),
             [&](const VecD<3>& u, double w, const Tag&)
-            { append(u, w * detj * surface_scale(inv, phi_gradient(cls.phi, u))); },
+            { append(u, w * detj * surface_scale(inv, gradient_at(ctx, cls, u))); },
             0, LineRule::interface);
         return;
     }
@@ -1305,7 +1512,7 @@ void certified_bisection(const ClippedBox& cell, const LevelSet& ls, const Selec
         {
             if (kind != PartKind::whole)
             {
-                const double v = algoim::bernstein::evalBernsteinPoly(cls.phi, uv(u));
+                const double v = phi_at(ctx, cls, u);
                 if ((kind == PartKind::negative && !(v < 0)) || (kind == PartKind::positive && !(v > 0)))
                     return;
             }
@@ -1321,14 +1528,9 @@ void certified_leaves(const ClippedBox& cell, const LevelSet& ls, const Selectio
     if (degree < 1)
         throw std::runtime_error("certified_leaves: degree must be at least 1");
     const CellLevelSet cls(cell, ls);
-    Context ctx;
-    ctx.phi = &cls.phi;
-    ctx.phi_scale = cls.scale();
-    ctx.degree = ls.degree;
+    Context ctx = cell_context(cell, ls, cls, opt, stats);
     ctx.q = 1;
     ctx.vis_order = degree;
-    ctx.opt = opt;
-    ctx.stats = &stats;
 
     const PartKind kind = part_kind(term);
     const bool surface = kind == PartKind::interface;
@@ -1360,7 +1562,7 @@ void certified_leaves(const ClippedBox& cell, const LevelSet& ls, const Selectio
                 return;
             leaf.u[index] = u;
             leaf.set[index] = 1;
-            leaf.phi_sum += algoim::bernstein::evalBernsteinPoly(cls.phi, uv(u));
+            leaf.phi_sum += phi_at(ctx, cls, u);
         },
         0, surface ? LineRule::interface : LineRule::segments);
 
@@ -1416,7 +1618,7 @@ void certified_leaves(const ClippedBox& cell, const LevelSet& ls, const Selectio
             }
             // physical gradient of phi at the leaf centre: J^{-T} grad_u phi
             const Mat3 inv = inverse_jacobian(cell);
-            const Vec3 gu = phi_gradient(cls.phi, leaf.u[n_nodes / 2]);
+            const Vec3 gu = gradient_at(ctx, cls, leaf.u[n_nodes / 2]);
             for (int d = 0; d < 3; ++d)
             {
                 double gx = 0;

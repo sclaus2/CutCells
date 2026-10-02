@@ -38,6 +38,9 @@ prototype keeps that shape so a later engine can become another `backend` of
 | `src/study.cpp` | comparison driver |
 | `src/robustness.cpp` | robustness driver: degenerate placements, scaling, several components, singular points; every cell, checked against exact values (RESULTS.md, v1.2) |
 | `src/test_mesh.h` | the test meshes (hexes and Kuhn tets of [-1, 1]^3) |
+| `src/tape.h` | ShapeForest tapes: reader and `evaluate<T>`, one templated interpreter for values, gradients (`Dual`) and bounds |
+| `src/tape_algoim.h` | branch helpers and a rigorous `tsqrt` for algoim's Taylor-model intervals |
+| `tools/export_tape.py` | writes a ShapeForest shape as a tape for `quadrature_study --tape` (run with an environment that has ShapeForest, e.g. `fenicsx0.11`) |
 | `src/test_exact_reference.cpp` | checks the exact reference |
 | `CMakeLists.txt` | also writes a patched copy of algoim's `quadrature_multipoly.hpp` to the build tree; `third_party/` is untouched |
 
@@ -91,6 +94,10 @@ grid's symmetry, 0.0123,-0.0371,0.0217), `--radius`, `--gen`, `--part`
 (repeatable), `--csv`, `--vtk <prefix>` (point clouds), `--leaves <prefix>` and
 `--leaf-degree p` (leaf cells of the certify engine as Lagrange cells; see
 VISUALIZATION.md), `--plane` (planar level set; every rule must be exact).
+
+`--tape <file>` reads the level set as a ShapeForest tape describing the same
+sphere (`python tools/export_tape.py sphere-sdf 0.0123,-0.0371,0.0217 0.7
+build/sphere_sdf.tape`); certify and quadgen then evaluate it directly.
 
 For the certify engine: `--diagnose` prints why certification failed (by level,
 blocking function and cause) and the worst cell; `--only <cell>` restricts a run

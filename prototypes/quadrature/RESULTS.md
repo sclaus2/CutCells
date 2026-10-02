@@ -1,6 +1,7 @@
 # Results
 
-- v1.2: robustness (at the end)
+- v1.3: analytic level sets from ShapeForest (at the end)
+- v1.2: robustness
 - v1.1: where the extra bisections on tets come from
 - v1: certify-and-bisect (below the v0 section)
 - v0: algoim variants
@@ -424,3 +425,63 @@ Hex / tet. The prototype runs at margin 0.25 with the bisection budget.
 
 Run with `quadrature_robustness [--case ...] [--mesh tet,hex] [--n 16] [--q 3]
 [--gen ...]`; `--list` prints the cases.
+
+## v1.3: analytic level sets from ShapeForest (2026-10-02)
+
+The level set can now be a ShapeForest tape: an expression DAG lowered to
+register code (`shapeforest/ir/tape.py`), written by `tools/export_tape.py` and read
+with `quadrature_study --tape`. One templated interpreter, `evaluate<T>` in
+`src/tape.h`, runs the tape for every scalar type, the way algoim's level-set
+functors are templated:
+
+| T | gives |
+| --- | --- |
+| `double` | values |
+| `Dual<double, 3>` | values and gradients (forward mode) |
+| `algoim::Interval<D>` | bounds of the value over a box (first-order Taylor model) |
+| `Dual<algoim::Interval<D>, D>` | bounds of value and gradient over a box: what certification needs |
+
+With a tape, the certify engine takes its margins from Taylor models instead of
+Bernstein coefficients. The map from a box at any level to physical space is
+affine, so the models represent it exactly, without wrapping. Roots on lines are
+isolated with one-dimensional models; nothing is interpolated. The same tape is
+algoim's functor for its 2015 engine (`algoim_quadgen_tape`), so both engines
+integrate the same expression.
+
+algoim's `sqrt` for its intervals leaves out part of the remainder (the term
+|f'(alpha)| eps). That is harmless for a linear argument, but for
+sqrt(x^2 + y^2 + z^2) the bound came out too tight. Both engines then declared cut
+cells uncut and lost their interface (worst cell error 1.0). `tsqrt` in
+`tape_algoim.h` adds the term, after which both engines are right.
+
+Sphere of radius 0.7 off the grid as ShapeForest's signed distance |x - c| - r,
+which is not a polynomial (per-cell L1 / worst cell; points per cut cell; time per
+cut cell):
+
+| Mesh, q | Method | Interface | Volume | Points (vol / surf) | us (vol / surf) |
+| --- | --- | --- | --- | --- | --- |
+| hexes n = 32, q = 5 | certify (0.25), tape | 1.3e-9 / 4.2e-6 | 1.1e-12 / 2.9e-8 | 226 / 32 | 117 / 76 |
+| hexes n = 32, q = 5 | certify:0.1, tape | 6.9e-8 / 2.4e-4 | 8.9e-12 / 2.9e-8 | 224 / 32 | 119 / 76 |
+| hexes n = 32, q = 5 | algoim 2015, same tape | 6.9e-8 / 2.4e-4 | 8.9e-12 / 2.9e-8 | 224 / 32 | 60 / 52 |
+| hexes n = 32, q = 3 | certify (0.25), tape | 1.9e-7 / 2.2e-4 | 7.4e-9 / 3.3e-5 | 49 / 12 | 52 / 42 |
+| hexes n = 32, q = 3 | algoim 2015, same tape | 9.3e-7 / 2.8e-3 | 7.7e-9 / 3.3e-5 | 49 / 12 | 31 / 28 |
+| tets n = 16, q = 5 | certify (0.25), tape | 6.7e-9 / 2.4e-6 | 9.8e-11 / 1.1e-6 | 1,259 / 127 | 578 / 335 |
+| tets n = 16, q = 5 | certify (0.25), Bernstein | 1.4e-8 / 2.7e-6 | 2.2e-10 / 2.8e-6 | 599 / 62 | 441 / 308 |
+
+- The quadratic sphere |x - c|^2 - r^2 as a tape gives exactly the errors of the
+  polynomial path, in both engines (hexes, n = 16): the plumbing is right.
+- On hexes, for the same expression, the certify engine is 1.5 to 2 times slower
+  than algoim's 2015 engine, down from 6 to 11 times against a hand-written
+  functor. The tape path is faster than our Bernstein path (76 against 145 us per
+  cut hex for the interface), since nothing is interpolated.
+- On tets the Taylor models are looser than Bernstein bounds: the box of a tet is
+  a parallelepiped about twice the hex's size, and remainders grow with its square.
+  That gives 7,178 bisections instead of 1,974 and twice the points, for errors
+  about half as large.
+- A lost bound (sqrt or division near zero) leaves a box uncertain, so it bisects
+  until the bisection budget runs out. That is harmless, but wasteful in uncut cells
+  near the centre of a signed distance.
+
+Next: tighter bounds on tets (Taylor models on sub-boxes, or a Bernstein
+interpolant plus a Taylor bound of its error), and several level sets, for
+ShapeForest's booleans.

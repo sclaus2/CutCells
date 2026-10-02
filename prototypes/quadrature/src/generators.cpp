@@ -13,6 +13,7 @@
 
 #include "quadrature_general.hpp"
 #include "quadrature_multipoly.hpp"
+#include "tape_algoim.h"
 
 namespace cutcells::proto
 {
@@ -292,6 +293,55 @@ void integrate_box(const ClippedBox& box, const LevelSet& ls, PartKind kind, int
 
 /// |x(u) - centre|^2 - radius^2 for algoim's 2015 engine, which needs values and
 /// gradients in interval arithmetic.
+/// A tape as algoim's level-set functor on the cell's unit box: x = origin + jac u.
+struct TapeInBox
+{
+    const Tape* tape = nullptr;
+    Vec3 origin;
+    Mat3 jac;
+    double sign = 1;
+
+    template <typename T>
+    std::array<T, 3> physical(const algoim::uvector<T, 3>& u) const
+    {
+        std::array<T, 3> x;
+        for (int i = 0; i < 3; ++i)
+        {
+            T xi = T(origin[i]);
+            for (int k = 0; k < 3; ++k)
+                xi = xi + jac[i][k] * u(k);
+            x[i] = xi;
+        }
+        return x;
+    }
+
+    template <typename T>
+    T operator()(const algoim::uvector<T, 3>& u) const
+    {
+        thread_local std::vector<T> regs;
+        return sign * evaluate(*tape, physical(u), regs);
+    }
+
+    template <typename T>
+    algoim::uvector<T, 3> grad(const algoim::uvector<T, 3>& u) const
+    {
+        const std::array<T, 3> xv = physical(u);
+        std::array<Dual<T, 3>, 3> x;
+        for (int i = 0; i < 3; ++i)
+        {
+            x[i].v = xv[i];
+            for (int k = 0; k < 3; ++k)
+                x[i].d[k] = T(jac[i][k]);
+        }
+        thread_local std::vector<Dual<T, 3>> regs;
+        const Dual<T, 3> r = evaluate(*tape, x, regs);
+        algoim::uvector<T, 3> g;
+        for (int k = 0; k < 3; ++k)
+            g(k) = sign * r.d[k];
+        return g;
+    }
+};
+
 struct SphereInBox
 {
     Vec3 offset; ///< origin - centre
@@ -352,6 +402,35 @@ void algoim_clipped_box(const ClippedBox& cell, const LevelSet& ls, const Select
                         const GeneratorOptions& opt, Rule& rule, GeneratorStats& stats)
 {
     integrate_box(cell, ls, part_kind(term), q, opt, opt.split_depth, rule, stats);
+}
+
+void algoim_quadgen_tape(const ClippedBox& cell, const Tape& tape, const SelectionTerm& term, int q, Rule& rule)
+{
+    if (!cell.clips.empty())
+        throw std::runtime_error("algoim_quadgen_tape: clipped boxes are not supported");
+    const PartKind kind = part_kind(term);
+    if (kind == PartKind::whole)
+        throw std::runtime_error("algoim_quadgen_tape: part 'whole' is not supported");
+    TapeInBox phi;
+    phi.tape = &tape;
+    phi.origin = cell.origin;
+    phi.jac = cell.jacobian;
+    phi.sign = kind == PartKind::positive ? -1.0 : 1.0;
+    const double detj = std::abs(jacobian_determinant(cell));
+    const algoim::HyperRectangle<real, 3> unit(algoim::uvector<real, 3>(0.0), algoim::uvector<real, 3>(1.0));
+    const bool surface = kind == PartKind::interface;
+    const auto qr = algoim::quadGen<3>(phi, unit, surface ? 3 : -1, -1, q);
+    const Mat3 inv = inverse_jacobian(cell);
+    for (const auto& node : qr.nodes)
+    {
+        double w = node.w * detj;
+        if (surface)
+        {
+            const auto g = phi.grad<real>(node.x);
+            w *= surface_factor(inv, {g(0), g(1), g(2)});
+        }
+        append_point(cell, to_vec(node.x), w, rule);
+    }
 }
 
 void algoim_quadgen_sphere(const ClippedBox& cell, const Vec3& centre, double radius, const SelectionTerm& term, int q,

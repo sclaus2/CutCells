@@ -14,11 +14,17 @@
 //                    [--radius r] [--gen algoim-auto,alpha-split,...]
 //                    [--part "phi < 0"]... [--csv file] [--plane] [--vtk prefix]
 //                    [--leaves prefix] [--leaf-degree p]
-//                    [--diagnose] [--only cell] [--masks M] [--no-diagonal]
+//                    [--diagnose] [--only cell] [--masks M] [--no-diagonal] [--tape file]
 //
 // --diagnose (certify) prints why bisections happen and the worst cell; --only
 // restricts the run to one cell index; --masks and --no-diagonal set
 // CertifyOptions::mask_subdivisions and diagonal_frames.
+//
+// --tape reads the sphere as a ShapeForest tape (tools/export_tape.py), e.g. its
+// signed distance |x - c| - r; it must describe the sphere given by --centre and
+// --radius, whose exact values stay the reference. certify and quadgen then
+// evaluate the tape itself (values, gradients, Taylor-model bounds); the other
+// generators interpolate its values.
 //
 // --leaves writes the certify engine's leaf cells (Lagrange cells of degree p, 3 by
 // default) for every cut cell, plus the uncut cells of volume parts as linear cells.
@@ -73,6 +79,7 @@ struct StudyConfig
     int only = -1;         ///< restrict the study to this cell index
     int masks = 1;         ///< certify: CertifyOptions::mask_subdivisions
     bool diagonal = true;  ///< certify: CertifyOptions::diagonal_frames
+    std::string tape;      ///< ShapeForest tape of the sphere (tools/export_tape.py)
 };
 
 struct Metrics
@@ -163,6 +170,8 @@ StudyConfig parse_args(int argc, char** argv)
             cfg.masks = std::stoi(next());
         else if (a == "--no-diagonal")
             cfg.diagonal = false;
+        else if (a == "--tape")
+            cfg.tape = next();
         else
             throw std::runtime_error("unknown argument: " + a);
     }
@@ -272,6 +281,14 @@ int main(int argc, char** argv)
     ls.degree = 2;
     ls.value = [&](const Vec3& x)
     { return (x[0] - c[0]) * (x[0] - c[0]) + (x[1] - c[1]) * (x[1] - c[1]) + (x[2] - c[2]) * (x[2] - c[2]) - r * r; };
+    Tape tape;
+    if (!cfg.tape.empty())
+    {
+        tape = read_tape(cfg.tape);
+        ls.tape = &tape;
+        ls.value = [&](const Vec3& x) { return tape_value(tape, x); };
+        std::printf("Level set from the tape %s (%zu instructions).\n", cfg.tape.c_str(), tape.code.size());
+    }
 
     std::ofstream csv;
     if (!cfg.csv.empty())
@@ -393,7 +410,9 @@ int main(int argc, char** argv)
                                     GeneratorStats stats;
                                     const long uncertified_before = m.uncertified;
                                     const auto t0 = std::chrono::steady_clock::now();
-                                    if (gen == "quadgen")
+                                    if (gen == "quadgen" && ls.tape)
+                                        algoim_quadgen_tape(cell.box, tape, term, q, rule);
+                                    else if (gen == "quadgen")
                                         algoim_quadgen_sphere(cell.box, c, r, term, q, rule);
                                     else if (certify)
                                     {

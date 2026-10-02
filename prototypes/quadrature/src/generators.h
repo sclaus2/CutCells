@@ -11,6 +11,7 @@
 
 #include "clipped_box.h"
 #include "selection_expr.h"
+#include "tape.h"
 
 namespace cutcells::proto
 {
@@ -28,11 +29,14 @@ struct Rule
 
 /// Level set given by its values in physical space and its polynomial degree.
 /// Generators interpolate it on each box (the engine will start from the
-/// cell's Bernstein coefficients instead).
+/// cell's Bernstein coefficients instead). With a tape (an analytic ShapeForest
+/// expression), the certify engine and algoim_quadgen_tape evaluate the tape itself:
+/// values, gradients and Taylor-model bounds, no interpolation.
 struct LevelSet
 {
     std::function<double(const Vec3&)> value;
     int degree = 2;
+    const Tape* tape = nullptr;
 };
 
 /// What a single-level-set selection term selects.
@@ -79,6 +83,11 @@ void algoim_clipped_box(const ClippedBox& cell, const LevelSet& ls, const Select
 /// for the level set |x - centre|^2 - radius^2.
 void algoim_quadgen_sphere(const ClippedBox& cell, const Vec3& centre, double radius,
                            const SelectionTerm& term, int q, Rule& rule);
+
+/// algoim's 2015 engine on an unclipped box for a tape: the tape is algoim's
+/// templated level-set functor (values with double, bounds with algoim::Interval,
+/// gradients through Dual).
+void algoim_quadgen_tape(const ClippedBox& cell, const Tape& tape, const SelectionTerm& term, int q, Rule& rule);
 
 /// Named generator presets used by the study.
 GeneratorOptions generator_preset(const std::string& name);
