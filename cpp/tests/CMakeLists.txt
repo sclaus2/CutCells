@@ -15,4 +15,5 @@ function(cutcells_add_test name)
 endfunction()
 
 add_subdirectory(quadrays)
+add_subdirectory(lut)
 add_subdirectory(part)

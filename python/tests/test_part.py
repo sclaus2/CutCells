@@ -151,8 +151,6 @@ def test_api_checks():
     result = cutcells.part.cut(mesh, phi, names=["ball"])
     assert result.level_set_names == ["ball"]
     assert result["ball < 0"].dim == 3 and result["ball = 0"].dim == 2
-    with pytest.raises(ValueError, match="phase 4"):
-        result["ball < 0"].quadrature(order=3, backend="lut")
     with pytest.raises(ValueError, match="unknown backend"):
         result["ball < 0"].quadrature(order=3, backend="straight")
     with pytest.raises(ValueError, match="named"):

@@ -260,6 +260,7 @@ ho_cut = _cutcellscpp.ho_cut
 HOCutResult = _cutcellscpp.HOCutResult
 HOMeshPart = _cutcellscpp.HOMeshPart
 QuadraysOptions = _cutcellscpp.QuadraysOptions
+LutOptions = _cutcellscpp.LutOptions
 QuadraysStats = _cutcellscpp.QuadraysStats
 QuadraysLeafMesh = _cutcellscpp.QuadraysLeafMesh
 QuadraysLeafMesh_float32 = _cutcellscpp.QuadraysLeafMesh_float32

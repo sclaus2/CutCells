@@ -3504,6 +3504,23 @@ struct PartCutResult
   cutcells::part::CutResult<T, int> result;
 };
 
+inline void check_part_backend(const std::string& backend)
+{
+  if (backend != "quadrays" && backend != "lut")
+    throw std::invalid_argument("part: unknown backend '" + backend + "'; expected 'quadrays' or 'lut'");
+}
+
+/// The options of a part's backend: its defaults for None, else its options type.
+template <typename Options>
+Options part_backend_options(const std::string& backend, nb::handle options, const char* type_name)
+{
+  if (options.is_none())
+    return Options{};
+  if (!nb::isinstance<Options>(options))
+    throw nb::type_error(("part: the backend '" + backend + "' takes " + type_name).c_str());
+  return nb::cast<Options>(options);
+}
+
 template <typename T>
 void declare_part(nb::module_& m, const std::string& type)
 {
@@ -3594,43 +3611,78 @@ void declare_part(nb::module_& m, const std::string& type)
           nb::rv_policy::reference_internal, "Indices into the result's zero_faces.")
       .def(
           "quadrature",
-          [](const PartT& self, int order, const std::string& mode, const std::string& backend,
-             const qr::Options& options)
+          [](const PartT& self, int order, const std::string& mode, const std::string& backend, nb::handle options)
           {
+            check_part_backend(backend);
             const bool cut_only = part_mode_is_cut_only(mode);
+            if (backend == "lut")
+            {
+              const auto o = part_backend_options<cutcells::lut::Options>(backend, options, "LutOptions");
+              nb::gil_scoped_release release;
+              return cutcells::part::quadrature_rules(self, order, !cut_only, o);
+            }
+            const auto o = part_backend_options<qr::Options>(backend, options, "QuadraysOptions");
             nb::gil_scoped_release release;
-            return cutcells::part::quadrature_rules(self, order, !cut_only, backend, options);
+            return cutcells::part::quadrature_rules(self, order, !cut_only, o);
           },
           nb::arg("order") = 3, nb::arg("mode") = "full", nb::arg("backend") = "quadrays",
-          nb::arg("options") = qr::Options{},
+          nb::arg("options") = nb::none(),
           "Quadrature rules, one per cell: the backend's on cut cells, rules on owned "
-          "zero faces, and with mode 'full' those of the whole cells. quadrays: order "
-          "Gauss-Legendre points per segment; whole cells and faces get rules exact for "
+          "zero faces, and with mode 'full' those of the whole cells. backend: 'quadrays' "
+          "(options: QuadraysOptions) or 'lut', the lookup tables on Pk-iso-P1 templates "
+          "(options: LutOptions). quadrays takes order Gauss-Legendre points per segment; "
+          "the lookup tables' straight pieces, whole cells and faces get rules exact for "
           "degree 2 order - 1 (at most 10).")
       .def(
           "visualization_mesh",
           [](const PartT& self, const std::string& mode, const std::string& backend, int degree,
-             const qr::Options& options)
+             nb::handle options) -> nb::object
           {
+            check_part_backend(backend);
             const bool cut_only = part_mode_is_cut_only(mode);
-            nb::gil_scoped_release release;
-            return cutcells::part::visualization_mesh(self, degree, !cut_only, backend, options);
+            if (backend == "lut")
+            {
+              const auto o = part_backend_options<cutcells::lut::Options>(backend, options, "LutOptions");
+              cutcells::mesh::CutMesh<T> out;
+              {
+                nb::gil_scoped_release release;
+                out = cutcells::part::visualization_mesh(self, !cut_only, o);
+              }
+              return nb::cast(std::move(out));
+            }
+            const auto o = part_backend_options<qr::Options>(backend, options, "QuadraysOptions");
+            qr::LeafMesh<T> out;
+            {
+              nb::gil_scoped_release release;
+              out = cutcells::part::visualization_mesh(self, degree, !cut_only, o);
+            }
+            return nb::cast(std::move(out));
           },
           nb::arg("mode") = "full", nb::arg("backend") = "quadrays", nb::arg("degree") = 3,
-          nb::arg("options") = qr::Options{},
-          "Cells for visualisation: the backend's pieces of cut cells (quadrays: Lagrange "
-          "cells of the given degree), zero faces, and with mode 'full' the whole cells.")
+          nb::arg("options") = nb::none(),
+          "Cells for visualisation: the backend's pieces of cut cells, zero faces, and with "
+          "mode 'full' the whole cells. quadrays gives a QuadraysLeafMesh of Lagrange cells "
+          "of the given degree; the lookup tables a CutMesh of straight cells.")
       .def(
           "write_vtu",
           [](const PartT& self, const std::string& filename, const std::string& mode, const std::string& backend,
-             int degree, const qr::Options& options)
+             int degree, nb::handle options)
           {
+            check_part_backend(backend);
             const bool cut_only = part_mode_is_cut_only(mode);
+            if (backend == "lut")
+            {
+              const auto o = part_backend_options<cutcells::lut::Options>(backend, options, "LutOptions");
+              nb::gil_scoped_release release;
+              cutcells::part::write_vtu(filename, self, !cut_only, o);
+              return;
+            }
+            const auto o = part_backend_options<qr::Options>(backend, options, "QuadraysOptions");
             nb::gil_scoped_release release;
-            cutcells::part::write_vtu(filename, self, degree, !cut_only, backend, options);
+            cutcells::part::write_vtu(filename, self, degree, !cut_only, o);
           },
           nb::arg("filename"), nb::arg("mode") = "full", nb::arg("backend") = "quadrays", nb::arg("degree") = 3,
-          nb::arg("options") = qr::Options{}, "Write visualization_mesh to a .vtu file.");
+          nb::arg("options") = nb::none(), "Write visualization_mesh to a .vtu file.");
 
   m.def(
       ("cut_" + type).c_str(),
@@ -3862,6 +3914,16 @@ NB_MODULE(_cutcellscpp, m)
               "M > 1: margins from M^D sub-cells; 1: bounds on the whole box.")
       .def_rw("diagnose", &cutcells::quadrays::Options::diagnose,
               "Record why each bisection happened in QuadraysStats.causes.");
+  nb::class_<cutcells::lut::Options>(m, "LutOptions", "Options of the lookup-table backend of cutcells.part.")
+      .def(
+          "__init__",
+          [](cutcells::lut::Options* self, int template_order, bool triangulate)
+          { new (self) cutcells::lut::Options{template_order, triangulate}; },
+          nb::arg("template_order") = 0, nb::arg("triangulate") = false)
+      .def_rw("template_order", &cutcells::lut::Options::template_order,
+              "Order k of the Pk-iso-P1 template that subdivides a cut cell, 1 to 4; 0: the "
+              "highest degree of the level sets that cut the cell, 2 for analytic ones.")
+      .def_rw("triangulate", &cutcells::lut::Options::triangulate, "Split the cut pieces into simplices.");
   nb::class_<cutcells::quadrays::Stats>(m, "QuadraysStats",
       "Counters of quadrays engine runs.")
       .def(nb::init<>())
@@ -3876,7 +3938,7 @@ NB_MODULE(_cutcellscpp, m)
   nb::module_ part_module = m.def_submodule(
       "part", "The front end without AdaptCell: cut(mesh, level_sets) classifies cells by "
               "the level sets' own bounds; result[expr] selects a MeshPart, whose quadrature "
-              "and visualisation come from a backend (quadrays).");
+              "and visualisation come from a backend (quadrays, or the lookup tables: 'lut').");
   declare_part<float>(part_module, "float32");
   declare_part<double>(part_module, "float64");
 }

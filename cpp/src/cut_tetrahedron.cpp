@@ -119,7 +119,7 @@ namespace{
         {  101, 1, 0, 103, 5, 3  },      // 10 (prism: swapped bottom/top)
         {  2, 1, 5, 100, 101, 103},      // 11 (prism: swapped bottom/top)
         {  3, 103, 4, 2, 102, 1  },      // 12 (prism: swapped bottom/top)
-        {  100, 102, 103, 4, 0, 1},      // 13 (prism: swapped bottom/top)
+        {  100, 102, 103, 0, 1, 4},      // 13 (prism: swapped bottom/top)
         {  101, 103, 102, 0, 3, 2},      // 14 (prism: swapped bottom/top)
         {  100, 101, 102, 103, -1, -1}   // 15
     };

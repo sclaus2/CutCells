@@ -1,10 +1,11 @@
-# The front end without AdaptCell (phase 3)
+# The front end without AdaptCell (phases 3 and 4)
 
 `cpp/src/part/`, namespace `cutcells::part`, Python `cutcells.part`. It classifies
 cells by their level sets, selects mesh parts by expressions, and hands their
-quadrature and visualisation to a backend; quadrays today, the lookup tables in
-phase 4. It needs no AdaptCell and no interpolant of an analytic level set. It
-sits beside `HOCutResult` and `HOMeshPart` until it replaces them (phase 5).
+quadrature and visualisation to a backend: quadrays, or the lookup tables on
+Pk-iso-P1 templates (`cpp/src/lut/`, phase 4). It needs no AdaptCell and no
+interpolant of an analytic level set. It sits beside `HOCutResult` and
+`HOMeshPart` until it replaces them (phase 5).
 
 ```python
 import cutcells
@@ -12,6 +13,8 @@ import cutcells
 result = cutcells.part.cut(mesh, cutcells.analytic_sphere([0, 0, 0], 0.7))
 rules = result["phi < 0"].quadrature(order=5, backend="quadrays")
 result["phi = 0"].write_vtu("sphere.vtu", mode="cut_only", degree=3)
+straight = result["phi < 0"].quadrature(order=2, backend="lut",
+                                        options=cutcells.LutOptions(template_order=3))
 ```
 
 `cut(mesh, level_sets)` takes LevelSetFunctions with dof values (Pk) and
@@ -26,7 +29,7 @@ AnalyticLevelSets, alone or in a list; analytic ones are named `phi`, or `phi1`,
 | `classify.h/.cpp` | the sign of a level set on a cell by bounds; `bisect_tetrahedron` splits simplex Bernstein forms |
 | `cut_result.h/.cpp` | `CutResult` (a domain per cell and level set, the cut cells, the faces lying in zero sets with their owners) and `cut()` |
 | `mesh_part.h/.cpp` | `MeshPart` (whole cells, cut cells, zero faces) and `select()`; `term_on_cell` |
-| `output.h/.cpp` | `quadrature_rules`, `visualization_mesh` and `write_vtu`, by backend |
+| `output.h/.cpp` | `quadrature_rules`, `visualization_mesh` and `write_vtu`; the type of the options (`quadrays::Options`, `lut::Options`) picks the backend |
 
 ## Classification
 
@@ -76,7 +79,8 @@ all of it, otherwise it is a cut cell of the part if some term holds on a piece
 (`term_on_cell`). With quadrays, the pieces of a cut cell must be bounded by one
 level set: a term whose two level sets cut the same cell, or terms bounded by
 different level sets in one cell, raise an error until phase 6; terms on one
-level set ("phi < 0 or phi > 0") are fine.
+level set ("phi < 0 or phi > 0") are fine. The lookup tables take any number of
+level sets per cell.
 
 ## Faces lying in a zero set
 
@@ -94,16 +98,125 @@ the interface measures 4 to rounding, as do the volumes below and above it.
 
 `part.quadrature(order, mode, backend="quadrays", options)` gives one rule per
 cell, cells ascending; points in the cell's reference coordinates, physical
-weights. quadrays' `order` counts Gauss points per segment; whole cells and
-zero faces get the reference rules exact for degree 2 order - 1 (at most 10).
+weights. quadrays' `order` counts Gauss points per segment; whole cells, zero
+faces and the lookup tables' pieces get the reference rules exact for degree
+2 order - 1 (at most 10). `options` is a `QuadraysOptions` for quadrays and a
+`LutOptions` for `backend="lut"` (None: the defaults).
 `part.visualization_mesh(mode, backend, degree)` gives quadrays' leaves as
-Lagrange cells, zero faces as linear faces and, with mode `full`, the whole cells
-as linear cells; `write_vtu` writes them.
+Lagrange cells (a `QuadraysLeafMesh`) or the lookup tables' straight pieces (a
+`CutMesh`), zero faces as linear faces and, with mode `full`, the whole cells as
+linear cells; `write_vtu` writes them.
+
+## The lookup-table backend (phase 4)
+
+`cpp/src/lut/`, namespace `cutcells::lut`:
+
+| File | Contents |
+| --- | --- |
+| `cell_pieces.h/.cpp` | `cut_cell`: the straight pieces of a cell on its Pk-iso-P1 template, each with its side of every level set; `template_vertices` |
+| `piece_rules.h/.cpp` | `CellMap` (affine, or multilinear on quadrilaterals and hexahedra), `push_forward`, and `append_piece_rule`: rules on straight pieces through the cell's map |
+
+For each cut cell of a part, `backend="lut"`
+
+1. takes the level sets that cut the cell and that the expression names;
+2. picks the Pk-iso-P1 template of order k: `LutOptions.template_order`, by
+   default the highest degree among them (2 for analytic level sets), 1 to 4;
+3. evaluates them at the template's vertices: the Pk polynomial, or the
+   analytic level set itself at the mapped point;
+4. cuts each sub-cell with the lookup tables (`cell::cut`) by the level sets'
+   P1 interpolants, one level set after the other, both sides kept; the zero
+   sets the expression asks for are cut by the other level sets;
+5. integrates the pieces that some term selects: by their sides for the
+   cutting level sets, by the cell's domains for the others. Every piece is
+   counted once, so unions and complements add up exactly.
+
+Values within 64 eps max|v| of 0 count as positive; they are moved to that
+bound, so the tables' case masks (which treat values within 2 eps |v_0| as 0)
+agree with the classification. A level set vanishing on a face of the sub-cells
+is integrated once, by the sub-cell below it, as zero faces of mesh cells are.
+
+What the tables need, found on the way:
+
+- The tables of quadrilaterals, hexahedra, prisms and pyramids take and give
+  Basix vertex order; those of triangles and tetrahedra give their
+  quadrilaterals in cyclic (VTK) order. The backend turns them into Basix order.
+- `cut_tetrahedron`'s table listed the prism of case 13 (vertex 1 alone on its
+  side) with its top triangle rotated: a twisted wedge, which split into
+  tetrahedra measured 0.094 instead of 0.133 in one case; fixed in
+  `cpp/src/cut_tetrahedron.cpp`. Its triangulated output was right before (it
+  rebuilds the prism from the intersected edges).
+- The hexahedron's tables cut parallelepipeds exactly for affine values, but
+  not the other hexahedra that a first cut leaves (errors up to 0.09 of the
+  unit cube in 400 pairs of random planes), and for multilinear values their
+  two sides do not fit together (up to 0.8% of a cell). The backend cuts
+  leaves that are not parallelograms or parallelepipeds as simplices, and
+  hexahedral sub-cells on which some level set is not affine as their Kuhn
+  tetrahedra (for affine values the tables give the same measures as those).
+  The quadrilateral's tables fit together, also at saddles.
+- Rules: simplices take the simplex rules, parallelograms and parallelepipeds
+  the tensor rules, other quadrilaterals and hexahedra, prisms and pyramids are
+  split into simplices; so on pieces with planar faces in affine cells the
+  rules are exact for polynomials of degree 2 order - 1. Areas come from cross
+  products: the Gram determinant lost half the digits on the slivers next to
+  values moved off 0 (6.6e-10 instead of 2e-15).
+
+### Against today's straight backend
+
+`cutcells.cut(mesh, level_sets)[expr].quadrature(order, backend="straight")`
+refines cut cells with the same iso-Pk templates and cuts them with the same
+tables. On [-1, 1]^3 and [-1, 1]^2 at n = 6 and 8 the lookup tables give every
+cell the same measure and first moments, to 1e-15, for P1 and P2 spheres
+(circles) on hexahedra, tetrahedra, quadrilaterals and triangles, volumes and
+interfaces, and for a P2 sphere and a plane crossing in cells on tetrahedra,
+quadrilaterals and triangles (`python/tests/test_part_lut.py`). Two
+differences: the straight backend refuses two level sets on hexahedra
+(`refine_red_on_ambiguous_cells: unsupported cell type`), and where the
+values on hexahedra are multilinear, its two sides do not fill the cells: for
+the Q1 and Q2 interpolants of the sphere's distance at n = 8, 48 and 94 of
+the 138 cut cells miss up to 1.3e-4 of their volume 0.0156 (0.8%), which the
+lookup tables fill to rounding.
+
+### Template order
+
+The sphere of radius 0.7 by its analytic distance, its values at the template's
+vertices, relative errors of the ball's volume and the sphere's area
+(`python/tests/test_part_lut.py`, `cpp/tests/lut/test_lut.cpp`); hexahedra and
+tetrahedra give the same numbers here, since the distance is multilinear on the
+hexahedra's sub-cells, which are cut as Kuhn tetrahedra:
+
+| n | k = 1 | k = 2 | k = 3 | k = 4 | rate in k |
+| --- | --- | --- | --- | --- | --- |
+| 4 | 2.5e-1 / 1.4e-1 | 6.3e-2 / 3.3e-2 | 2.8e-2 / 1.5e-2 | 1.6e-2 / 8.2e-3 | 1.98 / 2.05 |
+| 8 | 6.3e-2 / 3.3e-2 | 1.6e-2 / 8.2e-3 | 7.1e-3 / 3.7e-3 | 4.0e-3 / 2.1e-3 | 2.00 / 2.01 |
+| 16 | 1.6e-2 / 8.2e-3 | 4.0e-3 / 2.1e-3 | 1.8e-3 / 9.1e-4 | 1.0e-3 / 5.1e-4 | 2.00 / 2.00 |
+
+The errors fall as (h / k)^2: a mesh of size h with template order k gives the
+errors of size h / k with order 1.
+
+### Time
+
+A sphere interpolated to degree k, `phi < 0` (mode full) and `phi = 0`, seconds
+for the classification and both rules (best of three, load average 6 to 8):
+
+| | AdaptCell `cut` + straight | `part.cut` + lut |
+| --- | --- | --- |
+| 32,768 hexahedra, P1 | 0.57 + 0.08 | 0.06 + 0.25 |
+| same, P2 | 2.16 + 0.24 | 0.13 + 0.72 |
+| same, P3 | 6.34 + 0.63 | 0.34 + 1.37 |
+| 24,576 tetrahedra, P1 | 0.12 + 0.04 | 0.02 + 0.07 |
+| same, P2 | 0.67 + 0.07 | 0.03 + 0.20 |
+| same, P3 | 2.20 + 0.17 | 0.06 + 0.52 |
+
+The lookup tables cut the cells when the rules are asked for, on every call;
+the straight backend reads the pieces AdaptCell made in `cut`.
 
 ## Limits
 
-- Affine cells, as everywhere in quadrays; tetrahedra and hexahedra in 3D for
-  analytic level sets and the quadrays backend (2D cells, prisms and pyramids
-  come in phase 6).
+- quadrays: affine cells, tetrahedra and hexahedra in 3D, one level set per
+  cell (2D cells, prisms, pyramids and several level sets per cell come in
+  phase 6).
+- The lookup tables: triangles, quadrilaterals, tetrahedra and hexahedra (the
+  cells of the iso-P1 templates), affine or multilinear cell maps; volumes and
+  interfaces, not the sets where two level sets vanish.
+- Analytic level sets: tetrahedra and hexahedra in 3D.
 - Pk level sets need dof values; level sets with nodal values only are refused.
-- Several level sets in one cell: phase 6.
