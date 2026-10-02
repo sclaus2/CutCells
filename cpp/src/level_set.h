@@ -325,6 +325,15 @@ LevelSetFunction<T, I> create_level_set_function(
     int degree,
     std::string name = "phi");
 
+/// @brief An analytic level set alone, without an interpolant, for the front
+/// end of part/ (part::cut), which classifies and integrates with its bounds.
+/// value() and grad() evaluate it in @p gdim coordinates.
+template <std::floating_point T, std::integral I = int>
+LevelSetFunction<T, I> create_level_set_function(
+    std::shared_ptr<const quadrays::AnalyticLevelSet> analytic,
+    int gdim,
+    std::string name = "phi");
+
 template <std::floating_point T, std::integral I = int>
 LevelSetFunction<T, I> create_level_set_function_view(
     LevelSetMeshData<T, I> mesh_data,

@@ -110,8 +110,8 @@ void isolate(const Source<T>& phi, const std::array<double, 3>& p, const std::ar
 /// Sign of phi on the sub-box [lo, hi] of a cell: +1, -1, 0 if it may vanish,
 /// or 2 if the sub-box misses the clipped region.
 template <std::floating_point T>
-int box_sign(const ClippedBox<T>& cell, const AnalyticLevelSet& phi, const Vec3<T>& lo, const Vec3<T>& hi,
-             int depth, int max_depth)
+int box_sign(const ClippedBox<T>& cell, const Source<T>& phi, const Vec3<T>& lo, const Vec3<T>& hi, int depth,
+             int max_depth)
 {
     if (!may_meet_clips(cell, lo, hi))
         return 2;
@@ -126,13 +126,25 @@ int box_sign(const ClippedBox<T>& cell, const AnalyticLevelSet& phi, const Vec3<
         }
         centre[i] = c;
     }
-    double models[4 * 5];
-    if (parallelepiped_bounds(phi, centre, axes, 3, models) != 0)
+    if (phi.bernstein != nullptr)
     {
-        double alpha, dev;
-        const int s = row_sign(models, 3, alpha, dev);
+        thread_local BoxBernstein<T> sub;
+        thread_local std::vector<T> work;
+        subdivide(*phi.bernstein, std::span<const T>(lo), std::span<const T>(hi), sub, work);
+        const int s = coefficient_sign(std::span<const T>(sub.coeffs));
         if (s != 0)
             return s;
+    }
+    else
+    {
+        double models[4 * 5];
+        if (parallelepiped_bounds(*phi.analytic, centre, axes, 3, models) != 0)
+        {
+            double alpha, dev;
+            const int s = row_sign(models, 3, alpha, dev);
+            if (s != 0)
+                return s;
+        }
     }
     if (depth >= max_depth)
         return 0;
@@ -304,10 +316,30 @@ T line_root(const Source<T>& phi, std::span<const T> origin, std::span<const T> 
 }
 
 template <std::floating_point T>
+int coefficient_sign(std::span<const T> coeffs)
+{
+    const T m = max_abs(coeffs);
+    if (!(m > T(0)))
+        return 0;
+    const T tol = T(64) * std::numeric_limits<T>::epsilon() * m;
+    bool positive = true, negative = true;
+    for (const T c : coeffs)
+    {
+        positive &= c >= -tol;
+        negative &= c <= tol;
+    }
+    return positive ? 1 : (negative ? -1 : 0);
+}
+
+template <std::floating_point T>
 int cell_sign(const ClippedBox<T>& cell, const AnalyticLevelSet& phi, int max_depth)
 {
-    if (phi.value == nullptr || phi.box_bounds == nullptr)
-        throw std::invalid_argument("quadrays: an analytic level set needs value and box_bounds");
+    return cell_sign(cell, analytic_source(phi, cell), max_depth);
+}
+
+template <std::floating_point T>
+int cell_sign(const ClippedBox<T>& cell, const Source<T>& phi, int max_depth)
+{
     const Vec3<T> lo = {0, 0, 0}, hi = {1, 1, 1};
     // the whole box first: most cells are far from the zero set
     const int s = box_sign(cell, phi, lo, hi, 0, 0);
@@ -320,10 +352,8 @@ int cell_sign(const ClippedBox<T>& cell, const AnalyticLevelSet& phi, int max_de
         const Vec3<T> u = {T(c & 1), T((c >> 1) & 1), T((c >> 2) & 1)};
         if (!inside_clips(cell, u, scaled_tolerance<T>(1e-12)))
             continue;
-        const Vec3<T> x = physical_point(cell, u);
-        const double xd[3] = {x[0], x[1], x[2]};
-        const double v = phi.value(xd, phi.context);
-        seen |= (v > 0 ? 1 : 0) | (v < 0 ? 2 : 0);
+        const T v = evaluate(phi, std::span<const T>(u));
+        seen |= (v > T(0) ? 1 : 0) | (v < T(0) ? 2 : 0);
     }
     if (seen == 3)
         return 0;
@@ -357,6 +387,10 @@ template float line_root<float>(const Source<float>&, std::span<const float>, st
                                 float, float);
 template double line_root<double>(const Source<double>&, std::span<const double>, std::span<const double>, double,
                                   double, double, double);
+template int coefficient_sign<float>(std::span<const float>);
+template int coefficient_sign<double>(std::span<const double>);
+template int cell_sign<float>(const ClippedBox<float>&, const Source<float>&, int);
+template int cell_sign<double>(const ClippedBox<double>&, const Source<double>&, int);
 template int cell_sign<float>(const ClippedBox<float>&, const AnalyticLevelSet&, int);
 template int cell_sign<double>(const ClippedBox<double>&, const AnalyticLevelSet&, int);
 

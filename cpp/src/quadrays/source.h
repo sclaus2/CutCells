@@ -93,15 +93,25 @@ template <std::floating_point T>
 T line_root(const Source<T>& phi, std::span<const T> origin, std::span<const T> direction, T a, T b, T ga,
             T gb);
 
-/// @brief The sign of an analytic level set on a cell, for classifying cells as
-/// inside, outside or cut.
+/// @brief +1 or -1 if Bernstein coefficients prove that sign (coefficients
+/// that are 0 up to rounding allowed: the polynomial may touch zero), else 0.
+template <std::floating_point T>
+int coefficient_sign(std::span<const T> coeffs);
+
+/// @brief The sign of a level set on a cell, for classifying cells as inside,
+/// outside or cut.
 ///
-/// Taylor models over the cell's box prove a sign, or its corners show both;
-/// otherwise the box is bisected, along its longest edge, down to
-/// @p max_depth levels, and sub-boxes outside the clips are skipped.
+/// Bounds over the cell's box prove a sign (Bernstein coefficients of the
+/// restriction, or Taylor models), or its corners show both; otherwise the box
+/// is bisected, along its longest edge, down to @p max_depth levels, and
+/// sub-boxes outside the clips are skipped.
 /// @return +1 or -1 if phi has that sign on the cell (up to touching zero), 0 if
-///         it changes sign or the models cannot tell (where it touches zero
+///         it changes sign or the bounds cannot tell (where it touches zero
 ///         inside, or where a bound is lost)
+template <std::floating_point T>
+int cell_sign(const ClippedBox<T>& cell, const Source<T>& phi, int max_depth = 12);
+
+/// @brief cell_sign for an analytic level set.
 template <std::floating_point T>
 int cell_sign(const ClippedBox<T>& cell, const AnalyticLevelSet& phi, int max_depth = 12);
 

@@ -160,7 +160,8 @@ template <std::floating_point T>
 void append_linear_cell(cell::type cell_type, std::span<const T> vertex_coords,
                         std::int32_t parent_cell, LeafMesh<T>& mesh)
 {
-    if (cell_type != cell::type::tetrahedron && cell_type != cell::type::hexahedron)
+    if (cell_type != cell::type::tetrahedron && cell_type != cell::type::hexahedron
+        && cell_type != cell::type::triangle && cell_type != cell::type::quadrilateral)
     {
         throw std::invalid_argument("quadrays: unsupported cell type "
                                     + cell::cell_type_to_str(cell_type));
@@ -182,7 +183,20 @@ void append_linear_cell(cell::type cell_type, std::span<const T> vertex_coords,
             std::swap(mesh.connectivity[first + 1], mesh.connectivity[first + 2]);
     }
     mesh.offsets.push_back(static_cast<std::int32_t>(mesh.connectivity.size()));
-    mesh.vtk_types.push_back(cell_type == cell::type::tetrahedron ? vtk_tetra : vtk_hexahedron);
+    switch (cell_type)
+    {
+    case cell::type::tetrahedron:
+        mesh.vtk_types.push_back(vtk_tetra);
+        break;
+    case cell::type::hexahedron:
+        mesh.vtk_types.push_back(vtk_hexahedron);
+        break;
+    case cell::type::triangle:
+        mesh.vtk_types.push_back(vtk_triangle);
+        break;
+    default:
+        mesh.vtk_types.push_back(vtk_quad);
+    }
     mesh.parent.push_back(parent_cell);
     mesh.degree.push_back(1);
 }

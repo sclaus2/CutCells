@@ -20,7 +20,8 @@ library (below).
 | `source.h/.cpp` | the level set of a cell as the engine reads it: a Bernstein form or an analytic level set; values, gradients, Taylor bounds on affine images, roots on lines |
 | `adapters/shapeforest_tape.h` | ShapeForest tapes (register code) run on every scalar type of `taylor.h`; no build dependency |
 
-From Python, `part.quadrature(order, mode, backend="quadrays")` uses it, with
+The front end of phase 3, `cutcells.part`, uses quadrays without AdaptCell
+(`FRONTEND.md`). From Python, `part.quadrature(order, mode, backend="quadrays")` uses it, with
 `order` Gauss-Legendre points per segment as for `backend="algoim"`; uncut cells
 of volume parts get the straight rules of degree `order`. `quadrays_quadrature`
 and `quadrays_leaves` take a `QuadraysOptions`; `quadrays_cell_rules` and

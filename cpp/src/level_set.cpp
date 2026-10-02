@@ -1299,6 +1299,27 @@ LevelSetFunction<T, I> create_level_set_function(
 
   LevelSetFunction<T, I> ls = create_level_set_function<T, I>(
       std::move(mesh_data), std::span<const T>(values), std::move(name));
+  const LevelSetFunction<T, I> alone = create_level_set_function<T, I>(analytic, gdim, ls.name);
+  ls.analytic = alone.analytic;
+  ls.value_fn = alone.value_fn;
+  ls.grad_fn = alone.grad_fn;
+  return ls;
+}
+
+template <std::floating_point T, std::integral I>
+LevelSetFunction<T, I> create_level_set_function(
+    std::shared_ptr<const quadrays::AnalyticLevelSet> analytic,
+    int gdim,
+    std::string name)
+{
+  if (!analytic || analytic->value == nullptr)
+    throw std::invalid_argument("create_level_set_function: the analytic level set has no value function");
+  if (gdim < 1 || gdim > 3)
+    throw std::invalid_argument("create_level_set_function: gdim must be 1, 2 or 3");
+  LevelSetFunction<T, I> ls;
+  ls.name = std::move(name);
+  ls.type = LevelSetType::Analytical;
+  ls.gdim = gdim;
   ls.analytic = analytic;
   ls.value_fn = [analytic, gdim](const T* x, I) -> T
   {
@@ -1394,6 +1415,14 @@ template LevelSetFunction<double, int> create_level_set_function(
     std::span<const double> dof_values,
     std::string name);
 
+template LevelSetFunction<float, int> create_level_set_function(
+    std::shared_ptr<const quadrays::AnalyticLevelSet> analytic,
+    int gdim,
+    std::string name);
+template LevelSetFunction<double, int> create_level_set_function(
+    std::shared_ptr<const quadrays::AnalyticLevelSet> analytic,
+    int gdim,
+    std::string name);
 template LevelSetFunction<float, int> create_level_set_function(
     const MeshView<float, int>& mesh,
     std::shared_ptr<const quadrays::AnalyticLevelSet> analytic,

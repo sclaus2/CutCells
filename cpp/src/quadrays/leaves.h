@@ -21,6 +21,8 @@ namespace cutcells::quadrays
 {
 
 /// VTK cell types of leaf meshes.
+inline constexpr std::uint8_t vtk_triangle = 5;
+inline constexpr std::uint8_t vtk_quad = 9;
 inline constexpr std::uint8_t vtk_tetra = 10;
 inline constexpr std::uint8_t vtk_hexahedron = 12;
 inline constexpr std::uint8_t vtk_lagrange_quadrilateral = 70;
@@ -63,8 +65,8 @@ template <std::floating_point T>
 void append_leaves(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int degree,
                    const Options& opt, std::int32_t parent_cell, LeafMesh<T>& mesh, Stats& stats);
 
-/// @brief A whole cell as a linear VTK cell (tetrahedron or hexahedron),
-/// appended to @p mesh.
+/// @brief A whole cell as a linear VTK cell (tetrahedron or hexahedron), or a
+/// face of one (triangle or quadrilateral), appended to @p mesh.
 ///
 /// @param vertex_coords  vertices in Basix order, flat, 3 per vertex
 template <std::floating_point T>

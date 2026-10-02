@@ -47,6 +47,9 @@
 #include <cutcells/quadrays/analytic.h>
 #include <cutcells/quadrays/leaves.h>
 #include <cutcells/quadrays/rules.h>
+#include <cutcells/part/cut_result.h>
+#include <cutcells/part/mesh_part.h>
+#include <cutcells/part/output.h>
 #include <cutcells/reference_cell.h>
 #include <cutcells/refine_cell.h>
 #include <cutcells/triangulation.h>
@@ -3487,6 +3490,215 @@ void declare_quadrays(nb::module_& m, const std::string& type)
   }
 }
 
+// ============================================================================
+// The front end without AdaptCell (part/), as the submodule cutcells.part
+// ============================================================================
+
+/// What Python holds for part::cut: the mesh and level sets the result points
+/// to, at stable addresses.
+template <typename T>
+struct PartCutResult
+{
+  std::shared_ptr<const cutcells::MeshView<T, int>> mesh;
+  std::shared_ptr<const std::vector<cutcells::LevelSetFunction<T, int>>> level_sets;
+  cutcells::part::CutResult<T, int> result;
+};
+
+template <typename T>
+void declare_part(nb::module_& m, const std::string& type)
+{
+  namespace qr = cutcells::quadrays;
+  using MeshViewT = cutcells::MeshView<T, int>;
+  using LevelSetT = cutcells::LevelSetFunction<T, int>;
+  using ResultT = PartCutResult<T>;
+  using PartT = cutcells::part::MeshPart<T, int>;
+
+  const std::string result_name = "CutResult_" + type;
+  nb::class_<ResultT>(m, result_name.c_str(),
+      "Every cell classified by every level set as inside, outside or cut, by "
+      "the level sets' own bounds, and the faces lying in a zero set with the "
+      "cell that owns each. result[\"phi1 < 0 and phi2 = 0\"] selects a MeshPart.")
+      .def_prop_ro("level_set_names", [](const ResultT& self) { return self.result.level_set_names; })
+      .def_prop_ro("num_cells", [](const ResultT& self) { return self.result.num_cells; })
+      .def_prop_ro("num_cut_cells",
+                   [](const ResultT& self) { return static_cast<int>(self.result.cut_cells.size()); })
+      .def_prop_ro(
+          "cut_cells",
+          [](const ResultT& self)
+          {
+            return nb::ndarray<const int, nb::numpy>(self.result.cut_cells.data(), {self.result.cut_cells.size()},
+                                                     nb::handle());
+          },
+          nb::rv_policy::reference_internal, "Cells that some level set cuts, ascending.")
+      .def_prop_ro(
+          "domains",
+          [](const ResultT& self)
+          {
+            std::vector<std::int8_t> d(self.result.domains.size());
+            for (std::size_t i = 0; i < d.size(); ++i)
+              d[i] = static_cast<std::int8_t>(self.result.domains[i]);
+            return as_nbarray(std::move(d), {static_cast<std::size_t>(self.result.n_level_sets()),
+                                             static_cast<std::size_t>(self.result.num_cells)});
+          },
+          nb::rv_policy::move, "Per level set and cell: 0 inside, 1 cut, 2 outside; shape (num_level_sets, num_cells).")
+      .def_prop_ro(
+          "zero_faces",
+          [](const ResultT& self)
+          {
+            const std::size_t n = static_cast<std::size_t>(self.result.n_zero_faces());
+            std::vector<int> z(3 * n);
+            for (std::size_t i = 0; i < n; ++i)
+            {
+              z[3 * i] = self.result.zero_face_level_sets[i];
+              z[3 * i + 1] = self.result.zero_face_cells[i];
+              z[3 * i + 2] = self.result.zero_face_local[i];
+            }
+            return as_nbarray(std::move(z), {n, std::size_t(3)});
+          },
+          nb::rv_policy::move,
+          "Faces in a zero set, each once: (level set, owning cell, face of the cell in "
+          "Basix numbering), shape (n, 3). The owner is the cell on the negative side, "
+          "else the lower cell index.")
+      .def(
+          "__getitem__",
+          [](const ResultT& self, const std::string& expr)
+          { return cutcells::part::select(self.result, std::string_view(expr)); },
+          nb::arg("expr"), nb::keep_alive<0, 1>(),
+          "The MeshPart that a selection expression such as \"phi < 0\" selects.");
+
+  const std::string part_name = "MeshPart_" + type;
+  nb::class_<PartT>(m, part_name.c_str(),
+      "A part of the mesh: the cells wholly in it, the cut cells holding a piece "
+      "of it, and the zero faces in it. Its quadrature and visualisation come from "
+      "a backend.")
+      .def_prop_ro("dim", [](const PartT& self) { return self.dim; })
+      .def_prop_ro("num_cut_cells", [](const PartT& self) { return self.n_cut_cells(); })
+      .def_prop_ro("num_uncut_cells", [](const PartT& self) { return self.n_uncut_cells(); })
+      .def_prop_ro(
+          "cut_cells",
+          [](const PartT& self)
+          { return nb::ndarray<const int, nb::numpy>(self.cut_cells.data(), {self.cut_cells.size()}, nb::handle()); },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "uncut_cells",
+          [](const PartT& self)
+          {
+            return nb::ndarray<const int, nb::numpy>(self.uncut_cells.data(), {self.uncut_cells.size()},
+                                                     nb::handle());
+          },
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "zero_faces",
+          [](const PartT& self)
+          { return nb::ndarray<const int, nb::numpy>(self.zero_faces.data(), {self.zero_faces.size()}, nb::handle()); },
+          nb::rv_policy::reference_internal, "Indices into the result's zero_faces.")
+      .def(
+          "quadrature",
+          [](const PartT& self, int order, const std::string& mode, const std::string& backend,
+             const qr::Options& options)
+          {
+            const bool cut_only = part_mode_is_cut_only(mode);
+            nb::gil_scoped_release release;
+            return cutcells::part::quadrature_rules(self, order, !cut_only, backend, options);
+          },
+          nb::arg("order") = 3, nb::arg("mode") = "full", nb::arg("backend") = "quadrays",
+          nb::arg("options") = qr::Options{},
+          "Quadrature rules, one per cell: the backend's on cut cells, rules on owned "
+          "zero faces, and with mode 'full' those of the whole cells. quadrays: order "
+          "Gauss-Legendre points per segment; whole cells and faces get rules exact for "
+          "degree 2 order - 1 (at most 10).")
+      .def(
+          "visualization_mesh",
+          [](const PartT& self, const std::string& mode, const std::string& backend, int degree,
+             const qr::Options& options)
+          {
+            const bool cut_only = part_mode_is_cut_only(mode);
+            nb::gil_scoped_release release;
+            return cutcells::part::visualization_mesh(self, degree, !cut_only, backend, options);
+          },
+          nb::arg("mode") = "full", nb::arg("backend") = "quadrays", nb::arg("degree") = 3,
+          nb::arg("options") = qr::Options{},
+          "Cells for visualisation: the backend's pieces of cut cells (quadrays: Lagrange "
+          "cells of the given degree), zero faces, and with mode 'full' the whole cells.")
+      .def(
+          "write_vtu",
+          [](const PartT& self, const std::string& filename, const std::string& mode, const std::string& backend,
+             int degree, const qr::Options& options)
+          {
+            const bool cut_only = part_mode_is_cut_only(mode);
+            nb::gil_scoped_release release;
+            cutcells::part::write_vtu(filename, self, degree, !cut_only, backend, options);
+          },
+          nb::arg("filename"), nb::arg("mode") = "full", nb::arg("backend") = "quadrays", nb::arg("degree") = 3,
+          nb::arg("options") = qr::Options{}, "Write visualization_mesh to a .vtu file.");
+
+  m.def(
+      ("cut_" + type).c_str(),
+      [](const MeshViewT& mesh, nb::object level_sets, nb::object names, int max_depth)
+      {
+        std::vector<nb::handle> items;
+        if (nb::isinstance<nb::list>(level_sets) || nb::isinstance<nb::tuple>(level_sets))
+        {
+          for (nb::handle h : level_sets)
+            items.push_back(h);
+        }
+        else
+          items.push_back(level_sets);
+        std::vector<std::string> given;
+        if (!names.is_none())
+          given = nb::cast<std::vector<std::string>>(names);
+        if (!given.empty() && given.size() != items.size())
+          throw std::invalid_argument("part.cut: give one name per level set");
+
+        auto owned = std::make_shared<std::vector<LevelSetT>>();
+        for (std::size_t i = 0; i < items.size(); ++i)
+        {
+          const std::string fallback = items.size() == 1 ? "phi" : "phi" + std::to_string(i + 1);
+          if (nb::isinstance<LevelSetT>(items[i]))
+          {
+            owned->push_back(nb::cast<const LevelSetT&>(items[i]));
+            if (!given.empty())
+              owned->back().name = given[i];
+          }
+          else if (nb::isinstance<PyAnalyticLevelSet>(items[i]))
+          {
+            const PyAnalyticLevelSet& phi = nb::cast<const PyAnalyticLevelSet&>(items[i]);
+            owned->push_back(cutcells::create_level_set_function<T, int>(phi.phi, mesh.gdim,
+                                                                         given.empty() ? fallback : given[i]));
+          }
+          else
+            throw nb::type_error("part.cut: level sets are LevelSetFunctions or AnalyticLevelSets");
+        }
+        for (std::size_t i = 0; i < owned->size(); ++i)
+          for (std::size_t j = 0; j < i; ++j)
+            if ((*owned)[i].name == (*owned)[j].name)
+              throw std::invalid_argument("part.cut: two level sets are named '" + (*owned)[i].name + "'");
+
+        ResultT r;
+        r.mesh = std::make_shared<const MeshViewT>(mesh);
+        r.level_sets = owned;
+        cutcells::part::ClassifyOptions options;
+        options.max_depth = max_depth;
+        {
+          nb::gil_scoped_release release;
+          r.result = cutcells::part::cut<T, int>(*r.mesh, std::span<const LevelSetT>(*r.level_sets), options);
+        }
+        return r;
+      },
+      nb::arg("mesh"), nb::arg("level_sets"), nb::arg("names") = nb::none(), nb::arg("max_depth") = 12,
+      "Classify every cell of the mesh by every level set (LevelSetFunctions with dof "
+      "values, or AnalyticLevelSets, alone or in a list) by their own bounds. Analytic "
+      "level sets are named 'phi', or 'phi1', 'phi2', ... in a list, unless names are "
+      "given. max_depth: bisections of a cell before an unproven sign counts as cut.");
+
+  if constexpr (std::is_same_v<T, double>)
+  {
+    m.attr("CutResult") = m.attr(result_name.c_str());
+    m.attr("MeshPart") = m.attr(part_name.c_str());
+    m.attr("cut") = m.attr("cut_float64");
+  }
+}
+
 NB_MODULE(_cutcellscpp, m)
 {
   // Create module for C++ wrappers
@@ -3660,4 +3872,11 @@ NB_MODULE(_cutcellscpp, m)
       .def_ro("causes", &cutcells::quadrays::Stats::causes);
   declare_quadrays<float>(m, "float32");
   declare_quadrays<double>(m, "float64");
+
+  nb::module_ part_module = m.def_submodule(
+      "part", "The front end without AdaptCell: cut(mesh, level_sets) classifies cells by "
+              "the level sets' own bounds; result[expr] selects a MeshPart, whose quadrature "
+              "and visualisation come from a backend (quadrays).");
+  declare_part<float>(part_module, "float32");
+  declare_part<double>(part_module, "float64");
 }
