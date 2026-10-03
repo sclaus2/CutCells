@@ -10,9 +10,10 @@
 // the robustness cases. The shell 1e-3 wide on hexahedra and tetrahedra: boxes
 // must be certified with two roots per line, and the per-cell L1 must stay
 // below the bounds given; on hexahedra with Bernstein coefficients it must be
-// ten times smaller than with one root per line only (Options::two_roots_depth
-// past max_depth), and with analytic level sets not larger. The shell 1e-6
-// wide takes the checks only, on hexahedra.
+// three times smaller than with one root per line only (Options::two_roots_depth
+// past max_depth: boxes at the depth limit integrated uncertified), and with
+// analytic level sets not larger. The shell 1e-6 wide takes the checks only,
+// on hexahedra.
 // Exits non-zero on failure.
 
 #include <cutcells/selection_expr.h>
@@ -40,9 +41,9 @@ int main()
     };
     // about three times the measured L1
     const Bound bounds[] = {
-        {"hex", false, "phi < 0", 3e-5}, {"hex", false, "phi = 0", 2.5e-3}, {"tet", false, "phi < 0", 1.5e-5},
-        {"tet", false, "phi = 0", 1e-3}, {"hex", true, "phi < 0", 3e-2},    {"hex", true, "phi = 0", 6e-2},
-        {"tet", true, "phi < 0", 1.5e-5}, {"tet", true, "phi = 0", 1e-3},
+        {"hex", false, "phi < 0", 7e-6}, {"hex", false, "phi = 0", 7e-6}, {"tet", false, "phi < 0", 1.5e-7},
+        {"tet", false, "phi = 0", 1.5e-7}, {"hex", true, "phi < 0", 6e-5}, {"hex", true, "phi = 0", 1e-4},
+        {"tet", true, "phi < 0", 2.5e-7}, {"tet", true, "phi = 0", 2.5e-7},
     };
     Case shell, thinner;
     for (const Case& c : all_cases())
@@ -91,9 +92,9 @@ int main()
             const CaseRun r1 = run_case(shell, b.mesh, n, term, q, one_root, b.analytic, first);
             const double l1_one = r1.l1 / r1.exact_total;
             checks(r1, problems);
-            if (b.analytic ? l1 > l1_one : 10 * l1 > l1_one)
+            if (b.analytic ? l1 > l1_one : 3 * l1 > l1_one)
                 problems.push_back(b.analytic ? "larger than with one root per line"
-                                              : "not ten times smaller than with one root per line");
+                                              : "not three times smaller than with one root per line");
             std::snprintf(what + len, sizeof what - len, ", with one root per line %.1e", l1_one);
         }
         report(what, problems);

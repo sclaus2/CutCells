@@ -1761,25 +1761,14 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
     return an;
 }
 
-/// Why did certification fail? Sample the clipped region on a 9^D grid and look
-/// at the function with the smallest margin for the chosen axis near its zero set.
+/// Margins of @p f near its zero set, sampled: on a 9^D grid of the clipped
+/// region, at the points where |f| is within a fifth of its largest value, the
+/// smallest |d_j f| / |grad f| along each axis j (infinity if no point is
+/// that close). False if f takes one sign at every point (its zero set is
+/// outside the cell, or between the points).
 template <std::floating_point T, int D>
-void diagnose_failure(Context<T>& ctx, const Problem<T, D>& p, const Analysis<T, D>& an, int depth)
+bool sampled_margins(const Context<T>& ctx, const Problem<T, D>& p, const Func<T, D>& f, VecD<T, D>& rmin)
 {
-    std::map<std::string, std::int64_t>& causes = ctx.stats->causes;
-    const std::string level = "level " + std::to_string(D);
-    const std::vector<VecD<T, D>>& ratios = an.ratios;
-    if (ratios.empty())
-    {
-        ++causes[level + " | surface function | depth " + std::to_string(depth)];
-        return;
-    }
-    const int k = an.k;
-    std::size_t blocker = 0;
-    for (std::size_t i = 1; i < ratios.size(); ++i)
-        if (ratios[i][k] < ratios[blocker][k])
-            blocker = i;
-    const Func<T, D>& f = p.funcs[an.curved[blocker]];
     const int G = 9;
     std::vector<VecD<T, D>> points;
     int total = 1;
@@ -1815,24 +1804,108 @@ void diagnose_failure(Context<T>& ctx, const Problem<T, D>& p, const Analysis<T,
         pos |= values[i] > T(0);
         neg |= values[i] < T(0);
     }
-    std::string category;
+    rmin.fill(infinity<T>);
     if (!(pos && neg))
+        return false;
+    for (std::size_t i = 0; i < points.size(); ++i)
+    {
+        if (std::abs(values[i]) > T(0.2) * vmax)
+            continue;
+        VecD<T, D> g;
+        for (int j = 0; j < D; ++j)
+            g[j] = derivative_along<T, D>(ctx, f, points[i], j);
+        const T norm = scaled_norm(std::span<const T>(g));
+        for (int j = 0; j < D && norm > T(0); ++j)
+            rmin[j] = std::min(rmin[j], std::abs(g[j]) / norm);
+    }
+    return true;
+}
+
+/// The height direction of a box integrated uncertified: no axis has a
+/// certified margin, but its lines must still cross the zero sets, as
+/// transversally as the box allows. Where the samples of a curved function
+/// change sign, the axis with the largest sampled margin near the zero sets
+/// (sampled_margins). Otherwise @p k, the longest side, unless the bounds
+/// show that a function hardly varies along it (its |d_k psi| below a tenth
+/// of that along the best axis): then the longest of the other axes. At a
+/// pyramid's apex, where the form (1 - z)^n phi has a degenerate zero, every
+/// bound is 0 and the longest side may be an axis along which the level set
+/// does not vary at all: its lines would find no roots.
+template <std::floating_point T, int D>
+int uncertified_direction(const Context<T>& ctx, const Problem<T, D>& p, const Analysis<T, D>& an, int k)
+{
+    const auto passive = [&](std::size_t i) { return i < an.passive.size() && an.passive[i]; };
+    VecD<T, D> score;
+    score.fill(infinity<T>);
+    bool seen = false;
+    for (std::size_t i = 0; i < p.funcs.size(); ++i)
+    {
+        if (p.funcs[i].linear || passive(i))
+            continue;
+        VecD<T, D> rmin;
+        if (!sampled_margins<T, D>(ctx, p, p.funcs[i], rmin))
+            continue;
+        seen = true;
+        for (int j = 0; j < D; ++j)
+            score[j] = std::min(score[j], rmin[j]);
+    }
+    if (seen)
+    {
+        for (int j = 0; j < D; ++j)
+            if (score[j] > score[k])
+                k = j;
+        return k;
+    }
+    // the zero sets fall between the samples: how much each function may vary
+    // along each axis, relative to its gradient, from the bounds
+    VecD<T, D> variation;
+    variation.fill(T(1));
+    for (std::size_t c = 0; c < an.uppers.size(); ++c)
+    {
+        if (passive(static_cast<std::size_t>(an.curved[c])))
+            continue;
+        const VecD<T, D>& upper = an.uppers[c];
+        const T norm = scaled_norm(std::span<const T>(upper));
+        for (int j = 0; j < D; ++j)
+            variation[j] = std::min(variation[j], norm > T(0) && norm < infinity<T> ? upper[j] / norm : T(0));
+    }
+    T best = T(0);
+    for (int j = 0; j < D; ++j)
+        best = std::max(best, variation[j]);
+    if (variation[k] >= T(0.1) * best)
+        return k;
+    int longest = k;
+    for (int j = 0; j < D; ++j)
+        if (variation[j] >= T(0.1) * best && (longest == k || p.hi[j] - p.lo[j] > p.hi[longest] - p.lo[longest]))
+            longest = j;
+    return longest;
+}
+
+/// Why did certification fail? Sample the clipped region on a 9^D grid and look
+/// at the function with the smallest margin for the chosen axis near its zero set.
+template <std::floating_point T, int D>
+void diagnose_failure(Context<T>& ctx, const Problem<T, D>& p, const Analysis<T, D>& an, int depth)
+{
+    std::map<std::string, std::int64_t>& causes = ctx.stats->causes;
+    const std::string level = "level " + std::to_string(D);
+    const std::vector<VecD<T, D>>& ratios = an.ratios;
+    if (ratios.empty())
+    {
+        ++causes[level + " | surface function | depth " + std::to_string(depth)];
+        return;
+    }
+    const int k = an.k;
+    std::size_t blocker = 0;
+    for (std::size_t i = 1; i < ratios.size(); ++i)
+        if (ratios[i][k] < ratios[blocker][k])
+            blocker = i;
+    const Func<T, D>& f = p.funcs[an.curved[blocker]];
+    VecD<T, D> rmin;
+    std::string category;
+    if (!sampled_margins<T, D>(ctx, p, f, rmin))
         category = "zero set outside the cell";
     else
     {
-        VecD<T, D> rmin;
-        rmin.fill(infinity<T>);
-        for (std::size_t i = 0; i < points.size(); ++i)
-        {
-            if (std::abs(values[i]) > T(0.2) * vmax)
-                continue;
-            VecD<T, D> g;
-            for (int j = 0; j < D; ++j)
-                g[j] = derivative_along<T, D>(ctx, f, points[i], j);
-            const T norm = scaled_norm(std::span<const T>(g));
-            for (int j = 0; j < D && norm > T(0); ++j)
-                rmin[j] = std::min(rmin[j], std::abs(g[j]) / norm);
-        }
         T other = T(0);
         for (int j = 0; j < D; ++j)
             other = std::max(other, rmin[j]);
@@ -2443,7 +2516,7 @@ template <std::floating_point T, int D, bool Rotated, int Top, typename Emit>
 void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Emit& emit, int depth,
             bool interface)
 {
-    const int k = an.k;
+    int k = an.k;
     const bool certified = an.certified;
     if (!certified && ctx.opt.diagnose)
         diagnose_failure<T, D>(ctx, p, an, depth);
@@ -2469,6 +2542,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             return;
         }
         ++ctx.stats->uncertified;
+        k = uncertified_direction<T, D>(ctx, p, an, k);
     }
 
     // bounds of the height lines: box faces and clip planes

@@ -383,13 +383,15 @@ q = 3, per-cell L1 of volume and area:
 
 | | two roots | one root per line |
 | --- | --- | --- |
-| hexahedra, P4 | 1.0e-5 / 7.4e-4 | 1.7e-2 / 3.4e-2 |
-| tetrahedra, P4 | 4.4e-6 / 2.7e-4 | 1.1e-5 / 1.3e-4 |
-| hexahedra, analytic | 1.0e-2 / 2.5e-2 | 1.6e-2 / 3.0e-2 |
-| tetrahedra, analytic | 4.6e-6 / 2.7e-4 | 1.1e-5 / 1.7e-4 |
+| hexahedra, P4 | 2.4e-6 / 2.4e-6 | 2.2e-5 / 3.3e-5 |
+| tetrahedra, P4 | 4.6e-8 / 4.6e-8 | 5.1e-4 / 1.8e-3 |
+| hexahedra, analytic | 2.0e-5 / 3.2e-5 | 2.2e-5 / 3.3e-5 |
+| tetrahedra, analytic | 7.0e-8 / 7.3e-8 | 5.1e-4 / 1.8e-3 |
 
-The shell 1e-6 wide passes the checks with 5.5e-2; analytic shells stay weak
-(Taylor models of the product separate the sheets late).
+With one root per line, the boxes at the depth limit are integrated
+uncertified, along the axis with the largest margin sampled near the zero set
+(uncertified_direction). The shell 1e-6 wide passes the checks with 3.8e-2
+(analytic 4.8e-2).
 
 ### Taylor sub-boxes
 
@@ -415,6 +417,17 @@ q and the margin as for Bernstein forms.
   from degree 3 in the reference points too, and two of the pyramid's triangle
   faces were wrong (VTK's base order with Basix numbering; no dofs on them below
   degree 3).
+- A box integrated uncertified (no axis certified, depth limit reached) took
+  the longest side as height direction, the first axis of a cube-shaped box.
+  At a pyramid's apex, where (1 - z)^n phi has a degenerate zero, every margin
+  is 0 down to the depth limit; with the sphere's centre in the mid-plane of a
+  pyramid the level set does not vary along that axis, its lines found no
+  roots and the box lost its interface (1.4e-3 h^2 per cell in the sweep at
+  s = 1/2, for P2 and for the P1 reference of the lookup tables). Such a box
+  now takes the axis with the largest margin sampled near its zero sets, or,
+  where they fall between the samples, avoids axes along which the bounds
+  show a level set hardly varies. Thin shells with one root per line gained a
+  factor 20 to 1,000.
 
 ## Sweeping circle and sphere against algoim (2026-10-03)
 
