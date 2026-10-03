@@ -476,17 +476,21 @@ int main()
     }
 
     // Taylor models over the sub-boxes that meet a tetrahedron (the default):
-    // far fewer bisections, errors within a few times the whole boxes' at q = 5.
+    // at most half the whole boxes' bisections, and at q = 5 the errors of the
+    // polynomial path in the same (orthogonal) frame, 25% slack. Whole boxes
+    // bisect more, and so integrate more accurately at the same q.
     for (const Expected& p : polynomial)
     {
         if (std::string(p.mesh) != "tet" || p.q != 5)
             continue;
-        const Errors whole = sphere_errors(&phi_distance, "tet", 8, 5, p.part, whole_boxes);
+        const Errors bernstein = sphere_errors(nullptr, "tet", 8, 5, p.part);
         const Errors e = sphere_errors(&phi_distance, "tet", 8, 5, p.part);
-        const bool ok = e.l1 <= 4 * whole.l1 && e.worst <= 4 * whole.worst && 2 * e.bisections <= whole_tet_bisections;
-        std::printf("distance tet sub-boxes q = 5 %-8s L1 %.1e (whole boxes %.1e), worst %.1e (%.1e), bisections %d "
-                    "(%d) %s\n",
-                    p.part, e.l1, whole.l1, e.worst, whole.worst, e.bisections, whole_tet_bisections, ok ? "" : "FAILED");
+        const bool ok = e.l1 <= 1.25 * bernstein.l1 && e.worst <= 1.25 * bernstein.worst
+                        && 2 * e.bisections <= whole_tet_bisections;
+        std::printf("distance tet sub-boxes q = 5 %-8s L1 %.1e (Bernstein %.1e), worst %.1e (%.1e), bisections %d "
+                    "(whole boxes %d) %s\n",
+                    p.part, e.l1, bernstein.l1, e.worst, bernstein.worst, e.bisections, whole_tet_bisections,
+                    ok ? "" : "FAILED");
         failures += !ok;
     }
 

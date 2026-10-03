@@ -11,8 +11,8 @@ two roots per line (below).
 
 | File | Contents |
 | --- | --- |
-| `box_bernstein.h/.cpp` | tensor Bernstein forms on boxes: a cell's level set converted exactly (a rational matrix per degree for simplices, computed once), restriction to affine images, derivatives, margins, roots on lines |
-| `clipped_box.h/.cpp` | a cell as the unit box clipped by half-spaces, from its type and vertices; maps to physical and reference coordinates |
+| `box_bernstein.h/.cpp` | tensor Bernstein forms on boxes: a cell's level set converted onto its box (exactly by a rational matrix per degree on the reference box, by interpolation at equispaced nodes on an orthogonal one), restriction to affine images, derivatives, margins, roots on lines |
+| `clipped_box.h/.cpp` | a cell as the unit box clipped by half-spaces, from its type and vertices, in its reference frame or an orthogonal one (`BoxFrame`, below); maps to physical and reference coordinates |
 | `engine.h/.cpp` | dimension reduction with certified height directions, bisection, the diagonal frame; `Options`, `Stats`, `part_of` |
 | `rules.h/.cpp` | rules for one cell and one selection term into `quadrature::QuadratureRules` |
 | `leaves.h/.cpp` | the decomposition as VTK Lagrange cells; `io::write_lagrange_vtk` writes them (VTK 9.1 node order) |
@@ -328,9 +328,25 @@ their restrictions to the bounds stay, so that ridges through faces are found.
 Where several level sets meet, the base splits into regions with one active
 lower and one upper bound; where no axis suits both zero sets, a rotated frame
 between their normals does (always in 2D, from depth 6 in 3D); where three zero
-sets meet, the crossings of two surface functions give the corners. An
-analytic level set that is linear on the cell (its Hessian bounds vanish) is
-read as its form of degree 1.
+sets meet, the crossings of two surface functions give the corners. They are
+sampled between the points where either root enters or leaves the height
+lines, so that a crossing is found however narrow the stretch where both roots
+exist. An analytic level set that is linear on the cell (its Hessian bounds
+vanish) is read as its form of degree 1.
+
+Leaf cells come from the same decomposition, with one node grid per segment of
+each height line; a leaf takes the same segment on every line of its base, so
+the roots on those lines must keep their order. Leaves do not split where only
+the integration does: in an interface part at the roots of the other level
+sets' restrictions to faces, which may cross a ridge inside a base segment, and
+where a surface function vanishes beyond the box above, where it follows or
+clamps the root of under and its roots may vanish inside a base segment. On the
+faces of the lens, the bicylinder, the tricylinder and the napkin ring below
+(n = 8), every node of every leaf lies in its part up to 1e-5 h; before, nodes
+of a few leaves at corners and where a ridge leaves a cell lay up to 0.07 h
+outside. At most 2 % of a face's leaves are dropped because their nodes do not
+line up: slivers along ridges, leaves that pinch to a point, and boxes without
+a certified direction where two cylinders touch.
 
 Ball and half-space per cell, n = 8, q = 5, per-cell L1 relative to the totals:
 
@@ -340,9 +356,15 @@ Ball and half-space per cell, n = 8, q = 5, per-cell L1 relative to the totals:
 | tetrahedra, P2 and P1 | 7.1e-10 | 3.4e-8 | 4.4e-14 | 1.7e-10 |
 | tetrahedra, analytic | 9.1e-10 | 4.3e-8 | 3.9e-14 | 2.1e-10 |
 
-A disk and a half-plane in 2D reach 1e-15 at q = 8. Exact totals, n = 8, q = 5:
-the lens of two balls within 1.0e-7, the Steinmetz bicylinder within 1.5e-6
-(its cylinders touch where their intersection curves cross). The robustness
+A disk and a half-plane in 2D reach 1e-15 at q = 8. Exact totals, n = 8, q = 5,
+hexahedra and tetrahedra, P2 and analytic: the lens of two balls within 1.0e-7,
+the Steinmetz bicylinder within 1.5e-6 (its cylinders touch where their
+intersection curves cross), the tricylinder (three cylinders, faces meeting at
+corners) within 2.7e-6, the napkin ring (a ball outside a cylinder) within
+7.7e-8. In 2D, n = 16, q = 5: two disks within 5.5e-8 (lens, crescent, union
+and arcs); of three disks, the eight parts integrated one by one fill the
+square to rounding, and the four pieces of one circle make it up within
+2.3e-9. The robustness
 cases (planes through vertices and 1e-3 off faces, a sphere with its tangent
 plane, two balls touching, a plane in grid faces with a sphere through
 vertices) pass every check.
@@ -391,6 +413,124 @@ q and the margin as for Bernstein forms.
   faces were wrong (VTK's base order with Basix numbering; no dofs on them below
   degree 3).
 
+## Sweeping circle and sphere against algoim (2026-10-03)
+
+`quadrays_sweep` moves the centre of a circle (sphere) of radius r over a
+cell, c = s h (1, 0.618, 0.414) with s = k / steps, from a grid vertex (s = 0)
+on, in [-1, 1]^d. The level set is the P2 interpolant of |x - c|^2 - r^2,
+exact. The same parts of the front end go to quadrays (`part::quadrature_rules`)
+and to algoim's multi-polynomial engine on the same Bernstein forms with its
+AutoMixed strategy (`benchmarks::algoim_rules`, quadrilaterals and hexahedra).
+Errors are against exact per-cell values; one thread.
+
+No negative or non-finite weight, no point outside its cell or more than
+1e-8 h outside its part, no failure, for either engine at any of 128 (2D) or
+32 (3D) centres, also for r = 5h, where the circle (sphere) passes through
+grid vertices and touches grid lines (planes) at s = 0.
+
+Largest per-cell L1 over the sweep (relative to the area or length, volume or
+area) of the volume / interface parts, microseconds and points per cut cell:
+
+| n = 16, r = 0.7 | q | quadrays L1 | algoim L1 | µs: quadrays, algoim | points: quadrays, algoim |
+| --- | --- | --- | --- | --- | --- |
+| quadrilaterals | 3 | 3.1e-8 / 2.5e-7 | the same | 9.5 / 8.3, 12.7 / 12.0 | 11.3 / 3.0, the same |
+| quadrilaterals | 5 | 4.3e-12 / 6.6e-11 | the same | 12.2 / 9.8, 15.6 / 12.6 | 31.4 / 5.0, the same |
+| hexahedra | 3 | 2.9e-7 / 8.0e-6 | 1.7e-6 / 4.8e-5 | 35 / 30, 168 / 158 | 48 / 12, 47 / 12 |
+| hexahedra | 5 | 7.5e-10 / 2.2e-7 | 2.3e-7 / 4.5e-6 | 88 / 57, 226 / 179 | 224 / 33, 217 / 32 |
+
+In 2D both build the same rules. In 3D they agree where no box needs a split
+(s < 0.4 on n = 16); elsewhere AutoMixed switches to tanh-sinh where it sees
+vertical tangents and its error jumps by one to three orders of magnitude at
+some centres, while quadrays splits the box (a few percent more points). With
+r = 5h algoim's errors grow (q = 5: 7.0e-6 / 2.8e-5) and quadrays' do not
+(2.3e-9 / 2.3e-7). With Gauss-Legendre everywhere (`quadrays_study`, generator
+`algoim-gl`; n = 8, q = 5, s = 0.25) algoim reaches 3.8e-8 / 7.0e-6 against
+quadrays' 1.2e-8 / 1.9e-7, at two to four times quadrays' time.
+
+Simplices (quadrays only), on their reference boxes as first measured.
+Triangles cost 12 to 17 µs per cut cell and are less accurate than
+quadrilaterals at the same q (circle 1.6e-5 at q = 3, 1.8e-7 at q = 5): their
+height directions are two legs in the sheared box frame, where the margin 0.25
+allows steeper height functions than two orthogonal axes ever need.
+Tetrahedra, n = 16, q = 3: 145 / 128 µs and 133 / 23 points per cut cell, and
+4.5 times as many cut cells as hexahedra, so 19 times the time per mesh. Most
+of it is bisection at the top level (one function fails on every axis, in
+boxes cut by the clip face): the box of a Kuhn tetrahedron is a sheared
+parallelepiped six times its volume. Orthogonal boxes (next section) fix both.
+algoim on tetrahedra as clipped boxes, its points beyond the clip discarded,
+does not converge on the interface (L1 about 1e-3 at q = 3 and 5).
+
+Compression onto Q2 (P2 on simplices) leaves 27 (10) points per cut cell of a
+volume part and at most 12 (9) of an interface, moment residuals below 1e-12;
+it costs 59 µs per cut hexahedron at q = 3 and 285 µs at q = 5, more than the
+rules themselves (35 and 88 µs), so it pays where rules are reused or the
+element space is rich.
+
+## Orthogonal boxes for simplices and prisms (2026-10-03)
+
+`make_clipped_box` takes a `BoxFrame`. `BoxFrame::orthogonal`, the default,
+puts a triangle or tetrahedron in the smallest of the boxes around it in the
+identity frame and in the orthonormal frames that Gram-Schmidt makes of its
+edges (4 frames for a triangle, 31 for a tetrahedron); its facets that do not
+hold on the whole box become the clips. A prism takes the smallest rectangle
+around its bottom triangle in the frames of the triangle's edges, and its
+lateral edge as the third axis. Quadrilaterals,
+hexahedra and pyramids keep their reference boxes (`BoxFrame::reference`): an
+orthogonal box made pyramids 30 times slower.
+
+A Pk level set goes onto such a box by interpolation at the box's (n + 1)^d
+equispaced nodes with the inverse Bernstein-Vandermonde matrix, computed once
+per degree in long double. An affine image of a polynomial of total degree n
+has degree n in each variable, so the conversion is exact up to rounding (below
+1e-12 against the exact one in `test_box_bernstein`). Classification stays in
+the reference frame, where the sign test reads a simplex's own Bernstein
+coefficients. Only cut cells build the orthogonal box; whole cells and faces in
+a zero set keep the reference box.
+
+The sweeps above and one over 8 centres on prisms whose triangles have a
+diagonal leg, before and after (per-cell L1 of the volume / interface parts,
+largest over the sweep; points and µs per cut cell; µs are medians of runs that
+alternate the two libraries, 25 for triangles, 3 for tetrahedra, 5 for
+prisms):
+
+| | q | L1, reference box | L1, orthogonal box | points | µs |
+| --- | --- | --- | --- | --- | --- |
+| triangles, n = 16 | 3 | 2.3e-7 / 1.6e-5 | 1.4e-8 / 1.1e-7 | 13.6 / 3.0 to 14.1 / 3.0 | 17 / 15 to 19 / 17 |
+| triangles, n = 16 | 5 | 1.3e-9 / 1.8e-7 | 2.0e-12 / 3.0e-11 | 37.7 / 5.0 to 39.1 / 5.0 | 22 / 17 to 23 / 19 |
+| triangles, n = 16 | 8 | 1.0e-12 / 2.4e-10 | 5.6e-16 / 1.7e-14 | 97 / 8 to 100 / 8 | |
+| tetrahedra, n = 8 | 3 | 4.1e-7 / 9.0e-6 | 3.8e-6 / 2.9e-5 | 419 / 71 to 104 / 19 | 665 / 620 to 167 / 157 |
+| tetrahedra, n = 8 | 5 | 4.0e-9 / 1.8e-7 | 8.1e-9 / 1.9e-7 | 1941 / 198 to 482 / 54 | 1229 / 931 to 307 / 226 |
+| tetrahedra, n = 16 | 3 | 1.5e-7 / 4.0e-6 | 2.8e-7 / 7.3e-6 | 133 / 23 to 84 / 15 | 174 / 151 to 110 / 96 |
+| tetrahedra, n = 16 | 5 | 2.9e-10 / 4.4e-8 | 8.5e-10 / 7.8e-8 | 617 / 65 to 389 / 42 | 329 / 232 to 214 / 147 |
+| diagonal prisms, n = 8 | 3 | 6.2e-6 / 6.4e-5 | 6.0e-6 / 5.1e-5 | 97 / 21 to 87 / 18 | 111 / 101 to 131 / 107 |
+| diagonal prisms, n = 8 | 5 | 2.7e-8 / 9.9e-7 | 2.2e-8 / 6.8e-7 | 449 / 57 to 401 / 51 | 215 / 170 to 201 / 162 |
+| diagonal prisms, n = 16 | 3 | 3.7e-7 / 6.6e-6 | 3.2e-7 / 6.1e-6 | 59 / 13 to 73 / 15 | 46 / 42 to 66 / 59 |
+| diagonal prisms, n = 16 | 5 | 4.4e-10 / 5.2e-8 | 4.0e-10 / 5.5e-8 | 271 / 35 to 337 / 42 | 101 / 69 to 132 / 93 |
+
+- **Triangles** become 16 to 6000 times more accurate at q = 3 and 5 with the
+  same points, and reach rounding at q = 8; at q = 3 they are now below the
+  quadrilaterals' 3.1e-8 / 2.5e-7. The box and the conversion cost 1.5 µs per
+  cut cell (6 to 11 percent).
+- **Tetrahedra** need 6 times fewer bisections at n = 8 (630 instead of 4086
+  for a centred sphere, q = 3) and 20 times fewer at n = 16 (122 instead of
+  2382): 4 times fewer points and 4 times faster at n = 8, 1.6 times at
+  n = 16. The bisections of the sheared box also refined the rules, so at the
+  same q the new rules are less accurate (up to 9 times at n = 8, q = 3). q = 5
+  now costs about what q = 3 did (n = 8: 307 against 665 µs; n = 16: 214
+  against 174) and is 50 to 180 times more accurate.
+- **Prisms** on axis-aligned triangles had orthogonal boxes already and are
+  unchanged. On the diagonal grid (triangles (0,0), (1,0), (1,1) and (0,0),
+  (1,1), (0,1)) the accuracy stays the same; n = 8 takes 10 percent fewer
+  points in about the same time, n = 16 25 percent more points and 30 to 40
+  percent more time.
+- **Pyramids** keep their reference box and stay expensive, about 3 ms per cut
+  cell at n = 8, q = 3 (2112 / 382 points), and their interface does not
+  converge in the sweep (largest L1 6.4e-5 at q = 3, 3.5e-5 at q = 5, at
+  s = 0.5): an open problem.
+
+`quadrays_study --frame reference|orthogonal` compares the two on single
+cells.
+
 ## Build and run
 
 ```bash
@@ -402,6 +542,7 @@ env CONDA_PREFIX=$E CC=$E/bin/clang CXX=$E/bin/clang++ $E/bin/cmake -S benchmark
 $E/bin/cmake --build build-quadrays/benchmarks
 build-quadrays/benchmarks/quadrays/quadrays_study --mesh tet --n 32 --q 5 --gen quadrays,alpha-split
 build-quadrays/benchmarks/quadrays/quadrays_robustness_report --list
+OMP_NUM_THREADS=1 build-quadrays/benchmarks/quadrays/quadrays_sweep --mesh hex --n 16 --q 3,5 --steps 32 --compress 2
 build-quadrays/benchmarks/quadrays/quadrays_study --mesh hex --n 32 --q 5 --analytic distance --gen quadrays,quadgen
 PYTHONPATH=build-quadrays/python $E/bin/python -c "import shapeforest as sf; from cutcells import shapeforest as csf; csf.write_tape(sf.sphere(0.7).translate(0.0123, -0.0371, 0.0217), 'sphere.tape')"
 build-quadrays/benchmarks/quadrays/quadrays_study --mesh hex --n 32 --q 5 --tape sphere.tape --gen quadrays,quadgen

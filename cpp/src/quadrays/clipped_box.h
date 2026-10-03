@@ -37,10 +37,12 @@ struct HalfSpace
 ///   xi(u) = ref_origin + ref_jacobian u   maps it to the parent cell's reference
 ///                                         coordinates, where points are reported.
 ///
-/// A hexahedron is its own box; a tetrahedron is the box of its affine map
-/// clipped by u0 + u1 + u2 <= 1, a prism the box clipped by u0 + u1 <= 1, a
-/// pyramid the box clipped by u0 + u2 <= 1 and u1 + u2 <= 1. Maps are affine,
-/// as everywhere in CutCells.
+/// A hexahedron is its own box. In the reference frame (BoxFrame), a
+/// tetrahedron is the box of its affine map clipped by u0 + u1 + u2 <= 1, a
+/// prism the box clipped by u0 + u1 <= 1, a pyramid the box clipped by
+/// u0 + u2 <= 1 and u1 + u2 <= 1; in the orthogonal frame, a simplex is its
+/// bounding box in an orthonormal frame, clipped by its facets. Maps are
+/// affine, as everywhere in CutCells.
 ///
 /// Cells of dimension 2 (triangles, quadrilaterals) live in the plane u2 = 0:
 /// their box is [0, 1]^2 x {0}, the third column of the maps is e2 (so their
@@ -71,22 +73,41 @@ struct Polytope
     int n_faces() const { return static_cast<int>(face_offsets.size()) - 1; }
 };
 
+/// How make_clipped_box chooses the box of a cell.
+enum class BoxFrame : std::uint8_t
+{
+    /// The unit box of the cell's affine map from vertex 0 along its edges:
+    /// box coordinates are the cell's reference coordinates.
+    reference = 0,
+    /// Triangles and tetrahedra: over the physical axes and the orthonormal
+    /// frames two of the cell's edges span, the one in which the cell's
+    /// bounding box is smallest, the physical axes on ties; the cell is that
+    /// box clipped by its facets. Prisms: their bottom triangle's smallest
+    /// rectangle in an orthonormal frame of its plane, times the lateral edge,
+    /// clipped by the triangle's sides. Height directions along orthogonal
+    /// axes: one of them always suits a smooth zero set, while the sheared
+    /// reference frame of a Kuhn tetrahedron may offer none. Pyramids keep
+    /// the reference frame: (1 - z)^n phi, their engine's function, varies
+    /// wildly in the box outside the pyramid, of which an orthogonal box has
+    /// more. Hexahedra, quadrilaterals and degenerate cells: reference.
+    orthogonal = 1
+};
+
 /// @brief The ClippedBox of a cell from its type and vertices.
 ///
-/// The map is affine: from vertex 0 along the edges to the vertices next to
-/// it in the reference cell. Quadrilaterals, hexahedra, prisms and pyramids
-/// are exact only if they are affine images of their reference cells
+/// The maps are affine. Quadrilaterals, hexahedra, prisms and pyramids are
+/// exact only if they are affine images of their reference cells
 /// (parallelograms, parallelepipeds, ...).
 ///
 /// @param cell_type      triangle or quadrilateral (gdim 2); tetrahedron,
 ///                       hexahedron, prism or pyramid (gdim 3)
 /// @param vertex_coords  vertices in Basix order, flat, gdim per vertex
 /// @param gdim           geometric dimension, the cell's dimension
-/// @param box            output; box coordinates equal the cell's Basix
-///                       reference coordinates
+/// @param box            output
+/// @param frame          the frame of the box (BoxFrame)
 template <std::floating_point T>
 void make_clipped_box(cell::type cell_type, std::span<const T> vertex_coords, int gdim,
-                      ClippedBox<T>& box);
+                      ClippedBox<T>& box, BoxFrame frame = BoxFrame::orthogonal);
 
 /// @brief True if quadrays takes cells of this type (make_clipped_box).
 inline bool supported_cell(cell::type cell_type)
@@ -109,6 +130,11 @@ inline bool supported_cell(cell::type cell_type)
 template <std::floating_point T>
 T jacobian_determinant(const ClippedBox<T>& box);
 
+/// @brief Determinant of the map from the parent's reference coordinates to
+/// physical space: reference measures times its absolute value are physical.
+template <std::floating_point T>
+T reference_jacobian_determinant(const ClippedBox<T>& box);
+
 /// @brief Inverse of the box-to-physical Jacobian.
 template <std::floating_point T>
 Mat3<T> inverse_jacobian(const ClippedBox<T>& box);
@@ -120,6 +146,16 @@ Vec3<T> physical_point(const ClippedBox<T>& box, const Vec3<T>& u);
 /// @brief Parent reference coordinates of the box coordinates @p u.
 template <std::floating_point T>
 Vec3<T> reference_point(const ClippedBox<T>& box, const Vec3<T>& u);
+
+/// @brief Box coordinates of the parent reference coordinates @p xi (the
+/// inverse of reference_point).
+template <std::floating_point T>
+Vec3<T> box_point(const ClippedBox<T>& box, const Vec3<T>& xi);
+
+/// @brief True if the box coordinates of @p box are its parent's reference
+/// coordinates (BoxFrame::reference, or a hexahedron or quadrilateral).
+template <std::floating_point T>
+bool reference_frame(const ClippedBox<T>& box);
 
 /// @brief Child covering [lo, hi] of the box coordinates of @p box; clips carry
 /// over. Boxes of 2D cells keep lo[2] = 0 and hi[2] = 1.

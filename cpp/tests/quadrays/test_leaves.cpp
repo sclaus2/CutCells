@@ -109,7 +109,7 @@ void test_sphere_leaves(const char* mesh, int degree)
                         ClippedBox<double> box;
                         BoxBernstein<double> form;
                         make_clipped_box<double>(cell.type, cell.vertices, 3, box);
-                        cell_bernstein_on_box<double>(cell.type, 2, coeffs, form);
+                        cell_bernstein_on_box<double>(cell.type, 2, coeffs, box, form);
                         append_leaves(box, form, part, degree, Options{}, index++, leaves, stats);
                     }
         const std::string what = std::string(mesh) + " " + part_text + ", degree " + std::to_string(degree);

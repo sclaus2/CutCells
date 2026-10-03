@@ -56,13 +56,16 @@ struct LeafMesh
 /// degree whose nodes are the images of an equispaced grid under the piece's
 /// parametrisation: hexahedra (quadrilaterals on 2D cells) for volume parts,
 /// oriented to a positive Jacobian, and quadrilaterals (curves on 2D cells)
-/// for interfaces, with their normal along the gradient of the level set. A
-/// picture of the leaves shows exactly what is integrated.
+/// for interfaces, with their normal along the gradient of the level set.
+/// Leaves do not split where only the integration does (leaf_nodes): where
+/// two level sets' zero sets cross beyond the box above, and in interface
+/// parts at the traces of the other level sets on box faces. A picture of the
+/// leaves shows exactly the region that is integrated.
 ///
 /// @param phis         the cell's level sets (bernstein_source, analytic_source)
 /// @param terms        the selection (integrate)
 /// @param parent_cell  background cell of the leaves
-/// @param stats        counts leaves dropped because their nodes did not line up
+/// @param stats        counts leaves of the part dropped because their nodes did not line up
 template <std::floating_point T>
 void append_leaves(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms,
                    int degree, const Options& opt, std::int32_t parent_cell, LeafMesh<T>& mesh, Stats& stats);

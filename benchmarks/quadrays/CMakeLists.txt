@@ -120,6 +120,16 @@ endfunction()
 quadrays_benchmark(quadrays_study study.cpp)
 quadrays_benchmark(quadrays_robustness_report robustness_report.cpp)
 
+# a sweeping circle and sphere through the front end: quadrays, and algoim on
+# the same parts with CUTCELLS_WITH_ALGOIM
+add_executable(quadrays_sweep sweep.cpp)
+target_include_directories(quadrays_sweep PRIVATE "${QUADRAYS_SUPPORT_DIR}")
+target_link_libraries(quadrays_sweep PRIVATE CUTCELLS::cutcells)
+if(CUTCELLS_WITH_ALGOIM)
+  target_sources(quadrays_sweep PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/mesh_part_algoim.cpp")
+  target_link_libraries(quadrays_sweep PRIVATE quadrays_algoim)
+endif()
+
 # algoim's quadrature on the parts of the front end (formerly the library's
 # backend='algoim'), and its checks
 if(CUTCELLS_WITH_ALGOIM)

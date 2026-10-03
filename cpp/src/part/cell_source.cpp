@@ -26,7 +26,7 @@ quadrays::Source<T> source_on_box(const LevelSetFunction<T, I>& ls, I cell_id, c
     {
         make_cell_level_set(ls, cell_id, ls_cell);
         quadrays::cell_bernstein_on_box<T>(type, ls_cell.bernstein_order, std::span<const T>(ls_cell.bernstein_coeffs),
-                                           form);
+                                           box, form);
         return quadrays::bernstein_source(form);
     }
     throw std::invalid_argument("part: the level set '" + ls.name
@@ -36,13 +36,13 @@ quadrays::Source<T> source_on_box(const LevelSetFunction<T, I>& ls, I cell_id, c
 
 template <std::floating_point T, std::integral I>
 bool cell_source(const MeshView<T, I>& mesh, const LevelSetFunction<T, I>& ls, I cell_id,
-                 CellSource<T, I>& out)
+                 CellSource<T, I>& out, quadrays::BoxFrame frame)
 {
     const cell::type type = mesh.cell_type(cell_id);
     if (!quadrays_takes(type, mesh.gdim, ls))
         return false;
     cell_vertex_coords_basix(mesh, cell_id, out.vertices, out.nodes);
-    quadrays::make_clipped_box<T>(type, std::span<const T>(out.vertices), mesh.gdim, out.box);
+    quadrays::make_clipped_box<T>(type, std::span<const T>(out.vertices), mesh.gdim, out.box, frame);
     out.source = source_on_box(ls, cell_id, type, out.box, out.form, out.ls_cell);
     return true;
 }
@@ -71,9 +71,9 @@ bool cell_sources(const MeshView<T, I>& mesh, std::span<const LevelSetFunction<T
 // ============================================================================
 
 template bool cell_source<float, int>(const MeshView<float, int>&, const LevelSetFunction<float, int>&, int,
-                                      CellSource<float, int>&);
+                                      CellSource<float, int>&, quadrays::BoxFrame);
 template bool cell_source<double, int>(const MeshView<double, int>&, const LevelSetFunction<double, int>&, int,
-                                       CellSource<double, int>&);
+                                       CellSource<double, int>&, quadrays::BoxFrame);
 template bool cell_sources<float, int>(const MeshView<float, int>&,
                                        std::span<const LevelSetFunction<float, int>* const>, int,
                                        CellSources<float, int>&);

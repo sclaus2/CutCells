@@ -117,12 +117,15 @@ void append_cell_points(const quadrays::ClippedBox<T>& box, cell::type type, int
                         quadrays::CellPoints<T>& out)
 {
     const auto rule = quadrature::get_reference_rule<T>(type, degree);
-    const T detj = std::abs(quadrays::jacobian_determinant(box));
+    const T detj = std::abs(quadrays::reference_jacobian_determinant(box));
     const int tdim = rule._tdim;
     for (int q = 0; q < rule._num_points; ++q)
     {
-        for (int i = 0; i < 3; ++i)
-            out.points.push_back(i < tdim ? rule._points[static_cast<std::size_t>(q * tdim + i)] : T(0));
+        quadrays::Vec3<T> xi = {0, 0, 0};
+        for (int i = 0; i < tdim; ++i)
+            xi[i] = rule._points[static_cast<std::size_t>(q * tdim + i)];
+        const quadrays::Vec3<T> u = quadrays::box_point(box, xi);
+        out.points.insert(out.points.end(), u.begin(), u.end());
         out.weights.push_back(rule._weights[static_cast<std::size_t>(q)] * detj);
     }
 }
@@ -135,8 +138,8 @@ void append_face_points(const quadrays::ClippedBox<T>& box, cell::type type, int
 {
     const std::span<const int> fv = facet_vertices(type, f);
     const bool edge = cell::get_tdim(type) == 2;
-    const quadrays::Vec3<T> ua = box_vertex<T>(type, fv[0]), ub = box_vertex<T>(type, fv[1]),
-                            uc = box_vertex<T>(type, fv[edge ? 1 : 2]);
+    const quadrays::Vec3<T> ua = box_vertex<T>(box, type, fv[0]), ub = box_vertex<T>(box, type, fv[1]),
+                            uc = box_vertex<T>(box, type, fv[edge ? 1 : 2]);
     // physical edges of the facet and its measure factor
     std::array<T, 3> e1{}, e2{};
     for (int i = 0; i < 3; ++i)
@@ -419,7 +422,13 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
                                         "hexahedra, prisms and pyramids in 3D");
         }
         cell_vertex_coords_basix(mesh, c, cs.vertices, cs.nodes);
-        quadrays::make_clipped_box<T>(type, std::span<const T>(cs.vertices), mesh.gdim, box);
+        // a cut cell's points come in the frame of its sources; whole cells and
+        // zero faces take the reference box, which costs nothing to build
+        bool cut = false;
+        for (std::size_t j = i; j < entries.size() && entries[j].cell == c; ++j)
+            cut = cut || entries[j].kind == 0;
+        quadrays::make_clipped_box<T>(type, std::span<const T>(cs.vertices), mesh.gdim, box,
+                                      cut ? quadrays::BoxFrame::orthogonal : quadrays::BoxFrame::reference);
         points.points.clear();
         points.weights.clear();
         for (; i < entries.size() && entries[i].cell == c; ++i)

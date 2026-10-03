@@ -43,7 +43,9 @@ struct TestCell
 
 /// The cells of the grid cube [lo, lo + h]^3: the cube itself ("hex"), its
 /// six Kuhn tetrahedra ("tet"), two prisms ("prism": the triangles of the
-/// bottom face extruded along z) or six pyramids ("pyramid": the faces with the
+/// bottom face extruded along z, their legs along the axes; "prism-diag": the
+/// bottom face split along its other diagonal, so that the edges from vertex
+/// 0 meet at 45 degrees) or six pyramids ("pyramid": the faces with the
 /// cube's centre as apex). Faces are given relative to @p origin.
 inline std::vector<TestCell> grid_cells(const std::string& mesh, const V3& lo, double h, const V3& origin)
 {
@@ -94,9 +96,13 @@ inline std::vector<TestCell> grid_cells(const std::string& mesh, const V3& lo, d
         cells.push_back(c);
         return cells;
     }
-    if (mesh == "prism")
+    if (mesh == "prism" || mesh == "prism-diag")
     {
-        for (const auto& b : {std::array{P(0, 0, 0), P(1, 0, 0), P(0, 1, 0)}, std::array{P(1, 1, 0), P(0, 1, 0), P(1, 0, 0)}})
+        const bool diag = mesh == "prism-diag";
+        const std::array<std::array<V3, 3>, 2> bottoms
+            = diag ? std::array<std::array<V3, 3>, 2>{{{P(0, 0, 0), P(1, 0, 0), P(1, 1, 0)}, {P(0, 0, 0), P(1, 1, 0), P(0, 1, 0)}}}
+                   : std::array<std::array<V3, 3>, 2>{{{P(0, 0, 0), P(1, 0, 0), P(0, 1, 0)}, {P(1, 1, 0), P(0, 1, 0), P(1, 0, 0)}}};
+        for (const auto& b : bottoms)
         {
             std::array<V3, 3> t = b;
             for (V3& x : t)

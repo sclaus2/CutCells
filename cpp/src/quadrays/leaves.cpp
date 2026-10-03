@@ -97,21 +97,18 @@ void append_leaves(const ClippedBox<T>& cell, std::span<const Source<T>> phis, s
     };
     for (const auto& [key, leaf] : leaves)
     {
-        if (std::count(leaf.set.begin(), leaf.set.end(), char(1)) != n_nodes)
-        {
-            ++stats.incomplete_leaves; // node counts differed across the leaf
-            continue;
-        }
         // A leaf lies on one side of each level set that splits it; nodes on
-        // a zero set are ~0. The terms decide by the sign of the sums.
+        // a zero set are ~0. The terms decide by the sign of the sums, over
+        // the nodes a leaf has.
         if (signed_sets != 0)
         {
             for (std::uint64_t bits = signed_sets; bits != 0; bits &= bits - 1)
             {
                 const int l = std::countr_zero(bits);
                 T sum = T(0);
-                for (const Vec3<T>& u : leaf.u)
-                    sum += evaluate(phis[static_cast<std::size_t>(l)], std::span<const T>(u));
+                for (int index = 0; index < n_nodes; ++index)
+                    if (leaf.set[index])
+                        sum += evaluate(phis[static_cast<std::size_t>(l)], std::span<const T>(leaf.u[index]));
                 sign[static_cast<std::size_t>(l)] = sum < T(0) ? -1 : (sum > T(0) ? 1 : 0);
             }
             bool selected = false;
@@ -127,6 +124,11 @@ void append_leaves(const ClippedBox<T>& cell, std::span<const Source<T>> phis, s
             }
             if (!selected)
                 continue;
+        }
+        if (std::count(leaf.set.begin(), leaf.set.end(), char(1)) != n_nodes)
+        {
+            ++stats.incomplete_leaves; // node counts differed across the leaf
+            continue;
         }
 
         const std::int32_t first = mesh.n_points();
@@ -271,9 +273,9 @@ void append_linear_cell(cell::type cell_type, std::span<const T> vertex_coords, 
     }
     if (cell_type == cell::type::tetrahedron)
     {
-        // VTK tetrahedra are positively oriented
+        // VTK tetrahedra are positively oriented: the sign of the reference map
         ClippedBox<T> box;
-        make_clipped_box(cell_type, vertex_coords, gdim, box);
+        make_clipped_box(cell_type, vertex_coords, gdim, box, BoxFrame::reference);
         if (jacobian_determinant(box) < T(0))
             std::swap(mesh.connectivity[first + 1], mesh.connectivity[first + 2]);
     }

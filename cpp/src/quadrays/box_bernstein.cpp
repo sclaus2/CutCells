@@ -402,9 +402,11 @@ const std::vector<T>& pyramid_to_box_matrix(int n)
 // Conversion from a cell's level set
 // ============================================================================
 
+namespace
+{
+/// The form on the box of the reference frame (cell_bernstein_on_box).
 template <std::floating_point T>
-void cell_bernstein_on_box(cell::type cell_type, int degree, std::span<const T> coeffs,
-                           BoxBernstein<T>& out)
+void reference_form(cell::type cell_type, int degree, std::span<const T> coeffs, BoxBernstein<T>& out)
 {
     check_degree(degree);
     const int n1 = degree + 1;
@@ -515,6 +517,135 @@ void cell_bernstein_on_box(cell::type cell_type, int degree, std::span<const T> 
     default:
         throw std::invalid_argument("quadrays: unsupported cell type "
                                     + cell::cell_type_to_str(cell_type));
+    }
+}
+
+/// Inverse of the Bernstein-Vandermonde matrix of degree n at the equispaced
+/// nodes i / n (row-major): coefficients from values. Computed once per
+/// degree in long double.
+template <std::floating_point T>
+const std::vector<T>& equispaced_bernstein_inverse(int n)
+{
+    // per thread, the pointers into the shared cache (whose nodes stay put)
+    thread_local std::array<const std::vector<T>*, max_box_degree + 1> local{};
+    if (n >= 0 && n <= max_box_degree && local[static_cast<std::size_t>(n)] != nullptr)
+        return *local[static_cast<std::size_t>(n)];
+    static std::mutex mutex;
+    static std::map<int, std::vector<T>> cache;
+    const std::lock_guard<std::mutex> lock(mutex);
+    auto it = cache.find(n);
+    if (it == cache.end())
+    {
+        const int n1 = n + 1;
+        std::vector<long double> a(static_cast<std::size_t>(n1 * n1)), inv(a.size(), 0.0L);
+        for (int i = 0; i < n1; ++i)
+        {
+            const long double s = n == 0 ? 0.5L : static_cast<long double>(i) / n;
+            long double binom = 1.0L;
+            for (int j = 0; j < n1; ++j)
+            {
+                a[static_cast<std::size_t>(i * n1 + j)] = binom * std::pow(s, j) * std::pow(1.0L - s, n - j);
+                binom = binom * (n - j) / (j + 1);
+            }
+            inv[static_cast<std::size_t>(i * n1 + i)] = 1.0L;
+        }
+        // Gauss-Jordan elimination with partial pivoting
+        for (int c = 0; c < n1; ++c)
+        {
+            int pivot = c;
+            for (int r = c + 1; r < n1; ++r)
+                if (std::abs(a[static_cast<std::size_t>(r * n1 + c)])
+                    > std::abs(a[static_cast<std::size_t>(pivot * n1 + c)]))
+                    pivot = r;
+            for (int k = 0; k < n1; ++k)
+            {
+                std::swap(a[static_cast<std::size_t>(c * n1 + k)], a[static_cast<std::size_t>(pivot * n1 + k)]);
+                std::swap(inv[static_cast<std::size_t>(c * n1 + k)], inv[static_cast<std::size_t>(pivot * n1 + k)]);
+            }
+            const long double d = a[static_cast<std::size_t>(c * n1 + c)];
+            for (int k = 0; k < n1; ++k)
+            {
+                a[static_cast<std::size_t>(c * n1 + k)] /= d;
+                inv[static_cast<std::size_t>(c * n1 + k)] /= d;
+            }
+            for (int r = 0; r < n1; ++r)
+            {
+                if (r == c)
+                    continue;
+                const long double f = a[static_cast<std::size_t>(r * n1 + c)];
+                for (int k = 0; k < n1; ++k)
+                {
+                    a[static_cast<std::size_t>(r * n1 + k)] -= f * a[static_cast<std::size_t>(c * n1 + k)];
+                    inv[static_cast<std::size_t>(r * n1 + k)] -= f * inv[static_cast<std::size_t>(c * n1 + k)];
+                }
+            }
+        }
+        it = cache.emplace(n, std::vector<T>(inv.begin(), inv.end())).first;
+    }
+    if (n >= 0 && n <= max_box_degree)
+        local[static_cast<std::size_t>(n)] = &it->second;
+    return it->second;
+}
+} // namespace
+
+template <std::floating_point T>
+void cell_bernstein_on_box(cell::type cell_type, int degree, std::span<const T> coeffs,
+                           const ClippedBox<T>& box, BoxBernstein<T>& out)
+{
+    if (reference_frame(box))
+    {
+        reference_form(cell_type, degree, coeffs, out);
+        return;
+    }
+    if (cell_type != cell::type::triangle && cell_type != cell::type::tetrahedron && cell_type != cell::type::prism)
+    {
+        throw std::invalid_argument("quadrays: a " + cell::cell_type_to_str(cell_type)
+                                    + " takes the box of its reference frame");
+    }
+    thread_local BoxBernstein<T> ref;
+    reference_form(cell_type, degree, coeffs, ref);
+
+    // degree n in each box variable (cell_bernstein_on_box)
+    const int dim = box.tdim, n = degree;
+    const std::array<int, 3> deg = {n, n, dim == 3 ? n : 0};
+    const std::array<int, 3> ext = {deg[0] + 1, deg[1] + 1, deg[2] + 1};
+
+    // values at the equispaced nodes of the box, then coefficients axis by axis
+    out.dim = dim;
+    out.degree = deg;
+    out.coeffs.resize(static_cast<std::size_t>(ext[0] * ext[1] * ext[2]));
+    auto node = [](int i, int d) { return d == 0 ? T(0.5) : static_cast<T>(i) / static_cast<T>(d); };
+    for (int a2 = 0; a2 < ext[2]; ++a2)
+        for (int a1 = 0; a1 < ext[1]; ++a1)
+            for (int a0 = 0; a0 < ext[0]; ++a0)
+            {
+                const Vec3<T> u = {node(a0, deg[0]), node(a1, deg[1]), dim == 3 ? node(a2, deg[2]) : T(0)};
+                const Vec3<T> xi = reference_point(box, u);
+                out.coeffs[static_cast<std::size_t>(a0 + ext[0] * (a1 + ext[1] * a2))]
+                    = evaluate(ref, std::span<const T>(xi.data(), static_cast<std::size_t>(dim)));
+            }
+    thread_local std::vector<T> line;
+    const std::array<int, 3> stride = {1, ext[0], ext[0] * ext[1]};
+    for (int axis = 0; axis < dim; ++axis)
+    {
+        const std::vector<T>& inv = equispaced_bernstein_inverse<T>(deg[axis]);
+        const int m = ext[axis];
+        line.resize(static_cast<std::size_t>(m));
+        const int o1 = axis == 0 ? 1 : 0, o2 = axis == 2 ? 1 : 2; // the other two axes
+        for (int i2 = 0; i2 < ext[o2]; ++i2)
+            for (int i1 = 0; i1 < ext[o1]; ++i1)
+            {
+                const int base = i1 * stride[o1] + i2 * stride[o2];
+                for (int i = 0; i < m; ++i)
+                    line[static_cast<std::size_t>(i)] = out.coeffs[static_cast<std::size_t>(base + i * stride[axis])];
+                for (int k = 0; k < m; ++k)
+                {
+                    T sum = T(0);
+                    for (int i = 0; i < m; ++i)
+                        sum += inv[static_cast<std::size_t>(k * m + i)] * line[static_cast<std::size_t>(i)];
+                    out.coeffs[static_cast<std::size_t>(base + k * stride[axis])] = sum;
+                }
+            }
     }
 }
 
@@ -1055,7 +1186,8 @@ void isolate_roots(std::span<const T> c, T a, T b, std::vector<T>& roots, std::v
 // Explicit instantiations
 // ============================================================================
 
-template void cell_bernstein_on_box<float>(cell::type, int, std::span<const float>, BoxBernstein<float>&);
+template void cell_bernstein_on_box<float>(cell::type, int, std::span<const float>, const ClippedBox<float>&,
+                                          BoxBernstein<float>&);
 template float evaluate<float>(const BoxBernstein<float>&, std::span<const float>);
 template void gradient<float>(const BoxBernstein<float>&, std::span<const float>, std::span<float>);
 template void derivative<float>(const BoxBernstein<float>&, int, BoxBernstein<float>&);
@@ -1070,7 +1202,8 @@ template float evaluate_1d<float>(std::span<const float>, float);
 template float bracketed_root<float>(std::span<const float>, float, float, float, float, float, float);
 template void isolate_roots<float>(std::span<const float>, float, float, std::vector<float>&, std::vector<float>&);
 
-template void cell_bernstein_on_box<double>(cell::type, int, std::span<const double>, BoxBernstein<double>&);
+template void cell_bernstein_on_box<double>(cell::type, int, std::span<const double>, const ClippedBox<double>&,
+                                           BoxBernstein<double>&);
 template double evaluate<double>(const BoxBernstein<double>&, std::span<const double>);
 template void gradient<double>(const BoxBernstein<double>&, std::span<const double>, std::span<double>);
 template void derivative<double>(const BoxBernstein<double>&, int, BoxBernstein<double>&);

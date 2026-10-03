@@ -71,7 +71,7 @@ void find_zero_faces(const MeshView<T, I>& mesh, CellSource<T, I>& cs, I cell_id
     std::array<T, 8> values{};
     for (int v = 0; v < nv; ++v)
     {
-        const quadrays::Vec3<T> u = box_vertex<T>(type, v);
+        const quadrays::Vec3<T> u = box_vertex<T>(cs.box, type, v);
         values[v] = quadrays::evaluate(cs.source, std::span<const T>(u));
     }
     thread_local quadrays::BoxBernstein<T> face_form;
@@ -87,8 +87,8 @@ void find_zero_faces(const MeshView<T, I>& mesh, CellSource<T, I>& cs, I cell_id
         if (!zero)
             continue;
         // the facet as the image of [0, 1]^m: u_a + s (u_b - u_a) (+ t (u_c - u_a))
-        const quadrays::Vec3<T> ua = box_vertex<T>(type, fv[0]), ub = box_vertex<T>(type, fv[1]),
-                                uc = box_vertex<T>(type, fv[m > 1 ? 2 : 1]);
+        const quadrays::Vec3<T> ua = box_vertex<T>(cs.box, type, fv[0]), ub = box_vertex<T>(cs.box, type, fv[1]),
+                                uc = box_vertex<T>(cs.box, type, fv[m > 1 ? 2 : 1]);
         std::array<T, 6> matrix{};
         for (int i = 0; i < 3; ++i)
         {
@@ -128,13 +128,13 @@ void find_zero_faces(const MeshView<T, I>& mesh, CellSource<T, I>& cs, I cell_id
             quadrays::Vec3<T> centroid = {0, 0, 0}, inner = {0, 0, 0};
             for (const int v : fv)
             {
-                const quadrays::Vec3<T> u = box_vertex<T>(type, v);
+                const quadrays::Vec3<T> u = box_vertex<T>(cs.box, type, v);
                 for (int i = 0; i < 3; ++i)
                     centroid[i] += u[i] / T(fv.size());
             }
             for (int v = 0; v < nv; ++v)
             {
-                const quadrays::Vec3<T> u = box_vertex<T>(type, v);
+                const quadrays::Vec3<T> u = box_vertex<T>(cs.box, type, v);
                 for (int i = 0; i < 3; ++i)
                     inner[i] += u[i] / T(nv);
             }
@@ -271,7 +271,9 @@ CutResult<T, I> cut(const MeshView<T, I>& mesh, std::span<const LevelSetFunction
         {
             const LevelSetFunction<T, I>& ls = level_sets[static_cast<std::size_t>(l)];
             cell::domain dom;
-            if (cell_source(mesh, ls, c, cs))
+            // the reference frame: simplices are classified on their own
+            // Bernstein coefficients, and it is the cheapest box to make
+            if (cell_source(mesh, ls, c, cs, quadrays::BoxFrame::reference))
             {
                 const int s = cell_sign(cs, mesh.cell_type(c), options.max_depth);
                 dom = s > 0 ? cell::domain::outside : (s < 0 ? cell::domain::inside : cell::domain::intersected);

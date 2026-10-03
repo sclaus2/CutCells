@@ -45,11 +45,10 @@ struct CellSources
     std::vector<I> nodes;    ///< scratch
 };
 
-/// @brief Box coordinates of vertex @p v (Basix numbering) of a cell that
-/// quadrays takes; they equal the cell's reference coordinates (u2 = 0 on 2D
-/// cells).
+/// @brief Reference coordinates of vertex @p v (Basix numbering) of a cell
+/// that quadrays takes (xi2 = 0 on 2D cells).
 template <std::floating_point T>
-quadrays::Vec3<T> box_vertex(cell::type type, int v)
+quadrays::Vec3<T> reference_vertex(cell::type type, int v)
 {
     switch (type)
     {
@@ -70,6 +69,14 @@ quadrays::Vec3<T> box_vertex(cell::type type, int v)
     }
 }
 
+/// @brief Box coordinates of vertex @p v (Basix numbering) of a cell that
+/// quadrays takes, in its box @p box (u2 = 0 on 2D cells).
+template <std::floating_point T>
+quadrays::Vec3<T> box_vertex(const quadrays::ClippedBox<T>& box, cell::type type, int v)
+{
+    return quadrays::box_point(box, reference_vertex<T>(type, v));
+}
+
 /// @brief True if quadrays takes level sets on cells of type @p type in a mesh
 /// of geometric dimension @p gdim: triangles and quadrilaterals in 2D,
 /// tetrahedra, hexahedra, prisms and pyramids in 3D.
@@ -79,14 +86,15 @@ bool quadrays_takes(cell::type type, int gdim, const LevelSetFunction<T, I>&)
     return quadrays::supported_cell(type) && gdim == cell::get_tdim(type);
 }
 
-/// @brief Fill @p out for level set @p ls on cell @p cell_id.
+/// @brief Fill @p out for level set @p ls on cell @p cell_id, in a box of the
+/// given frame (quadrays::BoxFrame).
 /// @return false if quadrays does not take the cell or the level set on it
 ///         (quadrays_takes)
 /// @throws std::invalid_argument if @p ls has neither dof values nor an
 ///         analytic level set
 template <std::floating_point T, std::integral I>
 bool cell_source(const MeshView<T, I>& mesh, const LevelSetFunction<T, I>& ls, I cell_id,
-                 CellSource<T, I>& out);
+                 CellSource<T, I>& out, quadrays::BoxFrame frame = quadrays::BoxFrame::orthogonal);
 
 /// @brief Fill @p out for the level sets @p level_sets on cell @p cell_id.
 /// @return false if quadrays does not take the cell or one of the level sets

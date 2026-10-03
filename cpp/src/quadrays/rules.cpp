@@ -79,7 +79,7 @@ void append_cell_rules(cell::type cell_type, std::span<const T> vertex_coords, i
     thread_local ClippedBox<T> cell;
     thread_local BoxBernstein<T> phi;
     make_clipped_box(cell_type, vertex_coords, cell::get_tdim(cell_type), cell);
-    cell_bernstein_on_box(cell_type, degree, coeffs, phi);
+    cell_bernstein_on_box(cell_type, degree, coeffs, cell, phi);
     append_rules(cell, phi, part_of(term, level_set), q, opt, parent_cell, rules, stats);
 }
 

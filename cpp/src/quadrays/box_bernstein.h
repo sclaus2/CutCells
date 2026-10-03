@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "../cell_types.h"
+#include "clipped_box.h"
 
 namespace cutcells::quadrays
 {
@@ -46,24 +47,32 @@ struct BoxBernstein
     int size() const { return (degree[0] + 1) * (degree[1] + 1) * (degree[2] + 1); }
 };
 
-/// @brief The level set of a cell as an exact tensor Bernstein form on the cell's box.
+/// @brief The level set of a cell as a tensor Bernstein form on the cell's box.
 ///
-/// The box of a simplex is the unit box of its reference coordinates; the
-/// polynomial is extended to the whole box. Simplices are converted by a fixed
-/// matrix per degree, computed once in exact rational arithmetic; tensor cells
-/// are only reordered; a prism's layers are triangles. A pyramid's level set
-/// phi of degree n is rational in its reference coordinates; (1 - z)^n phi is a
+/// In the reference frame (BoxFrame) the box of a simplex is the unit box of
+/// its reference coordinates, the polynomial extended to the whole box, and
+/// the form is exact: simplices are converted by a fixed matrix per degree,
+/// computed once in exact rational arithmetic; tensor cells are only
+/// reordered; a prism's layers are triangles. A pyramid's level set phi of
+/// degree n is rational in its reference coordinates; (1 - z)^n phi is a
 /// polynomial of degree (n, n, 2n), which inside the pyramid has the sign and
 /// the zero set of phi and on the zero set its normal: the apex, where the
 /// factor vanishes, is the only zero added.
 ///
+/// In the orthogonal frame of a simplex, the polynomial keeps total degree n,
+/// so degree n in each box variable; a prism's level set keeps degree n in
+/// its triangle's variables, which the frame's first two box variables are,
+/// and n along its lateral edge, the third. The form is interpolated at the
+/// equispaced points of the box, exact up to rounding.
+///
 /// @param cell_type  triangle, tetrahedron, quadrilateral, hexahedron, prism or pyramid
 /// @param degree     polynomial degree (at most 12 for simplices)
 /// @param coeffs     Bernstein coefficients in CutCells' order (bernstein.h)
+/// @param box        the cell's box (make_clipped_box), whose frame the form takes
 /// @param out        form of degree @p degree in each variable
 template <std::floating_point T>
 void cell_bernstein_on_box(cell::type cell_type, int degree, std::span<const T> coeffs,
-                           BoxBernstein<T>& out);
+                           const ClippedBox<T>& box, BoxBernstein<T>& out);
 
 /// @brief Value of @p p at the point @p s (any point, not only in the box).
 template <std::floating_point T>

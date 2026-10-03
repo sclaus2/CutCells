@@ -21,7 +21,7 @@
 //                  [--part "phi < 0"]... [--csv file] [--plane] [--vtk prefix]
 //                  [--leaves prefix] [--leaf-degree p]
 //                  [--diagnose] [--only cell] [--masks M] [--taylor M] [--no-diagonal]
-//                  [--analytic distance|quadratic] [--tape file]
+//                  [--analytic distance|quadratic] [--tape file] [--frame reference|orthogonal]
 //
 // Generators: quadrays (margin 0.25) or quadrays:<margin>; with
 // CUTCELLS_WITH_ALGOIM also algoim-auto, algoim-gl, gl-cellmask, alpha, split,
@@ -32,6 +32,9 @@
 // value), the global error, points and microseconds per cut cell. The time of a
 // quadrays cell covers the conversion of its Bernstein coefficients to the box
 // and the engine; the coefficients themselves come from the front end.
+//
+// --frame sets the frame of the cells' boxes (BoxFrame, orthogonal by default)
+// for quadrays and algoim's clipped boxes alike.
 //
 // --diagnose prints why bisections happen and the worst cell; --only restricts
 // the run to one cell index; --masks, --taylor and --no-diagonal set
@@ -92,6 +95,7 @@ struct StudyConfig
     bool diagonal = true;
     std::string analytic; ///< "", "distance" or "quadratic"
     std::string tape;     ///< ShapeForest tape file of the sphere
+    BoxFrame frame = BoxFrame::orthogonal;
 };
 
 struct Metrics
@@ -191,6 +195,13 @@ StudyConfig parse_args(int argc, char** argv)
         }
         else if (a == "--tape")
             cfg.tape = next();
+        else if (a == "--frame")
+        {
+            const std::string f = next();
+            if (f != "reference" && f != "orthogonal")
+                throw std::runtime_error("--frame takes reference or orthogonal");
+            cfg.frame = f == "reference" ? BoxFrame::reference : BoxFrame::orthogonal;
+        }
         else
             throw std::runtime_error("unknown argument: " + a);
     }
@@ -265,10 +276,14 @@ void write_point_cloud(const std::string& path, const std::vector<double>& point
 /// One cell through quadrays: rule in reference coordinates (box coordinates of
 /// these test cells) with physical weights.
 void quadrays_rule(const TestCell& cell, int degree, const std::vector<double>& coeffs,
-                   const SelectionTerm& term, int q, const Options& opt,
+                   const SelectionTerm& term, int q, const Options& opt, BoxFrame frame,
                    quadrature::QuadratureRules<double>& rule, Stats& stats)
 {
-    append_cell_rules<double>(cell.type, cell.vertices, degree, coeffs, term, 0, q, opt, 0, rule, stats);
+    ClippedBox<double> box;
+    BoxBernstein<double> form;
+    make_clipped_box<double>(cell.type, cell.vertices, 3, box, frame);
+    cell_bernstein_on_box<double>(cell.type, degree, coeffs, box, form);
+    append_rules<double>(box, form, part_of(term), q, opt, 0, rule, stats);
 }
 
 /// Planar level set: every generator must reproduce the totals to rounding.
@@ -320,7 +335,7 @@ int plane_study(const StudyConfig& cfg)
                                     {
                                         Stats stats;
                                         cell_coefficients(cell, 1, phi, coeffs);
-                                        quadrays_rule(cell, 1, coeffs, term, q, quadrays_options(gen, cfg), rule, stats);
+                                        quadrays_rule(cell, 1, coeffs, term, q, quadrays_options(gen, cfg), cfg.frame, rule, stats);
                                     }
 #ifdef CUTCELLS_WITH_ALGOIM
                                     else
@@ -329,7 +344,7 @@ int plane_study(const StudyConfig& cfg)
                                         ls.degree = 1;
                                         ls.value = [&](const Vec3<double>& x) { return phi({x[0], x[1], x[2]}); };
                                         ClippedBox<double> box;
-                                        make_clipped_box<double>(cell.type, cell.vertices, 3, box);
+                                        make_clipped_box<double>(cell.type, cell.vertices, 3, box, cfg.frame);
                                         benchmarks::GeneratorStats gstats;
                                         benchmarks::algoim_clipped_box(box, ls, term, q, benchmarks::generator_preset(gen),
                                                                        rule, gstats);
@@ -496,14 +511,14 @@ int main(int argc, char** argv)
                                     {
                                         ClippedBox<double> box;
                                         BoxBernstein<double> form;
-                                        make_clipped_box<double>(cell.type, cell.vertices, 3, box);
+                                        make_clipped_box<double>(cell.type, cell.vertices, 3, box, cfg.frame);
                                         Stats leaf_stats;
                                         if (is_analytic)
                                             append_leaves<double>(box, analytic_source(analytic, box), part,
                                                                   cfg.leaf_degree, opt, cell_index, leaf_mesh, leaf_stats);
                                         else
                                         {
-                                            cell_bernstein_on_box<double>(cell.type, 2, coeffs, form);
+                                            cell_bernstein_on_box<double>(cell.type, 2, coeffs, box, form);
                                             append_leaves<double>(box, form, part, cfg.leaf_degree, opt, cell_index,
                                                                   leaf_mesh, leaf_stats);
                                         }
@@ -514,15 +529,19 @@ int main(int argc, char** argv)
                                     Stats stats;
                                     const auto t0 = std::chrono::steady_clock::now();
                                     if (quad && is_analytic)
-                                        append_cell_rules<double>(cell.type, cell.vertices, analytic, term, 0, q, opt, 0,
-                                                                  rule, stats);
+                                    {
+                                        ClippedBox<double> box;
+                                        make_clipped_box<double>(cell.type, cell.vertices, 3, box, cfg.frame);
+                                        append_rules<double>(box, analytic_source(analytic, box), part_of(term), q, opt,
+                                                             0, rule, stats);
+                                    }
                                     else if (quad)
-                                        quadrays_rule(cell, 2, coeffs, term, q, opt, rule, stats);
+                                        quadrays_rule(cell, 2, coeffs, term, q, opt, cfg.frame, rule, stats);
 #ifdef CUTCELLS_WITH_ALGOIM
                                     else
                                     {
                                         ClippedBox<double> box;
-                                        make_clipped_box<double>(cell.type, cell.vertices, 3, box);
+                                        make_clipped_box<double>(cell.type, cell.vertices, 3, box, cfg.frame);
                                         if (gen == "quadgen" && !cfg.tape.empty())
                                             benchmarks::algoim_quadgen_tape(box, tape, term, q, rule);
                                         else if (gen == "quadgen" && is_analytic)

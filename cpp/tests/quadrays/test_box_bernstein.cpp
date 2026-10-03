@@ -4,8 +4,9 @@
 // SPDX-License-Identifier: MIT
 
 // Tensor Bernstein forms on boxes: the conversion of cell level sets (a check
-// per degree), affine restriction, subdivision, derivatives, margins and roots.
-// Exits non-zero on failure.
+// per degree), also onto the orthogonal boxes of triangles and tetrahedra
+// (their frames and clips), affine restriction, subdivision, derivatives,
+// margins and roots. Exits non-zero on failure.
 
 #include <cutcells/bernstein.h>
 #include <cutcells/quadrays/box_bernstein.h>
@@ -50,6 +51,16 @@ std::vector<double> random_point(cell::type ct, bool inside, std::mt19937& rng)
     }
 }
 
+/// The box of the reference frame of a reference cell: identity maps.
+ClippedBox<double> reference_box(int tdim)
+{
+    ClippedBox<double> box;
+    box.tdim = tdim;
+    for (int i = 0; i < 3; ++i)
+        box.jacobian[i][i] = box.ref_jacobian[i][i] = 1;
+    return box;
+}
+
 /// The conversion of a cell's level set reproduces it at random points, inside
 /// the cell and, for simplices, in the rest of the box.
 void test_conversion(cell::type ct, int max_degree)
@@ -62,7 +73,7 @@ void test_conversion(cell::type ct, int max_degree)
         for (double& v : c)
             v = u(rng);
         BoxBernstein<double> box;
-        cell_bernstein_on_box<double>(ct, n, c, box);
+        cell_bernstein_on_box<double>(ct, n, c, reference_box(cell::get_tdim(ct)), box);
         const double scale = max_abs<double>(box.coeffs);
         double worst = 0;
         for (int k = 0; k < 200; ++k)
@@ -240,11 +251,127 @@ void test_roots()
           "bracketed root");
 }
 
+/// Simplices and prisms in the orthogonal frame: a Kuhn tetrahedron and a
+/// right triangle get their axis-aligned bounding box (exact maps) with the
+/// clips of their slanted facets; on random cells the form reproduces the
+/// level set on the whole box, and points of the cell lie in the box and its
+/// clips while the box corners outside it break one.
+void test_orthogonal_frames()
+{
+    {
+        // the Kuhn tetrahedron 0 <= x2 <= x1 <= x0 <= 1, scaled by 0.5 and moved
+        const std::vector<double> v = {1, 2, 3, 1.5, 2, 3, 1.5, 2.5, 3, 1.5, 2.5, 3.5};
+        ClippedBox<double> box;
+        make_clipped_box<double>(cell::type::tetrahedron, v, 3, box);
+        bool exact = box.origin[0] == 1 && box.origin[1] == 2 && box.origin[2] == 3;
+        for (int i = 0; i < 3; ++i)
+            for (int k = 0; k < 3; ++k)
+                exact &= box.jacobian[i][k] == (i == k ? 0.5 : 0.0);
+        check(exact, "Kuhn tetrahedron: its cube as the box");
+        check(box.clips.size() == 2, "Kuhn tetrahedron: two clips (" + std::to_string(box.clips.size()) + ")");
+        check(!reference_frame(box), "Kuhn tetrahedron: not the reference frame");
+        ClippedBox<double> ref;
+        make_clipped_box<double>(cell::type::tetrahedron, v, 3, ref, BoxFrame::reference);
+        check(reference_frame(ref) && ref.clips.size() == 1, "reference frame on request");
+    }
+    {
+        const std::vector<double> v = {0, 0, 2, 0, 0, 3}; // right triangle, legs along the axes
+        ClippedBox<double> box;
+        make_clipped_box<double>(cell::type::triangle, v, 2, box);
+        check(box.jacobian[0][0] == 2 && box.jacobian[1][1] == 3 && box.jacobian[0][1] == 0
+                  && box.jacobian[1][0] == 0 && box.clips.size() == 1,
+              "right triangle: its rectangle as the box, one clip");
+    }
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<double> u(-1.0, 1.0), w(0.0, 1.0);
+    for (const cell::type ct : {cell::type::triangle, cell::type::tetrahedron, cell::type::prism})
+    {
+        const bool prism = ct == cell::type::prism;
+        const int tdim = cell::get_tdim(ct), nv = cell::get_num_vertices(ct);
+        // is xi in the reference cell?
+        auto in_cell = [&](const Vec3<double>& xi)
+        {
+            const double tol = 1e-12;
+            if (prism)
+                return xi[0] > -tol && xi[1] > -tol && xi[0] + xi[1] < 1 + tol && xi[2] > -tol && xi[2] < 1 + tol;
+            double sum = 0, lowest = 0;
+            for (int d = 0; d < tdim; ++d)
+            {
+                sum += xi[d];
+                lowest = std::min(lowest, xi[d]);
+            }
+            return lowest > -tol && sum < 1 + tol;
+        };
+        double worst = 0, outside = 0;
+        bool corners_clipped = true;
+        for (int trial = 0; trial < 40; ++trial)
+        {
+            std::vector<double> v(static_cast<std::size_t>(nv * tdim));
+            for (double& x : v)
+                x = u(rng);
+            if (prism) // the top is the bottom moved along one lateral edge
+                for (int j = 4; j < 6; ++j)
+                    for (int i = 0; i < 3; ++i)
+                        v[3 * j + i] = v[3 * (j - 3) + i] + v[9 + i] - v[i];
+            ClippedBox<double> box;
+            make_clipped_box<double>(ct, v, tdim, box);
+            const int n = 1 + trial % 4;
+            std::vector<double> c(bernstein::num_polynomials(ct, n));
+            for (double& x : c)
+                x = u(rng);
+            BoxBernstein<double> form;
+            cell_bernstein_on_box<double>(ct, n, c, box, form);
+            const double scale = max_abs<double>(form.coeffs);
+            for (int k = 0; k < 50; ++k)
+            {
+                const Vec3<double> s = {w(rng), w(rng), tdim == 3 ? w(rng) : 0.0};
+                const Vec3<double> xi = reference_point(box, s);
+                const double ref = bernstein::evaluate<double>(ct, n, c, std::vector<double>(xi.begin(), xi.begin() + tdim));
+                worst = std::max(worst, std::abs(evaluate<double>(form, std::span<const double>(s.data(), tdim)) - ref) / scale);
+                // a point of the cell in box coordinates
+                std::vector<double> l(3);
+                double sum = 0;
+                for (double& x : l)
+                    sum += x = -std::log(w(rng) + 1e-300);
+                Vec3<double> p = {l[1] / sum, l[2] / sum, 0};
+                if (prism)
+                    p[2] = w(rng);
+                else if (tdim == 3)
+                {
+                    const double l3 = -std::log(w(rng) + 1e-300);
+                    p = {l[1] / (sum + l3), l[2] / (sum + l3), l3 / (sum + l3)};
+                }
+                const Vec3<double> ub = box_point(box, p);
+                for (int d = 0; d < tdim; ++d)
+                    outside = std::max({outside, -ub[d], ub[d] - 1});
+                for (const HalfSpace<double>& h : box.clips)
+                    outside = std::max(outside, h.c[0] * ub[0] + h.c[1] * ub[1] + h.c[2] * ub[2] - h.d);
+            }
+            // every box corner off the cell breaks a clip
+            for (int corner = 0; corner < (1 << tdim); ++corner)
+            {
+                const Vec3<double> s = {double(corner & 1), double((corner >> 1) & 1), double((corner >> 2) & 1)};
+                bool clipped = false;
+                for (const HalfSpace<double>& h : box.clips)
+                    clipped |= h.c[0] * s[0] + h.c[1] * s[1] + h.c[2] * s[2] > h.d + 1e-12;
+                corners_clipped &= in_cell(reference_point(box, s)) || clipped;
+            }
+        }
+        const std::string name = cell::cell_type_to_str(ct);
+        check(worst < 1e-12, name + " orthogonal frame: conversion error " + std::to_string(worst));
+        check(outside < 1e-12, name + " orthogonal frame: points of the cell outside the box or a clip");
+        check(corners_clipped, name + " orthogonal frame: a box corner off the cell inside all clips");
+    }
+}
+
 void test_float()
 {
     std::vector<float> c = {0.5f, -0.25f, 0.75f, 1.0f};
     BoxBernstein<float> box;
-    cell_bernstein_on_box<float>(cell::type::tetrahedron, 1, c, box);
+    ClippedBox<float> unit;
+    for (int i = 0; i < 3; ++i)
+        unit.jacobian[i][i] = unit.ref_jacobian[i][i] = 1.0f;
+    cell_bernstein_on_box<float>(cell::type::tetrahedron, 1, c, unit, box);
     const std::vector<float> x = {0.2f, 0.3f, 0.1f};
     const float ref = bernstein::evaluate<float>(cell::type::tetrahedron, 1, c, x);
     check(std::abs(evaluate<float>(box, x) - ref) < 1e-6f, "float conversion");
@@ -261,6 +388,7 @@ int main()
     test_restriction();
     test_derivatives_and_margins();
     test_roots();
+    test_orthogonal_frames();
     test_float();
     if (failures == 0)
         std::printf("test_box_bernstein: ok\n");

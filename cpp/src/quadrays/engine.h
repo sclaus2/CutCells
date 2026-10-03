@@ -92,7 +92,7 @@ struct Stats
     int bisections = 0;        ///< boxes bisected, all levels
     int uncertified = 0;       ///< boxes integrated without a certified direction
     int rotations = 0;         ///< level-2 boxes integrated in the diagonal frame
-    int incomplete_leaves = 0; ///< leaves dropped because their nodes did not line up
+    int incomplete_leaves = 0; ///< leaves of the part dropped because their nodes did not line up
     int two_roots = 0;         ///< boxes certified with two roots per height line
     int surfaces = 0;          ///< surface functions made where two level sets cut a box
     /// With Options::diagnose: bisections counted by level, the function that
@@ -181,7 +181,11 @@ void integrate(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part,
 /// Every segment gets degree + 1 equispaced nodes, pulled 1e-5 of its length
 /// inside its ends, with their tags; weights are 0. Leaves are not filtered by
 /// the terms where a box needs the level sets to decide: a leaf lies on one
-/// side of each level set as a whole.
+/// side of each level set as a whole. The height lines below the top do not
+/// split where a surface function vanishes beyond the box above, nor, in an
+/// interface part, at the roots of the other level sets' restrictions: neither
+/// is an edge of a leaf, and such roots may cross others inside a base
+/// segment, so that the segments of a leaf would not line up.
 template <std::floating_point T>
 void leaf_nodes(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms,
                 int degree, const Options& opt, CellPoints<T>& out, Stats& stats);

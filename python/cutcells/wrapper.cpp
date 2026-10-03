@@ -1860,7 +1860,7 @@ void declare_quadrays(nb::module_& m, const std::string& type)
   {
     qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()),
                             cell::get_tdim(cell_type), box);
-    qr::cell_bernstein_on_box<T>(cell_type, degree, std::span<const T>(coeffs.data(), coeffs.size()), phi);
+    qr::cell_bernstein_on_box<T>(cell_type, degree, std::span<const T>(coeffs.data(), coeffs.size()), box, phi);
   };
   auto cell_part = [](const std::string& selection, const std::string& name)
   {

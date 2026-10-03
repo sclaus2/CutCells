@@ -2317,9 +2317,12 @@ void integrate_line(Context<T>& ctx, const Problem<T, 1>& p, const Emit& emit)
 
 /// Where the roots of two surface functions on the height lines of a level-2
 /// box cross: three level sets meet there (a corner), and the integrand of the
-/// line below has a kink. Both are monotone along k on the certified box; the
-/// difference of their roots is sampled along the base and its sign changes
-/// are refined. The base coordinates of the crossings are appended.
+/// line below has a kink. Both are monotone along k on the certified box. A
+/// root exists where its function differs in sign at the two ends of the line,
+/// so between the points where either function vanishes on an end, both roots
+/// exist throughout or nowhere; the difference of the roots is sampled on each
+/// such interval and its sign changes are refined. The base coordinates of the
+/// crossings are appended.
 template <std::floating_point T>
 void surface_crossings(Context<T>& ctx, const Surface<T, 2>& a, const Surface<T, 2>& b, int k, T lo, T hi, T blo,
                        T bhi, std::vector<T>& out)
@@ -2334,32 +2337,58 @@ void surface_crossings(Context<T>& ctx, const Surface<T, 2>& a, const Surface<T,
                              fl, fh);
     };
     auto gap = [&](T y) { return root(a, y) - root(b, y); };
-    constexpr int samples = 9;
-    T y0 = blo, g0 = gap(blo);
-    for (int i = 1; i < samples; ++i)
-    {
-        const T y1 = blo + (bhi - blo) * T(i) / T(samples - 1), g1 = gap(y1);
-        if (std::isfinite(g0) && std::isfinite(g1) && opposite(g0, g1))
+
+    // where a root enters or leaves the line through one of its ends
+    std::vector<T> ends = {blo, bhi};
+    for (const Surface<T, 2>* s : {&a, &b})
+        for (int side = 0; side < 2; ++side)
         {
-            // the roots may vanish inside: bisect while both exist
-            T l = y0, h = y1, gl = g0;
-            for (int it = 0; it < 60 && h - l > segment_tol<T> * (bhi - blo); ++it)
-            {
-                const T m = T(0.5) * (l + h), gm = gap(m);
-                if (!std::isfinite(gm))
-                    break;
-                if (opposite(gl, gm))
-                    h = m;
-                else
-                {
-                    l = m;
-                    gl = gm;
-                }
-            }
-            out.push_back(T(0.5) * (l + h));
+            Bound<T, 2> end;
+            end.alpha = side == 0 ? lo : hi;
+            end.kind = side == 0 ? 2 : 3;
+            surface_line_roots<T>(ctx, restrict_surface<T, 2>(*s, k, end), blo, bhi, ends);
         }
-        y0 = y1;
-        g0 = g1;
+    std::sort(ends.begin(), ends.end());
+
+    constexpr int samples = 9;
+    const T tol = segment_tol<T> * (bhi - blo);
+    for (std::size_t e = 0; e + 1 < ends.size(); ++e)
+    {
+        const T e0 = ends[e], e1 = ends[e + 1];
+        if (!(e1 - e0 > tol))
+            continue;
+        // the first and last samples just inside, where a root may sit on an end
+        auto sample = [&](int i)
+        {
+            const T t = std::clamp(T(i) / T(samples - 1), T(1e-6), T(1) - T(1e-6));
+            return e0 + (e1 - e0) * t;
+        };
+        T y0 = sample(0), g0 = gap(y0);
+        for (int i = 1; i < samples; ++i)
+        {
+            const T y1 = sample(i), g1 = gap(y1);
+            if (std::isfinite(g0) && std::isfinite(g1) && opposite(g0, g1))
+            {
+                // the roots may still vanish inside: bisect while both exist
+                T l = y0, h = y1, gl = g0;
+                for (int it = 0; it < 60 && h - l > tol; ++it)
+                {
+                    const T m = T(0.5) * (l + h), gm = gap(m);
+                    if (!std::isfinite(gm))
+                        break;
+                    if (opposite(gl, gm))
+                        h = m;
+                    else
+                    {
+                        l = m;
+                        gl = gm;
+                    }
+                }
+                out.push_back(T(0.5) * (l + h));
+            }
+            y0 = y1;
+            g0 = g1;
+        }
     }
 }
 
@@ -2710,13 +2739,17 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                     }
                     continue;
                 }
+                // An interface part: the roots of the interface's level set; the
+                // others are evaluated at them. Leaf cells do not split at the
+                // others' restrictions below either, which only pair with the
+                // interface's in surface functions: their roots may cross a
+                // surface function's inside a base segment, and the segments of
+                // a leaf would no longer line up.
+                if (ctx.surface >= 0 && f.ls != ctx.surface && (D == Top || ctx.vis_order > 0))
+                    continue;
                 BoxBernstein<T>* form = &ctx.line[D];
                 if constexpr (D == Top)
                 {
-                    // the interface: the roots of its level set; the others are
-                    // evaluated at them
-                    if (interface && f.ls != ctx.surface)
-                        continue;
                     if (!is_analytic(ctx, f.ls))
                     {
                         form = &ctx.top_lines[static_cast<std::size_t>(f.ls)];
@@ -2729,6 +2762,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             {
                 for (const Surface<T, D>& s : p.surfaces)
                 {
+                    const std::size_t found = nodes.size();
                     if (certified)
                     {
                         const T sl = surface_value<T, D>(ctx, s, insert<T, D>(yb, k, L)),
@@ -2739,6 +2773,18 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                     }
                     else
                         surface_line_roots<T>(ctx, surface_on_line<T, D>(s, yb, k), L, U, nodes);
+                    // Leaf cells: only crossings in the box above. Beyond it the
+                    // surface function follows the root of under, then clamps it;
+                    // such roots may vanish inside a base segment, and the
+                    // segments of a leaf would no longer line up.
+                    if (ctx.vis_order > 0)
+                        nodes.erase(std::remove_if(nodes.begin() + static_cast<std::ptrdiff_t>(found), nodes.end(),
+                                                   [&](T t)
+                                                   {
+                                                       const T r = surface_root<T, D>(ctx, s, insert<T, D>(yb, k, t));
+                                                       return r < s.t_lo || r > s.t_hi;
+                                                   }),
+                                    nodes.end());
                 }
             }
 

@@ -18,8 +18,10 @@
 
 /// quadrays: height-function quadrature on cut cells.
 ///
-/// Every cell is a box clipped by half-spaces; a tetrahedron is the unit box
-/// with u0 + u1 + u2 <= 1, a triangle the unit square with u0 + u1 <= 1. The
+/// Every cell is a box clipped by half-spaces (make_clipped_box): a triangle,
+/// tetrahedron or prism its smallest bounding box in an orthonormal frame,
+/// clipped by its facets; a quadrilateral or hexahedron its own box; a pyramid
+/// the box of its reference map, clipped by two planes. The
 /// engine reduces the dimension one height direction at a time, accepts a
 /// direction only where bounds of the level sets certify it, and bisects the
 /// box otherwise (engine.h). This header is the module's entry point:

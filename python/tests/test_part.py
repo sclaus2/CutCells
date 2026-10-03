@@ -5,7 +5,8 @@
 """The front end without AdaptCell (cutcells.part) with the quadrays backend:
 parts selected by expressions against exact values, for Pk and analytic level
 sets, interfaces lying in mesh faces, triangles and quadrilaterals, prisms and
-pyramids, several level sets meeting in cells, and the API."""
+pyramids, several level sets meeting in cells and the leaves of their faces,
+and the API."""
 
 import itertools
 import math
@@ -245,6 +246,114 @@ def test_ball_and_half_space(mesh_kind, ls_kind):
         math.pi * (radius**2 - height**2), rel=1e-7)
     ball_volume = 4.0 / 3.0 * math.pi * radius**3
     assert total(result["ball < 0 or plane > 0"]) == pytest.approx(ball_volume + above - cap, rel=1e-7)
+
+
+def disk_level_set(mesh, ls_kind, centre, radius, name):
+    """A disk about centre: P2, or analytic (the quadratic, not the distance)."""
+    if ls_kind == "P2":
+        return cutcells.create_level_set(
+            mesh, lambda x: (x[0] - centre[0]) ** 2 + (x[1] - centre[1]) ** 2 - radius**2, degree=2, name=name)
+    return cutcells.analytic_sphere(centre, radius, signed_distance=False)
+
+
+@pytest.mark.parametrize("mesh_kind", ["quad", "tri"])
+@pytest.mark.parametrize("ls_kind", ["P2", "analytic"])
+def test_two_disks(mesh_kind, ls_kind):
+    """Two disks crossing in cells: the lens, the crescent and the union, and
+    the arcs of either circle bounded by the other disk."""
+    r1, r2 = 0.62, 0.5
+    ca, cb = CENTRE_2D + np.array([-0.2, 0.0]), CENTRE_2D + np.array([0.3, 0.1])
+    mesh = square_mesh(mesh_kind, 16)
+    result = cutcells.part.cut(mesh, [disk_level_set(mesh, ls_kind, ca, r1, "a"),
+                                      disk_level_set(mesh, ls_kind, cb, r2, "b")], names=["a", "b"])
+    # the half angles under which the common chord is seen from the centres
+    d = float(np.linalg.norm(cb - ca))
+    t1 = math.acos((d * d + r1 * r1 - r2 * r2) / (2 * d * r1))
+    t2 = math.acos((d * d + r2 * r2 - r1 * r1) / (2 * d * r2))
+    lens = r1**2 * (t1 - math.sin(2 * t1) / 2) + r2**2 * (t2 - math.sin(2 * t2) / 2)
+    assert total(result["a < 0 and b < 0"]) == pytest.approx(lens, rel=1e-9)
+    assert total(result["a < 0 and b > 0"]) == pytest.approx(math.pi * r1**2 - lens, rel=1e-8)
+    assert total(result["a < 0 or b < 0"]) == pytest.approx(math.pi * (r1**2 + r2**2) - lens, rel=1e-8)
+    assert total(result["a = 0 and b < 0"], mode="cut_only") == pytest.approx(2 * r1 * t1, rel=1e-8)
+    assert total(result["b = 0 and a < 0"], mode="cut_only") == pytest.approx(2 * r2 * t2, rel=1e-8)
+    assert total(result["a = 0 and b > 0"], mode="cut_only") == pytest.approx(2 * math.pi * r1 - 2 * r1 * t1,
+                                                                              rel=1e-6)
+
+
+@pytest.mark.parametrize("mesh_kind", ["quad", "tri"])
+def test_three_disks(mesh_kind):
+    """Three disks crossing pairwise: the eight parts, integrated one by one,
+    fill the square, and the four pieces of circle a make it up."""
+    mesh = square_mesh(mesh_kind, 16)
+    centres = [CENTRE_2D + np.array(offset) for offset in ([-0.25, -0.1], [0.25, -0.12], [0.02, 0.3])]
+    radii = [0.5, 0.45, 0.48]
+    level_sets = [disk_level_set(mesh, "P2", c, r, name) for c, r, name in zip(centres, radii, "abc")]
+    result = cutcells.part.cut(mesh, level_sets, names=["a", "b", "c"])
+    signs = list(itertools.product("<>", repeat=3))
+    parts = [total(result[f"a {sa} 0 and b {sb} 0 and c {sc} 0"]) for sa, sb, sc in signs]
+    assert sum(parts) == pytest.approx(4.0, rel=1e-12)
+    pieces = [total(result[f"a = 0 and b {sb} 0 and c {sc} 0"], mode="cut_only") for _, sb, sc in signs[:4]]
+    assert sum(pieces) == pytest.approx(2 * math.pi * radii[0], rel=1e-7)
+
+
+def cylinder_level_set(mesh, r, axis, name):
+    """A P2 cylinder of radius r about the axis through CENTRE."""
+    i, j = (k for k in range(3) if k != axis)
+    return cutcells.create_level_set(mesh, lambda x: (x[i] - CENTRE[i]) ** 2 + (x[j] - CENTRE[j]) ** 2 - r**2,
+                                     degree=2, name=name)
+
+
+@pytest.mark.parametrize("mesh_kind", ["hex", "tet"])
+def test_napkin_ring(mesh_kind):
+    """A ball outside a cylinder: the napkin ring, its sphere zone and its
+    inner cylinder, which depend only on the ring's height h."""
+    R, r = 0.8, 0.45
+    h = 2 * math.sqrt(R**2 - r**2)
+    mesh = box_mesh(mesh_kind, 8)
+    ball = cutcells.create_level_set(mesh, lambda x: sum((x[i] - CENTRE[i]) ** 2 for i in range(3)) - R**2, degree=2,
+                                     name="ball")
+    result = cutcells.part.cut(mesh, [ball, cylinder_level_set(mesh, r, 2, "cyl")], names=["ball", "cyl"])
+    assert total(result["ball < 0 and cyl > 0"]) == pytest.approx(math.pi * h**3 / 6, rel=1e-6)
+    assert total(result["ball = 0 and cyl > 0"], mode="cut_only") == pytest.approx(2 * math.pi * R * h, rel=1e-6)
+    assert total(result["cyl = 0 and ball < 0"], mode="cut_only") == pytest.approx(2 * math.pi * r * h, rel=1e-6)
+
+
+TRICYLINDER_FACES = ["a = 0 and b < 0 and c < 0", "b = 0 and a < 0 and c < 0", "c = 0 and a < 0 and b < 0"]
+
+
+def tricylinder(mesh, r):
+    """Cylinders along z, y and x (a, b, c): their intersection's faces meet
+    at corners where all three vanish."""
+    level_sets = [cylinder_level_set(mesh, r, axis, name) for axis, name in zip((2, 1, 0), "abc")]
+    return cutcells.part.cut(mesh, level_sets, names=["a", "b", "c"])
+
+
+def test_tricylinder():
+    """The volume and the faces of three cylinders' intersection on hexahedra."""
+    r, s = 0.6, 2 - math.sqrt(2)
+    result = tricylinder(box_mesh("hex", 8), r)
+    assert total(result["a < 0 and b < 0 and c < 0"]) == pytest.approx(8 * s * r**3, rel=1e-5)
+    for face in TRICYLINDER_FACES:
+        assert total(result[face], mode="cut_only") == pytest.approx(8 * s * r**2, rel=1e-5)
+
+
+@pytest.mark.parametrize("mesh_kind", ["hex", "tet"])
+def test_face_leaves_stay_in_their_part(mesh_kind):
+    """The leaves of the tricylinder's faces stay on their side of the other
+    cylinders, also where a ridge leaves a cell or three faces meet: every
+    node within 1e-5 h of it (leaf nodes sit 1e-5 of their segment inside its
+    ends)."""
+    n, r = 8, 0.6
+    result = tricylinder(box_mesh(mesh_kind, n), r)
+    for face in TRICYLINDER_FACES:
+        x = np.asarray(result[face].visualization_mesh(mode="cut_only", degree=2).points).reshape(-1, 3)
+        assert len(x) > 0
+        for other in face.split(" and ")[1:]:
+            axis = {"a": 2, "b": 1, "c": 0}[other[0]]
+            i, j = (k for k in range(3) if k != axis)
+            rho = np.hypot(x[:, i] - CENTRE[i], x[:, j] - CENTRE[j])
+            # phi = rho^2 - r^2 < 0, up to 1e-5 h |grad phi|
+            assert np.all(rho**2 - r**2 <= 1e-5 * (2.0 / n) * 2 * rho), (face, other)
 
 
 @pytest.mark.parametrize("mesh_kind", ["quad", "tri"])

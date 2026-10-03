@@ -256,9 +256,11 @@ int analytic_simplex_sign(const quadrays::ClippedBox<T>& box, const quadrays::An
 template <std::floating_point T, std::integral I, int NV>
 int simplex_sign(const CellSource<T, I>& cs, int max_depth)
 {
+    // the vertices in box coordinates
+    const cell::type type = NV == 4 ? cell::type::tetrahedron : cell::type::triangle;
     Vertices<T, NV> v{};
-    for (int j = 1; j < NV; ++j)
-        v[j][j - 1] = T(1);
+    for (int j = 0; j < NV; ++j)
+        v[j] = box_vertex<T>(cs.box, type, j);
     if (cs.source.bernstein != nullptr)
     {
         const std::span<const T> c(cs.ls_cell.bernstein_coeffs);

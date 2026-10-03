@@ -11,10 +11,19 @@
 //    half-space; a disk and a half-plane likewise on quadrilaterals and
 //    triangles of [-1, 1]^2 (n = 16). The per-cell L1, relative to the total,
 //    stays below the bounds given for q = 3, 5, 8.
-//  - Exact totals of a lens (two balls) and a Steinmetz bicylinder (two
-//    cylinders) on n = 8 with q = 5: volumes of intersections and unions, and
-//    interfaces bounded by the other level set, to 1e-6 (the bicylinder 1e-5:
-//    its cylinders touch where their intersection curves cross).
+//  - Exact totals on n = 8 with q = 5 of a lens (two balls), a Steinmetz
+//    bicylinder (two cylinders), a tricylinder (three cylinders, which meet at
+//    corners) and a napkin ring (a ball outside a cylinder): volumes of
+//    intersections and unions, and interfaces bounded by the other level sets,
+//    to 1e-6 (cylinders 1e-5: they touch where their intersection curves
+//    cross). In 2D, on quadrilaterals and triangles (n = 16): two disks, and
+//    three disks whose eight parts, integrated one by one, fill the square and
+//    whose circle is the sum of its four pieces.
+//  - The leaves (degree 2) of the solids' faces: every node in its part up to
+//    1e-5 h, also where the ridge between two faces leaves a cell or three
+//    faces meet, and at most 3 % of the leaves dropped because their nodes did
+//    not line up (slivers along ridges, leaves that pinch to a point, and boxes
+//    without a certified direction where two cylinders touch).
 //  - Robustness, q = 3 on n = 8: a plane through vertices with a plane 1e-3
 //    off the tetrahedra's slanted faces; a sphere with its tangent plane; two
 //    balls touching at an off-grid point; a sphere through 12 vertices with a
@@ -24,9 +33,11 @@
 //    per-cell L1 must stay below 1e-3 of the exact total (spheres of radius 2h
 //    and 1.2h on hexahedra reach 2e-4 at q = 3, as with one level set), and
 //    parts of measure zero below 1e-12 in total.
+// The argument "bernstein" or "analytic" runs one kind of level set only.
 // Exits non-zero on failure.
 
 #include <cutcells/quadrays/analytic.h>
+#include <cutcells/quadrays/leaves.h>
 #include <cutcells/quadrays/rules.h>
 #include <cutcells/quadrays/taylor.h>
 #include <cutcells/selection_expr.h>
@@ -131,8 +142,9 @@ double gradient_norm(const Field& f, const V3& x)
     return std::hypot(g.d[0], g.d[1], g.d[2]);
 }
 
-/// Does x lie in the part of one of the terms, up to 1e-9 h of each zero set?
-bool in_part(const std::vector<Field>& fields, const std::vector<SelectionTerm>& terms, const V3& x, double h)
+/// Does x lie in the part of one of the terms, up to @p tol h of each zero set?
+bool in_part(const std::vector<Field>& fields, const std::vector<SelectionTerm>& terms, const V3& x, double h,
+             double tol = 1e-9)
 {
     for (const SelectionTerm& t : terms)
     {
@@ -140,7 +152,7 @@ bool in_part(const std::vector<Field>& fields, const std::vector<SelectionTerm>&
         for (std::size_t l = 0; l < fields.size() && ok; ++l)
         {
             const std::uint64_t bit = std::uint64_t(1) << l;
-            const double f = value(fields[l], x), reach = 1e-9 * h * gradient_norm(fields[l], x);
+            const double f = value(fields[l], x), reach = tol * h * gradient_norm(fields[l], x);
             if (t.zero_required & bit)
                 ok = std::abs(f) <= reach;
             else if (t.negative_required & bit)
@@ -162,6 +174,43 @@ struct Run
 
     long problems() const { return fail + negative + outside + side; }
 };
+
+/// Adds the counts and totals of @p r to @p sum.
+void accumulate(Run& sum, const Run& r)
+{
+    sum.fail += r.fail;
+    sum.negative += r.negative;
+    sum.outside += r.outside;
+    sum.side += r.side;
+    sum.max_bisections = std::max(sum.max_bisections, r.max_bisections);
+    sum.total += r.total;
+    sum.exact_total += r.exact_total;
+    sum.l1 += r.l1;
+}
+
+/// The level sets on one cell as sources: analytic, or their P2 (P1)
+/// interpolants in Bernstein form, kept in @p forms.
+template <typename Cell>
+std::vector<Source<double>> cell_sources(const std::vector<Field>& fields, const std::vector<AnalyticLevelSet>& als,
+                                         const Cell& cell, const ClippedBox<double>& box, bool analytic,
+                                         std::vector<std::vector<double>>& coeffs,
+                                         std::vector<BoxBernstein<double>>& forms)
+{
+    std::vector<Source<double>> sources;
+    for (std::size_t l = 0; l < fields.size(); ++l)
+    {
+        if (analytic)
+        {
+            sources.push_back(analytic_source(als[l], box));
+            continue;
+        }
+        const Field& f = fields[l];
+        cell_coefficients(cell, f.degree(), [&f](const V3& x) { return value(f, x); }, coeffs[l]);
+        cell_bernstein_on_box<double>(cell.type, f.degree(), coeffs[l], box, forms[l]);
+        sources.push_back(bernstein_source(forms[l]));
+    }
+    return sources;
+}
 
 /// The rules of the part @p text of the level sets @p fields (named a, b, c) on
 /// every cell, their checks, and the per-cell errors if @p exact (per cell) is
@@ -187,19 +236,7 @@ Run run(const std::vector<Field>& fields, const char* text, const std::vector<Ce
         const Cell& cell = cells[i];
         ClippedBox<double> box;
         make_clipped_box<double>(cell.type, cell.vertices, tdim, box);
-        std::vector<Source<double>> sources;
-        for (std::size_t l = 0; l < fields.size(); ++l)
-        {
-            if (analytic)
-            {
-                sources.push_back(analytic_source(als[l], box));
-                continue;
-            }
-            const Field& f = fields[l];
-            cell_coefficients(cell, f.degree(), [&f](const V3& x) { return value(f, x); }, coeffs[l]);
-            cell_bernstein_on_box<double>(cell.type, f.degree(), coeffs[l], forms[l]);
-            sources.push_back(bernstein_source(forms[l]));
-        }
+        const std::vector<Source<double>> sources = cell_sources(fields, als, cell, box, analytic, coeffs, forms);
         quadrature::QuadratureRules<double> rule;
         Stats stats;
         try
@@ -241,6 +278,48 @@ Run run(const std::vector<Field>& fields, const char* text, const std::vector<Ce
         {
             r.exact_total += exact[i];
             r.l1 += std::abs(sum - exact[i]);
+        }
+    }
+    return r;
+}
+
+/// Leaves of the part @p text, of degree 2, on every cell: how many, how many
+/// of the part were dropped because their nodes did not line up, and how many
+/// nodes lie outside the part, beyond 1e-5 h of a zero set (nodes are pulled
+/// 1e-5 of their segment inside its ends).
+struct LeafRun
+{
+    long leaves = 0, incomplete = 0, outside = 0;
+};
+
+LeafRun leaves_of(const std::vector<Field>& fields, const char* text, const std::vector<TestCell>& cells, double h,
+                  bool analytic)
+{
+    const std::vector<std::string> names = {"a", "b", "c"};
+    SelectionExpr expr = parse_selection_expr(text);
+    compile_selection_expr(expr, std::vector<std::string>(names.begin(), names.begin() + fields.size()));
+    std::vector<AnalyticLevelSet> als;
+    for (const Field& f : fields)
+        als.push_back(analytic_level_set(f));
+    std::vector<std::vector<double>> coeffs(fields.size());
+    std::vector<BoxBernstein<double>> forms(fields.size());
+    LeafRun r;
+    for (std::size_t i = 0; i < cells.size(); ++i)
+    {
+        ClippedBox<double> box;
+        make_clipped_box<double>(cells[i].type, cells[i].vertices, 3, box);
+        const std::vector<Source<double>> sources = cell_sources(fields, als, cells[i], box, analytic, coeffs, forms);
+        LeafMesh<double> leaves;
+        Stats stats;
+        append_leaves<double>(box, std::span<const Source<double>>(sources),
+                              std::span<const SelectionTerm>(expr.terms), 2, Options{}, static_cast<std::int32_t>(i),
+                              leaves, stats);
+        r.leaves += leaves.n_cells();
+        r.incomplete += stats.incomplete_leaves;
+        for (int p = 0; p < leaves.n_points(); ++p)
+        {
+            const double* x = leaves.points.data() + 3 * p;
+            r.outside += !in_part(fields, expr.terms, V3{x[0], x[1], x[2]}, h, 1e-5);
         }
     }
     return r;
@@ -333,10 +412,27 @@ void report(const std::string& what, const Run& r, double l1, double bound)
                 problems.empty() ? "" : " FAILED:", message.c_str());
     failures += !problems.empty();
 }
+
+void report(const std::string& what, const LeafRun& r)
+{
+    const bool ok = r.leaves > 0 && r.incomplete <= 0.03 * r.leaves && r.outside == 0;
+    std::printf("%s %ld leaves, %ld dropped, %ld nodes outside the part%s\n", what.c_str(), r.leaves, r.incomplete,
+                r.outside, ok ? "" : " FAILED");
+    failures += !ok;
+}
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    // Bernstein forms and analytic level sets, or one of them (ctest runs the
+    // two side by side)
+    const std::string only = argc > 1 ? argv[1] : "";
+    std::vector<bool> sources; // analytic or not
+    if (only != "analytic")
+        sources.push_back(false);
+    if (only != "bernstein")
+        sources.push_back(true);
+
     // ---- a ball and a half-space, per cell ----
     {
         const V3 c = {0.0123, -0.0371, 0.0217};
@@ -367,7 +463,7 @@ int main()
                                                                   {0, 0, 1}, {0, 0, a}, rho));
                 parts[3].exact.push_back(whole[0] + up - above[0]);
             }
-            for (const bool analytic : {false, true})
+            for (const bool analytic : sources)
                 for (const Bound& b : bounds)
                     for (std::size_t k = 0; k < parts.size(); ++k)
                     {
@@ -411,7 +507,7 @@ int main()
                 parts[3].exact.push_back(exact::disk_polygon_area(cell.loop, c, r) + exact::polygon_area(above)
                                          - disk_above);
             }
-            for (const bool analytic : {false, true})
+            for (const bool analytic : sources)
                 for (const Bound& b : bounds)
                     for (std::size_t k = 0; k < parts.size(); ++k)
                     {
@@ -424,7 +520,7 @@ int main()
         }
     }
 
-    // ---- exact totals: a lens and a bicylinder ----
+    // ---- exact totals and leaves: lens, bicylinder, tricylinder, napkin ring ----
     {
         const V3 c = {0.0123, -0.0371, 0.0217};
         struct Shape
@@ -460,20 +556,118 @@ int main()
                                {"b = 0 and a < 0", 8 * r * r}},
                               1e-5}); // the cylinders touch where their intersection curves cross
         }
+        {
+            // three cylinders: the tricylinder, its faces, which meet at corners,
+            // and the union (pairwise intersections are bicylinders)
+            const double r = 0.6, s = 2 - std::sqrt(2.0);
+            shapes.push_back({"tricylinder",
+                              {cylinder(c, r, 2), cylinder(c, r, 1), cylinder(c, r, 0)},
+                              {{"a < 0 and b < 0 and c < 0", 8 * s * r * r * r},
+                               {"a = 0 and b < 0 and c < 0", 8 * s * r * r},
+                               {"b = 0 and a < 0 and c < 0", 8 * s * r * r},
+                               {"c = 0 and a < 0 and b < 0", 8 * s * r * r},
+                               {"a < 0 or b < 0 or c < 0", 6 * M_PI * r * r - 16 * r * r * r + 8 * s * r * r * r}},
+                              1e-5});
+        }
+        {
+            // a ball outside a cylinder: the napkin ring, its sphere zone and
+            // inner cylinder, with h = 2 sqrt(R^2 - r^2)
+            const double R = 0.8, r = 0.45, h = 2 * std::sqrt(R * R - r * r);
+            shapes.push_back({"napkin ring",
+                              {ball(c, R), cylinder(c, r, 2)},
+                              {{"a < 0 and b > 0", M_PI * h * h * h / 6},
+                               {"a = 0 and b > 0", 2 * M_PI * R * h},
+                               {"b = 0 and a < 0", 2 * M_PI * r * h}},
+                              1e-6});
+        }
         for (const Shape& shape : shapes)
             for (const std::string mesh : {"hex", "tet"})
             {
                 const std::vector<TestCell> cells = mesh_3d(mesh, 8, {0, 0, 0});
-                for (const bool analytic : {false, true})
+                for (const bool analytic : sources)
+                {
+                    const char* source = analytic ? "analytic" : "P2";
                     for (const auto& [text, exact_total] : shape.parts)
                     {
                         const Run r = run(shape.fields, text, cells, 0.25, 5, analytic, {});
                         char what[160];
-                        std::snprintf(what, sizeof what, "%-10s %-9s %s q = 5 %-16s total error", shape.name,
-                                      analytic ? "analytic" : "P2", mesh.c_str(), text);
+                        std::snprintf(what, sizeof what, "%-11s %-9s %s q = 5 %-26s total error", shape.name, source,
+                                      mesh.c_str(), text);
                         report(what, r, std::abs(r.total / exact_total - 1), shape.bound);
                     }
+                    for (const auto& [text, exact_total] : shape.parts)
+                    {
+                        if (std::string(text).find("= 0") == std::string::npos)
+                            continue;
+                        char what[160];
+                        std::snprintf(what, sizeof what, "%-11s %-9s %s leaves %-26s", shape.name, source,
+                                      mesh.c_str(), text);
+                        report(what, leaves_of(shape.fields, text, cells, 0.25, analytic));
+                    }
+                }
             }
+    }
+
+    // ---- exact totals in 2D: two and three disks ----
+    {
+        const V3 c = {0.0123, -0.0371, 0};
+        // two disks: the lens, the crescent, the union and three arcs, with the
+        // half angles t1, t2 under which the chord through the crossings is seen
+        const double r1 = 0.62, r2 = 0.5;
+        const V3 ca = {c[0] - 0.2, c[1], 0}, cb = {c[0] + 0.3, c[1] + 0.1, 0};
+        const double d = std::hypot(cb[0] - ca[0], cb[1] - ca[1]);
+        const double t1 = std::acos((d * d + r1 * r1 - r2 * r2) / (2 * d * r1)),
+                     t2 = std::acos((d * d + r2 * r2 - r1 * r1) / (2 * d * r2));
+        const double lens = r1 * r1 * (t1 - std::sin(2 * t1) / 2) + r2 * r2 * (t2 - std::sin(2 * t2) / 2);
+        const std::vector<Field> two = {ball(ca, r1), ball(cb, r2)};
+        const std::vector<std::pair<const char*, double>> parts = {
+            {"a < 0 and b < 0", lens},
+            {"a < 0 and b > 0", M_PI * r1 * r1 - lens},
+            {"a < 0 or b < 0", M_PI * (r1 * r1 + r2 * r2) - lens},
+            {"a = 0 and b < 0", 2 * r1 * t1},
+            {"b = 0 and a < 0", 2 * r2 * t2},
+            {"a = 0 and b > 0", 2 * M_PI * r1 - 2 * r1 * t1}};
+        // three disks crossing pairwise
+        const double ra = 0.5;
+        const std::vector<Field> three = {ball({c[0] - 0.25, c[1] - 0.1, 0}, ra),
+                                          ball({c[0] + 0.25, c[1] - 0.12, 0}, 0.45),
+                                          ball({c[0] + 0.02, c[1] + 0.3, 0}, 0.48)};
+        const char* signs[] = {"<", ">"};
+        for (const std::string mesh : {"quad", "tri"})
+        {
+            const std::vector<TestCell2D> cells = mesh_2d(mesh, 16);
+            for (const bool analytic : sources)
+            {
+                const char* source = analytic ? "analytic" : "P2";
+                for (const auto& [text, exact_total] : parts)
+                {
+                    const Run r = run(two, text, cells, 0.125, 5, analytic, {});
+                    char what[160];
+                    std::snprintf(what, sizeof what, "two disks   %-9s %-4s q = 5 %-26s total error", source,
+                                  mesh.c_str(), text);
+                    report(what, r, std::abs(r.total / exact_total - 1), 1e-6);
+                }
+                // the eight parts, one by one, fill the square; the four pieces
+                // of circle a make it up
+                Run filled, circle;
+                for (const char* sb : signs)
+                    for (const char* sc : signs)
+                    {
+                        const std::string rest = std::string(" 0 and b ") + sb + " 0 and c " + sc + " 0";
+                        for (const char* sa : signs)
+                            accumulate(filled, run(three, ("a " + std::string(sa) + rest).c_str(), cells, 0.125, 5,
+                                                   analytic, {}));
+                        accumulate(circle, run(three, ("a =" + rest).c_str(), cells, 0.125, 5, analytic, {}));
+                    }
+                char what[160];
+                std::snprintf(what, sizeof what, "three disks %-9s %-4s q = 5 %-26s total error", source,
+                              mesh.c_str(), "the eight parts");
+                report(what, filled, std::abs(filled.total / 4 - 1), 1e-10);
+                std::snprintf(what, sizeof what, "three disks %-9s %-4s q = 5 %-26s total error", source,
+                              mesh.c_str(), "circle a in four pieces");
+                report(what, circle, std::abs(circle.total / (2 * M_PI * ra) - 1), 1e-6);
+            }
+        }
     }
 
     // ---- robustness ----
@@ -550,7 +744,7 @@ int main()
                     std::vector<double> exact;
                     for (const TestCell& cell : cells)
                         exact.push_back(c.exact(cell, static_cast<int>(i)));
-                    for (const bool analytic : {false, true})
+                    for (const bool analytic : sources)
                     {
                         const Run r = run(c.fields, c.parts[i], cells, 0.25, 3, analytic, exact);
                         const bool zero = r.exact_total == 0;
