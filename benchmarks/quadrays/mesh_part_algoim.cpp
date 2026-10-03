@@ -1215,10 +1215,11 @@ quadrature::QuadratureRules<T> algoim_rules(const part::MeshPart<T, I>& part, in
             append_algoim_cell<T, I, 3>(rules, ls_cell, x, c, relation, order, general);
     }
 
-    // whole cells and faces in the zero set: the lookup tables' rules
+    // whole cells and faces in the zero set: the lookup tables' rules, exact
+    // for the degree of order Gauss points
     part::MeshPart<T, I> rest = part;
     rest.cut_cells.clear();
-    merge_rules(rules, part::quadrature_rules(rest, order, include_uncut_cells, lut::Options{}));
+    merge_rules(rules, part::quadrature_rules(rest, std::min(2 * order - 1, 10), include_uncut_cells, lut::Options{}));
     return rules;
 }
 

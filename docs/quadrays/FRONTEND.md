@@ -99,12 +99,21 @@ the interface measures 4 to rounding, as do the volumes below and above it.
 
 ## Quadrature and visualisation
 
-`part.quadrature(order, mode, backend="quadrays", options)` gives one rule per
-cell, cells ascending; points in the cell's reference coordinates, physical
-weights. quadrays' `order` counts Gauss points per segment; whole cells, zero
-faces and the lookup tables' pieces get the reference rules exact for degree
-2 order - 1 (at most 10). `options` is a `QuadraysOptions` for quadrays and a
-`LutOptions` for `backend="lut"` (None: the defaults).
+`part.quadrature(order, mode, backend, options)` gives one rule per cell, cells
+ascending; points in the cell's reference coordinates, physical weights.
+`order`, 1 to 10, is the polynomial degree integrated exactly on flat pieces, in
+both backends (since 2026-10-04; before, quadrays took it as Gauss points per
+segment and the lookup tables integrated degree 2 order - 1). quadrays takes
+q = ceil((order + m) / 2) Gauss-Legendre points per segment for a part of
+dimension m: on a flat piece each of the m nested levels has linear bounds,
+which raise the degree of the integrand by one, so the outermost level needs
+2 q - 1 >= order + m - 1. `QuadraysOptions.points_per_segment` sets q instead,
+for studies. Whole cells, zero faces and the lookup tables' pieces get the
+reference rule of degree order, or the lowest higher one with positive weights
+(tetrahedra: 4 for 3, 9 for 7 and 8). `python/tests/test_part_order.py` checks
+every moment up to degree order, orders 1 to 10, on cells cut by a plane.
+`options` is a `QuadraysOptions` for quadrays and a `LutOptions` for
+`backend="lut"` (None: the defaults).
 `part.visualization_mesh(mode, backend, degree)` gives quadrays' leaves as
 Lagrange cells (a `QuadraysLeafMesh`) or the lookup tables' straight pieces (a
 `CutMesh`), zero faces as linear faces and, with mode `full`, the whole cells as
@@ -268,8 +277,9 @@ level set. Two planes give their line, in every cell type and template order, to
   (`max_refinement_iterations`, `edge_max_depth`, `linear_fast_path`) and the
   algoim backends.
 - **Behaviour:** one rule per cell (the straight backend gave one per piece);
-  the lookup tables' `order` counts Gauss points per direction (rules exact for
-  degree 2 order - 1, the straight backend took the degree); hexahedra with
+  the lookup tables' `order` counted Gauss points per direction (rules exact
+  for degree 2 order - 1, the straight backend took the degree; since
+  2026-10-04 `order` is the degree again, in both backends); hexahedra with
   multilinear values fill their cells exactly (above); 1D meshes and curves go
   through the lookup tables.
 - **Fixed on the way:** `create_level_set_mesh_data(mesh, degree)` gave intervals

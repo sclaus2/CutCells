@@ -2306,11 +2306,13 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
           nb::arg("order") = 3, nb::arg("mode") = "full", nb::arg("backend") = nb::none(),
           nb::arg("options") = nb::none(),
           "Quadrature rules, one per cell: the backend's on cut cells, rules on owned "
-          "zero faces, and with mode 'full' those of the whole cells. backend: 'quadrays' "
-          "(options: QuadraysOptions) or 'lut' ('straight'), the lookup tables on Pk-iso-P1 "
-          "templates (options: LutOptions); None: the part's. quadrays takes order "
-          "Gauss-Legendre points per segment; the lookup tables' straight pieces, whole "
-          "cells and faces get rules exact for degree 2 order - 1 (at most 10).")
+          "zero faces, and with mode 'full' those of the whole cells. order: the polynomial "
+          "degree integrated exactly on flat pieces, 1 to 10, in both backends. backend: "
+          "'quadrays' (options: QuadraysOptions) or 'lut' ('straight'), the lookup tables on "
+          "Pk-iso-P1 templates (options: LutOptions); None: the part's. quadrays takes "
+          "ceil((order + dim) / 2) Gauss-Legendre points per segment of its height lines, or "
+          "QuadraysOptions.points_per_segment; the lookup tables' pieces, whole cells and "
+          "faces get the reference rules of degree order.")
       .def(
           "visualization_mesh",
           [](const PartT& self, const std::string& mode, nb::handle backend, int degree,
@@ -2436,8 +2438,8 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
           return cutcells::part::quadrature_rules(part.part, order, !cut_only, o);
         },
         nb::arg("part"), nb::arg("order") = 3, nb::arg("mode") = "full", nb::arg("options") = nb::none(),
-        "part.quadrature(order, mode, backend='quadrays', options). "
-        "order: Gauss-Legendre points per segment of each height line.");
+        "part.quadrature(order, mode, backend='quadrays', options). order: the polynomial "
+        "degree integrated exactly on flat pieces, 1 to 10.");
 
   m.def(("quadrays_leaves_" + type).c_str(),
         [](const PartT& part, int degree, const std::string& mode, nb::handle options)
@@ -2657,7 +2659,11 @@ NB_MODULE(_cutcellscpp, m)
               "From this depth of bisection on, accept a direction with two roots per height line "
               "that never merge in the box (two sheets of one level set).")
       .def_rw("diagnose", &cutcells::quadrays::Options::diagnose,
-              "Record why each bisection happened in QuadraysStats.causes.");
+              "Record why each bisection happened in QuadraysStats.causes.")
+      .def_rw("points_per_segment", &cutcells::quadrays::Options::points_per_segment,
+              "Gauss-Legendre points per segment of each height line in part.quadrature; 0: "
+              "enough for the order, ceil((order + part.dim) / 2), which integrates "
+              "polynomials of degree order exactly on flat pieces.");
   nb::class_<cutcells::lut::Options>(m, "LutOptions", "Options of the lookup-table backend.")
       .def(
           "__init__",

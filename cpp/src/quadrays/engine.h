@@ -84,6 +84,12 @@ struct Options
     int two_roots_depth = 0;
     /// Record why each bisection happened in Stats::causes.
     bool diagnose = false;
+    /// The front end (part::quadrature_rules): Gauss-Legendre points per
+    /// segment of each height line. 0: enough for its order, ceil((order + m)
+    /// / 2) for a part of dimension m, so that flat pieces integrate
+    /// polynomials of degree order exactly. The engine's own functions take
+    /// the points as an argument and ignore it.
+    int points_per_segment = 0;
 };
 
 /// Counters of one or more engine runs.

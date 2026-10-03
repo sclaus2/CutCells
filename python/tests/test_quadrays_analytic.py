@@ -67,7 +67,7 @@ def distance_callables(centre, radius):
     return cutcells.AnalyticLevelSet(value, gradient, box_bounds)
 
 
-def totals(result, order=5):
+def totals(result, order=7):
     volume = result["phi < 0"].quadrature(order=order, mode="full", backend="quadrays")
     area = result["phi = 0"].quadrature(order=order, mode="cut_only", backend="quadrays")
     return volume, area

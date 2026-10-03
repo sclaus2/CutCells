@@ -111,12 +111,24 @@ void sources_of(const MeshPart<T, I>& part, I cell_id, const CellTerms& ct, Cell
     }
 }
 
+/// The reference rule of a cell type exact for @p degree: the lowest at least
+/// as high with positive weights, made once per thread.
+template <std::floating_point T>
+const quadrature::ReferenceQuadratureRule<T>& reference_rule(cell::type type, int degree)
+{
+    thread_local std::array<std::array<quadrature::ReferenceQuadratureRule<T>, 11>, 8> cache;
+    quadrature::ReferenceQuadratureRule<T>& rule = cache[static_cast<int>(type)][degree];
+    if (rule._weights.empty())
+        rule = quadrature::get_reference_rule<T>(type, quadrature::positive_rule_order(type, degree));
+    return rule;
+}
+
 /// The reference rule of a whole cell, in box coordinates with physical weights.
 template <std::floating_point T>
 void append_cell_points(const quadrays::ClippedBox<T>& box, cell::type type, int degree,
                         quadrays::CellPoints<T>& out)
 {
-    const auto rule = quadrature::get_reference_rule<T>(type, degree);
+    const auto& rule = reference_rule<T>(type, degree);
     const T detj = std::abs(quadrays::reference_jacobian_determinant(box));
     const int tdim = rule._tdim;
     for (int q = 0; q < rule._num_points; ++q)
@@ -153,7 +165,7 @@ void append_face_points(const quadrays::ClippedBox<T>& box, cell::type type, int
                : std::sqrt((e1[1] * e2[2] - e1[2] * e2[1]) * (e1[1] * e2[2] - e1[2] * e2[1])
                            + (e1[2] * e2[0] - e1[0] * e2[2]) * (e1[2] * e2[0] - e1[0] * e2[2])
                            + (e1[0] * e2[1] - e1[1] * e2[0]) * (e1[0] * e2[1] - e1[1] * e2[0]));
-    const auto rule = quadrature::get_reference_rule<T>(facet_type(type, f), degree);
+    const auto& rule = reference_rule<T>(facet_type(type, f), degree);
     for (int q = 0; q < rule._num_points; ++q)
     {
         const T s = rule._points[static_cast<std::size_t>(rule._tdim * q)];
@@ -389,18 +401,38 @@ void append_cell(mesh::CutMesh<T>& out, cell::type type, std::span<const T> x, s
     out._num_cells += 1;
 }
 
+/// The polynomial degree a quadrature order integrates exactly on flat pieces,
+/// whole cells and zero faces: the order itself, within the reference tables.
+int exact_degree(int order)
+{
+    if (order < 1 || order > 10)
+        throw std::invalid_argument("part: the quadrature order, the polynomial degree integrated exactly, goes "
+                                    "from 1 to 10");
+    return order;
+}
+
+/// quadrays' Gauss-Legendre points per segment for a quadrature order. On a
+/// flat piece the m nested levels of a part of dimension m have linear bounds,
+/// each of which raises the degree of the integrand by one: degree order needs
+/// 2 q - 1 >= order + m - 1.
+int points_per_segment(int order, int dim, const quadrays::Options& options)
+{
+    if (options.points_per_segment > 0)
+        return options.points_per_segment;
+    return std::max(1, (order + std::max(dim, 0) + 1) / 2);
+}
+
 } // namespace
 
 template <std::floating_point T, std::integral I>
 quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                                                 const quadrays::Options& options)
 {
-    if (order < 1)
-        throw std::invalid_argument("part: the quadrature order must be at least 1");
+    const int degree = exact_degree(order);
+    const int q = points_per_segment(order, part.dim, options);
     check_quadrays(part);
     const CutResult<T, I>& r = *part.result;
     const MeshView<T, I>& mesh = *r.mesh;
-    const int degree = std::min(2 * order - 1, 10);
 
     quadrature::QuadratureRules<T> rules;
     rules._tdim = r.num_cells > 0 ? cell::get_tdim(mesh.cell_type(I(0))) : 3;
@@ -445,7 +477,7 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
                                         std::span<const SelectionTerm>(ct.terms).subspan(
                                             static_cast<std::size_t>(ct.offsets[g]),
                                             static_cast<std::size_t>(ct.offsets[g + 1] - ct.offsets[g])),
-                                        order, options, points, stats);
+                                        q, options, points, stats);
             }
             else if (entries[i].kind == 1)
             {
@@ -529,11 +561,9 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
                                                 const lut::Options& options)
 {
     check_lut(part, options);
-    if (order < 1)
-        throw std::invalid_argument("part: the quadrature order must be at least 1");
+    const int degree = exact_degree(order);
     const CutResult<T, I>& r = *part.result;
     const MeshView<T, I>& mesh = *r.mesh;
-    const int degree = std::min(2 * order - 1, 10);
 
     quadrature::QuadratureRules<T> rules;
     rules._tdim = r.num_cells > 0 ? cell::get_tdim(mesh.cell_type(I(0))) : 3;

@@ -91,13 +91,13 @@ def test_backend_per_call_and_per_result():
     exact = 4.0 / 3.0 * np.pi * 0.12**3
     straight = np.sum(part.quadrature(order=2).weights)
     assert np.sum(part.quadrature(order=2, backend="straight").weights) == straight
-    curved = np.sum(part.quadrature(order=5, backend="quadrays").weights)
+    curved = np.sum(part.quadrature(order=7, backend="quadrays").weights)
     assert curved == pytest.approx(exact, rel=1e-5)
     assert abs(straight / exact - 1) > 1e-3
     # a result's backend applies to the parts selected afterwards
     result.backend = "quadrays"
     assert result.options is None
-    assert np.sum(result["phi < 0"].quadrature(order=5).weights) == curved
+    assert np.sum(result["phi < 0"].quadrature(order=7).weights) == curved
     assert type(result["phi < 0"].visualization_mesh()).__name__.startswith("QuadraysLeafMesh")
     with pytest.raises(ValueError, match="benchmarks"):
         part.quadrature(backend="algoim")

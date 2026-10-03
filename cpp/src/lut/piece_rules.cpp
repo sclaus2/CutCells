@@ -150,7 +150,8 @@ T measure(const T* b, int rows, int m)
     return std::sqrt(c0 * c0 + c1 * c1 + c2 * c2);
 }
 
-/// Reference rules by cell type, for one degree.
+/// Reference rules by cell type, for one degree: the lowest at least as high
+/// with positive weights.
 template <std::floating_point T>
 const quadrature::ReferenceQuadratureRule<T>& reference_rule(cell::type type, int degree)
 {
@@ -159,7 +160,7 @@ const quadrature::ReferenceQuadratureRule<T>& reference_rule(cell::type type, in
         throw std::invalid_argument("lut: rules go from degree 1 to 10");
     quadrature::ReferenceQuadratureRule<T>& rule = cache[static_cast<int>(type)][degree];
     if (rule._weights.empty())
-        rule = quadrature::get_reference_rule<T>(type, degree);
+        rule = quadrature::get_reference_rule<T>(type, quadrature::positive_rule_order(type, degree));
     return rule;
 }
 

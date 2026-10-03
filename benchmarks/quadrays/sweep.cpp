@@ -267,16 +267,22 @@ struct CutCells
     double whole_volume = 0, whole_surface = 0;
 };
 
+/// Rules of a part with q Gauss points per segment (quadrays) or per direction
+/// (algoim), or the lookup tables' rules exact for the same degree, 2 q - 1.
 quadrature::QuadratureRules<double> rules_of(const std::string& gen, const part::MeshPart<double, int>& part, int q)
 {
     if (gen == "quadrays")
-        return part::quadrature_rules(part, q, false, quadrays::Options{});
+    {
+        quadrays::Options options;
+        options.points_per_segment = q;
+        return part::quadrature_rules(part, std::min(2 * q - 1, 10), false, options);
+    }
     if (gen == "lut" || gen.starts_with("lut:"))
     {
         lut::Options options;
         if (gen != "lut")
             options.template_order = std::stoi(gen.substr(4));
-        return part::quadrature_rules(part, q, false, options);
+        return part::quadrature_rules(part, std::min(2 * q - 1, 10), false, options);
     }
 #ifdef CUTCELLS_WITH_ALGOIM
     if (gen == "algoim")
@@ -292,7 +298,10 @@ void p1_reference(const SweepMesh& m, const part::CutResult<double, int>& result
     for (const bool surface : {false, true})
     {
         const part::MeshPart<double, int> part = part::select(result, surface ? "phi = 0" : "phi < 0");
-        const quadrature::QuadratureRules<double> rules = part::quadrature_rules(part, q, false, quadrays::Options{});
+        quadrays::Options options;
+        options.points_per_segment = q;
+        const quadrature::QuadratureRules<double> rules
+            = part::quadrature_rules(part, std::min(2 * q - 1, 10), false, options);
         for (CellInfo& info : cut.infos)
             (surface ? info.exact_surface : info.exact_volume) = 0;
         double total = 0;

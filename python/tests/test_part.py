@@ -23,7 +23,8 @@ BALL = 4.0 / 3.0 * math.pi * RADIUS**3
 SPHERE = 4.0 * math.pi * RADIUS**2
 
 
-def total(part, order=5, mode="full"):
+def total(part, order=8, mode="full"):
+    """The part's measure; order 8 takes 5 or 6 Gauss points per segment."""
     return float(np.sum(part.quadrature(order=order, mode=mode).weights))
 
 

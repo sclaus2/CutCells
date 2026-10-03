@@ -122,4 +122,21 @@ ReferenceQuadratureRule<T> get_reference_rule(cell::type cell_type, int order)
         " not available (max order is 10; regenerate tables with higher max_order)");
 }
 
+/// The lowest order from @p order on, up to 10, whose rule on @p cell_type has
+/// only positive weights: the tetrahedron's rules of order 3, 7 and 8 have a
+/// negative one. Returns @p order where no rule up to 10 has.
+inline int positive_rule_order(cell::type cell_type, int order)
+{
+    for (int o = order; o <= 10; ++o)
+    {
+        const ReferenceQuadratureRule<double> rule = get_reference_rule<double>(cell_type, o);
+        bool positive = true;
+        for (const double w : rule._weights)
+            positive = positive && w > 0;
+        if (positive)
+            return o;
+    }
+    return order;
+}
+
 } // namespace cutcells::quadrature

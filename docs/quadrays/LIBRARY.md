@@ -23,9 +23,12 @@ two roots per line (below).
 | `../compression/compress.h/.cpp` | positive rules reduced to at most as many points as a polynomial space has moments (below) |
 
 The front end (`cutcells.cut`, `cutcells.part`; `FRONTEND.md`) integrates with
-quadrays when a part's quadrature asks for `backend="quadrays"`, with `order`
-Gauss-Legendre points per segment of each height line; whole cells and faces in
-a zero set get the reference rules exact for degree 2 order - 1.
+quadrays by default. Its `order` is the polynomial degree integrated exactly on
+flat pieces: quadrays takes ceil((order + m) / 2) Gauss-Legendre points per
+segment of each height line for a part of dimension m
+(`QuadraysOptions.points_per_segment` sets them instead), and whole cells and
+faces in a zero set get reference rules of that degree. The q of the results
+below is points per segment, the engine's own argument.
 `quadrays_quadrature` and `quadrays_leaves` take a part and a `QuadraysOptions`;
 `quadrays_cell_rules` and `quadrays_cell_leaves` work on one cell.
 

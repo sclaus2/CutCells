@@ -70,8 +70,8 @@ def test_plane_is_exact(kind, n, degree):
 def test_sphere_totals(kind):
     mesh = box_mesh(kind, 8)
     result = cutcells.cut(mesh, cutcells.create_level_set(mesh, sphere, degree=2, name="phi"))
-    volume = result["phi < 0"].quadrature(order=5, mode="full", backend="quadrays")
-    area = result["phi = 0"].quadrature(order=5, mode="cut_only", backend="quadrays")
+    volume = result["phi < 0"].quadrature(order=7, mode="full", backend="quadrays")
+    area = result["phi = 0"].quadrature(order=7, mode="cut_only", backend="quadrays")
     assert np.sum(volume.weights) == pytest.approx(4.0 / 3.0 * math.pi * RADIUS**3, rel=1e-7)
     assert np.sum(area.weights) == pytest.approx(4.0 * math.pi * RADIUS**2, rel=1e-6)
     assert np.all(np.asarray(volume.weights) > 0) and np.all(np.asarray(area.weights) > 0)

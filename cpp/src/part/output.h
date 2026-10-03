@@ -28,10 +28,12 @@ namespace cutcells::part
 /// a piece of the cell names; an interface part is integrated once per level
 /// set whose zero set it asks for.
 ///
-/// @param order  quadrays: Gauss-Legendre points per segment of each height
-///               line; the lookup tables' straight pieces, whole cells and zero
-///               faces get the reference rules exact for degree 2 order - 1
-///               (at most 10)
+/// @param order  the polynomial degree integrated exactly on flat pieces, 1 to
+///               10: quadrays takes ceil((order + part.dim) / 2) Gauss-Legendre
+///               points per segment of each height line (each nested level's
+///               linear bounds raise the degree by one), or
+///               options.points_per_segment; whole cells and zero faces get the
+///               reference rules of degree order
 /// @throws std::invalid_argument (quadrays) for parts of dimension below
 ///         tdim - 1, and for cells quadrays does not take
 template <std::floating_point T, std::integral I>
@@ -40,7 +42,8 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
 
 /// @brief Quadrature rules of a part from the lookup tables: the selected
 /// straight pieces of each cut cell (lut::cut_cell, with the level sets that
-/// cut the cell and that the expression names).
+/// cut the cell and that the expression names), with the reference rules of
+/// degree @p order (1 to 10) on the pieces, whole cells and zero faces.
 /// @throws std::invalid_argument for cells other than intervals, triangles,
 ///         quadrilaterals, tetrahedra and hexahedra, and for parts where
 ///         three level sets vanish
