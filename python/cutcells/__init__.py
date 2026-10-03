@@ -263,6 +263,10 @@ write_quadrays_leaves_float64 = _cutcellscpp.write_quadrays_leaves_float64
 AnalyticLevelSet = _cutcellscpp.AnalyticLevelSet
 analytic_sphere = _cutcellscpp.analytic_sphere
 analytic_level_set_from_tape = _cutcellscpp.analytic_level_set_from_tape
+CompressionStats = _cutcellscpp.CompressionStats
+compress_rules = _cutcellscpp.compress_rules
+compress_rules_float32 = _cutcellscpp.compress_rules_float32
+compress_rules_float64 = _cutcellscpp.compress_rules_float64
 from . import part as part
 
 from .mesh_utils import (

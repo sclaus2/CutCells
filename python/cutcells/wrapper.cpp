@@ -31,6 +31,7 @@
 #include <cutcells/cell_flags.h>
 #include <cutcells/cell_topology.h>
 #include <cutcells/cell_types.h>
+#include <cutcells/compression/compress.h>
 #include <cutcells/level_set.h>
 #include <cutcells/level_set_cell.h>
 #include <cutcells/lut/cut_cell.h>
@@ -2458,6 +2459,39 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
   }
 }
 
+// ============================================================================
+// Compression of quadrature rules (compression/compress.h)
+// ============================================================================
+
+template <typename T>
+void declare_compression(nb::module_& m, const std::string& type)
+{
+  namespace cc = cutcells::compression;
+  m.def(("compress_rules_" + type).c_str(),
+        [](const quadrature::QuadratureRules<T>& rules, int degree, const std::string& space)
+        {
+          const cc::MomentSpace s = cc::string_to_moment_space(space);
+          quadrature::QuadratureRules<T> out;
+          cc::CompressionStats stats;
+          {
+            nb::gil_scoped_release release;
+            cc::compress_rules(rules, degree, s, out, stats);
+          }
+          return std::make_pair(std::move(out), stats);
+        },
+        nb::arg("rules"), nb::arg("degree"), nb::arg("space") = "tensor",
+        "Every rule replaced by at most as many of its points as the polynomial space has "
+        "moments, with positive weights that integrate the space exactly as the original "
+        "rule does: space 'tensor' (degree <= degree in each reference coordinate, (degree + 1)^tdim "
+        "moments; hexahedra) or 'total' (total degree <= degree; tetrahedra). Q_k elements "
+        "on affine hexahedra need degree 2k for stiffness and mass, P_k on affine tetrahedra "
+        "space 'total' and degree 2k. Rules with a negative weight, or no more points than "
+        "moments, are copied. Returns (QuadratureRules, CompressionStats).");
+
+  if constexpr (std::is_same_v<T, double>)
+    m.attr("compress_rules") = m.attr("compress_rules_float64");
+}
+
 NB_MODULE(_cutcellscpp, m)
 {
   // Create module for C++ wrappers
@@ -2653,6 +2687,20 @@ NB_MODULE(_cutcellscpp, m)
       .def_ro("causes", &cutcells::quadrays::Stats::causes);
   declare_quadrays<float>(m, "float32");
   declare_quadrays<double>(m, "float64");
+
+  nb::class_<cutcells::compression::CompressionStats>(m, "CompressionStats",
+      "Counters of compress_rules.")
+      .def(nb::init<>())
+      .def_ro("n_rules", &cutcells::compression::CompressionStats::n_rules, "Rules read.")
+      .def_ro("n_compressed", &cutcells::compression::CompressionStats::n_compressed, "Rules reduced.")
+      .def_ro("n_skipped", &cutcells::compression::CompressionStats::n_skipped,
+              "Rules with a negative weight, copied unchanged.")
+      .def_ro("points_before", &cutcells::compression::CompressionStats::points_before, "Points read.")
+      .def_ro("points_after", &cutcells::compression::CompressionStats::points_after, "Points written.")
+      .def_ro("max_residual", &cutcells::compression::CompressionStats::max_residual,
+              "Largest moment error relative to a rule's total |weight|.");
+  declare_compression<float>(m, "float32");
+  declare_compression<double>(m, "float64");
 
   nb::module_ part_module = m.def_submodule(
       "part", "The front end: cut(mesh, level_sets) classifies cells by the level sets' "
