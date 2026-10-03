@@ -6,14 +6,16 @@ expressions, and hands their quadrature and visualisation to a backend:
 quadrays, or the lookup tables on Pk-iso-P1 templates (`cpp/src/lut/`, phase 4).
 It needs no interpolant of an analytic level set. Since phase 5 it is the only
 front end: AdaptCell, its certification and `HOCutResult`/`HOMeshPart` of old
-are gone, and those names now denote this front end's classes.
+are gone; `cutcells.cut` is its one entry point, with quadrays as the default
+backend (below).
 
 ```python
 import cutcells
 
 result = cutcells.cut(mesh, cutcells.analytic_sphere([0, 0, 0], 0.7))
-rules = result["phi < 0"].quadrature(order=2)                     # lookup tables
-curved = result["phi < 0"].quadrature(order=5, backend="quadrays")
+curved = result["phi < 0"].quadrature(order=5)                    # quadrays
+straight = result["phi < 0"].quadrature(order=2, backend="lut",
+                                        options=cutcells.LutOptions(template_order=2))
 result["phi = 0"].write_vtu("sphere.vtu", mode="cut_only")
 ```
 
@@ -247,15 +249,20 @@ level set. Two planes give their line, in every cell type and template order, to
   the front end's parts, checked by `mesh_part_algoim_check` with
   `CUTCELLS_WITH_ALGOIM`). The library no longer includes algoim or links
   LAPACK.
-- **Python:** `cutcells.cut(mesh, level_sets)` (and `ho_cut`) is `part.cut`
-  with the lookup tables as the default backend ("straight" names them too) and
-  the keywords of the former cut(): `triangulate`, `triangulation`
-  ('classical', 'midpoint'), `cut_approximation` ('auto', 'linear', 'iso_p1')
-  with `cut_approximation_order`, `degree` (the template order for analytic
-  level sets) and `name`. `result.backend` and `result.options` set the default
-  of the parts selected afterwards; a call can name another. `HOCutResult` and
-  `HOMeshPart` are `part.CutResult` and `part.MeshPart`, with `parent_cell_ids`,
-  `cell_domains`, `num_level_sets`, `cut_cell_ids` and `uncut_cell_ids` kept.
+- **Python:** `cutcells.cut(mesh, level_sets)` is the one entry point, with
+  quadrays as the default backend (2026-10-03; until then the lookup tables).
+  `backend="lut"` ("straight" names it too) gives the lookup tables' straight
+  pieces and takes the keywords of the former cut(): `triangulate`,
+  `triangulation` ('classical', 'midpoint'), `cut_approximation` ('auto',
+  'linear', 'iso_p1') with `cut_approximation_order`, and `degree` (the template
+  order for analytic level sets); given with another backend they raise
+  ValueError. `name` names a single level set. `result.backend` and
+  `result.options` set the default of the parts selected afterwards; a call can
+  name another. `cutcells.part.cut` (with `cut_float32`, `cut_float64`) and
+  `cutcells.ho_cut` are deprecated aliases of `cutcells.cut` that warn, and so
+  are the type names `HOCutResult` and `HOMeshPart` of `part.CutResult` and
+  `part.MeshPart`, which keep `parent_cell_ids`, `cell_domains`,
+  `num_level_sets`, `cut_cell_ids` and `uncut_cell_ids`.
   Gone: `AdaptCell`, `adapt_cell()`, the certification and refinement
   functions, their tags, the AdaptCell tuning keywords
   (`max_refinement_iterations`, `edge_max_depth`, `linear_fast_path`) and the

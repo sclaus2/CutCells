@@ -78,7 +78,7 @@ def totals(result, order=5):
 def test_analytic_sphere_totals(kind, signed_distance):
     mesh = box_mesh(kind, 8)
     phi = cutcells.analytic_sphere(CENTRE, RADIUS, signed_distance=signed_distance)
-    result = cutcells.cut(mesh, phi, degree=2)
+    result = cutcells.cut(mesh, phi)
     volume, area = totals(result)
     # as for the polynomial sphere (test_quadrays.py)
     assert np.sum(volume.weights) == pytest.approx(BALL, rel=1e-7)
@@ -89,42 +89,42 @@ def test_analytic_sphere_totals(kind, signed_distance):
 
 
 def test_analytic_beats_its_interpolant():
-    """quadrays integrates the analytic sphere, the straight backend its P2 interpolant."""
+    """quadrays integrates the analytic sphere, the lookup tables its P2 interpolant."""
     mesh = box_mesh("hex", 6)
-    result = cutcells.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS), degree=2)
+    result = cutcells.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
     exact_error = abs(np.sum(totals(result)[0].weights) - BALL)
-    straight = result["phi < 0"].quadrature(order=4, mode="full", backend="straight")
+    straight = result["phi < 0"].quadrature(order=4, mode="full", backend="lut",
+                                            options=cutcells.LutOptions(template_order=2))
     assert exact_error < 1e-8
     assert abs(np.sum(straight.weights) - BALL) > 100 * exact_error
 
 
 @pytest.mark.parametrize("kind", ["hex", "tet"])
-@pytest.mark.parametrize("degree", [1, 2])
-def test_cells_are_classified_by_the_analytic_level_set(kind, degree):
+def test_cells_are_classified_by_the_analytic_level_set(kind):
     """A ball about the centre of the cell [0, 0.5]^3 that reaches 0.01 beyond
     its faces: all vertices of all cells lie outside, so a P1 interpolant sees
     no ball at all, and the caps lie away from every vertex. The cells are
-    classified by the level set's own bounds, so quadrays finds them for any
-    degree; the lookup tables see the level set at the template's vertices.
-    Dense sampling finds the same 18 tetrahedra crossed."""
+    classified by the level set's own bounds, so quadrays finds them; the
+    lookup tables see the level set at the template's vertices, P1 ones
+    nothing. Dense sampling finds the same 18 tetrahedra crossed."""
     centre, radius = [0.25, 0.25, 0.25], 0.26
     mesh = box_mesh(kind, 4)
-    result = cutcells.cut(mesh, cutcells.analytic_sphere(centre, radius), degree=degree)
+    result = cutcells.cut(mesh, cutcells.analytic_sphere(centre, radius))
     assert result.num_cut_cells == (7 if kind == "hex" else 18)
     volume = result["phi < 0"].quadrature(order=5, mode="full", backend="quadrays")
     area = result["phi = 0"].quadrature(order=5, mode="cut_only", backend="quadrays")
     assert np.sum(volume.weights) == pytest.approx(4.0 / 3.0 * math.pi * radius**3, rel=1e-6)
     assert np.sum(area.weights) == pytest.approx(4.0 * math.pi * radius**2, rel=1e-5)
-    if degree == 1:
-        straight = result["phi < 0"].quadrature(order=2, mode="full", backend="straight")
-        assert np.sum(straight.weights) == 0.0
+    straight = result["phi < 0"].quadrature(order=2, mode="full", backend="lut",
+                                            options=cutcells.LutOptions(template_order=1))
+    assert np.sum(straight.weights) == 0.0
 
 
 @pytest.mark.parametrize("kind,n", [("hex", 3), ("tet", 2)])
 def test_plane_from_callables_is_exact(kind, n):
     mesh = box_mesh(kind, n)
     phi = plane_callables([1.0, 0.3, -0.2], 0.0)
-    result = cutcells.cut(mesh, phi, degree=1)
+    result = cutcells.cut(mesh, phi)
     volume, area = totals(result, order=3)
     assert np.sum(volume.weights) == pytest.approx(4.0, rel=1e-13)
     assert np.sum(area.weights) == pytest.approx(4.0 * math.sqrt(1.13), rel=1e-13)
@@ -251,8 +251,8 @@ def test_shapeforest_sphere_matches_the_compiled_one():
     tape_phi = csf.analytic_level_set(shape)
     compiled = cutcells.analytic_sphere(CENTRE, RADIUS)
     mesh = box_mesh("tet", 6)
-    a = totals(cutcells.cut(mesh, tape_phi, degree=2))
-    b = totals(cutcells.cut(mesh, compiled, degree=2))
+    a = totals(cutcells.cut(mesh, tape_phi))
+    b = totals(cutcells.cut(mesh, compiled))
     for x, y in zip(a, b):
         assert np.sum(x.weights) == pytest.approx(np.sum(y.weights), rel=1e-12)
     assert np.sum(a[0].weights) == pytest.approx(BALL, rel=1e-8)
@@ -266,7 +266,7 @@ def test_shapeforest_union_with_kinks():
     shape = sf.union(sf.sphere(0.45).translate(-0.2, 0.0, 0.0), sf.sphere(0.45).translate(0.2, 0.0, 0.0))
     phi = csf.analytic_level_set(shape)
     mesh = box_mesh("hex", 8)
-    volume, _ = totals(cutcells.cut(mesh, phi, degree=2))
+    volume, _ = totals(cutcells.cut(mesh, phi))
     # union volume: two balls minus their lens (distance d = 0.4)
     r, d = 0.45, 0.4
     lens = math.pi * (4 * r + d) * (2 * r - d) ** 2 / 12

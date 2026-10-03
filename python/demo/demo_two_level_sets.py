@@ -115,8 +115,8 @@ def main() -> None:
     print(f"  sphere dofs={sphere.mesh_data.num_dofs()}")
     print(f"  plane dofs={plane.mesh_data.num_dofs()}")
 
-    print(f"Running cut(mesh, [sphere, plane], triangulate={TRIANGULATE}) ...")
-    result = cutcells.cut(mesh, [sphere, plane], triangulate=TRIANGULATE)
+    print(f"Running cut(mesh, [sphere, plane], backend='lut', triangulate={TRIANGULATE}) ...")
+    result = cutcells.cut(mesh, [sphere, plane], backend="lut", triangulate=TRIANGULATE)
     print(f"  level sets={list(result.level_set_names)}")
     print(f"  num_cut_cells={result.num_cut_cells}")
 

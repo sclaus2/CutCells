@@ -189,7 +189,7 @@ def test_multi_level_set_interface_measure_is_exact(cell, n, case):
         for name in names
     ]
     values = np.array([[functions[name](x) for x in coords] for name in names])
-    result = cutcells.cut(mesh, level_sets, triangulate=True)
+    result = cutcells.cut(mesh, level_sets, backend="lut", triangulate=True)
 
     for expr, zero, signs in selections:
         weights = result[expr].quadrature(order=2, mode="full").weights
@@ -209,8 +209,8 @@ def test_second_level_set_keeps_first_interface():
     def measure(result, expr):
         return float(np.sum(result[expr].quadrature(order=2, mode="full").weights))
 
-    single = measure(cutcells.cut(mesh, a, triangulate=True), "a = 0")
-    multi = cutcells.cut(mesh, [a, b], triangulate=True)
+    single = measure(cutcells.cut(mesh, a, backend="lut", triangulate=True), "a = 0")
+    multi = cutcells.cut(mesh, [a, b], backend="lut", triangulate=True)
     assert measure(multi, "a = 0") == pytest.approx(single, rel=1e-12)
     assert measure(multi, "a = 0 and b < 0") + measure(multi, "a = 0 and b > 0") \
         == pytest.approx(single, rel=1e-12)
@@ -252,7 +252,7 @@ def test_second_level_set_keeps_curved_first_level_set(
     def measure(result, expr):
         return float(np.sum(result[expr].quadrature(order=4, mode="full").weights))
 
-    kwargs = {"triangulate": True, "cut_approximation": cut_approximation}
+    kwargs = {"backend": "lut", "triangulate": True, "cut_approximation": cut_approximation}
     single = cutcells.cut(mesh, a, **kwargs)
     multi = cutcells.cut(mesh, [a, b], **kwargs)
 

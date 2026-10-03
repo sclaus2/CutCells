@@ -139,7 +139,7 @@ def test_matches_straight_backend(kind, degree):
     refinement, so the parts have its measures and first moments."""
     mesh = mesh_of(kind, 6)
     phi = cutcells.create_level_set(mesh, round_level_set(kind), degree=degree, name="phi")
-    result = cutcells.part.cut(mesh, phi)
+    result = cutcells.cut(mesh, phi)
     tdim = 3 if kind in ("hex", "tet") else 2
     for expr, mode in [("phi < 0", "full"), ("phi > 0", "full"), ("phi = 0", "cut_only")]:
         lut = result[expr].quadrature(order=2, mode=mode, backend="lut")
@@ -151,7 +151,7 @@ def test_template_order(kind):
     """The analytic sphere's values at the template's vertices: errors fall as
     (h / k)^2 with the template order k."""
     mesh = box_mesh(kind, 6)
-    result = cutcells.part.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
+    result = cutcells.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
     volume, area = [], []
     for k in range(1, 5):
         options = cutcells.LutOptions(template_order=k)
@@ -170,7 +170,7 @@ def test_template_order_on_prisms_and_pyramids(kind, top):
     from test_part import wedge_mesh
 
     mesh = wedge_mesh(kind, 6)
-    result = cutcells.part.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
+    result = cutcells.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
     volume, area = [], []
     for k in range(1, top + 1):
         options = cutcells.LutOptions(template_order=k)
@@ -189,7 +189,7 @@ def test_plane_on_prisms_and_pyramids(kind, degree):
     from test_part import wedge_mesh
 
     mesh = wedge_mesh(kind, 3)
-    result = cutcells.part.cut(mesh, cutcells.create_level_set(mesh, plane, degree=degree, name="phi"))
+    result = cutcells.cut(mesh, cutcells.create_level_set(mesh, plane, degree=degree, name="phi"))
     # x + 0.3 y - 0.1 < 0 in [-1, 1]^3: 4 - 0.4 (the plane moved by 0.1 along x)
     assert total(result["phi < 0"]) == pytest.approx(4.0 + 4 * 0.1, rel=1e-13)
     assert total(result["phi < 0 or phi > 0"]) == pytest.approx(8.0, rel=1e-13)
@@ -205,7 +205,7 @@ def test_crossing_level_sets(kind):
     mesh = mesh_of(kind, 6)
     a = cutcells.create_level_set(mesh, round_level_set(kind), degree=2, name="a")
     b = cutcells.create_level_set(mesh, plane, degree=1, name="b")
-    result = cutcells.part.cut(mesh, [a, b])
+    result = cutcells.cut(mesh, [a, b])
     box = 8.0 if kind in ("hex", "tet") else 4.0
     quarters = [total(result[f"a {s} 0 and b {t} 0"]) for s in "<>" for t in "<>"]
     assert sum(quarters) == pytest.approx(box, rel=1e-13)
@@ -232,7 +232,7 @@ def test_hexahedra_with_multilinear_values(degree):
         return np.sqrt((x[0] - CENTRE[0]) ** 2 + (x[1] - CENTRE[1]) ** 2 + (x[2] - CENTRE[2]) ** 2) - RADIUS
 
     mesh = box_mesh("hex", 6)
-    result = cutcells.part.cut(mesh, cutcells.create_level_set(mesh, distance, degree=degree, name="phi"))
+    result = cutcells.cut(mesh, cutcells.create_level_set(mesh, distance, degree=degree, name="phi"))
     below = per_cell(result["phi < 0"].quadrature(order=1, mode="cut_only", backend="lut"))
     above = per_cell(result["phi > 0"].quadrature(order=1, mode="cut_only", backend="lut"))
     cell = (2.0 / 6) ** 3
@@ -246,14 +246,14 @@ def test_planes_in_faces(kind):
     2) is counted once by the lookup tables."""
     mesh = box_mesh(kind, 8)
     phi = cutcells.create_level_set(mesh, lambda x: x[0] - 0.25, degree=1, name="phi")
-    result = cutcells.part.cut(mesh, phi)
+    result = cutcells.cut(mesh, phi)
     assert result.num_cut_cells == 0
     assert total(result["phi = 0"], mode="cut_only") == pytest.approx(4.0, rel=1e-13)
     assert total(result["phi < 0"]) == pytest.approx(5.0, rel=1e-13)
     assert total(result["phi > 0"]) == pytest.approx(3.0, rel=1e-13)
 
     phi = cutcells.create_level_set(mesh, lambda x: x[0] - 0.125, degree=1, name="phi")
-    result = cutcells.part.cut(mesh, phi)
+    result = cutcells.cut(mesh, phi)
     options = cutcells.LutOptions(template_order=2)
     assert total(result["phi = 0"], mode="cut_only", options=options) == pytest.approx(4.0, rel=1e-13)
     assert total(result["phi < 0"], options=options) == pytest.approx(4.5, rel=1e-13)
@@ -281,7 +281,7 @@ def cut_mesh_volume(mesh):
 @pytest.mark.parametrize("kind", ["hex", "tet"])
 def test_visualization(kind, tmp_path):
     mesh = box_mesh(kind, 4)
-    result = cutcells.part.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
+    result = cutcells.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
     options = cutcells.LutOptions(template_order=2)
     volume = result["phi < 0"].visualization_mesh(mode="full", backend="lut", options=options)
     assert isinstance(volume, cutcells.CutMesh_float64)
@@ -300,7 +300,7 @@ def test_visualization(kind, tmp_path):
 
 def test_api():
     mesh = box_mesh("hex", 2)
-    result = cutcells.part.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
+    result = cutcells.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
     options = cutcells.LutOptions(template_order=3, triangulate=True)
     assert options.template_order == 3 and options.triangulate
     assert cutcells.LutOptions().template_order == 0
@@ -312,7 +312,7 @@ def test_api():
         result["phi < 0"].quadrature(backend="lut", options=cutcells.LutOptions(template_order=5))
     with pytest.raises(ValueError, match="unknown backend"):
         result["phi < 0"].visualization_mesh(backend="bogus")
-    planes = cutcells.part.cut(mesh, [cutcells.create_level_set(mesh, lambda x: x[0] - 0.1, degree=1, name="a"),
+    planes = cutcells.cut(mesh, [cutcells.create_level_set(mesh, lambda x: x[0] - 0.1, degree=1, name="a"),
                                       cutcells.create_level_set(mesh, lambda x: x[1] - 0.1, degree=1, name="b"),
                                       cutcells.create_level_set(mesh, lambda x: x[2] - 0.1, degree=1, name="c")])
     with pytest.raises(ValueError, match="three do"):
@@ -329,7 +329,7 @@ def test_curves_where_two_level_sets_vanish(kind):
     mesh = mesh_of(kind, 4)
     a = cutcells.create_level_set(mesh, lambda x: x[0] - 0.1, degree=1, name="a")
     b = cutcells.create_level_set(mesh, lambda x: x[1] + 0.2, degree=1, name="b")
-    part = cutcells.cut(mesh, [a, b])["a = 0 and b = 0"]
+    part = cutcells.cut(mesh, [a, b], backend="lut")["a = 0 and b = 0"]
     assert part.dim == (1 if kind in ("hex", "tet") else 0)
     rules = part.quadrature(order=2)
     assert np.sum(rules.weights) == pytest.approx(2.0 if kind in ("hex", "tet") else 1.0, rel=1e-13)

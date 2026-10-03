@@ -11,6 +11,7 @@ from pathlib import Path as _Path
 import ctypes as _ctypes
 import sys as _sys
 import sysconfig as _sysconfig
+import warnings as _warnings
 
 
 def _load_cpp_module():
@@ -87,8 +88,9 @@ def _load_cpp_module():
                 # Basic API sanity check for common dev/test usage. If this fails,
                 # fall back to the installed extension module.
                 if not (
-                    hasattr(module, "HOMeshPart_float64")
-                    and hasattr(module.HOMeshPart_float64, "visualization_mesh")
+                    hasattr(module, "part")
+                    and hasattr(module.part, "MeshPart_float64")
+                    and hasattr(module.part.MeshPart_float64, "visualization_mesh")
                 ):
                     raise ImportError(f"Stale in-tree extension loaded from {candidates[0]}")
 
@@ -232,13 +234,6 @@ runtime_quadrature = _cutcellscpp.runtime_quadrature
 physical_points = _cutcellscpp.physical_points
 write_vtk = _cutcellscpp.write_vtk
 write_level_set_vtu = _cutcellscpp.write_level_set_vtu
-ho_cut = _cutcellscpp.ho_cut
-HOCutResult = _cutcellscpp.HOCutResult
-HOCutResult_float32 = _cutcellscpp.HOCutResult_float32
-HOCutResult_float64 = _cutcellscpp.HOCutResult_float64
-HOMeshPart = _cutcellscpp.HOMeshPart
-HOMeshPart_float32 = _cutcellscpp.HOMeshPart_float32
-HOMeshPart_float64 = _cutcellscpp.HOMeshPart_float64
 QuadraysOptions = _cutcellscpp.QuadraysOptions
 LutOptions = _cutcellscpp.LutOptions
 QuadraysStats = _cutcellscpp.QuadraysStats
@@ -268,6 +263,29 @@ compress_rules = _cutcellscpp.compress_rules
 compress_rules_float32 = _cutcellscpp.compress_rules_float32
 compress_rules_float64 = _cutcellscpp.compress_rules_float64
 from . import part as part
+
+
+def ho_cut(*args, **kwargs):
+    """Deprecated: use cutcells.cut."""
+    _warnings.warn("cutcells.ho_cut is deprecated; use cutcells.cut", DeprecationWarning, stacklevel=2)
+    return cut(*args, **kwargs)
+
+
+# the former names of cutcells.part.CutResult and MeshPart
+_RETIRED_NAMES = {
+    old + suffix: new + suffix
+    for old, new in (("HOCutResult", "CutResult"), ("HOMeshPart", "MeshPart"))
+    for suffix in ("", "_float32", "_float64")
+}
+
+
+def __getattr__(name):
+    if name in _RETIRED_NAMES:
+        new = _RETIRED_NAMES[name]
+        _warnings.warn(f"cutcells.{name} is deprecated; use cutcells.part.{new}", DeprecationWarning, stacklevel=2)
+        return getattr(part, new)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 from .mesh_utils import (
     cutmesh_to_pyvista,

@@ -37,7 +37,7 @@ def level_set(kind, mesh):
 @pytest.mark.parametrize("ls_kind", ["P2", "analytic"])
 def test_sphere_parts(mesh_kind, ls_kind):
     mesh = box_mesh(mesh_kind, 8)
-    result = cutcells.part.cut(mesh, level_set(ls_kind, mesh))
+    result = cutcells.cut(mesh, level_set(ls_kind, mesh))
     assert total(result["phi < 0"]) == pytest.approx(BALL, rel=1e-7)
     assert total(result["phi <= 0"]) == pytest.approx(BALL, rel=1e-7)
     assert total(result["phi > 0"]) == pytest.approx(8.0 - BALL, rel=1e-7)
@@ -55,7 +55,7 @@ def test_cut_cells_hold_the_interface():
     """Bounds over each tetrahedron and its halves find exactly the cells the
     sphere crosses: each holds a piece of the interface."""
     mesh = box_mesh("tet", 8)
-    result = cutcells.part.cut(mesh, level_set("P2", mesh))
+    result = cutcells.cut(mesh, level_set("P2", mesh))
     rules = result["phi = 0"].quadrature(order=3, mode="cut_only")
     assert result.num_cut_cells == len(rules.parent_map) == 627
     np.testing.assert_array_equal(result.cut_cells, rules.parent_map)
@@ -76,7 +76,7 @@ def test_plane_in_mesh_faces(mesh_kind, ls_kind):
             return [lo[0] - offset, hi[0] - offset, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
 
         phi = cutcells.AnalyticLevelSet(lambda x: float(x[0] - offset), lambda x: normal, box_bounds)
-    result = cutcells.part.cut(mesh, phi)
+    result = cutcells.cut(mesh, phi)
     assert result.num_cut_cells == 0
     zero_faces = result.zero_faces
     assert len(zero_faces) == (64 if mesh_kind == "hex" else 128)
@@ -94,7 +94,7 @@ def test_ball_inside_one_cell(mesh_kind):
     no interpolant is involved."""
     centre, radius = [0.25, 0.25, 0.25], 0.26
     mesh = box_mesh(mesh_kind, 4)
-    result = cutcells.part.cut(mesh, cutcells.analytic_sphere(centre, radius))
+    result = cutcells.cut(mesh, cutcells.analytic_sphere(centre, radius))
     # exactly the cells the ball crosses (dense sampling gives the same 18 tetrahedra)
     assert result.num_cut_cells == (7 if mesh_kind == "hex" else 18)
     assert total(result["phi < 0"]) == pytest.approx(4.0 / 3.0 * math.pi * radius**3, rel=1e-8)
@@ -111,7 +111,7 @@ def test_two_level_sets(mesh_kind):
         return [lo[0] - 0.3, hi[0] - 0.3, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
 
     plane = cutcells.AnalyticLevelSet(lambda x: float(x[0] - 0.3), lambda x: [1.0, 0.0, 0.0], plane_bounds)
-    result = cutcells.part.cut(mesh, [ball, plane])
+    result = cutcells.cut(mesh, [ball, plane])
     assert result.level_set_names == ["phi1", "phi2"]
     volume, area = 4.0 / 3.0 * math.pi * 0.5**3, 4.0 * math.pi * 0.5**2
     assert total(result["phi1 < 0 and phi2 < 0"]) == pytest.approx(volume, rel=1e-7)
@@ -128,7 +128,7 @@ def test_two_level_sets_in_one_cell(mesh_kind):
     mesh = box_mesh(mesh_kind, 4)
     first = cutcells.create_level_set(mesh, lambda x: x[0] - 0.1, degree=1, name="a")
     second = cutcells.create_level_set(mesh, lambda x: x[1] - 0.1, degree=1, name="b")
-    result = cutcells.part.cut(mesh, [first, second])
+    result = cutcells.cut(mesh, [first, second])
     assert total(result["a < 0 and b < 0"], order=2) == pytest.approx(2 * 1.1 * 1.1, rel=1e-12)
     assert total(result["a < 0 or b < 0"], order=2) == pytest.approx(8 - 2 * 0.9 * 0.9, rel=1e-12)
     assert total(result["a < 0 and b > 0"], order=2) == pytest.approx(2 * 1.1 * 0.9, rel=1e-12)
@@ -186,7 +186,7 @@ def test_disk_parts(mesh_kind, ls_kind):
         phi = cutcells.create_level_set(mesh, circle, degree=2, name="phi")
     else:
         phi = cutcells.analytic_sphere(CENTRE_2D, RADIUS)
-    result = cutcells.part.cut(mesh, phi)
+    result = cutcells.cut(mesh, phi)
     disk, length = math.pi * RADIUS**2, 2 * math.pi * RADIUS
     assert total(result["phi < 0"]) == pytest.approx(disk, rel=1e-9)
     assert total(result["phi > 0"]) == pytest.approx(4.0 - disk, rel=1e-9)
@@ -204,7 +204,7 @@ def test_sphere_on_prisms_and_pyramids(mesh_kind, ls_kind):
     """Prisms and pyramids: a P2 level set (on pyramids a rational function, as
     Basix's pyramid elements span) or an analytic one."""
     mesh = wedge_mesh(mesh_kind, 6)
-    result = cutcells.part.cut(mesh, level_set(ls_kind, mesh))
+    result = cutcells.cut(mesh, level_set(ls_kind, mesh))
     assert total(result["phi < 0"]) == pytest.approx(BALL, rel=1e-7)
     assert total(result["phi > 0"]) == pytest.approx(8.0 - BALL, rel=1e-7)
     assert total(result["phi = 0"], mode="cut_only") == pytest.approx(SPHERE, rel=1e-6)
@@ -215,7 +215,7 @@ def test_sphere_on_prisms_and_pyramids(mesh_kind, ls_kind):
 def test_plane_on_prisms_and_pyramids(mesh_kind, degree):
     """A plane in general position as a P1 or P2 level set is exact."""
     mesh = wedge_mesh(mesh_kind, 3)
-    result = cutcells.part.cut(mesh, cutcells.create_level_set(mesh, plane, degree=degree, name="phi"))
+    result = cutcells.cut(mesh, cutcells.create_level_set(mesh, plane, degree=degree, name="phi"))
     # x + 0.3 y - 0.2 z < 0 halves [-1, 1]^3; the cut is 4 sqrt(1.13)
     assert total(result["phi < 0"], order=2) == pytest.approx(4.0, rel=1e-13)
     assert total(result["phi = 0"], order=2, mode="cut_only") == pytest.approx(4.0 * math.sqrt(1.13), rel=1e-13)
@@ -235,7 +235,7 @@ def test_ball_and_half_space(mesh_kind, ls_kind):
     else:
         ball = cutcells.analytic_sphere(CENTRE, radius, signed_distance=False)
     plane = cutcells.create_level_set(mesh, lambda x: x[2] - CENTRE[2] - height, degree=1, name="plane")
-    result = cutcells.part.cut(mesh, [ball, plane], names=["ball", "plane"])
+    result = cutcells.cut(mesh, [ball, plane], names=["ball", "plane"])
     h = radius - height
     cap = math.pi * h**2 * (3 * radius - h) / 3
     above = 4.0 * (1.0 - CENTRE[2] - height)
@@ -264,7 +264,7 @@ def test_two_disks(mesh_kind, ls_kind):
     r1, r2 = 0.62, 0.5
     ca, cb = CENTRE_2D + np.array([-0.2, 0.0]), CENTRE_2D + np.array([0.3, 0.1])
     mesh = square_mesh(mesh_kind, 16)
-    result = cutcells.part.cut(mesh, [disk_level_set(mesh, ls_kind, ca, r1, "a"),
+    result = cutcells.cut(mesh, [disk_level_set(mesh, ls_kind, ca, r1, "a"),
                                       disk_level_set(mesh, ls_kind, cb, r2, "b")], names=["a", "b"])
     # the half angles under which the common chord is seen from the centres
     d = float(np.linalg.norm(cb - ca))
@@ -288,7 +288,7 @@ def test_three_disks(mesh_kind):
     centres = [CENTRE_2D + np.array(offset) for offset in ([-0.25, -0.1], [0.25, -0.12], [0.02, 0.3])]
     radii = [0.5, 0.45, 0.48]
     level_sets = [disk_level_set(mesh, "P2", c, r, name) for c, r, name in zip(centres, radii, "abc")]
-    result = cutcells.part.cut(mesh, level_sets, names=["a", "b", "c"])
+    result = cutcells.cut(mesh, level_sets, names=["a", "b", "c"])
     signs = list(itertools.product("<>", repeat=3))
     parts = [total(result[f"a {sa} 0 and b {sb} 0 and c {sc} 0"]) for sa, sb, sc in signs]
     assert sum(parts) == pytest.approx(4.0, rel=1e-12)
@@ -312,7 +312,7 @@ def test_napkin_ring(mesh_kind):
     mesh = box_mesh(mesh_kind, 8)
     ball = cutcells.create_level_set(mesh, lambda x: sum((x[i] - CENTRE[i]) ** 2 for i in range(3)) - R**2, degree=2,
                                      name="ball")
-    result = cutcells.part.cut(mesh, [ball, cylinder_level_set(mesh, r, 2, "cyl")], names=["ball", "cyl"])
+    result = cutcells.cut(mesh, [ball, cylinder_level_set(mesh, r, 2, "cyl")], names=["ball", "cyl"])
     assert total(result["ball < 0 and cyl > 0"]) == pytest.approx(math.pi * h**3 / 6, rel=1e-6)
     assert total(result["ball = 0 and cyl > 0"], mode="cut_only") == pytest.approx(2 * math.pi * R * h, rel=1e-6)
     assert total(result["cyl = 0 and ball < 0"], mode="cut_only") == pytest.approx(2 * math.pi * r * h, rel=1e-6)
@@ -325,7 +325,7 @@ def tricylinder(mesh, r):
     """Cylinders along z, y and x (a, b, c): their intersection's faces meet
     at corners where all three vanish."""
     level_sets = [cylinder_level_set(mesh, r, axis, name) for axis, name in zip((2, 1, 0), "abc")]
-    return cutcells.part.cut(mesh, level_sets, names=["a", "b", "c"])
+    return cutcells.cut(mesh, level_sets, names=["a", "b", "c"])
 
 
 def test_tricylinder():
@@ -359,7 +359,7 @@ def test_face_leaves_stay_in_their_part(mesh_kind):
 @pytest.mark.parametrize("mesh_kind", ["quad", "tri"])
 def test_visualization_2d(mesh_kind):
     mesh = square_mesh(mesh_kind, 8)
-    result = cutcells.part.cut(mesh, cutcells.analytic_sphere(CENTRE_2D, RADIUS))
+    result = cutcells.cut(mesh, cutcells.analytic_sphere(CENTRE_2D, RADIUS))
     disk = result["phi < 0"].visualization_mesh(mode="full", degree=2)
     curve = result["phi = 0"].visualization_mesh(mode="cut_only", degree=2)
     linear = 9 if mesh_kind == "quad" else 5
@@ -370,7 +370,7 @@ def test_visualization_2d(mesh_kind):
 
 def test_visualization(tmp_path):
     mesh = box_mesh("hex", 4)
-    result = cutcells.part.cut(mesh, level_set("analytic", mesh))
+    result = cutcells.cut(mesh, level_set("analytic", mesh))
     volume = result["phi < 0"].visualization_mesh(mode="full", degree=2)
     interface = result["phi = 0"].visualization_mesh(mode="cut_only", degree=2)
     assert set(np.unique(volume.vtk_types)) <= {12, 72}
@@ -381,19 +381,19 @@ def test_visualization(tmp_path):
     assert path.stat().st_size > 0
     # zero faces show as linear faces
     plane = cutcells.create_level_set(mesh, lambda x: x[0] - 0.5, degree=1, name="phi")
-    faces = cutcells.part.cut(mesh, plane)["phi = 0"].visualization_mesh(mode="cut_only")
+    faces = cutcells.cut(mesh, plane)["phi = 0"].visualization_mesh(mode="cut_only")
     assert set(np.unique(faces.vtk_types)) == {9} and faces.n_cells() == 16
 
 
 def test_api_checks():
     mesh = box_mesh("hex", 2)
     phi = cutcells.analytic_sphere(CENTRE, RADIUS)
-    result = cutcells.part.cut(mesh, phi, names=["ball"])
+    result = cutcells.cut(mesh, phi, names=["ball"])
     assert result.level_set_names == ["ball"]
     assert result["ball < 0"].dim == 3 and result["ball = 0"].dim == 2
     with pytest.raises(ValueError, match="unknown backend"):
         result["ball < 0"].quadrature(order=3, backend="bogus")
     with pytest.raises(ValueError, match="named"):
-        cutcells.part.cut(mesh, [phi, phi], names=["a", "a"])
+        cutcells.cut(mesh, [phi, phi], names=["a", "a"])
     with pytest.raises(TypeError):
-        cutcells.part.cut(mesh, "phi")
+        cutcells.cut(mesh, "phi")

@@ -2171,7 +2171,7 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
             return nb::ndarray<const int, nb::numpy>(self.result.cut_cells.data(), {self.result.cut_cells.size()},
                                                      nb::handle());
           },
-          nb::rv_policy::reference_internal, "The cut cells (the name of HOCutResult).")
+          nb::rv_policy::reference_internal, "The cut cells (the name the former HOCutResult used).")
       .def_prop_ro(
           "domains",
           [](const ResultT& self)
@@ -2193,7 +2193,7 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
             return as_nbarray(std::move(d), {static_cast<std::size_t>(self.result.n_level_sets()),
                                              static_cast<std::size_t>(self.result.num_cells)});
           },
-          nb::rv_policy::move, "domains as int (the name of HOCutResult).")
+          nb::rv_policy::move, "domains as int (the name the former HOCutResult used).")
       .def_prop_ro(
           "zero_faces",
           [](const ResultT& self)
@@ -2265,12 +2265,12 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
             return nb::ndarray<const int, nb::numpy>(self.part.uncut_cells.data(), {self.part.uncut_cells.size()},
                                                      nb::handle());
           },
-          nb::rv_policy::reference_internal, "uncut_cells (the name of HOMeshPart).")
+          nb::rv_policy::reference_internal, "uncut_cells (the name the former HOMeshPart used).")
       .def_prop_ro(
           "cut_cell_ids",
           [](const PartT& self)
           {
-            // positions in the result's cut cells, as HOMeshPart numbered them
+            // positions in the result's cut cells, as the former HOMeshPart numbered them
             const std::vector<int>& all = self.part.result->cut_cells;
             std::vector<int> ids;
             ids.reserve(self.part.cut_cells.size());
@@ -2380,45 +2380,52 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
       "given. max_depth: bisections of a cell before an unproven sign counts as cut. "
       "backend and options: the default of the result's parts.");
 
-  // cutcells.cut and cutcells.ho_cut: the same, with the lookup tables by
-  // default and the keywords of the former cut()
-  for (const char* name : {"cut", "ho_cut"})
-  {
-    m.def(
-        name,
-        [](const MeshViewT& mesh, nb::handle level_sets, nb::handle names, int max_depth, const std::string& backend,
-           nb::handle options, bool triangulate, const std::string& triangulation,
-           const std::string& cut_approximation, int cut_approximation_order, nb::handle degree, nb::handle name)
+  // cutcells.cut, the one entry point: quadrays by default; the keywords of
+  // the former cut() set the lookup tables' options
+  m.def(
+      "cut",
+      [](const MeshViewT& mesh, nb::handle level_sets, nb::handle names, int max_depth, const std::string& backend,
+         nb::handle options, bool triangulate, const std::string& triangulation, const std::string& cut_approximation,
+         int cut_approximation_order, nb::handle degree, nb::handle name)
+      {
+        nb::object given = nb::borrow(names);
+        if (!name.is_none())
         {
-          nb::object given = nb::borrow(names);
-          if (!name.is_none())
-          {
-            if (!names.is_none())
-              throw std::invalid_argument("cut: give name or names, not both");
-            given = nb::make_tuple(name);
-          }
-          ResultT r = cut_mesh_part<T>(mesh, level_sets, given, max_depth);
-          r.backend = part_backend(backend);
-          if (!options.is_none())
-            r.options = checked_options(options, r.backend);
-          else if (r.backend == "lut")
-            r.options = nb::cast(legacy_lut_options(triangulate, triangulation, cut_approximation,
-                                                    cut_approximation_order, degree));
-          return r;
-        },
-        nb::arg("mesh"), nb::arg("level_sets"), nb::arg("names") = nb::none(), nb::arg("max_depth") = 12,
-        nb::arg("backend") = "lut", nb::arg("options") = nb::none(), nb::arg("triangulate") = false,
-        nb::arg("triangulation") = "classical", nb::arg("cut_approximation") = "auto",
-        nb::arg("cut_approximation_order") = 1, nb::arg("degree") = nb::none(), nb::arg("name") = nb::none(),
-        "Cut a MeshView by level sets (LevelSetFunctions or AnalyticLevelSets, alone or in "
-        "a list): cutcells.part.cut with the lookup tables ('lut', 'straight') as the "
-        "default backend of the result's parts. Without options, the lookup tables take "
-        "triangulate and triangulation ('classical', 'midpoint') and the template order "
-        "from cut_approximation: 'auto' (the level sets' degree, or degree for analytic "
-        "ones), 'linear' (1) or 'iso_p1' (cut_approximation_order). name: of a single "
-        "level set. Returns an HOCutResult (cutcells.part.CutResult); "
-        "result[\"phi1 < 0 and phi2 = 0\"] selects a part.");
-  }
+          if (!names.is_none())
+            throw std::invalid_argument("cut: give name or names, not both");
+          given = nb::make_tuple(name);
+        }
+        const std::string b = part_backend(backend);
+        if (b != "lut"
+            && (triangulate || triangulation != "classical" || cut_approximation != "auto"
+                || cut_approximation_order != 1 || !degree.is_none()))
+        {
+          throw std::invalid_argument("cut: triangulate, triangulation, cut_approximation, cut_approximation_order "
+                                      "and degree set the lookup tables; give backend=\"lut\" with them");
+        }
+        ResultT r = cut_mesh_part<T>(mesh, level_sets, given, max_depth);
+        r.backend = b;
+        if (!options.is_none())
+          r.options = checked_options(options, r.backend);
+        else if (r.backend == "lut")
+          r.options = nb::cast(legacy_lut_options(triangulate, triangulation, cut_approximation,
+                                                  cut_approximation_order, degree));
+        return r;
+      },
+      nb::arg("mesh"), nb::arg("level_sets"), nb::arg("names") = nb::none(), nb::arg("max_depth") = 12,
+      nb::arg("backend") = "quadrays", nb::arg("options") = nb::none(), nb::arg("triangulate") = false,
+      nb::arg("triangulation") = "classical", nb::arg("cut_approximation") = "auto",
+      nb::arg("cut_approximation_order") = 1, nb::arg("degree") = nb::none(), nb::arg("name") = nb::none(),
+      "Cut a MeshView by level sets (LevelSetFunctions with dof values or AnalyticLevelSets, "
+      "alone or in a list), classifying every cell by their own bounds. backend: the default "
+      "of the result's parts, 'quadrays' (curved pieces, QuadraysOptions) or 'lut' (straight "
+      "pieces on Pk-iso-P1 templates, LutOptions). For the lookup tables only, without "
+      "options: triangulate and triangulation ('classical', 'midpoint'), and the template "
+      "order from cut_approximation: 'auto' (the level sets' degree, or degree for analytic "
+      "ones), 'linear' (1) or 'iso_p1' (cut_approximation_order); given with another "
+      "backend they raise. names: of the level sets; name: of a single one. max_depth: "
+      "bisections of a cell before an unproven sign counts as cut. Returns a "
+      "cutcells.part.CutResult; result[\"phi1 < 0 and phi2 = 0\"] selects a MeshPart.");
 
   m.def(("quadrays_quadrature_" + type).c_str(),
         [](const PartT& part, int order, const std::string& mode, nb::handle options)
@@ -2445,15 +2452,11 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
         "quadrays integrates in cut cells as Lagrange cells of the given degree; with mode "
         "'full', the whole cells of volume parts as linear cells.");
 
-  m.attr(("HOCutResult_" + type).c_str()) = part_module.attr(result_name.c_str());
-  m.attr(("HOMeshPart_" + type).c_str()) = part_module.attr(part_name.c_str());
   if constexpr (std::is_same_v<T, double>)
   {
     part_module.attr("CutResult") = part_module.attr(result_name.c_str());
     part_module.attr("MeshPart") = part_module.attr(part_name.c_str());
     part_module.attr("cut") = part_module.attr("cut_float64");
-    m.attr("HOCutResult") = part_module.attr(result_name.c_str());
-    m.attr("HOMeshPart") = part_module.attr(part_name.c_str());
     m.attr("quadrays_quadrature") = m.attr("quadrays_quadrature_float64");
     m.attr("quadrays_leaves") = m.attr("quadrays_leaves_float64");
   }

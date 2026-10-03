@@ -5,15 +5,15 @@
 #
 # SPDX-License-Identifier: MIT
 """
-Demo: MeshView + create_level_set + cut(mesh, ls) straight output bridge.
+Demo: MeshView + create_level_set + cut(mesh, ls, backend="lut") straight output bridge.
 
 This is the first user-facing step for the HO pipeline:
 1. build a pyvista tetrahedral mesh,
 2. convert it to a MeshView,
 3. build one polynomial level set with create_level_set(...),
-4. call cut(mesh, ls),
-5. select HOMeshPart objects,
-6. obtain straight hybrid visualization meshes and straight quadrature from HOMeshPart,
+4. call cut(mesh, ls, backend="lut") for the lookup tables' straight pieces,
+5. select MeshPart objects,
+6. obtain straight hybrid visualization meshes and straight quadrature from MeshPart,
 7. write VTU files.
 
 Curving is intentionally out of scope here. This demo only exercises the
@@ -80,7 +80,7 @@ def main() -> None:
         "--quadrature-order",
         type=int,
         default=4,
-        help="Quadrature order for HOMeshPart.quadrature(...).",
+        help="Quadrature order for MeshPart.quadrature(...).",
     )
     parser.add_argument(
         "--output-dir",
@@ -111,8 +111,8 @@ def main() -> None:
     ls = cutcells.create_level_set(mesh, phi_batch, degree=args.degree, name="phi")
     print(f"  level-set dofs={ls.mesh_data.num_dofs()}")
 
-    print("Running cut(mesh, ls) ...")
-    result = cutcells.cut(mesh, ls)
+    print("Running cut(mesh, ls, backend='lut') ...")
+    result = cutcells.cut(mesh, ls, backend="lut")
     negative = result["phi < 0"]
     interface = result["phi = 0"]
     positive = result["phi > 0"]
@@ -122,7 +122,7 @@ def main() -> None:
     print(f"  phi = 0  : cut={interface.num_cut_cells}, uncut={interface.num_uncut_cells}")
     print(f"  phi > 0  : cut={positive.num_cut_cells}, uncut={positive.num_uncut_cells}")
 
-    print("Building straight hybrid visualization meshes from HOMeshPart ...")
+    print("Building straight hybrid visualization meshes from MeshPart ...")
     inside_full = negative.visualization_mesh(mode="full")
     inside_cut = negative.visualization_mesh(mode="cut_only")
     interface_mesh = interface.visualization_mesh(mode="cut_only")
@@ -131,7 +131,7 @@ def main() -> None:
     print(f"  inside cut-only cells={len(np.asarray(inside_cut.types))}")
     print(f"  interface cells={len(np.asarray(interface_mesh.types))}")
 
-    print("Computing straight quadrature from HOMeshPart ...")
+    print("Computing straight quadrature from MeshPart ...")
     q_inside_full = negative.quadrature(
         order=args.quadrature_order,
         mode="full",

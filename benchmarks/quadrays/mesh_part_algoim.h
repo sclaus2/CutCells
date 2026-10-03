@@ -11,8 +11,8 @@
 #include <cutcells/quadrature.h>
 
 /// algoim's quadrature on the parts of the front end, for comparisons. It was
-/// the library's backend='algoim' on HOMeshPart until phase 5; the library no
-/// longer includes algoim or links LAPACK.
+/// the library's backend='algoim' on the mesh parts until phase 5; the library
+/// no longer includes algoim or links LAPACK.
 namespace cutcells::benchmarks
 {
 

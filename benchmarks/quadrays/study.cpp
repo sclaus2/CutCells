@@ -7,7 +7,7 @@
 //
 // Test problem: sphere |x - centre| = radius in [-1, 1]^3, meshed with n^3 hexahedra
 // or 6 n^3 Kuhn tetrahedra. Parts are selected with the same expressions as
-// HOCutResult, e.g. "phi < 0", "phi > 0", "phi = 0". By default the level set
+// cutcells.cut's results, e.g. "phi < 0", "phi > 0", "phi = 0". By default the level set
 // reaches quadrays as Bernstein coefficients on each cell, as from a
 // finite-element level set; algoim's generators interpolate the sphere on their
 // boxes. With --analytic or --tape it is an analytic level set instead

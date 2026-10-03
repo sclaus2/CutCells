@@ -1,4 +1,4 @@
-"""HOMeshPart output from the lookup tables (the former straight backend):
+"""MeshPart output from the lookup tables (the former straight backend):
 visualisation meshes, selection expressions and rules on straight pieces."""
 
 from pathlib import Path
@@ -180,7 +180,7 @@ def test_structured_hex_quadratic_sphere_interface_has_no_boundary_edges():
         name="phi",
     )
 
-    result = cutcells.cut(mesh, ls)
+    result = cutcells.cut(mesh, ls, backend="lut")
     interface = result["phi = 0"]
     vis = interface.visualization_mesh(mode="cut_only")
 
@@ -236,7 +236,7 @@ def test_homeshpart_straight_output_bridge(tmp_path: Path):
         name="phi",
     )
 
-    result = cutcells.cut(mesh, ls)
+    result = cutcells.cut(mesh, ls, backend="lut")
     negative = result["phi < 0"]
     interface = result["phi = 0"]
 
@@ -284,7 +284,7 @@ def test_mesh_part_string_selection_supports_volume_or():
         name="right",
     )
 
-    result = cutcells.cut(mesh, [left, right])
+    result = cutcells.cut(mesh, [left, right], backend="lut")
 
     left_part = result["left < 0"]
     right_part = result["right < 0"]
@@ -308,7 +308,7 @@ def test_mesh_part_string_selection_rejects_mixed_dimension_or():
         name="phi",
     )
 
-    result = cutcells.cut(mesh, ls)
+    result = cutcells.cut(mesh, ls, backend="lut")
     with pytest.raises(RuntimeError, match="same entity dimension"):
         result["phi < 0 or phi = 0"]
 
@@ -328,7 +328,7 @@ def test_mesh_part_string_selection_supports_surface_or():
         name="psi",
     )
 
-    result = cutcells.cut(mesh, [phi, psi])
+    result = cutcells.cut(mesh, [phi, psi], backend="lut")
     union_part = result["phi = 0 or psi = 0"]
     union_mesh = union_part.visualization_mesh(mode="cut_only")
 
@@ -346,7 +346,7 @@ def test_tetrahedron_interface_is_one_quadrilateral():
         name="phi",
     )
 
-    result = cutcells.cut(mesh, ls)
+    result = cutcells.cut(mesh, ls, backend="lut")
     interface = result["phi = 0"]
 
     vis_interface = interface.visualization_mesh(mode="cut_only")
@@ -368,7 +368,7 @@ def test_triangle_volume_piece_is_one_quadrilateral():
         name="phi",
     )
 
-    result = cutcells.cut(mesh, ls)
+    result = cutcells.cut(mesh, ls, backend="lut")
     negative = result["phi < 0"]
 
     vis_base = negative.visualization_mesh(mode="cut_only")
@@ -403,6 +403,7 @@ def test_iso_p1_tensor_product_quad_hex_output(
     result = cutcells.cut(
         mesh,
         ls,
+        backend="lut",
         triangulate=False,
         cut_approximation="iso_p1",
         cut_approximation_order=2,
@@ -442,7 +443,7 @@ def test_hexahedron_diagonal_plane_interface_uses_all_six_cut_vertices():
         name="phi",
     )
 
-    result = cutcells.cut(mesh, ls, triangulate=True)
+    result = cutcells.cut(mesh, ls, backend="lut", triangulate=True)
     interface = result["phi = 0"]
 
     vis = interface.visualization_mesh(mode="cut_only")
@@ -492,7 +493,7 @@ def test_hexahedron_sphere_cell_interface_is_not_counted_from_both_sides():
     level_set = lambda X: np.sum(X * X, axis=0) - radius**2
 
     ls = cutcells.create_level_set(mesh, level_set, degree=1, name="phi")
-    result = cutcells.cut(mesh, ls, triangulate=True)
+    result = cutcells.cut(mesh, ls, backend="lut", triangulate=True)
     interface = result["phi = 0"]
     q = interface.quadrature(order=4, mode="cut_only")
 
@@ -528,6 +529,7 @@ def test_iso_p1_hexahedron_sphere_interface():
     result = cutcells.cut(
         mesh,
         ls,
+        backend="lut",
         triangulate=False,
         cut_approximation="iso_p1",
         cut_approximation_order=2,

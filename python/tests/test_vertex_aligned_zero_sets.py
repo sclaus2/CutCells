@@ -86,7 +86,7 @@ def test_vertex_aligned_linear_zero_sets_are_exact(cell, level_set):
     ls = cutcells.create_level_set(mesh, phi, degree=1, name="phi")
 
     start = time.perf_counter()
-    result = cutcells.cut(mesh, ls, triangulate=True)
+    result = cutcells.cut(mesh, ls, backend="lut", triangulate=True)
     elapsed = time.perf_counter() - start
     assert elapsed < 5.0, f"cut took {elapsed:.3f}s"
 

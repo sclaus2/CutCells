@@ -150,7 +150,7 @@ def test_create_level_set_mesh_data_interval_dofs():
     np.testing.assert_array_equal(np.asarray(p2.cell_offsets), [0, 3, 6])
     # the level set of intervals embedded in 2D, cut at x = 0.3
     ls = cutcells.create_level_set(mesh, lambda x: x[0] - 0.3, degree=1, name="phi")
-    result = cutcells.cut(mesh, ls)
+    result = cutcells.cut(mesh, ls, backend="lut")
     assert np.sum(result["phi < 0"].quadrature(order=1).weights) == pytest.approx(0.3, rel=1e-14)
     root = result["phi = 0"].quadrature(order=1)
     np.testing.assert_allclose(np.asarray(root.points), [0.3], rtol=1e-14)

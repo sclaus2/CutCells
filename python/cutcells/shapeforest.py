@@ -14,8 +14,8 @@ ShapeForest. A tape object needs nothing from ShapeForest at all::
     from cutcells import shapeforest as csf
 
     phi = csf.analytic_level_set(sf.sphere(0.7).translate(0.1, 0.0, 0.0))
-    result = cutcells.cut(mesh, phi, degree=2)
-    rules = result["phi = 0"].quadrature(order=5, backend="quadrays")
+    result = cutcells.cut(mesh, phi)
+    rules = result["phi = 0"].quadrature(order=5)
 """
 
 import numpy as np

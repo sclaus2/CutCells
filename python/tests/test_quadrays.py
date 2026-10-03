@@ -2,7 +2,7 @@
 # Authors: Susanne Claus
 # This file is part of CutCells
 # SPDX-License-Identifier: MIT
-"""The quadrays backend through HOMeshPart.quadrature and the per-cell bindings."""
+"""The quadrays backend through MeshPart.quadrature and the per-cell bindings."""
 
 import itertools
 import math

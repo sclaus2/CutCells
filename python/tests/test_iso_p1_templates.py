@@ -61,8 +61,8 @@ def pieces(result, expr="phi < 0"):
 def test_cut_approximation_sets_the_template_order():
     mesh = triangle_mesh()
     ls = cutcells.create_level_set(mesh, lambda x: x[0] + x[1] - 0.9, degree=1, name="phi")
-    default = cutcells.cut(mesh, ls)
-    refined = cutcells.cut(mesh, ls, cut_approximation="iso_p1", cut_approximation_order=3)
+    default = cutcells.cut(mesh, ls, backend="lut")
+    refined = cutcells.cut(mesh, ls, backend="lut", cut_approximation="iso_p1", cut_approximation_order=3)
     assert refined.num_cut_cells == 1
     assert refined.options.template_order == 3
     assert pieces(refined) > pieces(default)
@@ -74,9 +74,9 @@ def test_cut_approximation_sets_the_template_order():
 def test_higher_order_level_set_uses_its_degree():
     mesh = triangle_mesh()
     ls = cutcells.create_level_set(mesh, lambda x: x[0] + x[1] - 0.9, degree=3, name="phi")
-    automatic = cutcells.cut(mesh, ls)
-    explicit = cutcells.cut(mesh, ls, cut_approximation="iso_p1", cut_approximation_order=3)
-    linear = cutcells.cut(mesh, ls, cut_approximation="linear")
+    automatic = cutcells.cut(mesh, ls, backend="lut")
+    explicit = cutcells.cut(mesh, ls, backend="lut", cut_approximation="iso_p1", cut_approximation_order=3)
+    linear = cutcells.cut(mesh, ls, backend="lut", cut_approximation="linear")
     assert automatic.options.template_order == 0 and linear.options.template_order == 1
     assert pieces(automatic) == pieces(explicit) > pieces(linear)
 
@@ -85,8 +85,8 @@ def test_invalid_template_orders_are_rejected():
     mesh = triangle_mesh()
     ls = cutcells.create_level_set(mesh, lambda x: x[0] + x[1] - 0.9, degree=1, name="phi")
     with pytest.raises(ValueError, match="linear"):
-        cutcells.cut(mesh, ls, cut_approximation="linear", cut_approximation_order=2)
+        cutcells.cut(mesh, ls, backend="lut", cut_approximation="linear", cut_approximation_order=2)
     with pytest.raises(ValueError, match="cut_approximation"):
-        cutcells.cut(mesh, ls, cut_approximation="quadratic")
+        cutcells.cut(mesh, ls, backend="lut", cut_approximation="quadratic")
     with pytest.raises(ValueError, match="1 to 4"):
-        cutcells.cut(mesh, ls, cut_approximation="iso_p1", cut_approximation_order=5)
+        cutcells.cut(mesh, ls, backend="lut", cut_approximation="iso_p1", cut_approximation_order=5)

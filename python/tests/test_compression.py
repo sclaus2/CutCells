@@ -33,7 +33,7 @@ def moments(rules, degree, space):
 )
 def test_compressed_quadrays_rules(kind, space, degree, n_moments):
     mesh = box_mesh(kind, 4)
-    result = cutcells.part.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
+    result = cutcells.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
     rules = result["phi < 0"].quadrature(order=5, mode="cut_only", backend="quadrays")
     compressed, stats = cutcells.compress_rules(rules, degree, space)
 
@@ -71,7 +71,7 @@ def test_small_rules_are_copied():
 
 def test_float64_name_and_unknown_space():
     mesh = box_mesh("hex", 3)
-    result = cutcells.part.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
+    result = cutcells.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
     rules = result["phi < 0"].quadrature(order=5, mode="cut_only", backend="quadrays")
     compressed, _ = cutcells.compress_rules_float64(rules, 4, "tensor")
     assert np.diff(np.asarray(compressed.offset)).max() <= 125
