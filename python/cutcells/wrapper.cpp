@@ -2526,7 +2526,22 @@ NB_MODULE(_cutcellscpp, m)
                 {self.cell_connectivity.size()},
                 nb::cast(self, nb::rv_policy::reference));
           },
-          nb::rv_policy::reference_internal);
+          nb::rv_policy::reference_internal)
+      .def_prop_ro(
+          "cell_offsets",
+          [](const cutcells::IsoRefineTemplate& self)
+          {
+            return nb::ndarray<const int, nb::numpy>(
+                self.cell_offsets.data(),
+                {self.cell_offsets.size()},
+                nb::cast(self, nb::rv_policy::reference));
+          },
+          nb::rv_policy::reference_internal,
+          "Children in CSR layout: child c has cell_connectivity[cell_offsets[c]:cell_offsets[c + 1]].")
+      .def_prop_ro(
+          "cell_types",
+          [](const cutcells::IsoRefineTemplate& self) { return self.cell_types; },
+          "The type of each child (a pyramid's template mixes pyramids and tetrahedra).");
 
   m.attr("RefinementTemplate") = m.attr("IsoRefineTemplate");
 

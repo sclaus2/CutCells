@@ -17,7 +17,9 @@ namespace cutcells
 ///
 /// Reference coordinates live in the parent reference cell. Parent entity ids
 /// are local to the parent cell for edges/faces and local corner ids for
-/// vertices.
+/// vertices. Children are in CSR layout; a template whose children differ in
+/// type (the pyramid's: pyramids and tetrahedra) has vertices_per_cell 0 and
+/// child_cell_type point.
 struct IsoRefineTemplate
 {
     int n_vertices = 0;
@@ -30,6 +32,8 @@ struct IsoRefineTemplate
     std::vector<int> vertex_parent_dim;
     std::vector<int> vertex_parent_id;
     std::vector<int> cell_connectivity;
+    std::vector<int> cell_offsets;      ///< child c: cell_connectivity[cell_offsets[c]] to [cell_offsets[c + 1] - 1]
+    std::vector<cell::type> cell_types; ///< per child
 };
 
 /// Backward-compatible name.
@@ -40,9 +44,11 @@ const IsoRefineTemplate& p1_template(cell::type cell_type);
 
 /// Select a Pk-iso-P1 template for k in {1, 2, 3, 4}.
 ///
-/// V1 supports interval, triangle, tetrahedron, quadrilateral, and hexahedron.
-/// Quadrilateral and hexahedron templates use classical tensor-product
-/// subdivision into smaller quadrilaterals and hexahedra.
+/// Intervals, triangles, tetrahedra, quadrilaterals, hexahedra and prisms;
+/// pyramids for k in {1, 2}. Quadrilateral and hexahedron templates use
+/// classical tensor-product subdivision into smaller quadrilaterals and
+/// hexahedra, prisms k^2 triangles in k layers; a pyramid of order 2 splits
+/// into six pyramids and four tetrahedra on its 14 nodes.
 const IsoRefineTemplate& iso_p1_template(cell::type cell_type, int order);
 
 /// Reference coordinates for the selected iso-P1 template.

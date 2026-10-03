@@ -54,12 +54,14 @@ double tetra_det(std::span<const double> coords,
 
 void orient_tetrahedra(IsoRefineTemplate& tpl)
 {
-    if (tpl.child_cell_type != cell::type::tetrahedron || tpl.tdim != 3)
+    if (tpl.tdim != 3)
         return;
 
     for (int c = 0; c < tpl.n_cells; ++c)
     {
-        const auto offset = static_cast<std::size_t>(4 * c);
+        if (tpl.cell_types[static_cast<std::size_t>(c)] != cell::type::tetrahedron)
+            continue;
+        const auto offset = static_cast<std::size_t>(tpl.cell_offsets[static_cast<std::size_t>(c)]);
         std::array<int, 4> tet = {
             tpl.cell_connectivity[offset + 0],
             tpl.cell_connectivity[offset + 1],
@@ -93,6 +95,95 @@ IsoRefineTemplate make_template(cell::type parent_cell_type,
     tpl.vertex_parent_dim = std::move(parent_dim);
     tpl.vertex_parent_id = std::move(parent_id);
     tpl.cell_connectivity = std::move(cells);
+    tpl.cell_types.assign(static_cast<std::size_t>(tpl.n_cells), child_cell_type);
+    for (int c = 0; c <= tpl.n_cells; ++c)
+        tpl.cell_offsets.push_back(c * vertices_per_cell);
+    orient_tetrahedra(tpl);
+    return tpl;
+}
+
+/// The parent entity of a point of a parent reference cell with planar faces:
+/// (0, vertex), (1, edge), (2, face) or (3, 0), in CutCells' numbering of the
+/// cell's edges and faces.
+std::pair<int, int> parent_entity(cell::type parent, const double* x)
+{
+    const std::vector<double> ref = cell::reference_vertices<double>(parent);
+    const int tdim = cell::get_tdim(parent), nv = cell::get_num_vertices(parent);
+    const double tol = 1e-12;
+    for (int v = 0; v < nv; ++v)
+    {
+        double d = 0;
+        for (int i = 0; i < tdim; ++i)
+            d = std::max(d, std::abs(x[i] - ref[static_cast<std::size_t>(v * tdim + i)]));
+        if (d <= tol)
+            return {0, v};
+    }
+    // the faces whose planes hold x
+    std::vector<int> on;
+    for (int f = 0; f < cell::num_faces(parent); ++f)
+    {
+        const std::span<const int> fv = cell::face_vertices(parent, f);
+        std::array<std::array<double, 3>, 3> p{};
+        for (int j = 0; j < 3; ++j)
+            for (int i = 0; i < 3; ++i)
+                p[j][i] = ref[static_cast<std::size_t>(fv[j] * tdim + i)];
+        const std::array<double, 3> a = {p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]},
+                                    b = {p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]};
+        const std::array<double, 3> n = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+        double dot = 0;
+        for (int i = 0; i < 3; ++i)
+            dot += n[i] * (x[i] - p[0][i]);
+        if (std::abs(dot) <= tol)
+            on.push_back(f);
+    }
+    if (on.empty())
+        return {3, 0};
+    if (on.size() == 1)
+        return {2, on[0]};
+    // an edge: the two vertices the first two faces share
+    std::vector<int> shared;
+    for (const int u : cell::face_vertices(parent, on[0]))
+        for (const int w : cell::face_vertices(parent, on[1]))
+            if (u == w)
+                shared.push_back(u);
+    const std::span<const std::array<int, 2>> edges = cell::edges(parent);
+    for (std::size_t e = 0; e < edges.size(); ++e)
+        if (shared.size() == 2
+            && ((edges[e][0] == shared[0] && edges[e][1] == shared[1])
+                || (edges[e][0] == shared[1] && edges[e][1] == shared[0])))
+            return {1, static_cast<int>(e)};
+    throw std::logic_error("iso_refine: a point on two faces but no edge");
+}
+
+/// A template from its vertices (each with its parent entity) and children of
+/// mixed types.
+IsoRefineTemplate make_mixed_template(cell::type parent_cell_type, std::vector<double> ref_coords,
+                                      std::vector<cell::type> types, std::vector<int> cells)
+{
+    IsoRefineTemplate tpl;
+    const int tdim = cell::get_tdim(parent_cell_type);
+    tpl.tdim = tdim;
+    tpl.n_vertices = static_cast<int>(ref_coords.size()) / tdim;
+    tpl.parent_cell_type = parent_cell_type;
+    tpl.ref_vertex_coords = std::move(ref_coords);
+    for (int v = 0; v < tpl.n_vertices; ++v)
+    {
+        const auto [dim, id] = parent_entity(parent_cell_type, tpl.ref_vertex_coords.data() + v * tdim);
+        tpl.vertex_parent_dim.push_back(dim);
+        tpl.vertex_parent_id.push_back(id);
+    }
+    tpl.n_cells = static_cast<int>(types.size());
+    tpl.cell_offsets.push_back(0);
+    for (const cell::type t : types)
+        tpl.cell_offsets.push_back(tpl.cell_offsets.back() + cell::get_num_vertices(t));
+    tpl.cell_types = std::move(types);
+    tpl.cell_connectivity = std::move(cells);
+    if (std::all_of(tpl.cell_types.begin(), tpl.cell_types.end(),
+                    [&](cell::type t) { return t == tpl.cell_types.front(); }))
+    {
+        tpl.child_cell_type = tpl.cell_types.front();
+        tpl.vertices_per_cell = cell::get_num_vertices(tpl.child_cell_type);
+    }
     orient_tetrahedra(tpl);
     return tpl;
 }
@@ -122,6 +213,14 @@ IsoRefineTemplate make_p1_storage(cell::type cell_type)
                   0.0, 1.0, 0.0, 1.0, 1.0, 0.0,
                   0.0, 0.0, 1.0, 1.0, 0.0, 1.0,
                   0.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+        break;
+    case cell::type::prism:
+        coords = {0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                  0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0};
+        break;
+    case cell::type::pyramid:
+        coords = {0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                  1.0, 1.0, 0.0, 0.0, 0.0, 1.0};
         break;
     default:
         throw std::invalid_argument(
@@ -455,6 +554,89 @@ IsoRefineTemplate make_hexahedron_iso_p1_storage(int order)
                          std::move(parent_id), std::move(cells));
 }
 
+/// The prism as k^2 triangles of its base (as the triangle's template) in k
+/// layers; the lattice points ordered by parent entity, vertices first.
+IsoRefineTemplate make_prism_iso_p1_storage(int order)
+{
+    const double h = 1.0 / static_cast<double>(order);
+    struct Point
+    {
+        int dim, id, i, j, l;
+    };
+    std::vector<Point> points;
+    for (int l = 0; l <= order; ++l)
+        for (int j = 0; j <= order; ++j)
+            for (int i = 0; i <= order - j; ++i)
+            {
+                const double x[3] = {i * h, j * h, l * h};
+                const auto [dim, id] = parent_entity(cell::type::prism, x);
+                points.push_back({dim, id, i, j, l});
+            }
+    std::stable_sort(points.begin(), points.end(),
+                     [](const Point& a, const Point& b) { return a.dim != b.dim ? a.dim < b.dim : a.id < b.id; });
+    std::vector<double> coords;
+    std::unordered_map<int, int> map_ijk;
+    for (std::size_t v = 0; v < points.size(); ++v)
+    {
+        const Point& p = points[v];
+        coords.insert(coords.end(), {p.i * h, p.j * h, p.l * h});
+        map_ijk.emplace(key_ijk(p.i, p.j, p.l), static_cast<int>(v));
+    }
+    auto vertex = [&](int i, int j, int l) { return map_ijk.at(key_ijk(i, j, l)); };
+    std::vector<cell::type> types;
+    std::vector<int> cells;
+    for (int l = 0; l < order; ++l)
+        for (int i = 0; i < order; ++i)
+            for (int j = 0; j < order - i; ++j)
+            {
+                const std::array<std::array<int, 2>, 3> up = {{{i, j}, {i + 1, j}, {i, j + 1}}};
+                const std::array<std::array<int, 2>, 3> down = {{{i + 1, j}, {i + 1, j + 1}, {i, j + 1}}};
+                for (int t = 0; t < (i + j <= order - 2 ? 2 : 1); ++t)
+                {
+                    const auto& tri = t == 0 ? up : down;
+                    for (const int layer : {l, l + 1})
+                        for (const auto& [a, b] : tri)
+                            cells.push_back(vertex(a, b, layer));
+                    types.push_back(cell::type::prism);
+                }
+            }
+    return make_mixed_template(cell::type::prism, std::move(coords), std::move(types), std::move(cells));
+}
+
+/// The pyramid of order 2 on its 14 nodes (vertices, the midpoints of its
+/// edges, the centre of its base): the pyramid on the square through the
+/// midpoints of the slanted edges, the four pyramids on the quarters of the
+/// base under that square's corners, the pyramid from that square down to the
+/// base's centre, and four tetrahedra between them.
+IsoRefineTemplate make_pyramid_iso_p1_storage()
+{
+    std::vector<double> coords = {0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1};
+    const std::vector<double> ref = cell::reference_vertices<double>(cell::type::pyramid);
+    for (const std::array<int, 2>& e : cell::edges(cell::type::pyramid))
+        for (int i = 0; i < 3; ++i)
+            coords.push_back(0.5 * (ref[static_cast<std::size_t>(e[0] * 3 + i)]
+                                    + ref[static_cast<std::size_t>(e[1] * 3 + i)]));
+    coords.insert(coords.end(), {0.5, 0.5, 0});
+    auto at = [&](double x, double y, double z)
+    {
+        for (std::size_t v = 0; v < coords.size() / 3; ++v)
+            if (coords[3 * v] == x && coords[3 * v + 1] == y && coords[3 * v + 2] == z)
+                return static_cast<int>(v);
+        throw std::logic_error("iso_refine: no pyramid node there");
+    };
+    const int v0 = 0, v1 = 1, v2 = 2, v3 = 3, apex = 4;
+    const int e01 = at(0.5, 0, 0), e02 = at(0, 0.5, 0), e13 = at(1, 0.5, 0), e23 = at(0.5, 1, 0);
+    const int m0 = at(0, 0, 0.5), m1 = at(0.5, 0, 0.5), m2 = at(0, 0.5, 0.5), m3 = at(0.5, 0.5, 0.5);
+    const int c = at(0.5, 0.5, 0);
+    // pyramids: base in Basix order (v3 = v1 + v2 - v0), then the apex
+    std::vector<int> cells = {m0, m1, m2, m3, apex, v0, e01, e02, c, m0, e01, v1, c, e13, m1,
+                              e02, c, v2, e23, m2, c, e13, e23, v3, m3, m0, m1, m2, m3, c,
+                              e01, c, m0, m1, e02, c, m0, m2, e13, c, m1, m3, e23, c, m2, m3};
+    std::vector<cell::type> types(6, cell::type::pyramid);
+    types.insert(types.end(), 4, cell::type::tetrahedron);
+    return make_mixed_template(cell::type::pyramid, std::move(coords), std::move(types), std::move(cells));
+}
+
 } // namespace
 
 const IsoRefineTemplate& p1_template(cell::type cell_type)
@@ -484,6 +666,16 @@ const IsoRefineTemplate& p1_template(cell::type cell_type)
     case cell::type::hexahedron:
     {
         static const IsoRefineTemplate tpl = make_p1_storage(cell::type::hexahedron);
+        return tpl;
+    }
+    case cell::type::prism:
+    {
+        static const IsoRefineTemplate tpl = make_p1_storage(cell::type::prism);
+        return tpl;
+    }
+    case cell::type::pyramid:
+    {
+        static const IsoRefineTemplate tpl = make_p1_storage(cell::type::pyramid);
         return tpl;
     }
     default:
@@ -537,12 +729,26 @@ const IsoRefineTemplate& iso_p1_template(cell::type cell_type, int order)
         static const IsoRefineTemplate p4 = make_hexahedron_iso_p1_storage(4);
         return order == 2 ? p2 : order == 3 ? p3 : p4;
     }
+    case cell::type::prism:
+    {
+        static const IsoRefineTemplate p2 = make_prism_iso_p1_storage(2);
+        static const IsoRefineTemplate p3 = make_prism_iso_p1_storage(3);
+        static const IsoRefineTemplate p4 = make_prism_iso_p1_storage(4);
+        return order == 2 ? p2 : order == 3 ? p3 : p4;
+    }
+    case cell::type::pyramid:
+    {
+        if (order > 2)
+            throw std::invalid_argument("iso_p1_template: pyramids take orders 1 and 2");
+        static const IsoRefineTemplate p2 = make_pyramid_iso_p1_storage();
+        return p2;
+    }
     default:
         throw std::invalid_argument(
             "iso_p1_template: unsupported cell type "
             + cell::cell_type_to_str(cell_type)
-            + "; supported v1 types are interval, triangle, tetrahedron, "
-              "quadrilateral, and hexahedron");
+            + "; supported types are interval, triangle, tetrahedron, "
+              "quadrilateral, hexahedron, prism and pyramid");
     }
 }
 

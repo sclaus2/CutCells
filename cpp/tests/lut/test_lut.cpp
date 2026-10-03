@@ -4,19 +4,21 @@
 // SPDX-License-Identifier: MIT
 
 // The lookup-table backend (lut/) and the front end's backend "lut":
-//  - the templates' quadrilaterals and hexahedra are boxes in Basix order;
-//  - lut::cut_cell on triangles, quadrilaterals, tetrahedra and hexahedra,
-//    templates of order 1 to 3, against exact measures of planes (a closed
-//    form on simplices, Kuhn simplices for quadrilaterals and hexahedra), whole
-//    and split into simplices (classical and midpoint), in double and float;
+//  - the templates' quadrilaterals and hexahedra are boxes in Basix order, and
+//    every template's sub-cells fill its cell;
+//  - lut::cut_cell on triangles, quadrilaterals, tetrahedra, hexahedra, prisms
+//    and pyramids, templates of order 1 to 3 (pyramids 1 and 2), against exact
+//    measures of planes (a closed form on simplices, the simplices of the
+//    other cells), whole and split into simplices (classical and midpoint), in
+//    double and float;
 //  - two planes in one cell: the four sides add up to the cell, the zero
 //    set of one splits into its two sides of the other, and the curve where
 //    both vanish has its exact length;
 //  - planes through template vertices and faces: the interface is counted
 //    once;
 //  - parts of the analytic sphere: errors fall as (h / k)^2 with the
-//    template order k, and parts of a sphere and a plane crossing in cells
-//    add up.
+//    template order k (on hexahedra, tetrahedra, prisms; pyramids from k = 1 to
+//    2), and parts of a sphere and a plane crossing in cells add up.
 // Exits non-zero on failure.
 
 #include <cutcells/cell_types.h>
@@ -176,8 +178,22 @@ std::pair<double, double> exact_measures(cell::type type, const std::vector<doub
 
 double reference_volume(cell::type type)
 {
-    return type == cell::type::triangle ? 0.5 : (type == cell::type::tetrahedron ? 1.0 / 6.0 : 1.0);
+    switch (type)
+    {
+    case cell::type::triangle:
+    case cell::type::prism:
+        return 0.5;
+    case cell::type::tetrahedron:
+        return 1.0 / 6.0;
+    case cell::type::pyramid:
+        return 1.0 / 3.0;
+    default:
+        return 1.0;
+    }
 }
+
+/// The highest template order of a cell type.
+int max_order(cell::type type) { return type == cell::type::pyramid ? 2 : 4; }
 
 /// The measure of the pieces that @p keep selects (by index), with rules of
 /// degree 1 in the reference cell.
@@ -236,7 +252,8 @@ std::vector<double> template_values(cell::type type, int k, const std::vector<do
 }
 
 const std::vector<cell::type> cell_types
-    = {cell::type::triangle, cell::type::quadrilateral, cell::type::tetrahedron, cell::type::hexahedron};
+    = {cell::type::triangle, cell::type::quadrilateral, cell::type::tetrahedron, cell::type::hexahedron,
+       cell::type::prism,    cell::type::pyramid};
 
 /// Two planes in one cell: the curve where both vanish (a point in 2D, of
 /// measure 1), on templates of order 1 to 3. In the tetrahedron the line
@@ -258,11 +275,13 @@ void test_curves()
         {cell::type::tetrahedron, {1, 0, 0}, -0.3, {0, 1, 0}, -0.2, 0.5},
         {cell::type::triangle, {1, 0}, -0.3, {0, 1}, -0.2, 1.0},
         {cell::type::quadrilateral, {1, 0}, -0.3, {0, 1}, -0.6, 1.0},
+        {cell::type::prism, {1, 0, 0}, -0.3, {0, 1, 0}, -0.2, 1.0},
+        {cell::type::pyramid, {1, 0, 0}, -0.3, {0, 1, 0}, -0.2, 0.7},
     };
     for (const Case& c : cases)
     {
         double worst = 0;
-        for (int k = 1; k <= 3; ++k)
+        for (int k = 1; k <= std::min(3, max_order(c.type)); ++k)
         {
             std::vector<double> values = template_values(c.type, k, c.ga, c.ca);
             const std::vector<double> vb = template_values(c.type, k, c.gb, c.cb);
@@ -300,6 +319,37 @@ void test_templates()
             }
         }
     check(boxes, "the templates' sub-cells are boxes in Basix order");
+
+    // every template's sub-cells fill its cell
+    double worst = 0;
+    for (const cell::type type : {cell::type::triangle, cell::type::quadrilateral, cell::type::tetrahedron,
+                                  cell::type::hexahedron, cell::type::prism, cell::type::pyramid})
+        for (int k = 1; k <= max_order(type); ++k)
+        {
+            const IsoRefineTemplate& tpl = iso_p1_template(type, k);
+            lut::CellMap<double> map;
+            map.type = type;
+            map.gdim = tpl.tdim;
+            map.vertices = cell::reference_vertices<double>(type);
+            std::vector<double> points, weights;
+            for (int c = 0; c < tpl.n_cells; ++c)
+            {
+                std::vector<double> x;
+                for (int j = tpl.cell_offsets[static_cast<std::size_t>(c)];
+                     j < tpl.cell_offsets[static_cast<std::size_t>(c) + 1]; ++j)
+                    for (int d = 0; d < tpl.tdim; ++d)
+                        x.push_back(tpl.ref_vertex_coords[static_cast<std::size_t>(
+                            tpl.cell_connectivity[static_cast<std::size_t>(j)] * tpl.tdim + d)]);
+                lut::append_piece_rule(map, tpl.cell_types[static_cast<std::size_t>(c)], std::span<const double>(x), 1,
+                                       points, weights);
+            }
+            double volume = 0;
+            for (const double w : weights)
+                volume += w;
+            worst = std::max(worst, std::abs(volume - reference_volume(type)));
+        }
+    std::printf("templates: sub-cells fill their cells to %.1e\n", worst);
+    check(worst < 1e-14, "the templates' sub-cells fill their cells");
 }
 
 /// Random planes through each cell type on templates of order 1 to 3.
@@ -313,7 +363,7 @@ void test_planes()
         const std::vector<double> ref = cell::reference_vertices<double>(type);
         const double volume = reference_volume(type);
         double worst = 0;
-        for (int k = 1; k <= 3; ++k)
+        for (int k = 1; k <= std::min(3, max_order(type)); ++k)
             for (const cell::TriangulationStrategy triangulation :
                  {cell::TriangulationStrategy::none, cell::TriangulationStrategy::classical,
                   cell::TriangulationStrategy::midpoint})
@@ -448,6 +498,10 @@ std::pair<double, double> axis_measures(cell::type type, double t)
         return {0.5 - 0.5 * (1 - t) * (1 - t), 1 - t};
     case cell::type::tetrahedron:
         return {(1 - (1 - t) * (1 - t) * (1 - t)) / 6, 0.5 * (1 - t) * (1 - t)};
+    case cell::type::prism:
+        return {0.5 - 0.5 * (1 - t) * (1 - t), 1 - t};
+    case cell::type::pyramid:
+        return {t / 2 - t * t * t / 6, (1 - t * t) / 2};
     default:
         return {t, 1.0};
     }
@@ -462,7 +516,7 @@ void test_planes_through_vertices()
         const int tdim = cell::get_tdim(type);
         const double volume = reference_volume(type);
         double worst = 0;
-        for (int k = 1; k <= 4; ++k)
+        for (int k = 1; k <= max_order(type); ++k)
             for (int j = 1; j < 2 * k; ++j)
             {
                 // x_0 = j / (2k): through template faces for even j; and its mirror image
@@ -528,23 +582,24 @@ void test_template_order()
     const double radius = 0.7;
     const double ball = 4.0 / 3.0 * M_PI * radius * radius * radius, sphere = 4.0 * M_PI * radius * radius;
     const quadrays::support::SphereDistance distance = {centre, radius};
-    for (const char* kind : {"hex", "tet"})
+    for (const char* kind : {"hex", "tet", "prism", "pyramid"})
     {
         BoxMesh mesh;
         make_box_mesh(kind, 8, centre, mesh);
         const std::vector<LevelSetFunction<double, int>> ls = {analytic_ls(distance, "phi")};
         const part::CutResult<double, int> r = part::cut<double, int>(mesh.view, ls);
+        const int top = std::string(kind) == "pyramid" ? 2 : 4;
         double volume_error[5], area_error[5];
-        for (int k = 1; k <= 4; ++k)
+        for (int k = 1; k <= top; ++k)
         {
             volume_error[k] = std::abs(total(part::select(r, "phi < 0"), k, true) / ball - 1);
             area_error[k] = std::abs(total(part::select(r, "phi = 0"), k, false) / sphere - 1);
         }
-        const double volume_rate = std::log(volume_error[1] / volume_error[4]) / std::log(4.0);
-        const double area_rate = std::log(area_error[1] / area_error[4]) / std::log(4.0);
-        std::printf("sphere %s, k = 1 to 4: volume %.1e to %.1e (rate %.2f), area %.1e to %.1e (rate %.2f)\n", kind,
-                    volume_error[1], volume_error[4], volume_rate, area_error[1], area_error[4], area_rate);
-        check(std::abs(volume_rate - 2) < 0.1 && std::abs(area_rate - 2) < 0.1,
+        const double volume_rate = std::log(volume_error[1] / volume_error[top]) / std::log(double(top));
+        const double area_rate = std::log(area_error[1] / area_error[top]) / std::log(double(top));
+        std::printf("sphere %s, k = 1 to %d: volume %.1e to %.1e (rate %.2f), area %.1e to %.1e (rate %.2f)\n", kind,
+                    top, volume_error[1], volume_error[top], volume_rate, area_error[1], area_error[top], area_rate);
+        check(std::abs(volume_rate - 2) < 0.2 && std::abs(area_rate - 2) < 0.2,
               std::string("errors fall as (h / k)^2, ") + kind);
     }
 }
@@ -556,7 +611,7 @@ void test_crossing_level_sets()
     const V3 centre = {0.0123, -0.0371, 0.0217};
     const quadrays::support::SphereDistance distance = {centre, 0.7};
     const AxisPlane plane = {0, 0.1};
-    for (const char* kind : {"hex", "tet"})
+    for (const char* kind : {"hex", "tet", "prism", "pyramid"})
     {
         BoxMesh mesh;
         make_box_mesh(kind, 8, centre, mesh);

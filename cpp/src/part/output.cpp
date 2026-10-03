@@ -210,10 +210,10 @@ void cell_map(const MeshView<T, I>& mesh, I cell_id, lut::CellMap<T>& map, std::
     map.type = mesh.cell_type(cell_id);
     if (map.type != cell::type::interval && map.type != cell::type::triangle
         && map.type != cell::type::quadrilateral && map.type != cell::type::tetrahedron
-        && map.type != cell::type::hexahedron)
+        && map.type != cell::type::hexahedron && map.type != cell::type::prism && map.type != cell::type::pyramid)
     {
         throw std::invalid_argument("part: the lookup tables take intervals, triangles, quadrilaterals, "
-                                    "tetrahedra and hexahedra");
+                                    "tetrahedra, hexahedra, prisms and pyramids");
     }
     map.gdim = mesh.gdim;
     cell_vertex_coords_basix(mesh, cell_id, map.vertices, scratch);
@@ -277,7 +277,8 @@ bool term_on_piece(const SelectionTerm& term, const CutResult<T, I>& r, I cell_i
 }
 
 /// The pieces of a cut cell: the template of the options' order (by default
-/// the highest degree of the level sets, 2 for analytic ones), the values of
+/// the highest degree of the level sets, 2 for analytic ones, at most 4, on
+/// pyramids 2), the values of
 /// the level sets there (exact for analytic level sets), the lookup tables,
 /// and which pieces the part selects.
 template <std::floating_point T, std::integral I>
@@ -306,7 +307,9 @@ void lut_cell(const MeshPart<T, I>& part, I cell_id, const lut::CellMap<T>& map,
         analytic |= static_cast<bool>(ls.analytic);
         degree = std::max(degree, ls.analytic ? 2 : ls.mesh_data.degree);
     }
-    const int k = options.template_order > 0 ? options.template_order : std::min(degree, 4);
+    // pyramids have templates of orders 1 and 2
+    const int k = options.template_order > 0 ? options.template_order
+                                             : std::min(degree, map.type == cell::type::pyramid ? 2 : 4);
     const int tdim = map.tdim();
     const std::span<const double> tv = lut::template_vertices(map.type, k);
     lc.xi.assign(tv.begin(), tv.end());

@@ -162,6 +162,40 @@ def test_template_order(kind):
     assert math.log(area[0] / area[3]) / math.log(4) == pytest.approx(2.0, abs=0.1)
 
 
+@pytest.mark.parametrize("kind,top", [("prism", 4), ("pyramid", 2)])
+def test_template_order_on_prisms_and_pyramids(kind, top):
+    """Prisms take templates of order 1 to 4 (k^2 triangles in k layers),
+    pyramids 1 and 2 (six pyramids and four tetrahedra): errors fall as
+    (h / k)^2."""
+    from test_part import wedge_mesh
+
+    mesh = wedge_mesh(kind, 6)
+    result = cutcells.part.cut(mesh, cutcells.analytic_sphere(CENTRE, RADIUS))
+    volume, area = [], []
+    for k in range(1, top + 1):
+        options = cutcells.LutOptions(template_order=k)
+        volume.append(abs(total(result["phi < 0"], options=options) / BALL - 1))
+        area.append(abs(total(result["phi = 0"], mode="cut_only", options=options) / SPHERE - 1))
+        assert total(result["phi < 0 or phi > 0"], options=options) == pytest.approx(8.0, rel=1e-13)
+    assert math.log(volume[0] / volume[-1]) / math.log(top) == pytest.approx(2.0, abs=0.2)
+    assert math.log(area[0] / area[-1]) / math.log(top) == pytest.approx(2.0, abs=0.2)
+
+
+@pytest.mark.parametrize("kind", ["prism", "pyramid"])
+@pytest.mark.parametrize("degree", [1, 2])
+def test_plane_on_prisms_and_pyramids(kind, degree):
+    """A plane as a P1 or P2 level set is exact on the templates of prisms and
+    pyramids, and the parts fill the box."""
+    from test_part import wedge_mesh
+
+    mesh = wedge_mesh(kind, 3)
+    result = cutcells.part.cut(mesh, cutcells.create_level_set(mesh, plane, degree=degree, name="phi"))
+    # x + 0.3 y - 0.1 < 0 in [-1, 1]^3: 4 - 0.4 (the plane moved by 0.1 along x)
+    assert total(result["phi < 0"]) == pytest.approx(4.0 + 4 * 0.1, rel=1e-13)
+    assert total(result["phi < 0 or phi > 0"]) == pytest.approx(8.0, rel=1e-13)
+    assert total(result["phi = 0"], mode="cut_only") == pytest.approx(4.0 * math.sqrt(1.09), rel=1e-13)
+
+
 @pytest.mark.parametrize("kind", ["hex", "tet", "quad", "tri"])
 def test_crossing_level_sets(kind):
     """A P2 sphere (circle) and a plane crossing in cells: the four parts fill

@@ -27,11 +27,49 @@ bool is_simplex(cell::type type)
 
 /// The point x(X) of a straight cell given by its vertices (Basix order, dim
 /// coordinates each) and the derivative dx/dX (dim x tdim of the cell,
-/// row-major); multilinear on quadrilaterals and hexahedra.
+/// row-major); multilinear on quadrilaterals and hexahedra, the triangle's map
+/// times the interval's on prisms, Basix's rational P1 map on pyramids (affine
+/// where the base is a parallelogram).
 template <std::floating_point T>
 void map_point(cell::type type, const T* vertices, int dim, const T* X, T* x, T* jacobian)
 {
     const int m = cell::get_tdim(type);
+    if (type == cell::type::prism)
+    {
+        const T l[3] = {T(1) - X[0] - X[1], X[0], X[1]};
+        const T dl[3][2] = {{-1, -1}, {1, 0}, {0, 1}};
+        for (int i = 0; i < dim; ++i)
+        {
+            x[i] = T(0);
+            for (int j = 0; j < 3; ++j)
+                jacobian[i * 3 + j] = T(0);
+            for (int a = 0; a < 3; ++a)
+            {
+                const T bottom = vertices[a * dim + i], top = vertices[(a + 3) * dim + i];
+                x[i] += l[a] * ((T(1) - X[2]) * bottom + X[2] * top);
+                for (int j = 0; j < 2; ++j)
+                    jacobian[i * 3 + j] += dl[a][j] * ((T(1) - X[2]) * bottom + X[2] * top);
+                jacobian[i * 3 + 2] += l[a] * (top - bottom);
+            }
+        }
+        return;
+    }
+    if (type == cell::type::pyramid)
+    {
+        // x = v0 (1 - X - Y - Z) + v1 X + v2 Y + v4 Z + (v0 - v1 - v2 + v3) X Y / (1 - Z)
+        const T r = std::max(T(1) - X[2], std::numeric_limits<T>::epsilon());
+        for (int i = 0; i < dim; ++i)
+        {
+            const T v0 = vertices[i], v1 = vertices[dim + i], v2 = vertices[2 * dim + i], v3 = vertices[3 * dim + i],
+                    v4 = vertices[4 * dim + i];
+            const T w = v0 - v1 - v2 + v3;
+            x[i] = v0 * (T(1) - X[0] - X[1] - X[2]) + v1 * X[0] + v2 * X[1] + v4 * X[2] + w * X[0] * X[1] / r;
+            jacobian[i * 3] = v1 - v0 + w * X[1] / r;
+            jacobian[i * 3 + 1] = v2 - v0 + w * X[0] / r;
+            jacobian[i * 3 + 2] = v4 - v0 + w * X[0] * X[1] / (r * r);
+        }
+        return;
+    }
     if (m == 0 || is_simplex(type))
     {
         for (int i = 0; i < dim; ++i)

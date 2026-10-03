@@ -3,9 +3,10 @@
 // This file is part of CutCells
 // SPDX-License-Identifier: MIT
 
-// [-1, 1]^3 as a MeshView of n^3 hexahedra or 6 n^3 Kuhn tetrahedra, with its
-// storage, cell by cell in the order of quadrays' test cells (grid_cells), so
-// that cell c of the mesh is the c-th test cell with its exact references.
+// [-1, 1]^3 as a MeshView of n^3 hexahedra, 6 n^3 Kuhn tetrahedra, 2 n^3 prisms
+// or 6 n^3 pyramids (apices at the cubes' centres), with its storage, cell by
+// cell in the order of quadrays' test cells (grid_cells), so that cell c of
+// the mesh is the c-th test cell with its exact references.
 
 #pragma once
 
@@ -42,11 +43,32 @@ inline void make_box_mesh(const std::string& kind, int n, const V3& origin, BoxM
         for (int j = 0; j <= n; ++j)
             for (int i = 0; i <= n; ++i)
                 mesh.coordinates.insert(mesh.coordinates.end(), {-1 + h * i, -1 + h * j, -1 + h * k});
+    // the cubes' centres after the lattice: the pyramids' apices
+    const int lattice = (n + 1) * (n + 1) * (n + 1);
+    if (kind == "pyramid")
+        for (int k = 0; k < n; ++k)
+            for (int j = 0; j < n; ++j)
+                for (int i = 0; i < n; ++i)
+                    mesh.coordinates.insert(mesh.coordinates.end(),
+                                            {-1 + h * (i + 0.5), -1 + h * (j + 0.5), -1 + h * (k + 0.5)});
     auto node = [&](const double* x)
     {
         int idx[3];
+        bool centre = false;
         for (int d = 0; d < 3; ++d)
-            idx[d] = static_cast<int>(std::lround((x[d] + 1) / h));
+        {
+            const double t = (x[d] + 1) / h;
+            idx[d] = static_cast<int>(std::lround(t));
+            centre |= std::abs(t - idx[d]) > 0.25;
+            if (centre)
+                idx[d] = static_cast<int>(std::floor(t));
+        }
+        if (centre)
+        {
+            for (int d = 0; d < 3; ++d)
+                idx[d] = static_cast<int>(std::floor((x[d] + 1) / h));
+            return lattice + idx[0] + n * (idx[1] + n * idx[2]);
+        }
         return idx[0] + (n + 1) * (idx[1] + (n + 1) * idx[2]);
     };
     for (int i0 = 0; i0 < n; ++i0)

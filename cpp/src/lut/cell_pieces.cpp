@@ -30,15 +30,24 @@ bool is_simplex(cell::type type)
     return type == cell::type::interval || type == cell::type::triangle || type == cell::type::tetrahedron;
 }
 
-/// A template sub-cell and its interpolant: P1 on simplices, multilinear on
-/// the axis-aligned quadrilaterals and hexahedra of tensor templates.
+/// Sub-cells whose interpolant is affine: simplices, and prisms and pyramids,
+/// which are cut whole only with affine values.
+bool affine_interpolant(cell::type type)
+{
+    return is_simplex(type) || type == cell::type::prism || type == cell::type::pyramid;
+}
+
+/// A template sub-cell and its interpolant: P1 on simplices, prisms and
+/// pyramids (with affine values), multilinear on the axis-aligned
+/// quadrilaterals and hexahedra of tensor templates.
 template <std::floating_point T>
 struct SubCell
 {
     cell::type type = cell::type::point;
     int tdim = 0;
     std::array<T, 3> origin{};
-    std::array<T, 9> inverse{}; ///< simplices: inverse of the edge matrix, row-major
+    std::array<int, 4> frame = {0, 1, 2, 3}; ///< affine: the vertices spanning the interpolant
+    std::array<T, 9> inverse{}; ///< affine: inverse of the edge matrix of the frame, row-major
     std::array<T, 3> scale{};   ///< boxes: 1 / edge lengths
 };
 
@@ -49,7 +58,9 @@ void make_sub_cell(cell::type type, int tdim, const T* x, SubCell<T>& s)
     s.tdim = tdim;
     for (int d = 0; d < tdim; ++d)
         s.origin[d] = x[d];
-    if (!is_simplex(type))
+    // the vertex above vertex 0: 3 on a prism, the apex on a pyramid
+    s.frame = {0, 1, 2, type == cell::type::pyramid ? 4 : 3};
+    if (!affine_interpolant(type))
     {
         // vertex 0 and the last vertex are opposite corners of the box
         const int last = cell::get_num_vertices(type) - 1;
@@ -57,11 +68,11 @@ void make_sub_cell(cell::type type, int tdim, const T* x, SubCell<T>& s)
             s.scale[d] = T(1) / (x[last * tdim + d] - x[d]);
         return;
     }
-    // edge matrix e[d][j] = x_{j+1}[d] - x_0[d] and its inverse
+    // edge matrix e[d][j] = x_{frame[j+1]}[d] - x_0[d] and its inverse
     std::array<T, 9> e{};
     for (int d = 0; d < tdim; ++d)
         for (int j = 0; j < tdim; ++j)
-            e[d * tdim + j] = x[(j + 1) * tdim + d] - x[d];
+            e[d * tdim + j] = x[s.frame[j + 1] * tdim + d] - x[d];
     if (tdim == 1)
         s.inverse[0] = T(1) / e[0];
     else if (tdim == 2)
@@ -86,7 +97,7 @@ template <std::floating_point T>
 T interpolate(const SubCell<T>& s, const T* values, const T* p)
 {
     const int tdim = s.tdim;
-    if (is_simplex(s.type))
+    if (affine_interpolant(s.type))
     {
         T sum = 0, result = 0;
         for (int j = 0; j < tdim; ++j)
@@ -95,7 +106,7 @@ T interpolate(const SubCell<T>& s, const T* values, const T* p)
             for (int d = 0; d < tdim; ++d)
                 lambda += s.inverse[j * tdim + d] * (p[d] - s.origin[d]);
             sum += lambda;
-            result += values[j + 1] * lambda;
+            result += values[s.frame[j + 1]] * lambda;
         }
         return result + values[0] * (T(1) - sum);
     }
@@ -284,6 +295,24 @@ bool affine_values(const T* v, int tdim)
     return gap <= T(1024) * std::numeric_limits<T>::epsilon() * scale;
 }
 
+/// Whether values at the vertices of a prism or a pyramid (Basix order) are an
+/// affine function's, up to rounding: equal rises along a prism's vertical
+/// edges, a planar pyramid base (v0 + v3 = v1 + v2).
+template <std::floating_point T>
+bool affine_values(cell::type type, const T* v)
+{
+    if (type == cell::type::hexahedron)
+        return affine_values(v, 3);
+    T scale = T(0), gap = T(0);
+    for (int b = 0; b < cell::get_num_vertices(type); ++b)
+        scale = std::max(scale, std::abs(v[b]));
+    if (type == cell::type::prism)
+        gap = std::max(std::abs((v[4] - v[1]) - (v[3] - v[0])), std::abs((v[5] - v[2]) - (v[3] - v[0])));
+    else if (type == cell::type::pyramid)
+        gap = std::abs(v[0] + v[3] - v[1] - v[2]);
+    return gap <= T(1024) * std::numeric_limits<T>::epsilon() * scale;
+}
+
 /// The pieces of one sub-cell: its volume cut by one level set after the
 /// other, and the zero sets asked for, cut by the other level sets (with
 /// @p curves also where two of them vanish).
@@ -334,18 +363,21 @@ void cut_cell(cell::type cell_type, int template_order, std::span<const T> value
     if (n_level_sets < 1 || n_level_sets > 64)
         throw std::invalid_argument("lut: give 1 to 64 level sets");
     const IsoRefineTemplate& tpl = iso_p1_template(cell_type, template_order);
-    const int tdim = tpl.tdim, nvt = tpl.n_vertices, vpc = tpl.vertices_per_cell;
+    const int tdim = tpl.tdim, nvt = tpl.n_vertices;
     if (static_cast<int>(values.size()) != n_level_sets * nvt)
         throw std::invalid_argument("lut: the level sets need one value per template vertex");
 
     out = Pieces<T>{};
     out.tdim = tdim;
-    const cell::type type = tpl.child_cell_type;
-    std::vector<T> x(static_cast<std::size_t>(vpc * tdim)), sv(static_cast<std::size_t>(n_level_sets * vpc));
+    std::vector<T> x, sv;
     std::vector<T> xs, svs;
     for (int c = 0; c < tpl.n_cells; ++c)
     {
-        const int* ids = tpl.cell_connectivity.data() + c * vpc;
+        const cell::type type = tpl.cell_types[static_cast<std::size_t>(c)];
+        const int* ids = tpl.cell_connectivity.data() + tpl.cell_offsets[static_cast<std::size_t>(c)];
+        const int vpc = tpl.cell_offsets[static_cast<std::size_t>(c) + 1] - tpl.cell_offsets[static_cast<std::size_t>(c)];
+        x.resize(static_cast<std::size_t>(vpc * tdim));
+        sv.resize(static_cast<std::size_t>(n_level_sets * vpc));
         for (int j = 0; j < vpc; ++j)
         {
             for (int d = 0; d < tdim; ++d)
@@ -355,16 +387,17 @@ void cut_cell(cell::type cell_type, int template_order, std::span<const T> value
                 sv[static_cast<std::size_t>(i * vpc + j)] = values[static_cast<std::size_t>(i * nvt + ids[j])];
         }
         bool affine = true;
-        if (type == cell::type::hexahedron)
+        if (type == cell::type::hexahedron || type == cell::type::prism || type == cell::type::pyramid)
             for (int i = 0; affine && i < n_level_sets; ++i)
-                affine = affine_values(sv.data() + i * vpc, tdim);
+                affine = affine_values(type, sv.data() + i * vpc);
         if (affine)
         {
             cut_sub_cell(type, tdim, x, sv, n_level_sets, zero_sets, curves, triangulation, out);
             continue;
         }
-        // multilinear values: the hexahedron's tables for both sides do not fit
-        // together there (up to 0.8% of a cell), P1 on its Kuhn tetrahedra does
+        // values that are not affine: the hexahedron's tables for both sides do
+        // not fit together there (up to 0.8% of a cell), nor a prism's or a
+        // pyramid's; P1 on their tetrahedra does
         int local[8] = {0, 1, 2, 3, 4, 5, 6, 7};
         std::vector<std::vector<int>> simplices;
         cell::triangulation(type, local, simplices);

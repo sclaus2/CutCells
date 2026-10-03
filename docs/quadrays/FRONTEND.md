@@ -115,13 +115,14 @@ linear cells; `write_vtu` writes them.
 | File | Contents |
 | --- | --- |
 | `cell_pieces.h/.cpp` | `cut_cell`: the straight pieces of a cell on its Pk-iso-P1 template, each with its side of every level set; `template_vertices` |
-| `piece_rules.h/.cpp` | `CellMap` (affine, or multilinear on quadrilaterals and hexahedra), `push_forward`, and `append_piece_rule`: rules on straight pieces through the cell's map |
+| `piece_rules.h/.cpp` | `CellMap` (affine, multilinear on quadrilaterals and hexahedra, the triangle's map times the interval's on prisms, Basix's rational P1 map on pyramids), `push_forward`, and `append_piece_rule`: rules on straight pieces through the cell's map |
 
 For each cut cell of a part, `backend="lut"`
 
 1. takes the level sets that cut the cell and that the expression names;
 2. picks the Pk-iso-P1 template of order k: `LutOptions.template_order`, by
-   default the highest degree among them (2 for analytic level sets), 1 to 4;
+   default the highest degree among them (2 for analytic level sets), 1 to 4
+   (on pyramids 1 and 2);
 3. evaluates them at the template's vertices: the Pk polynomial, or the
    analytic level set itself at the mapped point;
 4. cuts each sub-cell with the lookup tables (`cell::cut`) by the level sets'
@@ -135,6 +136,17 @@ Values within 64 eps max|v| of 0 count as positive; they are moved to that
 bound, so the tables' case masks (which treat values within 2 eps |v_0| as 0)
 agree with the classification. A level set vanishing on a face of the sub-cells
 is integrated once, by the sub-cell below it, as zero faces of mesh cells are.
+
+Prisms and pyramids (after phase 6): a prism's template of order k is k^2
+triangles of its base in k layers; a pyramid's of order 2 splits it on its 14
+nodes into six pyramids (the one under the apex on the square through the
+slanted edges' midpoints, four on the base's quarters, one from that square
+down to the base's centre) and four tetrahedra, so templates now give each
+sub-cell its type (`IsoRefineTemplate::cell_types`, `cell_offsets`). A prism or
+pyramid sub-cell on which every level set is affine (equal rises along a
+prism's vertical edges, a planar pyramid base) is cut whole; otherwise as its
+tetrahedra, as hexahedra are. Planes are exact on both, and the analytic sphere
+converges as (h / k)^2 (prisms from k = 1 to 4, pyramids 1 to 2).
 
 What the tables need, found on the way:
 
@@ -278,9 +290,9 @@ level set. Two planes give their line, in every cell type and template order, to
   with parallelogram faces); volumes and interfaces, with any number of level
   sets per cell. Pyramids with Pk level sets bisect towards their apex where a
   zero set passes near it.
-- The lookup tables: intervals, triangles, quadrilaterals, tetrahedra and
-  hexahedra (the cells of the iso-P1 templates), affine or multilinear cell
-  maps; volumes, interfaces and the curves (points in 2D) where two level sets
-  vanish. No prisms or pyramids yet.
+- The lookup tables: intervals, triangles, quadrilaterals, tetrahedra,
+  hexahedra, prisms and pyramids (pyramids with templates of order 1 and 2),
+  affine or multilinear cell maps; volumes, interfaces and the curves (points
+  in 2D) where two level sets vanish.
 - Pk level sets need dof values; level sets with nodal values only are refused.
   Pyramids take degree 2 at most.

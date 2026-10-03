@@ -25,6 +25,8 @@ def triangle_mesh():
         (cutcells.CellType.quadrilateral, 2, 9, 4, cutcells.CellType.quadrilateral),
         (cutcells.CellType.tetrahedron, 3, 20, 27, cutcells.CellType.tetrahedron),
         (cutcells.CellType.hexahedron, 2, 27, 8, cutcells.CellType.hexahedron),
+        (cutcells.CellType.prism, 2, 18, 8, cutcells.CellType.prism),
+        (cutcells.CellType.prism, 3, 40, 27, cutcells.CellType.prism),
     ],
 )
 def test_template_counts(cell_type, order, n_vertices, n_cells, child_type):
@@ -35,6 +37,21 @@ def test_template_counts(cell_type, order, n_vertices, n_cells, child_type):
     assert len(np.asarray(tpl.vertex_parent_dim)) == n_vertices
     assert len(np.asarray(tpl.vertex_parent_id)) == n_vertices
     assert len(np.asarray(tpl.cell_connectivity)) == n_cells * tpl.vertices_per_cell
+
+
+def test_pyramid_template_mixes_pyramids_and_tetrahedra():
+    """The pyramid of order 2 on its 14 nodes: six pyramids and four tetrahedra,
+    in CSR layout; pyramids take orders 1 and 2 only."""
+    tpl = cutcells.iso_p1_template(cutcells.CellType.pyramid, 2)
+    assert tpl.n_vertices == 14 and tpl.n_cells == 10
+    assert tpl.vertices_per_cell == 0 and tpl.child_cell_type == cutcells.CellType.point
+    assert list(tpl.cell_types) == [cutcells.CellType.pyramid] * 6 + [cutcells.CellType.tetrahedron] * 4
+    offsets = np.asarray(tpl.cell_offsets)
+    assert offsets[-1] == len(np.asarray(tpl.cell_connectivity)) == 6 * 5 + 4 * 4
+    # vertices, edge midpoints, the base's centre
+    assert sorted(np.asarray(tpl.vertex_parent_dim)) == [0] * 5 + [1] * 8 + [2]
+    with pytest.raises(ValueError, match="orders 1 and 2"):
+        cutcells.iso_p1_template(cutcells.CellType.pyramid, 3)
 
 
 def pieces(result, expr="phi < 0"):

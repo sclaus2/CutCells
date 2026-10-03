@@ -16,7 +16,8 @@ namespace cutcells::lut
 
 /// The map of a cell from its reference cell to physical coordinates, given by
 /// the cell's vertices in Basix order: affine on simplices, multilinear on
-/// quadrilaterals and hexahedra.
+/// quadrilaterals and hexahedra, the triangle's map times the interval's on
+/// prisms, Basix's rational P1 map on pyramids.
 template <std::floating_point T>
 struct CellMap
 {
