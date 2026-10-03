@@ -379,7 +379,8 @@ void declare_analytic(nb::module_& m)
           nb::arg("capsule"),
           "An AnalyticLevelSet from a capsule named 'cutcells.AnalyticLevelSet' that points "
           "to the C struct of quadrays/analytic.h: void* context, then the function pointers "
-          "value, gradient, box_bounds and taylor_bounds (may be NULL). The struct is copied; "
+          "value, gradient, box_bounds, taylor_bounds and hessian_bounds (the last two may be NULL). "
+          "The struct is copied; "
           "the capsule is kept alive, so it may own the context.")
       .def_prop_ro(
           "capsule",
@@ -1856,7 +1857,8 @@ void declare_quadrays(nb::module_& m, const std::string& type)
                         int degree, const ndarray1<T>& coeffs, qr::ClippedBox<T>& box,
                         qr::BoxBernstein<T>& phi)
   {
-    qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()), 3, box);
+    qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()),
+                            cell::get_tdim(cell_type), box);
     qr::cell_bernstein_on_box<T>(cell_type, degree, std::span<const T>(coeffs.data(), coeffs.size()), phi);
   };
   auto cell_part = [](const std::string& selection, const std::string& name)
@@ -1889,9 +1891,9 @@ void declare_quadrays(nb::module_& m, const std::string& type)
         nb::arg("cell_type"), nb::arg("vertex_coords"), nb::arg("degree"), nb::arg("bernstein_coeffs"),
         nb::arg("selection"), nb::arg("q") = 3, nb::arg("options") = qr::Options{},
         nb::arg("level_set_name") = "phi",
-        "Quadrature rule of one part of one cell (tetrahedron or hexahedron) from "
-        "its vertices (Basix order) and the Bernstein coefficients of its level set "
-        "(CutCells' order). Returns (QuadratureRules, QuadraysStats).");
+        "Quadrature rule of one part of one cell (triangle, quadrilateral, tetrahedron, "
+        "hexahedron, prism or pyramid) from its vertices (Basix order, tdim coordinates each) and the Bernstein "
+        "coefficients of its level set (CutCells' order). Returns (QuadratureRules, QuadraysStats).");
 
   m.def(("quadrays_cell_leaves_" + type).c_str(),
         [cell_inputs, cell_part](cell::type cell_type,
@@ -1922,7 +1924,8 @@ void declare_quadrays(nb::module_& m, const std::string& type)
                     const qr::Options& options, const std::string& level_set_name)
         {
           qr::ClippedBox<T> box;
-          qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()), 3, box);
+          qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()),
+                                  cell::get_tdim(cell_type), box);
           const qr::Part part = cell_part(selection, level_set_name);
           quadrature::QuadratureRules<T> rules;
           qr::Stats stats;
@@ -1934,8 +1937,8 @@ void declare_quadrays(nb::module_& m, const std::string& type)
         },
         nb::arg("cell_type"), nb::arg("vertex_coords"), nb::arg("level_set"), nb::arg("selection"),
         nb::arg("q") = 3, nb::arg("options") = qr::Options{}, nb::arg("level_set_name") = "phi",
-        "Quadrature rule of one part of one cell for an AnalyticLevelSet. Returns "
-        "(QuadratureRules, QuadraysStats).");
+        "Quadrature rule of one part of one cell for an AnalyticLevelSet; any cell of quadrays "
+        "(vertices with tdim coordinates each). Returns (QuadratureRules, QuadraysStats).");
 
   m.def(("quadrays_cell_leaves_" + type).c_str(),
         [cell_part](cell::type cell_type, const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords,
@@ -1943,7 +1946,8 @@ void declare_quadrays(nb::module_& m, const std::string& type)
                     const qr::Options& options, const std::string& level_set_name)
         {
           qr::ClippedBox<T> box;
-          qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()), 3, box);
+          qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()),
+                                  cell::get_tdim(cell_type), box);
           const qr::Part part = cell_part(selection, level_set_name);
           LeafMeshT leaves;
           qr::Stats stats;
@@ -2585,10 +2589,21 @@ NB_MODULE(_cutcellscpp, m)
               "Bisections allowed per cell; beyond it boxes are integrated uncertified.")
       .def_rw("prune_bounds", &cutcells::quadrays::Options::prune_bounds,
               "Drop bounds of the height lines that are never active.")
+      .def_rw("split_bounds", &cutcells::quadrays::Options::split_bounds,
+              "Split the base where the active bounds of the height lines change.")
       .def_rw("diagonal_frames", &cutcells::quadrays::Options::diagonal_frames,
               "Level 2: try the diagonal frame before bisecting.")
+      .def_rw("rotation_depth", &cutcells::quadrays::Options::rotation_depth,
+              "Where no axis suits the zero sets of two level sets, try a frame rotated between "
+              "their normals: at level 2 always, in 3D from this depth of bisection on.")
       .def_rw("mask_subdivisions", &cutcells::quadrays::Options::mask_subdivisions,
               "M > 1: margins from M^D sub-cells; 1: bounds on the whole box.")
+      .def_rw("taylor_subdivisions", &cutcells::quadrays::Options::taylor_subdivisions,
+              "Analytic level sets: M > 1: Taylor models over M^D sub-boxes on boxes a clip plane "
+              "cuts; 1: over the whole box.")
+      .def_rw("two_roots_depth", &cutcells::quadrays::Options::two_roots_depth,
+              "From this depth of bisection on, accept a direction with two roots per height line "
+              "that never merge in the box (two sheets of one level set).")
       .def_rw("diagnose", &cutcells::quadrays::Options::diagnose,
               "Record why each bisection happened in QuadraysStats.causes.");
   nb::class_<cutcells::lut::Options>(m, "LutOptions", "Options of the lookup-table backend.")
@@ -2618,6 +2633,8 @@ NB_MODULE(_cutcellscpp, m)
       .def_ro("uncertified", &cutcells::quadrays::Stats::uncertified)
       .def_ro("rotations", &cutcells::quadrays::Stats::rotations)
       .def_ro("incomplete_leaves", &cutcells::quadrays::Stats::incomplete_leaves)
+      .def_ro("two_roots", &cutcells::quadrays::Stats::two_roots)
+      .def_ro("surfaces", &cutcells::quadrays::Stats::surfaces)
       .def_ro("causes", &cutcells::quadrays::Stats::causes);
   declare_quadrays<float>(m, "float32");
   declare_quadrays<double>(m, "float64");

@@ -244,9 +244,9 @@ inline std::span<const FaceDef<int>> basix_faces(cell::type ctype)
   static constexpr std::array<FaceDef<int>, 5> pyramid = {{
       {cell::type::quadrilateral, 4, {0, 1, 2, 3}},
       {cell::type::triangle, 3, {0, 1, 4, -1}},
-      {cell::type::triangle, 3, {1, 2, 4, -1}},
+      {cell::type::triangle, 3, {0, 2, 4, -1}},
+      {cell::type::triangle, 3, {1, 3, 4, -1}},
       {cell::type::triangle, 3, {2, 3, 4, -1}},
-      {cell::type::triangle, 3, {0, 3, 4, -1}},
   }};
 
   switch (ctype)
@@ -890,10 +890,12 @@ void append_cell_dofs(const MeshView<T, I>& mesh, LevelSetMeshData<T, I>& out,
       append_prism_cell_interior(mesh, out, cell_id, verts, degree);
       break;
     case cell::type::pyramid:
-      if (degree > 1)
+      // degree 2: vertices, edges and the base's centre; triangle faces and
+      // the interior carry dofs from degree 3 on
+      if (degree > 2)
       {
         throw std::runtime_error(
-            "create_level_set_mesh_data: pyramid degree > 1 is not implemented yet");
+            "create_level_set_mesh_data: pyramid degree > 2 is not implemented yet");
       }
       break;
     default:

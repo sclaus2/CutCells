@@ -96,6 +96,11 @@ void isolate(const Source<T>& phi, const std::array<double, 3>& p, const std::ar
         const T ga = value_on_line(phi, p, v, a), gb = value_on_line(phi, p, v, b);
         if (ga != T(0) && gb != T(0) && (ga > T(0)) != (gb > T(0)))
             roots.push_back(illinois_root([&](T t) { return value_on_line(phi, p, v, t); }, a, b, ga, gb));
+        else if (slope_sign != 0 && (ga == T(0)) != (gb == T(0)))
+            // phi is monotone here: an end where it vanishes is a simple root,
+            // a split point shared with the next interval (line_roots drops
+            // the copy) or an end of the line (dropped)
+            roots.push_back(ga == T(0) ? a : b);
         return;
     }
     // phi vanishes on the interval up to the tolerance: the line lies in the
@@ -184,6 +189,7 @@ Source<T> bernstein_source(const BoxBernstein<T>& phi)
 {
     Source<T> s;
     s.bernstein = &phi;
+    s.tdim = phi.dim;
     return s;
 }
 
@@ -199,6 +205,7 @@ Source<T> analytic_source(const AnalyticLevelSet& phi, const ClippedBox<T>& cell
     s.analytic = &phi;
     s.origin = cell.origin;
     s.jacobian = cell.jacobian;
+    s.tdim = cell.tdim;
     return s;
 }
 
@@ -238,7 +245,7 @@ T reference_magnitude(const Source<T>& phi)
     if (phi.bernstein != nullptr)
         return max_abs(std::span<const T>(phi.bernstein->coeffs));
     T m = T(0);
-    for (int c = 0; c < 8; ++c)
+    for (int c = 0; c < (1 << phi.tdim); ++c)
     {
         const std::array<T, 3> u = {T(c & 1), T((c >> 1) & 1), T((c >> 2) & 1)};
         m = std::max(m, std::abs(evaluate(phi, std::span<const T>(u))));
@@ -284,12 +291,87 @@ bool affine_bounds(const Source<T>& phi, std::span<const T> origin, std::span<co
     out.has_derivatives = status == 1;
     out.lower.fill(T(0));
     out.upper.fill(T(0));
+    out.dmin.fill(T(0));
+    out.dmax.fill(T(0));
     for (int j = 0; j < m && out.has_derivatives; ++j)
     {
         // d / d s_j = 2 d / d t_j
         const int s = row_sign(models + (m + 2) * (1 + j), m, alpha, dev);
         out.upper[j] = static_cast<T>(2 * (std::abs(alpha) + dev));
         out.lower[j] = s != 0 ? static_cast<T>(2 * (std::abs(alpha) - dev)) : T(0);
+        out.dmin[j] = static_cast<T>(2 * (alpha - dev));
+        out.dmax[j] = static_cast<T>(2 * (alpha + dev));
+    }
+    return true;
+}
+
+template <std::floating_point T>
+bool affine_hessian(const Source<T>& phi, std::span<const T> origin, std::span<const T> matrix, int m,
+                    std::array<T, 9>& lo, std::array<T, 9>& hi)
+{
+    if (phi.analytic == nullptr)
+        throw std::invalid_argument("quadrays: affine_hessian needs an analytic level set");
+    if (phi.analytic->hessian_bounds == nullptr)
+        return false;
+    // the parallelepiped centre + axes t, t in [-1, 1]^m, with s = (t + 1) / 2
+    std::array<T, 3> centre_u;
+    std::array<T, 9> half{};
+    for (int i = 0; i < 3; ++i)
+    {
+        T c = origin[i];
+        for (int j = 0; j < m; ++j)
+        {
+            half[i * m + j] = T(0.5) * matrix[i * m + j];
+            c += half[i * m + j];
+        }
+        centre_u[i] = c;
+    }
+    const std::array<double, 3> centre = physical(phi, centre_u.data());
+    double axes[9];
+    for (int j = 0; j < m; ++j)
+    {
+        const T column[3] = {half[j], half[m + j], half[2 * m + j]};
+        const std::array<double, 3> a = physical_direction(phi, column);
+        for (int i = 0; i < 3; ++i)
+            axes[i * m + j] = a[i];
+    }
+    double bounds[18];
+    if (parallelepiped_hessian(*phi.analytic, centre.data(), axes, m, bounds) == 0)
+        return false;
+    // d^2 / ds_i ds_j = 4 d^2 / dt_i dt_j
+    for (int i = 0; i < m * m; ++i)
+    {
+        lo[i] = static_cast<T>(4 * bounds[2 * i]);
+        hi[i] = static_cast<T>(4 * bounds[2 * i + 1]);
+        if (!(lo[i] <= hi[i]))
+            return false; // not finite
+    }
+    return true;
+}
+
+template <std::floating_point T>
+bool linear_form(const Source<T>& phi, BoxBernstein<T>& form)
+{
+    if (phi.analytic == nullptr)
+        throw std::invalid_argument("quadrays: linear_form needs an analytic level set");
+    const int m = phi.tdim;
+    std::array<T, 9> matrix{}, lo{}, hi{};
+    for (int i = 0; i < m; ++i)
+        matrix[i * m + i] = T(1);
+    if (!affine_hessian(phi, std::span<const T>(std::array<T, 3>{}), std::span<const T>(matrix.data(), 3 * m), m,
+                        lo, hi))
+        return false;
+    for (int i = 0; i < m * m; ++i)
+        if (lo[i] != T(0) || hi[i] != T(0))
+            return false;
+    // degree 1: the coefficients are the values at the corners
+    form.dim = m;
+    form.degree = {1, 1, m == 3 ? 1 : 0};
+    form.coeffs.resize(static_cast<std::size_t>(1) << m);
+    for (int c = 0; c < (1 << m); ++c)
+    {
+        const std::array<T, 3> u = {T(c & 1), T((c >> 1) & 1), T((c >> 2) & 1)};
+        form.coeffs[static_cast<std::size_t>(c)] = evaluate(phi, std::span<const T>(u));
     }
     return true;
 }
@@ -301,8 +383,12 @@ void line_roots(const Source<T>& phi, std::span<const T> origin, std::span<const
     if (phi.analytic == nullptr)
         throw std::invalid_argument("quadrays: line_roots needs an analytic level set");
     int visited = 0;
+    const std::size_t first = roots.size();
     isolate(phi, physical(phi, origin.data()), physical_direction(phi, direction.data()), a, b,
             static_cast<double>(zero), 0, visited, roots);
+    // roots in (a, b) only, each once: isolate visits the intervals in order
+    const auto inside = std::remove_if(roots.begin() + first, roots.end(), [a, b](T t) { return !(t > a && t < b); });
+    roots.erase(std::unique(roots.begin() + first, inside), roots.end());
 }
 
 template <std::floating_point T>
@@ -340,14 +426,15 @@ int cell_sign(const ClippedBox<T>& cell, const AnalyticLevelSet& phi, int max_de
 template <std::floating_point T>
 int cell_sign(const ClippedBox<T>& cell, const Source<T>& phi, int max_depth)
 {
-    const Vec3<T> lo = {0, 0, 0}, hi = {1, 1, 1};
+    // boxes of 2D cells are flat: u2 = 0
+    const Vec3<T> lo = {0, 0, 0}, hi = {1, 1, T(cell.tdim == 3 ? 1 : 0)};
     // the whole box first: most cells are far from the zero set
     const int s = box_sign(cell, phi, lo, hi, 0, 0);
     if (s == 1 || s == -1)
         return s;
     // corners of the clipped region with both signs
     int seen = 0;
-    for (int c = 0; c < 8; ++c)
+    for (int c = 0; c < (1 << cell.tdim); ++c)
     {
         const Vec3<T> u = {T(c & 1), T((c >> 1) & 1), T((c >> 2) & 1)};
         if (!inside_clips(cell, u, scaled_tolerance<T>(1e-12)))
@@ -379,6 +466,12 @@ template bool affine_bounds<float>(const Source<float>&, std::span<const float>,
                                    AffineBounds<float>&);
 template bool affine_bounds<double>(const Source<double>&, std::span<const double>, std::span<const double>, int,
                                     AffineBounds<double>&);
+template bool affine_hessian<float>(const Source<float>&, std::span<const float>, std::span<const float>, int,
+                                    std::array<float, 9>&, std::array<float, 9>&);
+template bool affine_hessian<double>(const Source<double>&, std::span<const double>, std::span<const double>, int,
+                                     std::array<double, 9>&, std::array<double, 9>&);
+template bool linear_form<float>(const Source<float>&, BoxBernstein<float>&);
+template bool linear_form<double>(const Source<double>&, BoxBernstein<double>&);
 template void line_roots<float>(const Source<float>&, std::span<const float>, std::span<const float>, float, float,
                                 float, std::vector<float>&);
 template void line_roots<double>(const Source<double>&, std::span<const double>, std::span<const double>, double,

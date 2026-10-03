@@ -24,13 +24,16 @@ namespace cutcells::part
 /// the options picks the backend: quadrays (the default) or the lookup tables.
 ///
 /// Points are in the cells' reference coordinates, weights are physical.
+/// quadrays takes every level set that cuts a cell and that a term holding on
+/// a piece of the cell names; an interface part is integrated once per level
+/// set whose zero set it asks for.
 ///
 /// @param order  quadrays: Gauss-Legendre points per segment of each height
 ///               line; the lookup tables' straight pieces, whole cells and zero
 ///               faces get the reference rules exact for degree 2 order - 1
 ///               (at most 10)
-/// @throws std::runtime_error (quadrays) where a cell would need two level
-///         sets at once (several level sets per cell come in phase 6)
+/// @throws std::invalid_argument (quadrays) for parts of dimension below
+///         tdim - 1, and for cells quadrays does not take
 template <std::floating_point T, std::integral I>
 quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                                                 const quadrays::Options& options = {});

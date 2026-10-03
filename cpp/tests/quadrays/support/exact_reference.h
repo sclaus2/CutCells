@@ -408,6 +408,234 @@ inline PlaneCut plane_cut(const std::vector<Face>& faces, const V3& a, double b)
   return out;
 }
 
+// Convex polytope intersected with the half-space n . x <= d: its faces, each
+// face clipped (Sutherland-Hodgman) and the cut added as a new face. Empty if
+// nothing is left.
+inline std::vector<Face> clip_faces(const std::vector<Face>& faces, const V3& n, double d)
+{
+  double extent = 0;
+  for (const auto& f : faces)
+    for (const auto& v : f.loop)
+      extent = std::max(extent, norm(v));
+  const double tol = 1e-13 * std::max(extent, 1.0) * norm(n);
+  std::vector<std::vector<V3>> loops;
+  std::vector<V3> cut;
+  for (const auto& f : faces)
+  {
+    std::vector<V3> clipped;
+    const size_t m = f.loop.size();
+    for (size_t i = 0; i < m; ++i)
+    {
+      const V3& p = f.loop[i];
+      const V3& q = f.loop[(i + 1) % m];
+      const double sp = dot(n, p) - d, sq = dot(n, q) - d;
+      if (sp <= tol)
+        clipped.push_back(p);
+      if (std::abs(sp) <= tol)
+        cut.push_back(p);
+      if ((sp < -tol && sq > tol) || (sp > tol && sq < -tol))
+      {
+        const V3 x = add(p, mul(sp / (sp - sq), sub(q, p)));
+        clipped.push_back(x);
+        cut.push_back(x);
+      }
+    }
+    if (clipped.size() >= 3)
+      loops.push_back(clipped);
+  }
+  if (loops.empty())
+    return {};
+  // the cut polygon, its points sorted by angle about their mean
+  std::vector<V3> pts;
+  for (const auto& x : cut)
+  {
+    bool seen = false;
+    for (const auto& y : pts)
+      seen |= norm(sub(x, y)) <= 10 * tol;
+    if (!seen)
+      pts.push_back(x);
+  }
+  if (pts.size() >= 3)
+  {
+    V3 c{0, 0, 0};
+    for (const auto& x : pts)
+      c = add(c, x);
+    c = mul(1.0 / pts.size(), c);
+    const V3 u = unit(n);
+    V3 t0 = std::abs(u[0]) < 0.9 ? V3{1, 0, 0} : V3{0, 1, 0};
+    const V3 e1 = unit(cross(u, t0)), e2 = cross(u, e1);
+    std::sort(pts.begin(), pts.end(), [&](const V3& x, const V3& y)
+              { return std::atan2(dot(sub(x, c), e2), dot(sub(x, c), e1)) < std::atan2(dot(sub(y, c), e2), dot(sub(y, c), e1)); });
+    loops.push_back(pts);
+  }
+  return make_faces(loops);
+}
+
+// ---- 2D: convex polygons (loops of V3 with z = 0) ----
+
+// Area of the polygon inside the disk of radius r about c (in the plane z = 0).
+inline double disk_polygon_area(const std::vector<V3>& loop, const V3& c, double r)
+{
+  return polygon_disk_area(loop, {0, 0, 1}, c, r);
+}
+
+// Length of the circle |x - c| = r inside the convex polygon (z = 0).
+inline double circle_polygon_length(const std::vector<V3>& loop, const V3& c, double r)
+{
+  if (loop.size() < 3)
+    return 0.0;
+  // the polygon as half-planes n . (x - c) <= d, oriented by its centroid
+  V3 m{0, 0, 0};
+  for (const auto& v : loop)
+    m = add(m, v);
+  m = mul(1.0 / loop.size(), m);
+  std::vector<Iv> S = {{0.0, 2 * M_PI}};
+  for (size_t i = 0; i < loop.size(); ++i)
+  {
+    const V3& a = loop[i];
+    const V3& b = loop[(i + 1) % loop.size()];
+    V3 n = {b[1] - a[1], a[0] - b[0], 0};
+    n = unit(n);
+    double d = dot(n, sub(a, c));
+    if (dot(n, sub(m, c)) > d)
+    {
+      n = mul(-1, n);
+      d = -d;
+    }
+    // r cos(t - beta) <= d with beta the angle of n
+    if (d >= r)
+      continue;
+    if (d <= -r)
+      return 0.0;
+    const double beta = std::atan2(n[1], n[0]), g = std::acos(d / r);
+    std::vector<Iv> allow;
+    for (int k = -2; k <= 2; ++k)
+    {
+      const double lo = beta + g + 2 * M_PI * k, hi = beta + 2 * M_PI - g + 2 * M_PI * k;
+      const double l2 = std::max(lo, 0.0), h2 = std::min(hi, 2 * M_PI);
+      if (h2 > l2)
+        allow.push_back({l2, h2});
+    }
+    S = intersect(S, allow);
+    if (S.empty())
+      return 0.0;
+  }
+  double t = 0;
+  for (const auto& iv : S)
+    t += iv.second - iv.first;
+  return r * t;
+}
+
+// The convex polygon cut by the half-plane n . x <= d (Sutherland-Hodgman).
+inline std::vector<V3> clip_polygon(const std::vector<V3>& loop, const V3& n, double d)
+{
+  std::vector<V3> out;
+  const size_t m = loop.size();
+  for (size_t i = 0; i < m; ++i)
+  {
+    const V3& p = loop[i];
+    const V3& q = loop[(i + 1) % m];
+    const double sp = dot(n, p) - d, sq = dot(n, q) - d;
+    if (sp <= 0)
+      out.push_back(p);
+    if ((sp < 0 && sq > 0) || (sp > 0 && sq < 0))
+      out.push_back(add(p, mul(sp / (sp - sq), sub(q, p))));
+  }
+  return out;
+}
+
+// Area of a planar loop in z = 0 (any orientation).
+inline double polygon_area(const std::vector<V3>& loop) { return loop.size() < 3 ? 0.0 : loop_area(loop); }
+
+// Length of the chord of the line n . x = d inside the convex polygon and the
+// disk of radius r about c (r <= 0: no disk).
+inline double line_length(const std::vector<V3>& loop, const V3& n, double d, const V3& c, double r)
+{
+  if (loop.size() < 3)
+    return 0.0;
+  const V3 u = unit(n);
+  const double dd = d / norm(n);
+  const V3 p0 = mul(dd, u), t = {-u[1], u[0], 0};
+  // the line p0 + s t: clip s by the polygon's half-planes
+  V3 m{0, 0, 0};
+  for (const auto& v : loop)
+    m = add(m, v);
+  m = mul(1.0 / loop.size(), m);
+  double lo = -1e300, hi = 1e300;
+  for (size_t i = 0; i < loop.size(); ++i)
+  {
+    const V3& a = loop[i];
+    const V3& b = loop[(i + 1) % loop.size()];
+    V3 e = unit(V3{b[1] - a[1], a[0] - b[0], 0});
+    double ed = dot(e, a);
+    if (dot(e, m) > ed)
+    {
+      e = mul(-1, e);
+      ed = -ed;
+    }
+    // e . (p0 + s t) <= ed
+    const double et = dot(e, t), rest = ed - dot(e, p0);
+    if (std::abs(et) < 1e-300)
+    {
+      if (rest < 0)
+        return 0.0;
+      continue;
+    }
+    if (et > 0)
+      hi = std::min(hi, rest / et);
+    else
+      lo = std::max(lo, rest / et);
+  }
+  if (r > 0)
+  {
+    // |p0 + s t - c| <= r
+    const V3 w = sub(p0, c);
+    const double b = dot(w, t), cc = dot(w, w) - r * r, disc = b * b - cc;
+    if (disc <= 0)
+      return 0.0;
+    lo = std::max(lo, -b - std::sqrt(disc));
+    hi = std::min(hi, -b + std::sqrt(disc));
+  }
+  return hi > lo ? hi - lo : 0.0;
+}
+
+// ---- convex polytopes and half-spaces, with faces in the plane ----
+
+// The polytope intersected with n . x <= d. A polytope on one side of the plane
+// (faces in it included, up to tol) is kept whole or dropped, so that no face
+// is doubled by a cut along it.
+inline std::vector<Face> half_space(const std::vector<Face>& faces, const V3& n, double d, double tol = 1e-12)
+{
+  bool below = true, above = true;
+  for (const auto& f : faces)
+    for (const auto& v : f.loop)
+    {
+      below &= dot(n, v) <= d + tol;
+      above &= dot(n, v) >= d - tol;
+    }
+  if (below)
+    return faces;
+  if (above)
+    return {};
+  return clip_faces(faces, n, d);
+}
+
+// The polygon where the plane n . x = d cuts the polytope through its interior
+// (empty if the plane misses it, touches it or holds one of its faces).
+inline std::vector<V3> plane_section(const std::vector<Face>& faces, const V3& n, double d, double tol = 1e-12)
+{
+  bool lo = false, hi = false;
+  for (const auto& f : faces)
+    for (const auto& v : f.loop)
+    {
+      lo |= dot(n, v) < d - tol;
+      hi |= dot(n, v) > d + tol;
+    }
+  if (!(lo && hi))
+    return {};
+  return clip_faces(faces, n, d).back().loop; // the cut is the last face
+}
+
 // Tetrahedron helper
 inline std::vector<Face> tet_faces(const std::array<V3, 4>& X)
 {

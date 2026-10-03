@@ -25,7 +25,10 @@
 //
 // Usage: quadrays_robustness_report [--case a,b] [--mesh tet,hex] [--n 16] [--q 3]
 //                                   [--gen quadrays,quadrays:0.1,...]
-//                                   [--part "phi < 0"]... [--list]
+//                                   [--part "phi < 0"]... [--opt key=value]... [--list]
+// --opt sets an engine option of every quadrays generator: max_depth,
+// max_bisections, two_roots_depth, taylor_subdivisions, rotation_depth,
+// mask_subdivisions, split_bounds, diagonal_frames, prune_bounds.
 // Generators: quadrays, quadrays:<margin>; with CUTCELLS_WITH_ALGOIM also
 // algoim-auto, algoim-gl and quadgen (hexahedra, unscaled spheres).
 
@@ -85,6 +88,7 @@ int main(int argc, char** argv)
     std::vector<std::string> parts;
     std::vector<int> qs = {3};
     int n_cells = 16;
+    Options base_options;
     const std::vector<Case> cases = all_cases();
     try
     {
@@ -112,6 +116,35 @@ int main(int argc, char** argv)
                 qs.clear();
                 for (const std::string& s : split_list(next()))
                     qs.push_back(std::stoi(s));
+            }
+            else if (a == "--opt")
+            {
+                const std::string kv = next();
+                const std::size_t eq = kv.find('=');
+                if (eq == std::string::npos)
+                    throw std::runtime_error("--opt takes key=value");
+                const std::string key = kv.substr(0, eq);
+                const int v = std::stoi(kv.substr(eq + 1));
+                if (key == "max_depth")
+                    base_options.max_depth = v;
+                else if (key == "max_bisections")
+                    base_options.max_bisections = v;
+                else if (key == "two_roots_depth")
+                    base_options.two_roots_depth = v;
+                else if (key == "taylor_subdivisions")
+                    base_options.taylor_subdivisions = v;
+                else if (key == "rotation_depth")
+                    base_options.rotation_depth = v;
+                else if (key == "mask_subdivisions")
+                    base_options.mask_subdivisions = v;
+                else if (key == "split_bounds")
+                    base_options.split_bounds = v != 0;
+                else if (key == "diagonal_frames")
+                    base_options.diagonal_frames = v != 0;
+                else if (key == "prune_bounds")
+                    base_options.prune_bounds = v != 0;
+                else
+                    throw std::runtime_error("unknown option: " + key);
             }
             else if (a == "--list")
             {
@@ -155,7 +188,7 @@ int main(int argc, char** argv)
 #endif
                     if (gen == "quadgen" && (mesh != "hex" || c.shape != Shape::sphere || c.scale != 1.0))
                         continue; // algoim's 2015 engine here takes the sphere itself, on boxes
-                    Options opt;
+                    Options opt = base_options;
                     if (quad && gen.find(':') != std::string::npos)
                         opt.margin = std::stod(gen.substr(gen.find(':') + 1));
                     for (const std::string& part_text : parts)

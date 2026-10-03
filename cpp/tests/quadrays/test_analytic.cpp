@@ -446,7 +446,8 @@ int main()
     test_cell_sign();
 
     // The distance against the polynomial sphere's numbers at n = 8
-    // (test_sphere.cpp, the prototype's Bernstein path), 25% slack.
+    // (test_sphere.cpp, the prototype's Bernstein path), 25% slack, with Taylor
+    // models over whole boxes as in phase 2.
     struct Expected
     {
         const char* mesh;
@@ -460,12 +461,32 @@ int main()
         {"hex", 3, "phi < 0", 6.5e-6, 2.1e-4}, {"hex", 3, "phi = 0", 4.8e-5, 7.2e-4},
         {"hex", 5, "phi < 0", 2.2e-8, 9.4e-7}, {"hex", 5, "phi = 0", 3.7e-7, 8.6e-6},
     };
+    Options whole_boxes;
+    whole_boxes.taylor_subdivisions = 1;
+    int whole_tet_bisections = 0;
     for (const Expected& p : polynomial)
     {
-        const Errors e = sphere_errors(&phi_distance, p.mesh, 8, p.q, p.part);
+        const Errors e = sphere_errors(&phi_distance, p.mesh, 8, p.q, p.part, whole_boxes);
         const bool ok = e.l1 <= 1.25 * p.l1 && e.worst <= 1.25 * p.worst;
         std::printf("distance %s q = %d %-8s L1 %.1e (polynomial %.1e), worst %.1e (%.1e), bisections %d %s\n", p.mesh,
                     p.q, p.part, e.l1, p.l1, e.worst, p.worst, e.bisections, ok ? "" : "FAILED");
+        failures += !ok;
+        if (std::string(p.mesh) == "tet")
+            whole_tet_bisections = e.bisections;
+    }
+
+    // Taylor models over the sub-boxes that meet a tetrahedron (the default):
+    // far fewer bisections, errors within a few times the whole boxes' at q = 5.
+    for (const Expected& p : polynomial)
+    {
+        if (std::string(p.mesh) != "tet" || p.q != 5)
+            continue;
+        const Errors whole = sphere_errors(&phi_distance, "tet", 8, 5, p.part, whole_boxes);
+        const Errors e = sphere_errors(&phi_distance, "tet", 8, 5, p.part);
+        const bool ok = e.l1 <= 4 * whole.l1 && e.worst <= 4 * whole.worst && 2 * e.bisections <= whole_tet_bisections;
+        std::printf("distance tet sub-boxes q = 5 %-8s L1 %.1e (whole boxes %.1e), worst %.1e (%.1e), bisections %d "
+                    "(%d) %s\n",
+                    p.part, e.l1, whole.l1, e.worst, whole.worst, e.bisections, whole_tet_bisections, ok ? "" : "FAILED");
         failures += !ok;
     }
 

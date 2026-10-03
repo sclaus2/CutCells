@@ -6,8 +6,10 @@
 #include "bernstein.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -760,6 +762,124 @@ void evaluate_all_tensor(int tdim, int degree, const T* xi, T* out)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Prisms: the triangle's basis times the interval's
+//   index = simplex_index_2d(i, j, n) * (n + 1) + k
+// Pyramids: B^{n-k}_i(s) B^{n-k}_j(t) B^n_k(w) in the collapsed coordinates
+//   s = x / (1 - z), t = y / (1 - z), w = z (Chan and Warburton), which span
+//   the rational Lagrange space of the pyramid;
+//   index = sum_{l < k} (n - l + 1)^2 + i (n - k + 1) + j
+// ---------------------------------------------------------------------------
+
+template <std::floating_point T>
+void evaluate_all_prism(int degree, const T* xi, T* out)
+{
+    const int n = degree, n1 = n + 1;
+    const int nt = (n + 1) * (n + 2) / 2;
+    std::vector<T> tri(static_cast<std::size_t>(nt)), bz(static_cast<std::size_t>(n1));
+    evaluate_all_simplex(2, n, xi, tri.data());
+    bernstein_1d_all(n, xi[2], bz.data());
+    for (int a = 0; a < nt; ++a)
+        for (int k = 0; k <= n; ++k)
+            out[a * n1 + k] = tri[static_cast<std::size_t>(a)] * bz[static_cast<std::size_t>(k)];
+}
+
+/// The collapsed coordinates of a point of the reference pyramid; s = t = 0 at
+/// the apex, where only the functions with k = n do not vanish.
+template <std::floating_point T>
+std::array<T, 3> collapse_pyramid(const T* xi)
+{
+    const T r = T(1) - xi[2];
+    if (!(r > std::numeric_limits<T>::epsilon()))
+        return {T(0), T(0), T(1)};
+    return {xi[0] / r, xi[1] / r, xi[2]};
+}
+
+template <std::floating_point T>
+void evaluate_all_pyramid(int degree, const T* xi, T* out)
+{
+    const int n = degree;
+    const std::array<T, 3> u = collapse_pyramid(xi);
+    std::vector<T> bs(static_cast<std::size_t>(n + 1)), bt(static_cast<std::size_t>(n + 1)),
+        bw(static_cast<std::size_t>(n + 1));
+    bernstein_1d_all(n, u[2], bw.data());
+    int idx = 0;
+    for (int k = 0; k <= n; ++k)
+    {
+        const int m = n - k;
+        bernstein_1d_all(m, u[0], bs.data());
+        bernstein_1d_all(m, u[1], bt.data());
+        for (int i = 0; i <= m; ++i)
+            for (int j = 0; j <= m; ++j)
+                out[idx++] = bs[static_cast<std::size_t>(i)] * bt[static_cast<std::size_t>(j)]
+                             * bw[static_cast<std::size_t>(k)];
+    }
+}
+
+template <std::floating_point T>
+void gradient_prism(int degree, const T* coeffs, const T* xi, T* grad)
+{
+    const int n = degree, n1 = n + 1;
+    const int nt = (n + 1) * (n + 2) / 2;
+    std::vector<T> bz(static_cast<std::size_t>(n1)), dbz(static_cast<std::size_t>(n1), T(0)),
+        layer(static_cast<std::size_t>(nt));
+    bernstein_1d_all(n, xi[2], bz.data());
+    bernstein_1d_deriv(n, xi[2], dbz.data());
+    grad[0] = grad[1] = grad[2] = T(0);
+    for (int k = 0; k <= n; ++k)
+    {
+        for (int a = 0; a < nt; ++a)
+            layer[static_cast<std::size_t>(a)] = coeffs[a * n1 + k];
+        T g[2];
+        gradient_simplex(2, n, layer.data(), xi, g);
+        grad[0] += g[0] * bz[static_cast<std::size_t>(k)];
+        grad[1] += g[1] * bz[static_cast<std::size_t>(k)];
+        grad[2] += evaluate_simplex(2, n, layer.data(), xi) * dbz[static_cast<std::size_t>(k)];
+    }
+}
+
+/// d/dx = d/ds / (1 - z), d/dy = d/dt / (1 - z), d/dz = d/dw + (s d/ds + t d/dt) / (1 - z);
+/// at the apex the limit along the axis is taken.
+template <std::floating_point T>
+void gradient_pyramid(int degree, const T* coeffs, const T* xi, T* grad)
+{
+    const int n = degree;
+    const T eps = std::sqrt(std::numeric_limits<T>::epsilon());
+    const T p[3] = {xi[0], xi[1], std::min(xi[2], T(1) - eps)};
+    const std::array<T, 3> u = collapse_pyramid(p);
+    std::vector<T> bs(static_cast<std::size_t>(n + 1)), bt(static_cast<std::size_t>(n + 1)),
+        bw(static_cast<std::size_t>(n + 1)), ds(static_cast<std::size_t>(n + 1)),
+        dt(static_cast<std::size_t>(n + 1)), dw(static_cast<std::size_t>(n + 1), T(0));
+    bernstein_1d_all(n, u[2], bw.data());
+    bernstein_1d_deriv(n, u[2], dw.data());
+    T gs = T(0), gt = T(0), gw = T(0);
+    int idx = 0;
+    for (int k = 0; k <= n; ++k)
+    {
+        const int m = n - k;
+        bernstein_1d_all(m, u[0], bs.data());
+        bernstein_1d_all(m, u[1], bt.data());
+        std::fill(ds.begin(), ds.end(), T(0));
+        std::fill(dt.begin(), dt.end(), T(0));
+        bernstein_1d_deriv(m, u[0], ds.data());
+        bernstein_1d_deriv(m, u[1], dt.data());
+        for (int i = 0; i <= m; ++i)
+            for (int j = 0; j <= m; ++j)
+            {
+                const T c = coeffs[idx++];
+                const std::size_t I = static_cast<std::size_t>(i), J = static_cast<std::size_t>(j),
+                                  K = static_cast<std::size_t>(k);
+                gs += c * ds[I] * bt[J] * bw[K];
+                gt += c * bs[I] * dt[J] * bw[K];
+                gw += c * bs[I] * bt[J] * dw[K];
+            }
+    }
+    const T r = T(1) - p[2];
+    grad[0] = gs / r;
+    grad[1] = gt / r;
+    grad[2] = gw + (u[0] * gs + u[1] * gt) / r;
+}
+
 } // anonymous namespace
 
 // ===========================================================================
@@ -781,6 +901,10 @@ int num_polynomials(cell::type ctype, int degree)
             return (n + 1) * (n + 1);
         case cell::type::hexahedron:
             return (n + 1) * (n + 1) * (n + 1);
+        case cell::type::prism:
+            return (n + 1) * (n + 2) / 2 * (n + 1);
+        case cell::type::pyramid:
+            return (n + 1) * (n + 2) * (2 * n + 3) / 6;
         default:
             throw std::invalid_argument(
                 "bernstein::num_polynomials: unsupported cell type");
@@ -799,6 +923,15 @@ T evaluate(cell::type ctype, int degree,
     else if (is_tensor_product(ctype))
         return evaluate_tensor(cell::get_tdim(ctype), degree,
                                coeffs.data(), xi.data());
+    else if (ctype == cell::type::prism || ctype == cell::type::pyramid)
+    {
+        std::vector<T> basis(static_cast<std::size_t>(num_polynomials(ctype, degree)));
+        evaluate_basis(ctype, degree, xi, std::span<T>(basis));
+        T result = T(0);
+        for (std::size_t i = 0; i < basis.size(); ++i)
+            result += coeffs[i] * basis[i];
+        return result;
+    }
     else
         throw std::invalid_argument("bernstein::evaluate: unsupported cell type");
 }
@@ -819,6 +952,10 @@ void gradient(cell::type ctype, int degree,
     else if (is_tensor_product(ctype))
         gradient_tensor(cell::get_tdim(ctype), degree,
                         coeffs.data(), xi.data(), grad.data());
+    else if (ctype == cell::type::prism)
+        gradient_prism(degree, coeffs.data(), xi.data(), grad.data());
+    else if (ctype == cell::type::pyramid)
+        gradient_pyramid(degree, coeffs.data(), xi.data(), grad.data());
     else
         throw std::invalid_argument("bernstein::gradient: unsupported cell type");
 }
@@ -838,6 +975,10 @@ void evaluate_basis(cell::type ctype, int degree,
     else if (is_tensor_product(ctype))
         evaluate_all_tensor(cell::get_tdim(ctype), degree,
                             xi.data(), out.data());
+    else if (ctype == cell::type::prism)
+        evaluate_all_prism(degree, xi.data(), out.data());
+    else if (ctype == cell::type::pyramid)
+        evaluate_all_pyramid(degree, xi.data(), out.data());
     else
         throw std::invalid_argument("bernstein::evaluate_basis: unsupported cell type");
 }

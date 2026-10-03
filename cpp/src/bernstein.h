@@ -18,6 +18,11 @@ namespace cutcells::bernstein
 ///
 /// Simplex cells (interval, triangle, tetrahedron): C(n+d, d)
 /// Tensor-product cells (quadrilateral, hexahedron): (n+1)^d
+/// Prisms (the triangle's basis times the interval's): (n+1)(n+2)/2 (n+1)
+/// Pyramids: (n+1)(n+2)(2n+3)/6, the functions B^{n-k}_i(s) B^{n-k}_j(t)
+/// B^n_k(w) of the collapsed coordinates s = x / (1 - z), t = y / (1 - z),
+/// w = z (0 <= i, j <= n - k), which span the rational Lagrange space of the
+/// pyramid (as Basix's)
 int num_polynomials(cell::type ctype, int degree);
 
 /// Evaluate a Bernstein expansion at a point xi in reference coordinates.

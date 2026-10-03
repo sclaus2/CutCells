@@ -7,15 +7,22 @@
 // per-cell values summed over hexahedral and Kuhn-tetrahedral meshes against the
 // sphere's area and the ball's volume, also for spheres through grid vertices and
 // tangent to grid planes; plane cuts of a cube and of meshes against closed forms.
+// The same sums over the prisms and pyramids of the test meshes; a ball cut by a
+// half-space (cap volume and area, the disk of the cut) summed over meshes; in
+// 2D, disks, circles, half-planes and chords summed over quadrilaterals and
+// triangles of [-1, 1]^2.
 // Exits non-zero on failure.
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
 
 #include "support/exact_reference.h"
+#include "support/test_mesh.h"
 
 using namespace cutcells::quadrays::support::exact;
+namespace support = cutcells::quadrays::support;
 
 int main()
 {
@@ -132,5 +139,99 @@ int main()
     plane_sums("x = 0.25 (on faces)", {1, 0, 0}, 0.25, 5.0, 4.0);
     // x - y > 0.125: a triangular prism with legs 1.875 and length 2
     plane_sums("x - y = 0.125 (on tet faces)", {1, -1, 0}, 0.125, 8.0 - 1.875 * 1.875, 2.0 * std::sqrt(2.0) * 1.875);
+
+    // prisms and pyramids: spheres and planes summed over the meshes
+    const V3 off = {0.0123, -0.0371, 0.0217};
+    for (const std::string mesh : {"prism", "pyramid"})
+    {
+        const int n = 8;
+        const double h = 2.0 / n;
+        double area = 0, volume = 0, below = 0, cut = 0, cells = 0;
+        for (int a = 0; a < n; ++a)
+            for (int b = 0; b < n; ++b)
+                for (int d = 0; d < n; ++d)
+                    for (const support::TestCell& cell :
+                         support::grid_cells(mesh, {-1 + h * a, -1 + h * b, -1 + h * d}, h, off))
+                    {
+                        const double ar = sphere_area(cell.faces, r);
+                        area += ar;
+                        volume += ball_volume(cell.faces, r, ar);
+                        // x + y + z < 0.25 + off . (1, 1, 1) in absolute coordinates
+                        const PlaneCut c = plane_cut(cell.faces, {1, 1, 1}, 0.25);
+                        below += c.volume_below;
+                        cut += c.cut_area + 0.5 * c.face_in_plane;
+                        cells += cell.volume;
+                    }
+        // the plane x + y + z = t, t = 0.25 + off . (1, 1, 1), in [-1, 1]^3
+        const double t = 0.25 + off[0] + off[1] + off[2];
+        check((mesh + " cells, volume").c_str(), cells, 8.0, 1e-12);
+        check((mesh + " cells, sphere areas").c_str(), area, 4 * M_PI * r * r, 1e-12);
+        check((mesh + " cells, ball volumes").c_str(), volume, 4.0 / 3.0 * M_PI * r * r * r, 1e-12);
+        check((mesh + " cells, plane volumes").c_str(), below, 8 * (0.5 + (3 * t - t * t * t / 3) / 8), 1e-12);
+        check((mesh + " cells, plane areas").c_str(), cut, (3 - t * t) * std::sqrt(3.0), 1e-12);
+    }
+
+    // a ball cut by the half-space z > a: the cap, its sphere and the disk, summed
+    {
+        const double R = 0.8, a = 0.3, rho = std::sqrt(R * R - a * a);
+        for (const std::string mesh : {"hex", "tet"})
+        {
+            const int n = 8;
+            const double h = 2.0 / n;
+            double cap = 0, cap_area = 0, disk = 0;
+            for (int i = 0; i < n; ++i)
+                for (int j = 0; j < n; ++j)
+                    for (int k = 0; k < n; ++k)
+                        for (const support::TestCell& cell :
+                             support::grid_cells(mesh, {-1 + h * i, -1 + h * j, -1 + h * k}, h, off))
+                        {
+                            const std::vector<Face> above = half_space(cell.faces, {0, 0, -1}, -a);
+                            if (!above.empty())
+                            {
+                                const double ar = sphere_area(above, R);
+                                cap_area += ar;
+                                cap += ball_volume(above, R, ar);
+                            }
+                            disk += polygon_disk_area(plane_section(cell.faces, {0, 0, 1}, a), {0, 0, 1}, {0, 0, a}, rho);
+                        }
+            const double height = R - a;
+            check((mesh + " cells, cap volume").c_str(), cap, M_PI * height * height * (3 * R - height) / 3, 1e-12);
+            check((mesh + " cells, cap area").c_str(), cap_area, 2 * M_PI * R * height, 1e-12);
+            check((mesh + " cells, disk area").c_str(), disk, M_PI * rho * rho, 1e-12);
+        }
+    }
+
+    // 2D: disks, circles, half-planes and chords summed over [-1, 1]^2
+    for (const std::string mesh : {"quad", "tri"})
+    {
+        const int n = 16;
+        const double h = 2.0 / n, rr = 0.7, d = 0.3 * off[0] + off[1] + 0.25;
+        const V3 c = {off[0], off[1], 0}, nl = {0.3, 1, 0};
+        double disk = 0, circle = 0, cells = 0, chord = 0, cap = 0, arc = 0, below = 0;
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j)
+                for (const support::TestCell2D& cell : support::grid_cells_2d(mesh, {-1 + h * i, -1 + h * j, 0}, h))
+                {
+                    disk += disk_polygon_area(cell.loop, c, rr);
+                    circle += circle_polygon_length(cell.loop, c, rr);
+                    cells += polygon_area(cell.loop);
+                    chord += line_length(cell.loop, nl, d, c, rr);
+                    const std::vector<V3> above = clip_polygon(cell.loop, {-nl[0], -nl[1], 0}, -d);
+                    cap += disk_polygon_area(above, c, rr);
+                    arc += circle_polygon_length(above, c, rr);
+                    below += polygon_area(clip_polygon(cell.loop, nl, d));
+                }
+        // the line 0.3 (x - cx) + (y - cy) = 0.25 at distance s from the centre
+        const double s0 = 0.25 / std::sqrt(1.09), half = std::sqrt(rr * rr - s0 * s0), angle = std::acos(s0 / rr);
+        check((mesh + " cells, area").c_str(), cells, 4.0, 1e-14);
+        check((mesh + " cells, disk area").c_str(), disk, M_PI * rr * rr, 1e-12);
+        check((mesh + " cells, circle length").c_str(), circle, 2 * M_PI * rr, 1e-12);
+        check((mesh + " cells, chord length").c_str(), chord, 2 * half, 1e-12);
+        check((mesh + " cells, disk above the line").c_str(), cap, rr * rr * angle - s0 * half, 1e-12);
+        check((mesh + " cells, arc above the line").c_str(), arc, 2 * rr * angle, 1e-12);
+        // the line y = cy + 0.25 - 0.3 (x - cx) through the square: the area below
+        const double y0 = off[1] + 0.25 + 0.3 * off[0];
+        check((mesh + " cells, area below the line").c_str(), below, 2 * (y0 + 1), 1e-12);
+    }
     return failures == 0 ? 0 : 1;
 }

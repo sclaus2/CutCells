@@ -314,6 +314,88 @@ const std::vector<T>& simplex_to_box_matrix(int tdim, int n)
     return it->second;
 }
 
+/// Matrix (box index x pyramid index, row-major) taking the coefficients of a
+/// pyramid's level set phi in its basis B^m_i(s) B^m_j(t) B^n_k(z), m = n - k,
+/// s = x / (1 - z), t = y / (1 - z) (bernstein.h), to the tensor Bernstein
+/// coefficients of (1 - z)^n phi, of degree (n, n, 2n), on the unit box:
+///   (1 - z)^n B^m_i(s) B^m_j(t) B^n_k(z)
+///     = C(m, i) C(m, j) C(n, k) x^i (1 - z - x)^(m - i) y^j (1 - z - y)^(m - j) z^k (1 - z)^k,
+/// expanded in powers of x and y, with x^a = sum_l C(l, a) / C(n, a) B^n_l(x)
+/// and z^k (1 - z)^e = sum_l C(2n - k - e, l - k) / C(2n, l) B^2n_l(z). All
+/// sums are exact over the common denominator (n!)^2 (2n)! and rounded once.
+std::vector<long double> pyramid_to_box_exact(int n)
+{
+    const int N = 2 * n, n1 = n + 1;
+    const int nb = n1 * n1 * (N + 1);
+    int np = 0;
+    for (int k = 0; k <= n; ++k)
+        np += (n - k + 1) * (n - k + 1);
+    std::vector<int128> fact(N + 1);
+    for (int k = 0; k <= N; ++k)
+        fact[k] = factorial(k);
+    auto choose = [&fact](int a, int b) -> int128 { return b < 0 || b > a ? 0 : fact[a] / (fact[b] * fact[a - b]); };
+    // ff[l][a] = l! / (l - a)! (n - a)!: C(l, a) / C(n, a) times n!
+    std::vector<int128> ff(n1 * n1, 0);
+    for (int l = 0; l <= n; ++l)
+        for (int a = 0; a <= l; ++a)
+            ff[l * n1 + a] = fact[l] / fact[l - a] * fact[n - a];
+
+    std::vector<int128> numer(static_cast<std::size_t>(nb) * np, 0);
+    int idx = 0;
+    for (int k = 0; k <= n; ++k)
+    {
+        const int m = n - k;
+        for (int i = 0; i <= m; ++i)
+            for (int j = 0; j <= m; ++j, ++idx)
+            {
+                const int128 base = choose(m, i) * choose(m, j) * choose(n, k);
+                for (int p = 0; p <= m - i; ++p)
+                    for (int q = 0; q <= m - j; ++q)
+                    {
+                        int128 coef = base * choose(m - i, p) * choose(m - j, q);
+                        if ((p + q) % 2 == 1)
+                            coef = -coef;
+                        const int a = i + p, b = j + q, e = (m - i - p) + (m - j - q) + k;
+                        for (int l2 = k; l2 <= N - e; ++l2)
+                        {
+                            // C(N - k - e, l2 - k) / C(N, l2) times N!
+                            const int128 zl = choose(N - k - e, l2 - k) * fact[l2] * fact[N - l2];
+                            for (int l1 = b; l1 <= n; ++l1)
+                                for (int l0 = a; l0 <= n; ++l0)
+                                    numer[static_cast<std::size_t>(l0 + n1 * (l1 + n1 * l2)) * np + idx]
+                                        += coef * ff[l0 * n1 + a] * ff[l1 * n1 + b] * zl;
+                        }
+                    }
+            }
+    }
+    const int128 denom = fact[n] * fact[n] * fact[N];
+    std::vector<long double> matrix(numer.size());
+    for (std::size_t k = 0; k < numer.size(); ++k)
+    {
+        const int128 g = gcd128(numer[k], denom);
+        const int128 num = g > 0 ? numer[k] / g : numer[k];
+        const int128 den = g > 0 ? denom / g : denom;
+        matrix[k] = static_cast<long double>(num) / static_cast<long double>(den);
+    }
+    return matrix;
+}
+
+/// Cached pyramid-to-box matrix of type T.
+template <std::floating_point T>
+const std::vector<T>& pyramid_to_box_matrix(int n)
+{
+    static std::mutex mutex;
+    static std::map<int, std::vector<T>> cache;
+    const std::lock_guard<std::mutex> lock(mutex);
+    auto it = cache.find(n);
+    if (it == cache.end())
+    {
+        const std::vector<long double> exact = pyramid_to_box_exact(n);
+        it = cache.emplace(n, std::vector<T>(exact.begin(), exact.end())).first;
+    }
+    return it->second;
+}
+
 } // namespace
 
 // ============================================================================
@@ -380,6 +462,54 @@ void cell_bernstein_on_box(cell::type cell_type, int degree, std::span<const T> 
             for (int a1 = 0; a1 < n1; ++a1)
                 for (int a0 = 0; a0 < n1; ++a0)
                     out.coeffs[a0 + n1 * (a1 + n1 * a2)] = coeffs[(a0 * n1 + a1) * n1 + a2];
+        return;
+    }
+    case cell::type::prism:
+    {
+        // each layer k along xi_2 is a triangle form: CutCells stores
+        // coeffs[a * n1 + k], a the triangle's index
+        if (degree > 12)
+            throw std::invalid_argument("quadrays: prism level sets of degree above 12 are not supported");
+        const std::vector<T>& matrix = simplex_to_box_matrix<T>(2, degree);
+        const int nb = n1 * n1;
+        const int ns = static_cast<int>(matrix.size()) / nb;
+        if (static_cast<int>(coeffs.size()) != ns * n1)
+            throw std::invalid_argument("quadrays: wrong number of prism Bernstein coefficients");
+        out.dim = 3;
+        out.degree = {degree, degree, degree};
+        out.coeffs.assign(nb * n1, T(0));
+        for (int k = 0; k < n1; ++k)
+            for (int b = 0; b < nb; ++b)
+            {
+                const T* row = matrix.data() + static_cast<std::size_t>(b) * ns;
+                T sum = T(0);
+                for (int a = 0; a < ns; ++a)
+                    sum += row[a] * coeffs[a * n1 + k];
+                out.coeffs[b + nb * k] = sum;
+            }
+        return;
+    }
+    case cell::type::pyramid:
+    {
+        // the level set times (1 - z)^n, a polynomial (pyramid_to_box_exact)
+        if (degree > 6)
+            throw std::invalid_argument("quadrays: pyramid level sets of degree above 6 are not supported");
+        const std::vector<T>& matrix = pyramid_to_box_matrix<T>(degree);
+        const int nb = n1 * n1 * (2 * degree + 1);
+        const int np = static_cast<int>(matrix.size()) / nb;
+        if (static_cast<int>(coeffs.size()) != np)
+            throw std::invalid_argument("quadrays: wrong number of pyramid Bernstein coefficients");
+        out.dim = 3;
+        out.degree = {degree, degree, 2 * degree};
+        out.coeffs.assign(nb, T(0));
+        for (int b = 0; b < nb; ++b)
+        {
+            const T* row = matrix.data() + static_cast<std::size_t>(b) * np;
+            T sum = T(0);
+            for (int a = 0; a < np; ++a)
+                sum += row[a] * coeffs[a];
+            out.coeffs[b] = sum;
+        }
         return;
     }
     default:
@@ -792,7 +922,7 @@ T scaled_norm(std::span<const T> v)
 
 template <std::floating_point T>
 void margins(const BoxBernstein<T>& p, std::span<const T> lengths, std::span<T> ratio,
-             BoxBernstein<T>& work)
+             BoxBernstein<T>& work, std::span<T> upper_out)
 {
     std::array<T, 3> lower{}, upper{};
     for (int k = 0; k < p.dim; ++k)
@@ -816,6 +946,8 @@ void margins(const BoxBernstein<T>& p, std::span<const T> lengths, std::span<T> 
     const T norm = scaled_norm(std::span<const T>(upper.data(), p.dim));
     for (int k = 0; k < p.dim; ++k)
         ratio[k] = norm > T(0) ? lower[k] / norm : T(0);
+    for (std::size_t k = 0; k < upper_out.size(); ++k)
+        upper_out[k] = upper[k];
 }
 
 // ============================================================================
@@ -932,7 +1064,8 @@ template void subdivide<float>(const BoxBernstein<float>&, std::span<const float
 template bool may_vanish<float>(std::span<const float>);
 template float max_abs<float>(std::span<const float>);
 template float scaled_norm<float>(std::span<const float>);
-template void margins<float>(const BoxBernstein<float>&, std::span<const float>, std::span<float>, BoxBernstein<float>&);
+template void margins<float>(const BoxBernstein<float>&, std::span<const float>, std::span<float>, BoxBernstein<float>&,
+                             std::span<float>);
 template float evaluate_1d<float>(std::span<const float>, float);
 template float bracketed_root<float>(std::span<const float>, float, float, float, float, float, float);
 template void isolate_roots<float>(std::span<const float>, float, float, std::vector<float>&, std::vector<float>&);
@@ -946,7 +1079,8 @@ template void subdivide<double>(const BoxBernstein<double>&, std::span<const dou
 template bool may_vanish<double>(std::span<const double>);
 template double max_abs<double>(std::span<const double>);
 template double scaled_norm<double>(std::span<const double>);
-template void margins<double>(const BoxBernstein<double>&, std::span<const double>, std::span<double>, BoxBernstein<double>&);
+template void margins<double>(const BoxBernstein<double>&, std::span<const double>, std::span<double>,
+                              BoxBernstein<double>&, std::span<double>);
 template double evaluate_1d<double>(std::span<const double>, double);
 template double bracketed_root<double>(std::span<const double>, double, double, double, double, double, double);
 template void isolate_roots<double>(std::span<const double>, double, double, std::vector<double>&, std::vector<double>&);

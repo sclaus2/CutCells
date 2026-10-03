@@ -4,7 +4,8 @@ The prototype's certify engine (`README.md`, `RESULTS.md` here) is now the
 `quadrays` backend: `cpp/src/quadrays/`, namespace `cutcells::quadrays`. It
 reproduces the prototype's numbers to every printed digit and runs 2.4 to 3.3
 times faster per cut cell. Phase 2 added analytic level sets from any geometry
-library (below).
+library, phase 6 2D cells, prisms, pyramids, several level sets per cell and
+two roots per line (below).
 
 ## Files
 
@@ -99,7 +100,8 @@ From Python:
   expressions and tapes (`analytic_level_set_from_tape` takes the arrays);
   `cutcells.shapeforest.write_tape` writes the text format the benchmark reads;
 - `cutcells.cut(mesh, level_set, degree=2)` and `create_level_set(mesh, level_set,
-  degree)`: tetrahedra and hexahedra are classified as inside, outside or cut by
+  degree)`: cells (tetrahedra and hexahedra, since phase 6 all quadrays takes)
+  are classified as inside, outside or cut by
   the level set's own bounds (`cell_sign` in `source.h`: Taylor models over the
   cell, its corners, bisection), and `backend="quadrays"` integrates it. Until
   phase 5 the interpolant of degree `degree` fed the AdaptCells of the straight
@@ -191,6 +193,137 @@ Two things made that cell work:
   n = 8 needs 3,300 to 3,800 bisections, with an end vertex 7,300 to 9,300 (the box
   is less skewed). Choosing the vertex is one way to tighter bounds on tets
   (phase 6).
+
+## Phase 6: 2D cells, prisms and pyramids, several level sets, two roots
+
+### 2D cells
+
+Triangles and quadrilaterals are boxes in the plane u2 = 0 (`ClippedBox::tdim`
+= 2): the engine starts at level 2; a triangle is the unit square clipped by
+u0 + u1 <= 1. Lines are exact on every cell (largest error 7.8e-16 per cell,
+relative to h^2 or h). The circle of radius 0.7 off the grid's symmetry, n = 8,
+per-cell L1 of the disk and the circle, relative to their totals:
+
+| | q = 3 | q = 5 | q = 8 |
+| --- | --- | --- | --- |
+| quadrilaterals | 9.0e-7 / 5.1e-6 | 4.9e-10 / 5.2e-9 | 1.5e-14 / 2.5e-13 |
+| triangles | 5.0e-7 / 1.1e-5 | 7.7e-10 / 3.2e-8 | 9.6e-14 / 6.7e-12 |
+
+(P2 coefficients; the analytic circle agrees to two digits.) The robustness
+cases in 2D (circles through vertices, tangent to edges, caps of 1e-6 and
+1e-12, scaled by 1e+-150 and 1e+-200; lines in edges and through vertices; two
+circles touching; an annulus 1e-3 wide; two lines crossing in a vertex and in a
+cell) pass every check on n = 16 with q = 3, with a per-cell L1 of at most 8e-6.
+
+### Prisms and pyramids
+
+A prism is the unit box clipped by u0 + u1 <= 1, a pyramid the box clipped by
+u0 + u2 <= 1 and u1 + u2 <= 1. Pk level sets need Bernstein forms on them,
+which `bernstein.h` now has: on a prism the triangle's basis times the
+interval's (the space of Basix's prism elements); on a pyramid the functions
+B^(n-k)_i(s) B^(n-k)_j(t) B^n_k(z) of s = x / (1 - z), t = y / (1 - z) (Chan
+and Warburton), which span the rational space of Basix's pyramid elements (P1
+holds xy / (1 - z), not xy). A prism's form converts to the box layer by layer
+like a triangle's; for a pyramid the engine reads (1 - z)^n phi, a polynomial of
+degree (n, n, 2n) with phi's sign and zero set inside the pyramid and, on the
+zero set, its normal: the apex, where the factor vanishes, is the only zero it
+adds. That keeps the map affine and planes exact; reading the form on the cube
+of (s, t, z) instead, with a collapsed map, made planes curved surfaces (2.8e-5
+per cell at q = 3).
+
+Planes are exact as P1, P2 and analytic level sets (largest error 3.2e-15). The
+sphere of radius 0.7, n = 8, per-cell L1 of the ball and the sphere:
+
+| | q = 3 | q = 5 | q = 8 |
+| --- | --- | --- | --- |
+| prisms, P2 and analytic | 5.9e-6 / 4.4e-5 | 1.6e-8 / 3.4e-7 | 1.3e-11 / 7.5e-10 |
+| pyramids, analytic | 8.9e-7 / 7.9e-6 | 1.3e-9 / 3.7e-8 | 6.8e-13 / 4.2e-11 |
+| pyramids, P2 | 2.2e-9 / 6.9e-8 | 5.2e-13 / 1.8e-10 | 1.1e-14 / 1.1e-13 |
+
+A pyramid's P2 form costs: where a zero set passes near the apex, it nears the
+zero face z = 1 of (1 - z)^n phi there, and the engine bisects towards it (346
+bisections in the worst cell; 3.5 s for the 3,072 pyramids at n = 8, 0.6 s with
+the analytic sphere). The robustness cases of the 3D tests pass on prisms and
+pyramids, with Bernstein forms and analytic level sets.
+
+### Several level sets in one cell
+
+The terms of a selection are requirement masks over the cell's level sets;
+points are filtered by them, and an interface part integrates the zero set of
+one level set. Where two level sets cut a certified box, their zero sets meet
+on a ridge: the base splits there, where one level set vanishes on the other's
+zero set. That function, s(y) = on(y, r(y)) with r the root of under along the
+height line, is a nested height function (Beck and Kummer): its root is
+followed half the height range beyond the box, so that s stays smooth where the
+root leaves it; its bounds come from the slab the root sweeps over the box,
+about the root where under's derivative changes sign over the range. The
+non-interface level sets of an interface part need no margins (passive), but
+their restrictions to the bounds stay, so that ridges through faces are found.
+Where several level sets meet, the base splits into regions with one active
+lower and one upper bound; where no axis suits both zero sets, a rotated frame
+between their normals does (always in 2D, from depth 6 in 3D); where three zero
+sets meet, the crossings of two surface functions give the corners. An
+analytic level set that is linear on the cell (its Hessian bounds vanish) is
+read as its form of degree 1.
+
+Ball and half-space per cell, n = 8, q = 5, per-cell L1 relative to the totals:
+
+| | cap | its sphere | disk | union |
+| --- | --- | --- | --- | --- |
+| hexahedra | 2.3e-9 | 4.0e-8 | 5.6e-12 | 1.5e-9 |
+| tetrahedra, P2 and P1 | 7.1e-10 | 3.4e-8 | 4.4e-14 | 1.7e-10 |
+| tetrahedra, analytic | 9.1e-10 | 4.3e-8 | 3.9e-14 | 2.1e-10 |
+
+A disk and a half-plane in 2D reach 1e-15 at q = 8. Exact totals, n = 8, q = 5:
+the lens of two balls within 1.0e-7, the Steinmetz bicylinder within 1.5e-6
+(its cylinders touch where their intersection curves cross). The robustness
+cases (planes through vertices and 1e-3 off faces, a sphere with its tangent
+plane, two balls touching, a plane in grid faces with a sphere through
+vertices) pass every check.
+
+### Two roots per line
+
+Bisection rarely separates two sheets of one level set, so the roots decide:
+a direction qualifies where the derivative along it is monotone
+(second-derivative margin) and the extreme points on a grid of lines, with the
+planes through them, show that the sheets never merge in the box; each line
+then splits at its extreme point. The shell 1e-3 wide on the octant of n = 8,
+q = 3, per-cell L1 of volume and area:
+
+| | two roots | one root per line |
+| --- | --- | --- |
+| hexahedra, P4 | 1.0e-5 / 7.4e-4 | 1.7e-2 / 3.4e-2 |
+| tetrahedra, P4 | 4.4e-6 / 2.7e-4 | 1.1e-5 / 1.3e-4 |
+| hexahedra, analytic | 1.0e-2 / 2.5e-2 | 1.6e-2 / 3.0e-2 |
+| tetrahedra, analytic | 4.6e-6 / 2.7e-4 | 1.1e-5 / 1.7e-4 |
+
+The shell 1e-6 wide passes the checks with 5.5e-2; analytic shells stay weak
+(Taylor models of the product separate the sheets late).
+
+### Taylor sub-boxes
+
+The margins of an analytic level set come from Taylor models over the 2^D
+sub-boxes on which it may vanish (`taylor_subdivisions`); sign and size still
+come from the whole box. On the tetrahedra at n = 16, q = 5: 1275 instead of
+7144 bisections, 123 instead of 266 microseconds per cut cell, L1 4.0e-10
+instead of 9.8e-11: the certified boxes are larger, their accuracy then set by
+q and the margin as for Bernstein forms.
+
+### Found on the way
+
+- Analytic roots exactly on a split point of the root isolation were lost: two
+  lines crossing in a vertex lost a box's share of their length.
+- A bisection exactly through an interface leaves it on the face the halves
+  share, where neither has a root: the engine now splits at 5/8 there.
+- Surface functions with Taylor sub-boxes needed the root's slab over the whole
+  height range: a ball and a plane on tetrahedra took 53 s instead of 0.3 s, a
+  distance ball with a plane 7 minutes instead of 4 s on n = 4. A slab about the
+  root now holds it where the range does not.
+- The fold surfaces of the first two-root attempt are gone.
+- Level-set mesh data: pyramids take degree 2, prisms get their interior nodes
+  from degree 3 in the reference points too, and two of the pyramid's triangle
+  faces were wrong (VTK's base order with Basix numbering; no dofs on them below
+  degree 3).
 
 ## Build and run
 

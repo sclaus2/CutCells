@@ -131,15 +131,19 @@ def test_plane_from_callables_is_exact(kind, n):
 
 
 def test_callables_match_the_compiled_sphere():
+    """The callables bound the sphere over boxes, the compiled sphere by Taylor
+    models over sub-boxes, which certify larger boxes: the rules differ, their
+    values agree to the accuracy of q."""
     vertices = np.array([0.5, 0.25, 0.0, 0.75, 0.25, 0.0, 0.5, 0.5, 0.0, 0.5, 0.25, 0.25])
     compiled = cutcells.analytic_sphere(CENTRE, RADIUS)
     python = distance_callables(CENTRE, RADIUS)
     assert not python.has_taylor_bounds and compiled.has_taylor_bounds
     for selection in ["phi < 0", "phi = 0"]:
-        a, _ = cutcells.quadrays_cell_rules(cutcells.CellType.tetrahedron, vertices, compiled, selection, q=5)
-        b, _ = cutcells.quadrays_cell_rules(cutcells.CellType.tetrahedron, vertices, python, selection, q=5)
-        assert np.sum(a.weights) > 0
-        assert np.sum(b.weights) == pytest.approx(np.sum(a.weights), rel=1e-7), selection
+        for q, rel in [(5, 1e-6), (12, 1e-12)]:
+            a, _ = cutcells.quadrays_cell_rules(cutcells.CellType.tetrahedron, vertices, compiled, selection, q=q)
+            b, _ = cutcells.quadrays_cell_rules(cutcells.CellType.tetrahedron, vertices, python, selection, q=q)
+            assert np.sum(a.weights) > 0
+            assert np.sum(b.weights) == pytest.approx(np.sum(a.weights), rel=rel), selection
 
 
 def test_capsule_round_trip():

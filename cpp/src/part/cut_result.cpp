@@ -30,8 +30,8 @@ cell::domain coefficient_domain(const LevelSetFunction<T, I>& ls, I cell_id, Lev
 {
     if (ls.analytic)
     {
-        throw std::invalid_argument("part::cut: analytic level sets need tetrahedra or hexahedra in 3D "
-                                    "(other cells come in phase 6)");
+        throw std::invalid_argument("part::cut: analytic level sets need triangles or quadrilaterals in 2D, or "
+                                    "tetrahedra, hexahedra, prisms or pyramids in 3D");
     }
     if (!(ls.type == LevelSetType::Polynomial && ls.has_mesh_data() && ls.has_dof_values()))
     {
@@ -54,14 +54,15 @@ struct FaceEntry
     int side = 0; ///< -1: phi < 0 next to the face in the cell, +1: > 0, 0: unknown
 };
 
-/// The faces of a cell on which level set l vanishes, appended to @p entries:
-/// the level set is 0 up to the engine's tolerance at the face's vertices and,
-/// by its bounds, on the whole face.
+/// The facets of a cell (faces in 3D, edges in 2D) on which level set l
+/// vanishes, appended to @p entries: the level set is 0 up to the engine's
+/// tolerance at the facet's vertices and, by its bounds, on the whole facet.
 template <std::floating_point T, std::integral I>
 void find_zero_faces(const MeshView<T, I>& mesh, CellSource<T, I>& cs, I cell_id, int l, cell::domain dom,
                      std::vector<FaceEntry<I>>& entries)
 {
     const cell::type type = mesh.cell_type(cell_id);
+    const int tdim = cell::get_tdim(type);
     const T scale = quadrays::reference_magnitude(cs.source);
     if (!(scale > T(0)))
         return;
@@ -76,33 +77,38 @@ void find_zero_faces(const MeshView<T, I>& mesh, CellSource<T, I>& cs, I cell_id
     thread_local quadrays::BoxBernstein<T> face_form;
     thread_local std::vector<T> work;
     const std::span<const I> nodes = mesh.cell_nodes(cell_id, cs.nodes);
-    for (int f = 0; f < cell::num_faces(type); ++f)
+    const int m = tdim - 1; // dimension of the facets
+    for (int f = 0; f < num_facets(type); ++f)
     {
-        const std::span<const int> fv = cell::face_vertices(type, f);
+        const std::span<const int> fv = facet_vertices(type, f);
         bool zero = true;
         for (const int v : fv)
             zero &= std::abs(values[v]) <= tol;
         if (!zero)
             continue;
-        // the face as the image of [0, 1]^2: u_a + s (u_b - u_a) + t (u_c - u_a)
+        // the facet as the image of [0, 1]^m: u_a + s (u_b - u_a) (+ t (u_c - u_a))
         const quadrays::Vec3<T> ua = box_vertex<T>(type, fv[0]), ub = box_vertex<T>(type, fv[1]),
-                                uc = box_vertex<T>(type, fv[2]);
-        std::array<T, 6> matrix;
+                                uc = box_vertex<T>(type, fv[m > 1 ? 2 : 1]);
+        std::array<T, 6> matrix{};
         for (int i = 0; i < 3; ++i)
         {
-            matrix[2 * i] = ub[i] - ua[i];
-            matrix[2 * i + 1] = uc[i] - ua[i];
+            matrix[i * m] = ub[i] - ua[i];
+            if (m > 1)
+                matrix[i * m + 1] = uc[i] - ua[i];
         }
         if (cs.source.bernstein != nullptr)
         {
-            quadrays::restrict_affine(*cs.source.bernstein, std::span<const T>(ua), std::span<const T>(matrix), 2,
+            const std::size_t dim = static_cast<std::size_t>(cs.source.bernstein->dim);
+            quadrays::restrict_affine(*cs.source.bernstein, std::span<const T>(ua.data(), dim),
+                                      std::span<const T>(matrix.data(), dim * static_cast<std::size_t>(m)), m,
                                       face_form, work);
             zero = quadrays::max_abs(std::span<const T>(face_form.coeffs)) <= tol;
         }
         else
         {
             quadrays::AffineBounds<T> b;
-            zero = quadrays::affine_bounds(cs.source, std::span<const T>(ua), std::span<const T>(matrix), 2, b)
+            zero = quadrays::affine_bounds(cs.source, std::span<const T>(ua), std::span<const T>(matrix.data(), 3 * m),
+                                           m, b)
                    && b.magnitude <= tol;
         }
         if (!zero)
@@ -118,7 +124,7 @@ void find_zero_faces(const MeshView<T, I>& mesh, CellSource<T, I>& cs, I cell_id
             e.side = 1;
         else
         {
-            // a cut cell: the derivative into the cell at the face's centroid
+            // a cut cell: the derivative into the cell at the facet's centroid
             quadrays::Vec3<T> centroid = {0, 0, 0}, inner = {0, 0, 0};
             for (const int v : fv)
             {
@@ -132,7 +138,7 @@ void find_zero_faces(const MeshView<T, I>& mesh, CellSource<T, I>& cs, I cell_id
                 for (int i = 0; i < 3; ++i)
                     inner[i] += u[i] / T(nv);
             }
-            quadrays::Vec3<T> g;
+            quadrays::Vec3<T> g = {0, 0, 0};
             quadrays::gradient(cs.source, std::span<const T>(centroid), std::span<T>(g));
             T d = T(0);
             for (int i = 0; i < 3; ++i)
@@ -150,8 +156,8 @@ void find_zero_faces(const MeshView<T, I>& mesh, CellSource<T, I>& cs, I cell_id
     }
 }
 
-/// The facets of a cell classified by its Bernstein coefficients (2D cells,
-/// prisms, pyramids) on which level set l vanishes, appended to @p entries:
+/// The facets of a cell classified by its Bernstein coefficients (cells
+/// quadrays does not take) on which level set l vanishes, appended to @p entries:
 /// the level set is 0 up to the tolerance on the facet's lattice of its
 /// degree, which fixes the polynomial on the facet.
 template <std::floating_point T, std::integral I>

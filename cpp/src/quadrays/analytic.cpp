@@ -60,4 +60,12 @@ int parallelepiped_bounds(const AnalyticLevelSet& phi, const double* centre, con
     return 1;
 }
 
+int parallelepiped_hessian(const AnalyticLevelSet& phi, const double* centre, const double* axes, int m,
+                           double* bounds)
+{
+    if (phi.hessian_bounds == nullptr)
+        return 0;
+    return phi.hessian_bounds(centre, axes, m, bounds, phi.context);
+}
+
 } // namespace cutcells::quadrays

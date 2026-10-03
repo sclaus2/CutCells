@@ -5,6 +5,7 @@
 
 #include "level_set_cell.h"
 
+#include <array>
 #include <cassert>
 #include <stdexcept>
 #include <unordered_map>
@@ -75,9 +76,9 @@ inline std::span<const FaceDef<int>> basix_faces(cell::type ctype)
     static constexpr std::array<FaceDef<int>, 5> pyramid = {{
         {cell::type::quadrilateral, 4, {0, 1, 2, 3}},
         {cell::type::triangle, 3, {0, 1, 4, -1}},
-        {cell::type::triangle, 3, {1, 2, 4, -1}},
+        {cell::type::triangle, 3, {0, 2, 4, -1}},
+        {cell::type::triangle, 3, {1, 3, 4, -1}},
         {cell::type::triangle, 3, {2, 3, 4, -1}},
-        {cell::type::triangle, 3, {0, 3, 4, -1}},
     }};
 
     switch (ctype)
@@ -347,6 +348,27 @@ std::vector<T> build_reference_lagrange_points(cell::type ctype, int degree)
                     }
                 }
             }
+            break;
+        case cell::type::prism:
+            // the triangle's interior points on each interior layer, as
+            // create_level_set_mesh_data places them
+            for (int k = 1; k < degree; ++k)
+            {
+                for (int j = 1; j <= degree - 2; ++j)
+                {
+                    for (int i = 1; i <= degree - j - 1; ++i)
+                    {
+                        const std::array<T, 3> x = {static_cast<T>(i) / static_cast<T>(degree),
+                                                    static_cast<T>(j) / static_cast<T>(degree),
+                                                    static_cast<T>(k) / static_cast<T>(degree)};
+                        append_point(ref_points, std::span<const T>(x));
+                    }
+                }
+            }
+            break;
+        case cell::type::pyramid:
+            if (degree > 2)
+                throw std::invalid_argument("make_cell_level_set: pyramids of degree above 2 are not supported");
             break;
         default:
             break;

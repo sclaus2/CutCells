@@ -20,7 +20,7 @@
 //                  [--radius r] [--gen quadrays,quadrays:0.1,...]
 //                  [--part "phi < 0"]... [--csv file] [--plane] [--vtk prefix]
 //                  [--leaves prefix] [--leaf-degree p]
-//                  [--diagnose] [--only cell] [--masks M] [--no-diagonal]
+//                  [--diagnose] [--only cell] [--masks M] [--taylor M] [--no-diagonal]
 //                  [--analytic distance|quadratic] [--tape file]
 //
 // Generators: quadrays (margin 0.25) or quadrays:<margin>; with
@@ -34,8 +34,8 @@
 // and the engine; the coefficients themselves come from the front end.
 //
 // --diagnose prints why bisections happen and the worst cell; --only restricts
-// the run to one cell index; --masks and --no-diagonal set
-// Options::mask_subdivisions and diagonal_frames. --leaves writes the leaf cells
+// the run to one cell index; --masks, --taylor and --no-diagonal set
+// Options::mask_subdivisions, taylor_subdivisions and diagonal_frames. --leaves writes the leaf cells
 // (Lagrange cells of degree p, 3 by default) of every cut cell, plus the uncut
 // cells of volume parts as linear cells. --plane uses phi = x + 0.3 y - 0.2 z:
 // every rule must then be exact (volume below 4, area 4 sqrt(1.13)).
@@ -88,6 +88,7 @@ struct StudyConfig
     bool diagnose = false;
     int only = -1;
     int masks = 1;
+    int taylor = Options{}.taylor_subdivisions;
     bool diagonal = true;
     std::string analytic; ///< "", "distance" or "quadratic"
     std::string tape;     ///< ShapeForest tape file of the sphere
@@ -178,6 +179,8 @@ StudyConfig parse_args(int argc, char** argv)
             cfg.only = std::stoi(next());
         else if (a == "--masks")
             cfg.masks = std::stoi(next());
+        else if (a == "--taylor")
+            cfg.taylor = std::stoi(next());
         else if (a == "--no-diagonal")
             cfg.diagonal = false;
         else if (a == "--analytic")
@@ -205,6 +208,7 @@ Options quadrays_options(const std::string& gen, const StudyConfig& cfg)
         opt.margin = std::stod(gen.substr(gen.find(':') + 1));
     opt.diagnose = cfg.diagnose;
     opt.mask_subdivisions = cfg.masks;
+    opt.taylor_subdivisions = cfg.taylor;
     opt.diagonal_frames = cfg.diagonal;
     return opt;
 }
@@ -483,7 +487,7 @@ int main(int argc, char** argv)
                                     {
                                         m.sum_uncut += exact_part;
                                         if (want_leaves && !surface && exact_part > 0.5 * cell.volume)
-                                            append_linear_cell<double>(cell.type, cell.vertices, cell_index, leaf_mesh);
+                                            append_linear_cell<double>(cell.type, cell.vertices, 3, cell_index, leaf_mesh);
                                         continue;
                                     }
                                     if (quad && !is_analytic)
@@ -504,7 +508,7 @@ int main(int argc, char** argv)
                                                                   leaf_mesh, leaf_stats);
                                         }
                                         stats_all.incomplete_leaves += leaf_stats.incomplete_leaves;
-                                        append_linear_cell<double>(cell.type, cell.vertices, cell_index, cut_cells);
+                                        append_linear_cell<double>(cell.type, cell.vertices, 3, cell_index, cut_cells);
                                     }
                                     quadrature::QuadratureRules<double> rule;
                                     Stats stats;

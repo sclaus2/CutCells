@@ -38,10 +38,17 @@ struct HalfSpace
 ///                                         coordinates, where points are reported.
 ///
 /// A hexahedron is its own box; a tetrahedron is the box of its affine map
-/// clipped by u0 + u1 + u2 <= 1. Maps are affine, as everywhere in CutCells.
+/// clipped by u0 + u1 + u2 <= 1, a prism the box clipped by u0 + u1 <= 1, a
+/// pyramid the box clipped by u0 + u2 <= 1 and u1 + u2 <= 1. Maps are affine,
+/// as everywhere in CutCells.
+///
+/// Cells of dimension 2 (triangles, quadrilaterals) live in the plane u2 = 0:
+/// their box is [0, 1]^2 x {0}, the third column of the maps is e2 (so their
+/// determinants are the cells' areas), and points keep u2 = 0.
 template <std::floating_point T>
 struct ClippedBox
 {
+    int tdim = 3; ///< 2 or 3
     Vec3<T> origin = {0, 0, 0};
     Mat3<T> jacobian = {};
     Vec3<T> ref_origin = {0, 0, 0};
@@ -66,14 +73,37 @@ struct Polytope
 
 /// @brief The ClippedBox of a cell from its type and vertices.
 ///
-/// @param cell_type      tetrahedron or hexahedron
+/// The map is affine: from vertex 0 along the edges to the vertices next to
+/// it in the reference cell. Quadrilaterals, hexahedra, prisms and pyramids
+/// are exact only if they are affine images of their reference cells
+/// (parallelograms, parallelepipeds, ...).
+///
+/// @param cell_type      triangle or quadrilateral (gdim 2); tetrahedron,
+///                       hexahedron, prism or pyramid (gdim 3)
 /// @param vertex_coords  vertices in Basix order, flat, gdim per vertex
-/// @param gdim           geometric dimension (3)
+/// @param gdim           geometric dimension, the cell's dimension
 /// @param box            output; box coordinates equal the cell's Basix
 ///                       reference coordinates
 template <std::floating_point T>
 void make_clipped_box(cell::type cell_type, std::span<const T> vertex_coords, int gdim,
                       ClippedBox<T>& box);
+
+/// @brief True if quadrays takes cells of this type (make_clipped_box).
+inline bool supported_cell(cell::type cell_type)
+{
+    switch (cell_type)
+    {
+    case cell::type::triangle:
+    case cell::type::quadrilateral:
+    case cell::type::tetrahedron:
+    case cell::type::hexahedron:
+    case cell::type::prism:
+    case cell::type::pyramid:
+        return true;
+    default:
+        return false;
+    }
+}
 
 /// @brief Determinant of the box-to-physical map.
 template <std::floating_point T>
@@ -91,11 +121,12 @@ Vec3<T> physical_point(const ClippedBox<T>& box, const Vec3<T>& u);
 template <std::floating_point T>
 Vec3<T> reference_point(const ClippedBox<T>& box, const Vec3<T>& u);
 
-/// @brief Child covering [lo, hi] of the box coordinates of @p box; clips carry over.
+/// @brief Child covering [lo, hi] of the box coordinates of @p box; clips carry
+/// over. Boxes of 2D cells keep lo[2] = 0 and hi[2] = 1.
 template <std::floating_point T>
 ClippedBox<T> sub_box(const ClippedBox<T>& box, const Vec3<T>& lo, const Vec3<T>& hi);
 
-/// @brief Box axis with the longest physical edge.
+/// @brief Box axis (of the first tdim) with the longest physical edge.
 template <std::floating_point T>
 int longest_axis(const ClippedBox<T>& box);
 

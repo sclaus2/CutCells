@@ -67,36 +67,53 @@ template <std::floating_point T>
 void make_clipped_box(cell::type cell_type, std::span<const T> vertex_coords, int gdim,
                       ClippedBox<T>& box)
 {
-    if (gdim != 3)
-        throw std::invalid_argument("quadrays: cells must lie in 3D (gdim = 3)");
-    // Basix vertices spanning the box from vertex 0
-    std::array<int, 3> axes;
-    switch (cell_type)
+    if (!supported_cell(cell_type))
+        throw std::invalid_argument("quadrays: unsupported cell type " + cell::cell_type_to_str(cell_type));
+    const int tdim = cell::get_tdim(cell_type);
+    if (gdim != tdim)
     {
-    case cell::type::tetrahedron:
-        axes = {1, 2, 3};
-        break;
-    case cell::type::hexahedron:
-        axes = {1, 2, 4};
-        break;
-    default:
-        throw std::invalid_argument("quadrays: unsupported cell type "
-                                    + cell::cell_type_to_str(cell_type));
+        throw std::invalid_argument("quadrays: a " + cell::cell_type_to_str(cell_type) + " must lie in "
+                                    + std::to_string(tdim) + "D (gdim = " + std::to_string(tdim) + ")");
     }
     if (static_cast<int>(vertex_coords.size()) != cell::get_num_vertices(cell_type) * gdim)
         throw std::invalid_argument("quadrays: wrong number of vertex coordinates");
+    // Basix vertices spanning the box from vertex 0
+    std::array<int, 3> axes = {1, 2, 0};
+    if (cell_type == cell::type::tetrahedron || cell_type == cell::type::prism)
+        axes[2] = 3;
+    else if (cell_type == cell::type::hexahedron || cell_type == cell::type::pyramid)
+        axes[2] = 4;
 
-    for (int i = 0; i < 3; ++i)
+    box.tdim = tdim;
+    box.origin = {0, 0, 0};
+    box.jacobian = {};
+    for (int i = 0; i < gdim; ++i)
     {
         box.origin[i] = vertex_coords[i];
-        for (int k = 0; k < 3; ++k)
+        for (int k = 0; k < tdim; ++k)
             box.jacobian[i][k] = vertex_coords[axes[k] * gdim + i] - vertex_coords[i];
     }
+    if (tdim == 2)
+        box.jacobian[2][2] = T(1);
     box.ref_origin = {0, 0, 0};
     box.ref_jacobian = identity<T>();
     box.clips.clear();
-    if (cell_type == cell::type::tetrahedron)
+    switch (cell_type)
+    {
+    case cell::type::triangle:
+    case cell::type::prism:
+        box.clips.push_back({{T(1), T(1), T(0)}, T(1)});
+        break;
+    case cell::type::tetrahedron:
         box.clips.push_back({{T(1), T(1), T(1)}, T(1)});
+        break;
+    case cell::type::pyramid:
+        box.clips.push_back({{T(1), T(0), T(1)}, T(1)});
+        box.clips.push_back({{T(0), T(1), T(1)}, T(1)});
+        break;
+    default:
+        break;
+    }
 }
 
 template <std::floating_point T>
@@ -141,6 +158,7 @@ template <std::floating_point T>
 ClippedBox<T> sub_box(const ClippedBox<T>& box, const Vec3<T>& lo, const Vec3<T>& hi)
 {
     ClippedBox<T> child;
+    child.tdim = box.tdim;
     child.origin = physical_point(box, lo);
     child.ref_origin = reference_point(box, lo);
     for (int i = 0; i < 3; ++i)
@@ -169,7 +187,7 @@ int longest_axis(const ClippedBox<T>& box)
 {
     int best = 0;
     T best_len = T(-1);
-    for (int k = 0; k < 3; ++k)
+    for (int k = 0; k < box.tdim; ++k)
     {
         T len = T(0);
         for (int i = 0; i < 3; ++i)

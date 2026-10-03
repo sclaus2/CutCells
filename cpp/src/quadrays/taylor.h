@@ -15,8 +15,9 @@
 
 /// Scalar types for evaluating a templated level-set functor
 /// (template <typename T> T operator()(const std::array<T, 3>& x) const):
-/// Taylor<T, N> for bounds over a region, Dual<V, N> for derivatives, and
-/// Dual<Taylor<T, N>, N> for bounds of the derivatives. Functors call sqrt,
+/// Taylor<T, N> for bounds over a region, Dual<V, N> for derivatives,
+/// Dual<Taylor<T, N>, N> for bounds of the derivatives and
+/// Dual<Dual<Taylor<T, N>, N>, N> for bounds of the second ones. Functors call sqrt,
 /// exp, log, sin, cos, abs, min and max unqualified (after using std::sqrt and
 /// so on), so that argument-dependent lookup finds the versions below.
 namespace cutcells::quadrays
@@ -357,6 +358,13 @@ template <typename V, int N>
 int certain_sign(const Dual<V, N>& a)
 {
     return certain_sign(a.v);
+}
+
+/// Comparison of the values, for Duals of Duals (second derivatives).
+template <typename V, int N>
+bool certainly_less(const Dual<V, N>& a, const Dual<V, N>& b)
+{
+    return certainly_less(a.v, b.v);
 }
 
 template <typename V, int N>

@@ -51,9 +51,13 @@ struct BoxBernstein
 /// The box of a simplex is the unit box of its reference coordinates; the
 /// polynomial is extended to the whole box. Simplices are converted by a fixed
 /// matrix per degree, computed once in exact rational arithmetic; tensor cells
-/// are only reordered.
+/// are only reordered; a prism's layers are triangles. A pyramid's level set
+/// phi of degree n is rational in its reference coordinates; (1 - z)^n phi is a
+/// polynomial of degree (n, n, 2n), which inside the pyramid has the sign and
+/// the zero set of phi and on the zero set its normal: the apex, where the
+/// factor vanishes, is the only zero added.
 ///
-/// @param cell_type  triangle, tetrahedron, quadrilateral or hexahedron
+/// @param cell_type  triangle, tetrahedron, quadrilateral, hexahedron, prism or pyramid
 /// @param degree     polynomial degree (at most 12 for simplices)
 /// @param coeffs     Bernstein coefficients in CutCells' order (bernstein.h)
 /// @param out        form of degree @p degree in each variable
@@ -120,9 +124,10 @@ T scaled_norm(std::span<const T> v);
 /// respect to the box's own coordinates y = lo + lengths * s.
 ///
 /// @param ratio  p.dim entries
+/// @param upper  if not empty, p.dim entries: the upper bounds of |d_k p|
 template <std::floating_point T>
 void margins(const BoxBernstein<T>& p, std::span<const T> lengths, std::span<T> ratio,
-             BoxBernstein<T>& work);
+             BoxBernstein<T>& work, std::span<T> upper = {});
 
 /// @brief Value at s of the univariate Bernstein polynomial with coefficients @p c
 /// on [0, 1] (de Casteljau).

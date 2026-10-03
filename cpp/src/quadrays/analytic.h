@@ -46,6 +46,13 @@ struct AnalyticLevelSet
     /// alpha + beta . t + [-eps, eps].
     int (*taylor_bounds)(const double* centre, const double* axes, int m, double* models,
                          void* context) = nullptr;
+
+    /// Optional. Bounds of the second derivatives over the same parallelepiped:
+    /// d^2 phi / dt_i dt_j in [bounds[2 (i m + j)], bounds[2 (i m + j) + 1]].
+    /// Returns 1, or 0 if no bound holds. Without it, a level set with two
+    /// sheets in a cell is not certified with two roots per height line.
+    int (*hessian_bounds)(const double* centre, const double* axes, int m, double* bounds,
+                          void* context) = nullptr;
 };
 
 /// @brief Taylor models over a parallelepiped, in the layout of taylor_bounds:
@@ -54,6 +61,12 @@ struct AnalyticLevelSet
 /// @return 1, 2 if only the value's model (the first row) holds, 0 if none does
 int parallelepiped_bounds(const AnalyticLevelSet& phi, const double* centre, const double* axes, int m,
                           double* models);
+
+/// @brief Bounds of the second derivatives over a parallelepiped, in the layout
+/// of hessian_bounds.
+/// @return 1, or 0 if @p phi has no hessian_bounds or no bound holds
+int parallelepiped_hessian(const AnalyticLevelSet& phi, const double* centre, const double* axes, int m,
+                           double* bounds);
 
 // ============================================================================
 // Adapter for templated functors
@@ -107,6 +120,43 @@ int functor_taylor_models(const F& f, const double* centre, const double* axes, 
     }
 }
 
+/// Bounds of the second derivatives of a functor along the axes of a
+/// parallelepiped, in the layout of AnalyticLevelSet::hessian_bounds.
+template <typename F, int M>
+int functor_hessian_bounds(const F& f, const double* centre, const double* axes, double* bounds)
+{
+    using TM = Taylor<double, M>;
+    using D1 = Dual<TM, M>;
+    std::array<Dual<D1, M>, 3> x;
+    for (int i = 0; i < 3; ++i)
+    {
+        x[i].v.v = TM(centre[i]);
+        for (int j = 0; j < M; ++j)
+        {
+            x[i].v.v.beta[j] = axes[i * M + j];
+            x[i].v.d[j] = TM(axes[i * M + j]);
+            x[i].d[j].v = TM(axes[i * M + j]);
+        }
+    }
+    try
+    {
+        const Dual<D1, M> r = f(x);
+        for (int i = 0; i < M; ++i)
+            for (int j = 0; j < M; ++j)
+            {
+                const TM& h = r.d[i].d[j];
+                const double dev = deviation(h);
+                bounds[2 * (i * M + j)] = h.alpha - dev;
+                bounds[2 * (i * M + j) + 1] = h.alpha + dev;
+            }
+        return 1;
+    }
+    catch (const std::domain_error&)
+    {
+        return 0;
+    }
+}
+
 /// Bounds of a functor and of its gradient over a box, in the layout of
 /// AnalyticLevelSet::box_bounds.
 template <typename F>
@@ -153,8 +203,9 @@ int functor_box_bounds(const F& f, const double* lo, const double* hi, double* b
 /// @brief The interface of an algoim-style functor
 ///   template <typename T> T operator()(const std::array<T, 3>& x) const,
 /// in physical coordinates. It is evaluated with double for values,
-/// Dual<double, 3> for gradients and Dual<Taylor<double, m>, m> for bounds
-/// (Taylor<double, m> where the derivatives have none), so it must call sqrt,
+/// Dual<double, 3> for gradients, Dual<Taylor<double, m>, m> for bounds
+/// (Taylor<double, m> where the derivatives have none) and
+/// Dual<Dual<Taylor<double, m>, m>, m> for second derivatives, so it must call sqrt,
 /// exp, log, sin, cos, abs, min and max unqualified (with using std::sqrt and
 /// so on). The functor must outlive the result.
 template <typename F>
@@ -190,6 +241,21 @@ AnalyticLevelSet analytic_level_set(const F& functor)
             return functor_taylor_models<F, 2>(f, centre, axes, models);
         case 3:
             return functor_taylor_models<F, 3>(f, centre, axes, models);
+        default:
+            return 0;
+        }
+    };
+    phi.hessian_bounds = [](const double* centre, const double* axes, int m, double* bounds, void* context) -> int
+    {
+        const F& f = *static_cast<const F*>(context);
+        switch (m)
+        {
+        case 1:
+            return functor_hessian_bounds<F, 1>(f, centre, axes, bounds);
+        case 2:
+            return functor_hessian_bounds<F, 2>(f, centre, axes, bounds);
+        case 3:
+            return functor_hessian_bounds<F, 3>(f, centre, axes, bounds);
         default:
             return 0;
         }

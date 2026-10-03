@@ -1,4 +1,4 @@
-# The front end (phases 3 to 5)
+# The front end (phases 3 to 6)
 
 `cpp/src/part/`, namespace `cutcells::part`, Python `cutcells.cut` and
 `cutcells.part`. It classifies cells by their level sets, selects mesh parts by
@@ -36,19 +36,20 @@ AnalyticLevelSets, alone or in a list; analytic ones are named `phi`, or `phi1`,
 Every cell is inside (phi < 0), outside (phi > 0) or cut, for every level set,
 by bounds of the level set itself:
 
-- **Hexahedra:** Bernstein coefficients of the box form of a Pk level set, or
-  Taylor models of an analytic one, over the box and its halves
-  (`quadrays::cell_sign`).
-- **Tetrahedra:** bounds over the tetrahedron itself and its halves, split at
-  the midpoint of the longest edge: the simplex Bernstein coefficients of a Pk
-  level set (de Casteljau along the edge), or Taylor models over the
+- **Hexahedra and quadrilaterals:** Bernstein coefficients of the box form of
+  a Pk level set, or Taylor models of an analytic one, over the box and its
+  halves (`quadrays::cell_sign`).
+- **Tetrahedra and triangles:** bounds over the simplex itself and its halves,
+  split at the midpoint of the longest edge: the simplex Bernstein coefficients
+  of a Pk level set (de Casteljau along the edge), or Taylor models over the
   parallelepiped of a piece's edges whose linear part is bounded at the
-  piece's four vertices (intervals over the piece's bounding box when the level
+  piece's vertices (intervals over the piece's bounding box when the level
   set has no Taylor models). Bounds over the tetrahedron's box would cover six
   times its volume and flag cells the level set only crosses outside it.
-- **Other cells:** the signs of their Bernstein coefficients, without
-  subdivision (quadrays takes tetrahedra and hexahedra only; analytic level sets
-  are refused there).
+- **Prisms and pyramids:** as hexahedra, over their clipped boxes and halves
+  (sub-boxes that miss the cell drop out). A level set vanishing on an edge
+  where the clip meets the box leaves the sign unproven: such cells count as
+  cut (a plane in mesh faces flags the pyramids touching it along an edge).
 
 A sign the bounds cannot prove after `max_depth` (12) splits counts as cut; the
 backend then finds what the cell holds. On the sphere of radius 0.7 at n = 8,
@@ -76,11 +77,9 @@ sign tests does not show at degree 4.
 domains: a term holds on the whole cell, on a piece of it bounded by the level
 sets that cut it, or nowhere. A cell is in the part whole if some term holds on
 all of it, otherwise it is a cut cell of the part if some term holds on a piece
-(`term_on_cell`). With quadrays, the pieces of a cut cell must be bounded by one
-level set: a term whose two level sets cut the same cell, or terms bounded by
-different level sets in one cell, raise an error until phase 6; terms on one
-level set ("phi < 0 or phi > 0") are fine. The lookup tables take any number of
-level sets per cell.
+(`term_on_cell`). Both backends take any number of level sets per cell (quadrays
+since phase 6); quadrays integrates volumes and interfaces, the curves where two
+level sets vanish come from the lookup tables.
 
 ## Faces lying in a zero set
 
@@ -90,9 +89,8 @@ that interface before. `cut()` finds such facets and gives each to one cell:
 the cell on its negative side (by its domain, or for a cut cell by the
 derivative into the cell), else the lower cell index. On tetrahedra and
 hexahedra the level set is 0 at the face's vertices and, by its bounds, on the
-face; on the cells classified by Bernstein coefficients (2D cells, prisms,
-pyramids, phase 5) it is 0 on the facet's lattice of its degree, which fixes
-the polynomial there. An interface part then integrates the face once, with the reference
+face, and so on the other cells quadrays takes (phase 6) by the bounds of their
+box forms on the facet. An interface part then integrates the face once, with the reference
 rule of the face merged into the owner's rule, and shows it as a linear face.
 For the plane x = 0.25 at n = 8 that is 64 quadrilaterals or 128 triangles, and
 the interface measures 4 to rounding, as do the volumes below and above it.
@@ -258,14 +256,31 @@ level set. Two planes give their line, in every cell type and template order, to
 - **Fixed on the way:** `create_level_set_mesh_data(mesh, degree)` gave intervals
   their vertex dofs twice.
 
+## Phase 6: 2D cells, prisms and pyramids, several level sets per cell
+
+- **Cells:** quadrays takes triangles and quadrilaterals in 2D, tetrahedra,
+  hexahedra, prisms and pyramids in 3D (`quadrays_takes`), with Pk and analytic
+  level sets. Pk level sets on prisms and pyramids have Bernstein forms now
+  (`bernstein.h`); `create_level_set` takes pyramids up to degree 2 (Basix's
+  rational pyramid space). Faces lying in a zero set are found on edges (2D)
+  and faces (3D).
+- **Several level sets per cell:** a part's terms on a cell are grouped by the
+  level set whose zero set they integrate (`cell_terms`): volumes in one engine
+  run, interfaces one run per zero level set. Only the curves (points in 2D)
+  where two level sets vanish are left to the lookup tables.
+- **Python:** the quadrays options gain `split_bounds`, `rotation_depth`,
+  `taylor_subdivisions` and `two_roots_depth`, the stats `two_roots` and
+  `surfaces`.
+
 ## Limits
 
-- quadrays: affine cells, tetrahedra and hexahedra in 3D, one level set per
-  cell (2D cells, prisms, pyramids and several level sets per cell come in
-  phase 6).
+- quadrays: affine cells (parallelograms, parallelepipeds, prisms and pyramids
+  with parallelogram faces); volumes and interfaces, with any number of level
+  sets per cell. Pyramids with Pk level sets bisect towards their apex where a
+  zero set passes near it.
 - The lookup tables: intervals, triangles, quadrilaterals, tetrahedra and
   hexahedra (the cells of the iso-P1 templates), affine or multilinear cell
   maps; volumes, interfaces and the curves (points in 2D) where two level sets
-  vanish.
-- Analytic level sets: tetrahedra and hexahedra in 3D.
+  vanish. No prisms or pyramids yet.
 - Pk level sets need dof values; level sets with nodal values only are refused.
+  Pyramids take degree 2 at most.

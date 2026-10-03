@@ -14,94 +14,26 @@
 // unscaled totals, cones and the torus their exact totals (1e-3; 2e-2 for the
 // area near a cone's apex on n = 4), and the placements and planes a per-cell
 // L1 below 1e-4 of the exact total. On n = 4 the touching spheres are smaller
-// than the cells, which then hold two sheets, the engine's known weak spot:
-// they take the checks only, as do the double root and the thin shells, which
-// are left to benchmarks/quadrays/robustness_report.
+// than the cells, which then hold two sheets: they take the checks only. The
+// thin shells are in test_two_roots; the double root is left to
+// benchmarks/quadrays/robustness_report.
 // The cases run twice: as Bernstein coefficients and as analytic level sets
 // through quadrays/analytic.h (Taylor-model bounds).
 // Exits non-zero on failure.
 
-#include <cutcells/quadrays/analytic.h>
-#include <cutcells/quadrays/rules.h>
 #include <cutcells/selection_expr.h>
 
 #include <cmath>
 #include <cstdio>
-#include <exception>
 #include <map>
 #include <string>
 #include <vector>
 
 #include "support/robustness_cases.h"
-#include "support/test_mesh.h"
 
 using namespace cutcells;
 using namespace cutcells::quadrays;
 using namespace cutcells::quadrays::support;
-
-namespace
-{
-struct Run
-{
-    long fail = 0, negative = 0, outside = 0, side = 0;
-    int max_bisections = 0;
-    double total = 0, exact_total = 0, l1 = 0;
-};
-
-Run run_case(const Case& c, const std::string& mesh, int n, const SelectionTerm& term, const Options& opt,
-             bool analytic)
-{
-    const double h = 2.0 / n;
-    const bool surface = part_of(term) == Part::interface;
-    std::vector<double> coeffs;
-    const CaseLevelSet functor = {&c};
-    const AnalyticLevelSet phi_analytic = analytic_level_set(functor);
-    Run r;
-    for (int i0 = 0; i0 < n; ++i0)
-        for (int i1 = 0; i1 < n; ++i1)
-            for (int i2 = 0; i2 < n; ++i2)
-                for (const TestCell& cell : grid_cells(mesh, {-1 + h * i0, -1 + h * i1, -1 + h * i2}, h, {0, 0, 0}))
-                {
-                    const Reference ref = reference(c, cell);
-                    const bool on_face = surface && ref.face_area > 0;
-                    if (ref.known)
-                        r.exact_total += surface ? ref.area + 0.5 * ref.face_area : ref.volume;
-                    quadrature::QuadratureRules<double> rule;
-                    Stats stats;
-                    try
-                    {
-                        if (analytic)
-                            append_cell_rules<double>(cell.type, cell.vertices, phi_analytic, term, 0, 3, opt, 0, rule,
-                                                      stats);
-                        else
-                        {
-                            cell_coefficients(cell, degree(c), [&c](const V3& x) { return phi(c, x); }, coeffs);
-                            append_cell_rules<double>(cell.type, cell.vertices, degree(c), coeffs, term, 0, 3, opt, 0,
-                                                      rule, stats);
-                        }
-                    }
-                    catch (const std::exception&)
-                    {
-                        ++r.fail;
-                        continue;
-                    }
-                    r.max_bisections = std::max(r.max_bisections, stats.bisections);
-                    const RuleCheck check = check_rule(c, cell, rule, surface, h);
-                    if (check.fail)
-                    {
-                        ++r.fail;
-                        continue;
-                    }
-                    r.negative += check.negative;
-                    r.outside += check.outside;
-                    r.side += check.side;
-                    r.total += check.value;
-                    if (ref.known && !on_face)
-                        r.l1 += std::abs(check.value - (surface ? ref.area : ref.volume));
-                }
-    return r;
-}
-} // namespace
 
 int main()
 {
@@ -113,7 +45,7 @@ int main()
         for (const Case& c : all_cases())
         {
             if (c.shape == Shape::double_root || c.shape == Shape::shell)
-                continue; // weak spots, see the report
+                continue; // see the report and test_two_roots
             const bool batch2 = c.shape != Shape::sphere && c.shape != Shape::plane;
             const int n = batch2 ? 4 : 8;
             for (const std::string mesh : {"tet", "hex"})
@@ -123,7 +55,7 @@ int main()
                     compile_selection_expr(expr, {"phi"});
                     const SelectionTerm& term = expr.terms.front();
                     const bool surface = part_of(term) == Part::interface;
-                    const Run r = run_case(c, mesh, n, term, opt, analytic);
+                    const CaseRun r = run_case(c, mesh, n, term, 3, opt, analytic);
 
                     std::vector<std::string> problems;
                     if (r.fail + r.negative + r.outside + r.side > 0)

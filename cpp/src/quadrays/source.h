@@ -25,6 +25,8 @@ namespace cutcells::quadrays
 /// Values and gradients come from either kind. For bounds and roots the engine
 /// restricts a Bernstein form itself (restrict_affine); an analytic level set
 /// gives them through affine_bounds and line_roots below.
+///
+/// Box coordinates have 3 entries; on 2D cells (tdim 2) u2 is 0.
 template <std::floating_point T>
 struct Source
 {
@@ -32,6 +34,7 @@ struct Source
     const AnalyticLevelSet* analytic = nullptr;
     Vec3<T> origin{};
     Mat3<T> jacobian{};
+    int tdim = 3;
 
     bool is_analytic() const { return analytic != nullptr; }
 };
@@ -42,9 +45,11 @@ struct AffineBounds
 {
     int sign = 0;                 ///< +1 or -1 if psi has that sign everywhere, 0 if it may vanish
     T magnitude = 0;              ///< upper bound of |psi|
-    bool has_derivatives = false; ///< false: lower and upper are unknown
+    bool has_derivatives = false; ///< false: the derivative bounds are unknown
     std::array<T, 3> lower{};     ///< lower bounds of |d psi / d s_j|, 0 if d_j psi may vanish
     std::array<T, 3> upper{};     ///< upper bounds of |d psi / d s_j|
+    std::array<T, 3> dmin{};      ///< d psi / d s_j lies in [dmin_j, dmax_j]
+    std::array<T, 3> dmax{};
 };
 
 /// @brief A Bernstein form on the cell's box as a source.
@@ -77,12 +82,28 @@ template <std::floating_point T>
 bool affine_bounds(const Source<T>& phi, std::span<const T> origin, std::span<const T> matrix, int m,
                    AffineBounds<T>& out);
 
+/// @brief Bounds of the second derivatives of an analytic level set
+/// restricted to the affine image u = origin + matrix s, s in [0, 1]^m:
+/// d^2 psi / ds_i ds_j in [lo[i m + j], hi[i m + j]].
+/// @return false if the level set has no hessian_bounds or no bound holds
+template <std::floating_point T>
+bool affine_hessian(const Source<T>& phi, std::span<const T> origin, std::span<const T> matrix, int m,
+                    std::array<T, 9>& lo, std::array<T, 9>& hi);
+
+/// @brief The Bernstein form of degree 1 on the cell's box of an analytic
+/// level set that is linear there, from its values at the box's corners: one
+/// whose hessian_bounds vanish on the box (a plane, say).
+/// @return false if the level set has no hessian_bounds or may be curved on
+///         the box; @p form is then unchanged
+template <std::floating_point T>
+bool linear_form(const Source<T>& phi, BoxBernstein<T>& form);
+
 /// @brief Roots of t -> phi(origin + t direction) on (a, b) for an analytic
 /// level set, appended to @p roots: none where a Taylor model certifies the
 /// value's sign or bounds |phi| by @p zero (the line lies in the zero set or
 /// touches it), one where it certifies the derivative's sign and the ends
-/// differ in sign; bisection otherwise, down to 2^-40 of the segment and at
-/// most 4096 intervals per line.
+/// differ in sign or one of them is a root; bisection otherwise, down to 2^-40
+/// of the segment and at most 4096 intervals per line. Sorted, each root once.
 template <std::floating_point T>
 void line_roots(const Source<T>& phi, std::span<const T> origin, std::span<const T> direction, T a, T b, T zero,
                 std::vector<T>& roots);

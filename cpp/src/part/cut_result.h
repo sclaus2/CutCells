@@ -94,17 +94,18 @@ std::uint64_t cut_mask(const CutResult<T, I>& result, I cell_id)
 /// @brief Classify every cell of @p mesh by every level set, and find the faces
 /// lying in their zero sets.
 ///
-/// Tetrahedra and hexahedra are classified by bounds of the level set itself:
-/// Bernstein coefficients of a Pk level set, or Taylor models of an analytic
-/// one, over the cell and its halves (cell_sign in classify.h). A cell whose
-/// sign the bounds cannot prove counts as cut, which the backends handle.
-/// Other cells use the signs of their Bernstein coefficients.
+/// The cells quadrays takes (triangles and quadrilaterals in 2D, tetrahedra,
+/// hexahedra, prisms and pyramids in 3D) are classified by bounds of the level
+/// set itself: Bernstein coefficients of a Pk level set, or Taylor models of
+/// an analytic one, over the cell and its halves (cell_sign in classify.h). A
+/// cell whose sign the bounds cannot prove counts as cut, which the backends
+/// handle. Other cells (intervals, and prisms and pyramids for Pk level sets)
+/// use the signs of their Bernstein coefficients.
 ///
 /// @param level_sets  Pk level sets (dof values) or analytic ones; they and
 ///                    @p mesh must outlive the result
 /// @throws std::invalid_argument for level sets with neither, more than 64
-///         level sets, or analytic level sets on cells other than
-///         tetrahedra and hexahedra
+///         level sets, or analytic level sets on cells quadrays does not take
 template <std::floating_point T, std::integral I>
 CutResult<T, I> cut(const MeshView<T, I>& mesh, std::span<const LevelSetFunction<T, I>> level_sets,
                     const ClassifyOptions& options = {});

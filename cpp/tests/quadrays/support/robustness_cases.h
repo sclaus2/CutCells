@@ -12,13 +12,17 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <exception>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <cutcells/quadrature.h>
+#include <cutcells/quadrays/analytic.h>
+#include <cutcells/quadrays/rules.h>
 
 #include "exact_reference.h"
 #include "test_mesh.h"
@@ -364,7 +368,6 @@ inline RuleCheck check_rule(const Case& c, const TestCell& cell, const quadratur
                             bool surface, double h)
 {
     RuleCheck out;
-    const bool tet = cell.type == cell::type::tetrahedron;
     for (std::size_t p = 0; p < rule._weights.size(); ++p)
     {
         const V3 xi = {rule._points[3 * p], rule._points[3 * p + 1], rule._points[3 * p + 2]};
@@ -376,19 +379,83 @@ inline RuleCheck check_rule(const Case& c, const TestCell& cell, const quadratur
         }
         out.value += w;
         out.negative += w < 0;
-        const double tol = 1e-12;
-        bool inside = true;
-        for (int d = 0; d < 3; ++d)
-            inside &= xi[d] >= -tol && (tet || xi[d] <= 1 + tol);
-        if (tet)
-            inside &= xi[0] + xi[1] + xi[2] <= 1 + tol;
-        out.outside += !inside;
+        out.outside += !in_reference_cell(cell.type, xi, 1e-12);
         const V3 x = physical(cell, xi);
         const double f = phi(c, x), g = gradient_norm(c, x);
         const double reach = 1e-9 * h * g; // |phi| within 1e-9 h of the interface
         out.side += surface ? !(std::abs(f) <= reach) : !(f <= reach);
     }
     return out;
+}
+
+/// One case on a mesh of [-1, 1]^3: what the checks found, totals and
+/// per-cell errors.
+struct CaseRun
+{
+    long fail = 0, negative = 0, outside = 0, side = 0;
+    int max_bisections = 0; ///< in one cell
+    int two_roots = 0;      ///< boxes certified with two roots per line
+    double total = 0, exact_total = 0;
+    double l1 = 0; ///< over the cells with exact values, without those with phi = 0 on a face
+};
+
+/// Rules of one part of case @p c for every cell of the mesh @p mesh of
+/// [-1, 1]^3 with n cells per side (grid_cells), from the case's Bernstein
+/// coefficients or as an analytic level set, and their checks. Only the cells
+/// from index @p first on along every axis (first = n / 2: the octant x, y, z >= 0).
+inline CaseRun run_case(const Case& c, const std::string& mesh, int n, const SelectionTerm& term, int q,
+                        const Options& opt, bool analytic, int first = 0)
+{
+    const double h = 2.0 / n;
+    const bool surface = part_of(term) == Part::interface;
+    std::vector<double> coeffs;
+    const CaseLevelSet functor = {&c};
+    const AnalyticLevelSet phi_analytic = analytic_level_set(functor);
+    CaseRun r;
+    for (int i0 = first; i0 < n; ++i0)
+        for (int i1 = first; i1 < n; ++i1)
+            for (int i2 = first; i2 < n; ++i2)
+                for (const TestCell& cell : grid_cells(mesh, {-1 + h * i0, -1 + h * i1, -1 + h * i2}, h, {0, 0, 0}))
+                {
+                    const Reference ref = reference(c, cell);
+                    const bool on_face = surface && ref.face_area > 0;
+                    if (ref.known)
+                        r.exact_total += surface ? ref.area + 0.5 * ref.face_area : ref.volume;
+                    quadrature::QuadratureRules<double> rule;
+                    Stats stats;
+                    try
+                    {
+                        if (analytic)
+                            append_cell_rules<double>(cell.type, cell.vertices, phi_analytic, term, 0, q, opt, 0, rule,
+                                                      stats);
+                        else
+                        {
+                            cell_coefficients(cell, degree(c), [&c](const V3& x) { return phi(c, x); }, coeffs);
+                            append_cell_rules<double>(cell.type, cell.vertices, degree(c), coeffs, term, 0, q, opt, 0,
+                                                      rule, stats);
+                        }
+                    }
+                    catch (const std::exception&)
+                    {
+                        ++r.fail;
+                        continue;
+                    }
+                    r.max_bisections = std::max(r.max_bisections, stats.bisections);
+                    r.two_roots += stats.two_roots;
+                    const RuleCheck check = check_rule(c, cell, rule, surface, h);
+                    if (check.fail)
+                    {
+                        ++r.fail;
+                        continue;
+                    }
+                    r.negative += check.negative;
+                    r.outside += check.outside;
+                    r.side += check.side;
+                    r.total += check.value;
+                    if (ref.known && !on_face)
+                        r.l1 += std::abs(check.value - (surface ? ref.area : ref.volume));
+                }
+    return r;
 }
 
 } // namespace cutcells::quadrays::support

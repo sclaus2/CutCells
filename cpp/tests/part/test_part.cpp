@@ -10,7 +10,7 @@
 //  - faces lying in a zero set are owned once, by the negative side, so plane
 //    parts through mesh faces integrate exactly;
 //  - parts of the sphere, and of a sphere and a plane, against exact totals;
-//  - a term whose two level sets cut one cell is refused.
+//  - two planes crossing in cells: their corner, union and faces, exact.
 // Exits non-zero on failure.
 
 #include <cutcells/bernstein.h>
@@ -249,21 +249,24 @@ void test_parts()
                   && std::abs(cut_plane / 4 - 1) < 1e-13,
               std::string("parts of a sphere and a plane, ") + kind);
 
-        // two planes crossing in cells: refused until phase 6
+        // two planes crossing in cells: x < 0.3 and y < 0.1, their union and
+        // the faces of the corner, exact up to rounding
         const AxisPlane plane_y = {1, 0.1};
         const std::vector<LevelSetFunction<double, int>> crossing = {analytic_ls(plane, "phi1"),
                                                                      analytic_ls(plane_y, "phi2")};
         const CutResult<double, int> rc = cut<double, int>(mesh.view, crossing);
-        bool refused = false;
-        try
-        {
-            quadrature_rules(select(rc, "phi1 < 0 and phi2 < 0"), 3, true);
-        }
-        catch (const std::runtime_error&)
-        {
-            refused = true;
-        }
-        check(refused, std::string("two level sets in one cell are refused, ") + kind);
+        const double corner = total(select(rc, "phi1 < 0 and phi2 < 0"), 3, true);
+        const double either = total(select(rc, "phi1 < 0 or phi2 < 0"), 3, true);
+        const double face1 = total(select(rc, "phi1 = 0 and phi2 < 0"), 3, false);
+        const double face2 = total(select(rc, "phi2 = 0 and phi1 < 0"), 3, false);
+        const double faces = total(select(rc, "phi1 = 0 and phi2 < 0 or phi2 = 0 and phi1 < 0"), 3, false);
+        std::printf("two planes %s: corner %.1e, union %.1e, faces %.1e %.1e, both %.1e\n", kind, corner / 2.86 - 1,
+                    either / 6.74 - 1, face1 / 2.2 - 1, face2 / 2.6 - 1, faces / 4.8 - 1);
+        // sums over thousands of cells: exact up to their rounding
+        check(std::abs(corner / 2.86 - 1) < 1e-12 && std::abs(either / 6.74 - 1) < 1e-12
+                  && std::abs(face1 / 2.2 - 1) < 1e-12 && std::abs(face2 / 2.6 - 1) < 1e-12
+                  && std::abs(faces / 4.8 - 1) < 1e-12,
+              std::string("two planes crossing in cells, ") + kind);
     }
 }
 
