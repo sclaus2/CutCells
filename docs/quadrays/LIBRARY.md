@@ -236,6 +236,30 @@ under load:
 A random Q_4 polynomial integrates to the same value before and after
 compression (largest moment residual 1e-11 of a rule's weight).
 
+On the cases of phase 6 (q = 4; n = 8, quadrilaterals and triangles n = 16),
+points per cut cell before and after compression to degree 2 (P1 and Q1
+elements) and degree 4 (P2 and Q2), total degree on simplices, tensor on the
+other cells:
+
+| Case | Volume | Degree 2 | Degree 4 | Interface | Degree 2 | Degree 4 |
+| --- | --- | --- | --- | --- | --- | --- |
+| hexahedra, sphere | 485 | 27 | 118 | 71 | 25 | 63 |
+| tetrahedra, sphere | 1,102 | 10 | 35 | 141 | 9 | 24 |
+| tetrahedra, P2 sphere | 1,008 | 10 | 35 | 128 | 9 | 24 |
+| prisms, sphere | 390 | 27 | 112 | 55 | 23 | 47 |
+| pyramids, sphere | 423 | 27 | 115 | 63 | 24 | 48 |
+| hexahedra, lens of two balls | 825 | 27 | 105 | 137 | 24 | 61 |
+| tetrahedra, lens | 4,772 | 10 | 35 | 383 | 9 | 24 |
+| quadrilaterals / triangles, circle | 20 / 24 | 9 / 6 | 18 / 15 | 4 | 4 | 4 |
+
+Moments stay exact to 6e-11 of a rule's weight. A function outside the space,
+exp(x + y + z) cos 2x in reference coordinates, moves by up to 7e-4 of a rule's
+weight at degree 4 and 5e-2 at degree 2. Most interface rules on hexahedra have
+fewer points than Q_4 has moments and are kept. Pyramids' elements are
+rational, so no polynomial space makes their compression exact for them.
+Compressing to degree 4 took 0.01 to 0.7 s per mesh, about as long as quadrays
+took to make the rules.
+
 ## Phase 6: 2D cells, prisms and pyramids, several level sets, two roots
 
 ### 2D cells
