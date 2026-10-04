@@ -25,14 +25,14 @@ std::string_view trim(std::string_view s)
 }
 
 /// Parse a single clause: "name < 0", "name <= 0", "name > 0",
-/// "name >= 0", or "name = 0".
+/// "name >= 0", "name = 0", or "name == 0".
 Clause parse_clause(std::string_view text)
 {
     text = trim(text);
     if (text.empty())
         throw std::runtime_error("parse_selection_expr: empty clause");
 
-    // Find the relation operator: '<', '<=', '>', '>=', or '='
+    // Find the relation operator: '<', '<=', '>', '>=', '=', or '=='
     auto pos_lt = text.find('<');
     auto pos_gt = text.find('>');
     auto pos_eq = text.find('=');
@@ -72,13 +72,16 @@ Clause parse_clause(std::string_view text)
     }
     else if (pos_eq != std::string_view::npos)
     {
+        // "==" as well, so that strings read like Python conditions
         op_pos = pos_eq;
+        if (pos_eq + 1 < text.size() && text[pos_eq + 1] == '=')
+            op_len = 2;
         rel = Relation::EqualTo;
     }
     else
     {
         throw std::runtime_error(
-            "parse_selection_expr: no operator (<, <=, >, >=, =) in clause: '"
+            "parse_selection_expr: no operator (<, <=, >, >=, =, ==) in clause: '"
             + std::string(text) + "'");
     }
 

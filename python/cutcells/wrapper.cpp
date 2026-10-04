@@ -979,6 +979,8 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
           nb::arg("nodal_values") = nb::none(),
           nb::arg("gdim") = 0)
       .def_prop_ro("gdim", [](const LevelSetT& self) { return self.gdim; })
+      .def_prop_ro("name", [](const LevelSetT& self) { return self.name; },
+                   "The level set's name; cut() uses it unless names are given.")
       .def("has_value", &LevelSetT::has_value)
       .def("has_gradient", &LevelSetT::has_gradient)
       .def("has_nodal_values", &LevelSetT::has_nodal_values)
@@ -1987,13 +1989,15 @@ void declare_quadrays(nb::module_& m, const std::string& type)
 // ============================================================================
 
 /// What Python holds for a cut: the mesh and level sets the result points to,
-/// at stable addresses, and the backend its parts use unless a call names one,
-/// with that backend's options (None: its defaults).
+/// at stable addresses, the Python objects passed as level sets, which name
+/// the level sets of conditions, and the backend its parts use unless a call
+/// names one, with that backend's options (None: its defaults).
 template <typename T>
 struct PartCutResult
 {
   std::shared_ptr<const cutcells::MeshView<T, int>> mesh;
   std::shared_ptr<const std::vector<cutcells::LevelSetFunction<T, int>>> level_sets;
+  nb::object level_set_objects = nb::none(); ///< a tuple, in the order of result.level_set_names
   cutcells::part::CutResult<T, int> result;
   std::string backend = "quadrays";
   nb::object options = nb::none();
@@ -2102,6 +2106,10 @@ PartCutResult<T> cut_mesh_part(const cutcells::MeshView<T, int>& mesh, nb::handl
   PartCutResult<T> r;
   r.mesh = std::make_shared<const MeshViewT>(mesh);
   r.level_sets = owned;
+  nb::list objects;
+  for (nb::handle h : items)
+    objects.append(h);
+  r.level_set_objects = nb::tuple(objects);
   cutcells::part::ClassifyOptions options;
   options.max_depth = max_depth;
   {
@@ -2109,6 +2117,18 @@ PartCutResult<T> cut_mesh_part(const cutcells::MeshView<T, int>& mesh, nb::handl
     r.result = cutcells::part::cut<T, int>(*r.mesh, std::span<const LevelSetT>(*r.level_sets), options);
   }
   return r;
+}
+
+/// A selection as the string part::select parses: a string as it is, or a
+/// condition such as phi < 0, which cutcells.conditions writes with the names
+/// of the level sets passed to cut, matched by identity.
+template <typename T>
+std::string selection_text(const PartCutResult<T>& r, nb::handle selection)
+{
+  if (nb::isinstance<nb::str>(selection))
+    return nb::cast<std::string>(selection);
+  const nb::object write = nb::module_::import_("cutcells.conditions").attr("selection_text");
+  return nb::cast<std::string>(write(selection, r.level_set_objects, nb::cast(r.result.level_set_names)));
 }
 
 /// The lookup tables' options from the keywords of the old cut().
@@ -2148,9 +2168,10 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
   nb::class_<ResultT>(part_module, result_name.c_str(),
       "Every cell classified by every level set as inside, outside or cut, by "
       "the level sets' own bounds, and the faces lying in a zero set with the "
-      "cell that owns each. result[\"phi1 < 0 and phi2 = 0\"] selects a MeshPart. "
-      "Its parts integrate with result.backend ('quadrays' or 'lut') and "
-      "result.options unless a call names others.")
+      "cell that owns each. result[(phi1 < 0) & (phi2 == 0)], a condition built "
+      "from the level sets passed to cut, or its string result[\"phi1 < 0 and "
+      "phi2 = 0\"], selects a MeshPart. Its parts integrate with result.backend "
+      "('quadrays' or 'lut') and result.options unless a call names others.")
       .def_prop_ro("level_set_names", [](const ResultT& self) { return self.result.level_set_names; })
       .def_prop_ro("num_cells", [](const ResultT& self) { return self.result.num_cells; })
       .def_prop_ro("num_level_sets", [](const ResultT& self) { return self.result.n_level_sets(); })
@@ -2227,10 +2248,15 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
           "Options of the backend for parts selected from now on (None: its defaults).")
       .def(
           "__getitem__",
-          [](const ResultT& self, const std::string& expr)
-          { return PartT{cutcells::part::select(self.result, std::string_view(expr)), self.backend, self.options}; },
-          nb::arg("expr"), nb::keep_alive<0, 1>(),
-          "The MeshPart that a selection expression such as \"phi < 0\" selects.");
+          [](const ResultT& self, nb::handle selection)
+          {
+            const std::string text = selection_text(self, selection);
+            return PartT{cutcells::part::select(self.result, std::string_view(text)), self.backend, self.options};
+          },
+          nb::arg("selection"), nb::keep_alive<0, 1>(),
+          "The MeshPart that a selection selects: a condition built from the level sets passed "
+          "to cut, such as phi < 0 or (a > 0) & (b == 0), or its string, \"phi < 0\" or "
+          "\"a > 0 and b = 0\".");
 
   const std::string part_name = "MeshPart_" + type;
   nb::class_<PartT>(part_module, part_name.c_str(),
@@ -2431,7 +2457,8 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
       "ones), 'linear' (1) or 'iso_p1' (cut_approximation_order); given with another "
       "backend they raise. names: of the level sets; name: of a single one. max_depth: "
       "bisections of a cell before an unproven sign counts as cut. Returns a "
-      "cutcells.part.CutResult; result[\"phi1 < 0 and phi2 = 0\"] selects a MeshPart.");
+      "cutcells.part.CutResult; result[(phi1 < 0) & (phi2 == 0)], or the string "
+      "result[\"phi1 < 0 and phi2 = 0\"], selects a MeshPart.");
 
   m.def(("quadrays_quadrature_" + type).c_str(),
         [](const PartT& part, int order, const std::string& mode, nb::handle options)
@@ -2719,8 +2746,9 @@ NB_MODULE(_cutcellscpp, m)
 
   nb::module_ part_module = m.def_submodule(
       "part", "The front end: cut(mesh, level_sets) classifies cells by the level sets' "
-              "own bounds; result[expr] selects a MeshPart, whose quadrature and "
-              "visualisation come from a backend (quadrays, or the lookup tables: 'lut').");
+              "own bounds; result[selection], a condition such as phi < 0 or its string, "
+              "selects a MeshPart, whose quadrature and visualisation come from a backend "
+              "(quadrays, or the lookup tables: 'lut').");
   declare_part<float>(m, part_module, "float32");
   declare_part<double>(m, part_module, "float64");
 }

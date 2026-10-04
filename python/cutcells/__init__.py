@@ -263,6 +263,9 @@ compress_rules = _cutcellscpp.compress_rules
 compress_rules_float32 = _cutcellscpp.compress_rules_float32
 compress_rules_float64 = _cutcellscpp.compress_rules_float64
 from . import part as part
+# importing conditions gives the level-set classes their comparisons with 0
+from . import conditions as conditions
+from .conditions import Condition
 
 
 def ho_cut(*args, **kwargs):

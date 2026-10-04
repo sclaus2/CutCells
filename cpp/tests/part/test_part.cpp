@@ -10,7 +10,8 @@
 //  - faces lying in a zero set are owned once, by the negative side, so plane
 //    parts through mesh faces integrate exactly;
 //  - parts of the sphere, and of a sphere and a plane, against exact totals;
-//  - two planes crossing in cells: their corner, union and faces, exact.
+//  - two planes crossing in cells: their corner, union and faces, exact;
+//  - selections read "==" as "=".
 // Exits non-zero on failure.
 
 #include <cutcells/bernstein.h>
@@ -20,6 +21,7 @@
 #include <cutcells/part/mesh_part.h>
 #include <cutcells/part/output.h>
 #include <cutcells/quadrays/analytic.h>
+#include <cutcells/selection_expr.h>
 
 #include <cmath>
 #include <cstdio>
@@ -270,6 +272,35 @@ void test_parts()
     }
 }
 
+/// "==" reads as "=", so that strings read like Python conditions; "===" is
+/// no relation.
+void test_selection_spellings()
+{
+    const std::vector<std::string> names = {"a", "b"};
+    SelectionExpr python = parse_selection_expr("a == 0 and b < 0 or b==0 and a < 0");
+    SelectionExpr plain = parse_selection_expr("a = 0 and b < 0 or b=0 and a < 0");
+    compile_selection_expr(python, names);
+    compile_selection_expr(plain, names);
+    bool same = python.terms.size() == 2 && plain.terms.size() == 2;
+    for (std::size_t t = 0; same && t < plain.terms.size(); ++t)
+    {
+        const SelectionTerm& p = python.terms[t];
+        const SelectionTerm& q = plain.terms[t];
+        same = p.zero_required == q.zero_required && p.negative_required == q.negative_required
+               && p.positive_required == q.positive_required;
+    }
+    bool rejected = false;
+    try
+    {
+        parse_selection_expr("a === 0");
+    }
+    catch (const std::runtime_error&)
+    {
+        rejected = true;
+    }
+    check(same && rejected, "'==' reads as '=' in selections");
+}
+
 } // namespace
 
 int main()
@@ -278,5 +309,6 @@ int main()
     test_classification();
     test_zero_faces();
     test_parts();
+    test_selection_spellings();
     return failures == 0 ? 0 : 1;
 }
