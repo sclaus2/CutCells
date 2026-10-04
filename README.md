@@ -23,9 +23,17 @@ Current parent cell support:
 * 2D: **triangle**, **quadrilateral**
 * 3D: **tetrahedron**, **hexahedron**, **prism**, **pyramid**
 
-Higher-order (currently pragmatic) support:
+Level sets can be **Pk** (interpolated, any degree) or **analytic** (exact
+geometry, e.g. from ShapeForest), with any number of level sets per cell. Two
+backends integrate the selected parts:
 
-* **P2 triangle (6 nodes)** and **P2 tetrahedron (10 nodes)** via subdivision into linear sub-cells, cut, then merged back.
+* **quadrays** (the default): high-order quadrature on curved cut cells, for
+  affine cells.
+* **lookup tables** (`backend="lut"`): straight pieces on Pk-iso-P1 templates.
+
+The low-level single-cell API also cuts **P2 triangles (6 nodes)** and **P2
+tetrahedra (10 nodes)** (`higher_order_cut`), by subdivision into linear
+sub-cells.
 
 ## Performance and dependencies
 
@@ -128,8 +136,7 @@ cmake -G Ninja -S cpp -B build/cutcells \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$CONDA_PREFIX" \
   -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET=13.4 \
-  -DCUTCELLS_WITH_ALGOIM=ON
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=13.4
 cmake --build build/cutcells --target install
 ```
 
@@ -169,6 +176,27 @@ that prefix through `CMAKE_PREFIX_PATH`.
 
 The Python demos are located in `python/demo`.
 
+## Documentation
+
+The initial Sphinx/MyST documentation source is in `docs/`. It covers
+installation, a Python quickstart, mesh views, level sets, selection
+expressions, quadrature/output, and a compact API overview.
+
+Build it with:
+
+```console
+cd docs
+python -m pip install -r requirements.txt
+bash build_docs.sh build
+```
+
+The generated site is written to `docs/_build/html/index.html`. To serve it
+locally, run:
+
+```console
+bash build_docs.sh serve --port 8000
+```
+
 ## Third-party notices
 
 Some generated clip/cut case tables (hexahedron/prism/pyramid) are derived from
@@ -179,7 +207,7 @@ Some generated quadrature lookup tables are produced offline with Basix
 `make_quadrature`. Basix's MIT license text is included in
 `third_party/Basix-LICENSE.txt`.
 
-The optional Algoim quadrature backend vendors a pinned Algoim snapshot under
+The comparison drivers in `benchmarks/` use a pinned Algoim snapshot under
 `third_party/algoim`. Algoim's license, upstream commit, and local patch notes
 are included with the vendored copy. See `third_party/THIRD_PARTY_NOTICES.md`
 for the consolidated notice list.
@@ -193,40 +221,23 @@ At runtime for the python examples, CutCells requires [`numpy`](https://numpy.or
 
 The library contains python `pytest` tests in `python/tests`.
 
-### Optional Algoim quadrature backend
+### Quadrature backends
 
-CutCells vendors a pinned Algoim snapshot in `third_party/algoim`.
-The default build does not use it. Configure with `-DCUTCELLS_WITH_ALGOIM=ON`
-to enable the Algoim-backed quadrature backend:
-
-```console
-cmake -S cpp -B build/cutcells-algoim -DCUTCELLS_WITH_ALGOIM=ON
-cmake --build build/cutcells-algoim
-```
-
-For the Python package, use the split install from the installation section:
-enable Algoim in the C++ core, install that core into the active prefix, then
-build the Python wrapper against the installed CMake package.
-
-When Algoim is enabled, the build first looks for BLAS/LAPACK libraries under
-`CMAKE_PREFIX_PATH`, which keeps conda-forge builds on the conda OpenBLAS stack
-instead of accidentally picking Apple Accelerate on macOS. If needed, override
-the libraries explicitly with `-DCUTCELLS_ALGOIM_LAPACK_LIBRARIES=...`.
-
-The Python `HOMeshPart.quadrature` API keeps the existing straight backend as
-the default. Request Algoim explicitly. The `algoim` backend uses Algoim's
-Bernstein-polynomial quadrature path; `algoim_general` keeps the older callback
-and interval path available for comparison:
+The Python `MeshPart.quadrature` API uses quadrays by default; the lookup
+tables give straight pieces:
 
 ```python
-rules = result["phi < 0"].quadrature(order=4, mode="cut_only", backend="algoim")
-surface = result["phi = 0"].quadrature(order=4, mode="cut_only", backend="algoim")
-legacy = result["phi < 0"].quadrature(
-    order=4, mode="cut_only", backend="algoim_general"
-)
+result = cutcells.cut(mesh, phi)                    # quadrays
+rules = result["phi < 0"].quadrature(order=4)       # exact for degree 4 on flat pieces
+straight = result["phi < 0"].quadrature(order=4, backend="lut")
 ```
 
-The Algoim backends support single-clause `phi < 0`, `phi > 0`, and `phi = 0`
-selections on quadrilateral and hexahedral parent cells with Bernstein level-set
-data. Unsupported selections fail with an explicit error rather than silently
-falling back to the straight backend.
+### Algoim (benchmarks only)
+
+Algoim is no longer part of the library or the Python package;
+`backend="algoim"` raises. The comparison drivers in `benchmarks/` compare
+quadrays against the vendored Algoim snapshot in `third_party/algoim`.
+Configure that separate CMake project with `-DCUTCELLS_WITH_ALGOIM=ON` and
+with `CONDA_PREFIX` set. CMake then takes the conda environment's LAPACK
+instead of Apple's Accelerate on macOS, which lacks the LAPACKE symbols Algoim
+needs.
