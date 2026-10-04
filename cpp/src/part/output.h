@@ -26,7 +26,9 @@ namespace cutcells::part
 /// Points are in the cells' reference coordinates, weights are physical.
 /// quadrays takes every level set that cuts a cell and that a term holding on
 /// a piece of the cell names; an interface part is integrated once per level
-/// set whose zero set it asks for.
+/// set whose zero set it asks for, a curve part once per pair. The points
+/// where two curves cross on 2D cells weigh 1; one on an edge or a vertex
+/// that several cells find is kept by the lowest cell.
 ///
 /// @param order  the polynomial degree integrated exactly on flat pieces, 1 to
 ///               10: quadrays takes ceil((order + part.dim) / 2) Gauss-Legendre
@@ -35,7 +37,7 @@ namespace cutcells::part
 ///               options.points_per_segment; whole cells and zero faces get the
 ///               reference rules of degree order
 /// @throws std::invalid_argument (quadrays) for parts of dimension below
-///         tdim - 1, and for cells quadrays does not take
+///         tdim - 2, and for cells quadrays does not take
 template <std::floating_point T, std::integral I>
 quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                                                 const quadrays::Options& options = {});

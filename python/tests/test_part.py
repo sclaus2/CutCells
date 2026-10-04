@@ -6,7 +6,7 @@
 parts selected by expressions against exact values, for Pk and analytic level
 sets, interfaces lying in mesh faces, triangles and quadrilaterals, prisms and
 pyramids, several level sets meeting in cells and the leaves of their faces,
-and the API."""
+the curves where two level sets vanish (points on 2D cells), and the API."""
 
 import itertools
 import math
@@ -17,6 +17,7 @@ import pytest
 import cutcells
 
 from test_part_lut import CENTRE_2D, circle, square_mesh
+from test_part_order import physical_points
 from test_quadrays import CENTRE, RADIUS, box_mesh, plane, sphere
 
 BALL = 4.0 / 3.0 * math.pi * RADIUS**3
@@ -124,8 +125,8 @@ def test_two_level_sets(mesh_kind):
 
 @pytest.mark.parametrize("mesh_kind", ["hex", "tet"])
 def test_two_level_sets_in_one_cell(mesh_kind):
-    """Two P1 planes crossing in cells: the corner, the union and the corner's
-    faces are exact; the line where both vanish comes from the lookup tables."""
+    """Two P1 planes crossing in cells: the corner, the union, the corner's
+    faces and the line where both vanish are exact, the line in both backends."""
     mesh = box_mesh(mesh_kind, 4)
     first = cutcells.create_level_set(mesh, lambda x: x[0] - 0.1, degree=1, name="a")
     second = cutcells.create_level_set(mesh, lambda x: x[1] - 0.1, degree=1, name="b")
@@ -136,10 +137,16 @@ def test_two_level_sets_in_one_cell(mesh_kind):
     faces = result["a = 0 and b < 0 or b = 0 and a < 0"]
     assert total(result["a = 0 and b < 0"], order=2, mode="cut_only") == pytest.approx(2 * 1.1, rel=1e-12)
     assert total(faces, order=2, mode="cut_only") == pytest.approx(4 * 1.1, rel=1e-12)
-    with pytest.raises(ValueError, match="lookup tables"):
-        result["a = 0 and b = 0"].quadrature(order=2)
-    line = result["a = 0 and b = 0"].quadrature(order=2, mode="cut_only", backend="lut")
-    assert float(np.sum(line.weights)) == pytest.approx(2.0, rel=1e-12)
+    # the line x = 0.1, y = 0.13 (x = y = 0.1 lies in the faces between Kuhn
+    # tetrahedra, where quadrays counts a curve in either cell or neither)
+    off = cutcells.create_level_set(mesh, lambda x: x[1] - 0.13, degree=1, name="b")
+    for backend in ("quadrays", "lut"):
+        line = cutcells.cut(mesh, [first, off])["a = 0 and b = 0"].quadrature(order=2, mode="cut_only",
+                                                                              backend=backend)
+        assert float(np.sum(line.weights)) == pytest.approx(2.0, rel=1e-12), backend
+    third = cutcells.create_level_set(mesh, lambda x: x[2] - 0.1, degree=1, name="c")
+    with pytest.raises(ValueError, match="three do"):
+        cutcells.cut(mesh, [first, second, third])["a = 0 and b = 0 and c = 0"].quadrature(order=2)
 
 
 def wedge_mesh(kind, n):
@@ -355,6 +362,131 @@ def test_face_leaves_stay_in_their_part(mesh_kind):
             rho = np.hypot(x[:, i] - CENTRE[i], x[:, j] - CENTRE[j])
             # phi = rho^2 - r^2 < 0, up to 1e-5 h |grad phi|
             assert np.all(rho**2 - r**2 <= 1e-5 * (2.0 / n) * 2 * rho), (face, other)
+
+
+CURVE = "a = 0 and b = 0"
+
+
+def elliptic_e(m):
+    """The complete elliptic integral of the second kind E(m), m = k^2, by the
+    arithmetic-geometric mean."""
+    a, b, c = 1.0, math.sqrt(1.0 - m), math.sqrt(m)
+    total_, power = 0.5 * c * c, 0.5
+    for _ in range(10):  # quadratic convergence: a and b agree to rounding within 6
+        a, b, c = 0.5 * (a + b), math.sqrt(a * b), 0.5 * (a - b)
+        power *= 2
+        total_ += power * c * c
+    return math.pi / (2 * a) * (1 - total_)
+
+
+def ball_level_set(mesh, ls_kind, centre, radius, name):
+    """A ball about centre: P2, or analytic (the quadratic, not the distance)."""
+    if ls_kind == "P2":
+        return cutcells.create_level_set(
+            mesh, lambda x: sum((x[i] - centre[i]) ** 2 for i in range(3)) - radius**2, degree=2, name=name)
+    return cutcells.analytic_sphere(centre, radius, signed_distance=False)
+
+
+def curve_shapes(mesh, ls_kind):
+    """Pairs of level sets and the exact length of the curve where both vanish:
+    the rim of a lens of two balls, one circle; the rims of a napkin ring (a
+    ball and a cylinder), two circles of radius r; the edges of a Steinmetz
+    bicylinder, two ellipses, 8 sqrt(2) r E(1/2). Cylinders are P2."""
+    ca, cb = CENTRE + np.array([-0.25, 0.0, 0.0]), CENTRE + np.array([0.3, 0.05, 0.0])
+    r1, r2 = 0.6, 0.5
+    d = float(np.linalg.norm(cb - ca))
+    x1 = (d * d + r1 * r1 - r2 * r2) / (2 * d)
+    lens = [ball_level_set(mesh, ls_kind, ca, r1, "a"), ball_level_set(mesh, ls_kind, cb, r2, "b")]
+    ring = [ball_level_set(mesh, ls_kind, CENTRE, 0.8, "a"), cylinder_level_set(mesh, 0.45, 2, "b")]
+    bicylinder = [cylinder_level_set(mesh, 0.6, 2, "a"), cylinder_level_set(mesh, 0.6, 1, "b")]
+    return [("lens rim", lens, 2 * math.pi * math.sqrt(r1 * r1 - x1 * x1)),
+            ("napkin rims", ring, 4 * math.pi * 0.45),
+            ("bicylinder edges", bicylinder, 8 * math.sqrt(2) * 0.6 * elliptic_e(0.5))]
+
+
+@pytest.mark.parametrize("mesh_kind", ["hex", "tet"])
+@pytest.mark.parametrize("ls_kind", ["P2", "analytic"])
+def test_curves(mesh_kind, ls_kind):
+    """The curves where two level sets vanish, with quadrays: Gauss points on
+    the decomposition's base lines, weighted by the speed along the curve."""
+    mesh = box_mesh(mesh_kind, 8)
+    for name, level_sets, exact in curve_shapes(mesh, ls_kind):
+        result = cutcells.cut(mesh, level_sets, names=["a", "b"])
+        assert result[CURVE].dim == 1
+        rules = result[CURVE].quadrature(order=8, mode="cut_only")
+        assert np.all(np.asarray(rules.weights) > 0), name
+        assert float(np.sum(rules.weights)) == pytest.approx(exact, rel=1e-7), name
+
+
+@pytest.mark.parametrize("mesh_kind", ["hex", "tet"])
+def test_lut_curves_converge(mesh_kind):
+    """The lookup tables' straight curves converge to the same lengths, as
+    (h / k)^2 in the template order k."""
+    mesh = box_mesh(mesh_kind, 4)
+    for name, level_sets, exact in curve_shapes(mesh, "analytic"):
+        part = cutcells.cut(mesh, level_sets, names=["a", "b"])[CURVE]
+        errors = []
+        for k in (1, 2, 4):
+            options = cutcells.LutOptions(template_order=k)
+            rules = part.quadrature(order=2, mode="cut_only", backend="lut", options=options)
+            errors.append(abs(float(np.sum(rules.weights)) / exact - 1))
+        rates = np.log2(np.array(errors[:-1]) / np.array(errors[1:]))
+        assert np.all(rates > 1.5), (name, errors)
+
+
+@pytest.mark.parametrize("mesh_kind", ["quad", "tri"])
+@pytest.mark.parametrize("ls_kind", ["P2", "analytic"])
+def test_crossing_points(mesh_kind, ls_kind):
+    """On 2D cells the curves where two level sets vanish are points, each of
+    weight 1: two circles cross at two points, at their exact places."""
+    mesh = square_mesh(mesh_kind, 16)
+    r1, r2 = 0.62, 0.5
+    ca, cb = CENTRE_2D + np.array([-0.2, 0.0]), CENTRE_2D + np.array([0.3, 0.1])
+    result = cutcells.cut(mesh, [disk_level_set(mesh, ls_kind, ca, r1, "a"),
+                                 disk_level_set(mesh, ls_kind, cb, r2, "b")], names=["a", "b"])
+    assert result[CURVE].dim == 0
+    rules = result[CURVE].quadrature(order=3)
+    np.testing.assert_array_equal(np.asarray(rules.weights), [1.0, 1.0])
+    d = float(np.linalg.norm(cb - ca))
+    x1 = (d * d + r1 * r1 - r2 * r2) / (2 * d)
+    e = (cb - ca) / d
+    p = np.array([-e[1], e[0]]) * math.sqrt(r1 * r1 - x1 * x1)
+    exact = np.array(sorted([tuple(ca + x1 * e + p), tuple(ca + x1 * e - p)]))
+    np.testing.assert_allclose(np.array(sorted(map(tuple, physical_points(mesh, rules)))), exact, atol=1e-12)
+
+
+@pytest.mark.parametrize("mesh_kind", ["quad", "tri"])
+@pytest.mark.parametrize("where", ["vertex", "edge"])
+def test_crossing_point_on_cells_shared(mesh_kind, where):
+    """Two lines crossing at a mesh vertex or on a mesh edge: the cells sharing
+    the point find it, and the rules keep it once, with weight 1. Both lines'
+    slopes lie in (0, 1), so that both enter the cells north-east and
+    south-west of a vertex (triangles split along x = y)."""
+    mesh = square_mesh(mesh_kind, 16)
+    point = np.array([0.125, -0.25]) if where == "vertex" else np.array([0.125, -0.21])
+    level_sets = [cutcells.create_level_set(mesh, lambda x, s=s: s * (x[0] - point[0]) - (x[1] - point[1]), degree=1,
+                                            name=name) for s, name in ((0.37, "a"), (0.8, "b"))]
+    rules = cutcells.cut(mesh, level_sets)[CURVE].quadrature(order=2)
+    np.testing.assert_array_equal(np.asarray(rules.weights), [1.0])
+    np.testing.assert_allclose(physical_points(mesh, rules)[0], point, atol=1e-12)
+
+
+def test_curve_leaves(tmp_path):
+    """Curves where two level sets vanish show as Lagrange curves, the points
+    where they cross on 2D cells as vertices."""
+    mesh = box_mesh("hex", 4)
+    _, level_sets, _ = curve_shapes(mesh, "analytic")[0]
+    result = cutcells.cut(mesh, level_sets, names=["a", "b"])
+    curves = result[CURVE].visualization_mesh(mode="cut_only", degree=2)
+    assert curves.n_cells() > 0 and set(np.unique(curves.vtk_types)) == {68}
+    path = tmp_path / "rim.vtu"
+    result[CURVE].write_vtu(str(path), mode="cut_only", degree=2)
+    assert path.stat().st_size > 0
+    square = square_mesh("quad", 8)
+    disks = [disk_level_set(square, "analytic", CENTRE_2D + np.array([-0.2, 0.0]), 0.62, "a"),
+             disk_level_set(square, "analytic", CENTRE_2D + np.array([0.3, 0.1]), 0.5, "b")]
+    points = cutcells.cut(square, disks, names=["a", "b"])[CURVE].visualization_mesh(mode="cut_only")
+    assert points.n_cells() == 2 and set(np.unique(points.vtk_types)) == {1}
 
 
 @pytest.mark.parametrize("mesh_kind", ["quad", "tri"])

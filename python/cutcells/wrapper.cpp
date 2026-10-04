@@ -2312,7 +2312,9 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
           "Pk-iso-P1 templates (options: LutOptions); None: the part's. quadrays takes "
           "ceil((order + dim) / 2) Gauss-Legendre points per segment of its height lines, or "
           "QuadraysOptions.points_per_segment; the lookup tables' pieces, whole cells and "
-          "faces get the reference rules of degree order.")
+          "faces get the reference rules of degree order. Both backends integrate the curves "
+          "where two level sets vanish ('a = 0 and b = 0'); on 2D cells these are points of "
+          "weight 1.")
       .def(
           "visualization_mesh",
           [](const PartT& self, const std::string& mode, nb::handle backend, int degree,
@@ -2342,7 +2344,9 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
           nb::arg("options") = nb::none(),
           "Cells for visualisation: the backend's pieces of cut cells, zero faces, and with "
           "mode 'full' the whole cells. quadrays gives a QuadraysLeafMesh of Lagrange cells "
-          "of the given degree; the lookup tables a CutMesh of straight cells.")
+          "of the given degree (curves where two level sets vanish as Lagrange curves, their "
+          "crossing points on 2D cells as vertices); the lookup tables a CutMesh of straight "
+          "cells.")
       .def(
           "write_vtu",
           [](const PartT& self, const std::string& filename, const std::string& mode, nb::handle backend,
@@ -2693,6 +2697,8 @@ NB_MODULE(_cutcellscpp, m)
       .def_ro("incomplete_leaves", &cutcells::quadrays::Stats::incomplete_leaves)
       .def_ro("two_roots", &cutcells::quadrays::Stats::two_roots)
       .def_ro("surfaces", &cutcells::quadrays::Stats::surfaces)
+      .def_ro("curve_lost", &cutcells::quadrays::Stats::curve_lost,
+              "Top boxes of a curve part integrated uncertified, where the curve, if any, is missing.")
       .def_ro("causes", &cutcells::quadrays::Stats::causes);
   declare_quadrays<float>(m, "float32");
   declare_quadrays<double>(m, "float64");

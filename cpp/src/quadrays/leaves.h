@@ -21,6 +21,7 @@ namespace cutcells::quadrays
 {
 
 /// VTK cell types of leaf meshes.
+inline constexpr std::uint8_t vtk_vertex = 1;
 inline constexpr std::uint8_t vtk_line = 3;
 inline constexpr std::uint8_t vtk_triangle = 5;
 inline constexpr std::uint8_t vtk_quad = 9;
@@ -55,8 +56,10 @@ struct LeafMesh
 /// Every piece the engine integrates becomes a Lagrange cell of the given
 /// degree whose nodes are the images of an equispaced grid under the piece's
 /// parametrisation: hexahedra (quadrilaterals on 2D cells) for volume parts,
-/// oriented to a positive Jacobian, and quadrilaterals (curves on 2D cells)
-/// for interfaces, with their normal along the gradient of the level set.
+/// oriented to a positive Jacobian, quadrilaterals (curves on 2D cells) for
+/// interfaces, with their normal along the gradient of the level set, and
+/// curves along grad a x grad b for the curves where two level sets a, b
+/// vanish (vertices at the points where they cross on 2D cells).
 /// Leaves do not split where only the integration does (leaf_nodes): where
 /// two level sets' zero sets cross beyond the box above, and in interface
 /// parts at the traces of the other level sets on box faces. A picture of the

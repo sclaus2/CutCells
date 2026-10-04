@@ -5,7 +5,8 @@ The prototype's certify engine (`README.md`, `RESULTS.md` here) is now the
 reproduces the prototype's numbers to every printed digit and runs 2.4 to 3.3
 times faster per cut cell. Phase 2 added analytic level sets from any geometry
 library, phase 6 2D cells, prisms, pyramids, several level sets per cell and
-two roots per line (below).
+two roots per line, and 2026-10-04 the curves where two level sets vanish
+(below).
 
 ## Files
 
@@ -546,6 +547,115 @@ prisms):
 
 `quadrays_study --frame reference|orthogonal` compares the two on single
 cells.
+
+## Curves where two level sets vanish (2026-10-04)
+
+`a = 0 and b = 0` selects the curve where two zero sets meet, points on 2D
+cells. quadrays integrates it on the decomposition it makes for the interface
+of a, where the surface function s of b on a's zero set, made one level below
+the top, already marks the ridge (phase 6):
+
+- **Line rules.** The base line of a top box carries Gauss-Legendre points in
+  its coordinate s, ceil((order + 1) / 2) per segment; on each point's line of
+  the level above, the point takes the root of the surface function; on that
+  point's height line, the root of a. The weight is the Gauss weight times the
+  physical speed |J dU/ds|: each level differentiates its root implicitly,
+  dt/ds = -(grad_b s . dyb) / d_t s and dr/ds = -(grad_b a . dy') / d_k a, and
+  the frames' maps carry the derivative to the top (the diagonal frame's
+  factor 1/2, an area's, does not apply). Weights are positive, and straight
+  lines are integrated exactly for polynomials of degree `order`.
+- **Breakpoints.** The base line splits where the curve leaves a box (roots of
+  the surface function restricted to the box's sides, and of the surface
+  functions of the restrictions to its bounds and clips) and at corners, where
+  a third level set crosses the curve (crossings of two surface functions).
+  `a = 0 and b = 0 and c < 0` keeps the pieces by the sign of c.
+- **Points.** On 2D cells, the roots of the surface function on the base line,
+  then of a on the height line, each with weight 1. A root at an end of a line
+  counts within a Newton distance of 1e-10 (box units), also on a line shrunk
+  to a corner of the region; duplicates within 2e-10 are merged per cell, and
+  the front end keeps a point that several cells find on an edge or a vertex
+  once, by the lowest cell.
+- **Robustness.** A top box takes the roots of a, or of b where only b has a
+  margin (a with two roots per line, or a ball smaller than the box); curve
+  parts take no two-root boxes, whose surface functions are not made. They
+  bisect at 0.53 of a side, so that a curve in a dyadic plane of a cell (a plane
+  through its centre, two balls symmetric about it) does not lie on the face two
+  halves share. The surface function is dropped where a has one sign on the box
+  times the height range of the box above (on eight slabs of it for Taylor
+  models), and where it vanishes at the box's centre and corners (coincident
+  zero sets). Top boxes integrated uncertified, which make no surface
+  functions, count in `Stats::curve_lost`.
+- **Leaves.** VTK Lagrange curves (68) of the given degree, one per segment of
+  the base lines, oriented along grad a x grad b; vertices (1) on 2D cells.
+
+Hexahedra and tetrahedra, n = 8, P2 (analytic level sets give the same
+numbers, up to rounding at q = 8), per-cell L1 relative to the total, against
+the arcs in each cell (`test_curves`):
+
+| | q = 3 | q = 5 | q = 8 |
+| --- | --- | --- | --- |
+| lens rim (one circle), hexahedra | 1.2e-7 | 1.9e-11 | 7.8e-16 |
+| lens rim, tetrahedra | 1.1e-8 | 8.8e-13 | 2.9e-15 |
+| napkin rims (two circles), hexahedra | 2.1e-5 | 6.0e-8 | 1.8e-11 |
+| napkin rims, tetrahedra | 4.5e-7 | 2.0e-10 | 4.8e-15 |
+
+The line of two planes is exact to 3e-16 (hexahedra) and 9e-16 (tetrahedra)
+per cell and its first moments to 2e-16; `test_part_order.py` checks every
+moment up to degree `order`, orders 1 to 10, in both backends. At q = 5 the
+bicylinder's edges, two ellipses crossing where the cylinders touch, measure
+8 sqrt(2) r E(1/2) within 7.4e-8 (hexahedra) and 1.1e-9 (tetrahedra); the
+tricylinder's edges, inside the third cylinder, within 4.2e-13 and 1.5e-14,
+outside it within 2.9e-10 and 2.3e-12. On 2D cells two disks cross at two
+points of weight 1 within 1e-12 of the exact ones; three disks keep the
+crossings by the third's sign; two lines crossing at a vertex are found by the
+two cells they both enter, and kept once.
+
+The lookup tables' straight curves converge to the same lengths as (h / k)^2
+in the template order k (n = 4, analytic balls and P2 cylinders, hexahedra and
+tetrahedra alike; quadrays at order 8 on the same cells for comparison):
+
+| | k = 1 | k = 2 | k = 3 | k = 4 | quadrays, order 8 |
+| --- | --- | --- | --- | --- | --- |
+| lens rim | 3.5e-1 | 7.9e-2 | 2.6e-2 | 1.5e-2 | 2.7e-15 |
+| napkin rims | 1.8e-1 | 4.5e-2 | 1.9e-2 | 1.0e-2 | 1.4e-5 |
+| bicylinder edges | 8.3e-2 | 1.6e-2 | 4.4e-3 | 3.8e-6 | 1.0e-8 |
+
+A curve part costs about what the interface part of the same level set costs
+per cut cell, with a tenth of the points: at n = 16, order 8, P2, the lens rim
+takes 262 µs and 5.9 points per cut hexahedron against 260 µs and 49.5 points
+for `a = 0 and b < 0` (one thread, load average 5); the napkin rims 122 µs and
+3.4 points, the bicylinder's edges 170 µs and 5.8 points; tetrahedra 280 to
+520 µs and 3 to 6 points.
+
+### Found on the way
+
+- **A level set in mesh faces.** Where b vanishes on whole mesh faces (y = 0.2
+  on the grid lines of n = 10), no cell counts as cut by b, so
+  `a = 0 and b = 0` holds no cut cell and no zero face, and both backends give
+  nothing: no point of the two on 2D cells, no circle of 2 pi rho = 4.138 in
+  3D. The interface `b = 0 and a < 0` there gives 0.96 (hexahedra) or 1.04
+  (tetrahedra) instead of pi rho^2 = 1.363: `select()` keeps a zero face only
+  if the term's other clauses hold on all of its owner, so the faces a cuts are
+  dropped. Proposed fix: integrate a zero face that another named level set
+  cuts as a cell of one dimension less (a 2D `ClippedBox` in 3D, the unit
+  normal as third column of its Jacobian, its level sets restricted to it),
+  with the term less the face's zero clause: `a < 0` for the interface, `a = 0`
+  for the curve; on 2D meshes the roots of a on the edge.
+- **A curve in faces between cells.** The line x = y = 0.1 lies in the faces
+  between Kuhn tetrahedra (x = y in each cube), where neither plane vanishes on
+  a whole face: quadrays counts its pieces in either cell or neither (0.4 of
+  its length 2 at n = 4), the lookup tables once. A crossing at a vertex where
+  two curves enter different cells, each only touching the other's cells there,
+  is lost at classification already. Proposed fix: find curves and points on a
+  cell's faces with closed intervals, as points are, and give each to the cell
+  that a fixed generic direction points into.
+- **Surface functions beyond the box.** Where a only nears a box (a ball 0.025
+  from a cell that a plane crosses), its surface function follows the root of
+  a beyond the box, where the bounds never settle: 470 to 720 bisections per
+  cell (the limit, 1024, with Taylor models) for the curve part, 340 to 675 for
+  the interface parts `a = 0 and b < 0`. Curve parts now drop it where a has
+  one sign over the box's own height range: at most 11 bisections there.
+  Interface parts could take the same test; they are unchanged here.
 
 ## Build and run
 

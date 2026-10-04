@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: MIT
 """The quadrature order is the polynomial degree integrated exactly on flat
 pieces, in both backends: the moments of the cells of [-1, 1]^d below a plane
-and on it, whole cells included."""
+and on it, whole cells included, and of the line where two planes vanish."""
 
 import itertools
 import math
@@ -89,6 +89,47 @@ def test_order_is_the_exact_degree(kind, backend, surface):
         np.testing.assert_allclose(moments(weights, x, order)[degree <= order],
                                    exact_moments(d, order, surface)[degree <= order], rtol=1e-12, atol=1e-12,
                                    err_msg=f"order {order}")
+
+
+# two planes in general position, NA . x = DA and NB . x = DB; the curve where
+# both vanish is a line through [-1, 1]^3
+NA, DA = np.array([1.0, 0.3, -0.2]), 0.1
+NB, DB = np.array([-0.25, 1.0, 0.4]), -0.05
+
+
+def line_moments(order):
+    """The moments of the planes' line inside [-1, 1]^3, for all exponents up
+    to order in each coordinate: Gauss-Legendre in its parameter (exact for
+    total degrees up to 23)."""
+    t = np.cross(NA, NB)
+    p0 = (DA * np.cross(NB, t) + DB * np.cross(t, NA)) / (t @ t)
+    lo, hi = -np.inf, np.inf
+    for i in range(3):
+        s1, s2 = sorted(((-1.0 - p0[i]) / t[i], (1.0 - p0[i]) / t[i]))
+        lo, hi = max(lo, s1), min(hi, s2)
+    g, w = np.polynomial.legendre.leggauss(12)
+    s = lo + (hi - lo) * (g + 1) / 2
+    return moments(w * (hi - lo) / 2 * np.linalg.norm(t), p0 + s[:, None] * t, order)
+
+
+@pytest.mark.parametrize("kind", ["tet", "hex"])
+@pytest.mark.parametrize("backend", ["quadrays", "lut"])
+def test_order_on_curves(kind, backend):
+    """On the line where two planes vanish, order is the polynomial degree
+    integrated exactly too: quadrays' points per segment, ceil((order + 1) / 2),
+    on a line along which the parameter is affine."""
+    mesh = mesh_of(kind, 3)
+    level_sets = [cutcells.create_level_set(mesh, lambda x, n=n, d=d: n[0] * x[0] + n[1] * x[1] + n[2] * x[2] - d,
+                                            degree=1, name=name) for n, d, name in ((NA, DA, "a"), (NB, DB, "b"))]
+    part = cutcells.cut(mesh, level_sets)["a = 0 and b = 0"]
+    degree = np.sum(np.indices((11,) * 3), axis=0)
+    for order in range(1, 11):
+        rules = part.quadrature(order=order, backend=backend)
+        weights = np.asarray(rules.weights)
+        assert np.all(weights > 0), order
+        mask = degree[: order + 1, : order + 1, : order + 1] <= order
+        np.testing.assert_allclose(moments(weights, physical_points(mesh, rules), order)[mask],
+                                   line_moments(order)[mask], rtol=1e-12, atol=1e-12, err_msg=f"order {order}")
 
 
 def test_points_per_segment():

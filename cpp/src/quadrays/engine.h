@@ -101,6 +101,10 @@ struct Stats
     int incomplete_leaves = 0; ///< leaves of the part dropped because their nodes did not line up
     int two_roots = 0;         ///< boxes certified with two roots per height line
     int surfaces = 0;          ///< surface functions made where two level sets cut a box
+    /// top boxes of a curve part integrated uncertified (depth or bisection
+    /// limit): no surface function finds the curve there, so its piece, if
+    /// any, is missing
+    int curve_lost = 0;
     /// With Options::diagnose: bisections counted by level, the function that
     /// blocked certification, and what sampling the clipped region says.
     std::map<std::string, std::int64_t> causes;
@@ -149,9 +153,12 @@ struct CellPoints
 /// appended to @p out.
 ///
 /// The part is where some term holds; bit l of a term's masks refers to
-/// phis[l]. All terms ask for the zero set of the same level set (an interface
-/// part; weights are surface measures) or of none (a volume part). Curves
-/// where two level sets vanish are not integrated.
+/// phis[l]. All terms ask for the same zero sets: of none (a volume part), of
+/// one level set (an interface part; weights are surface measures), or of two
+/// (a curve part). A curve's points lie on the base lines of the boxes where
+/// both level sets vanish, Gauss-Legendre in the line's coordinate, weighted by
+/// the physical speed along the curve; on 2D cells the curve is the points
+/// where the two zero sets cross, each with weight 1.
 ///
 /// @param cell   the cell as a clipped box
 /// @param phis   the cell's level sets: Bernstein forms on its box or analytic
@@ -162,7 +169,7 @@ struct CellPoints
 /// @param out    points in box coordinates and physical weights
 /// @param stats  counters, accumulated
 /// @throws std::invalid_argument if terms ask for different zero sets, or for
-///         two zero sets at once
+///         three zero sets at once
 template <std::floating_point T>
 void integrate(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms,
                int q, const Options& opt, CellPoints<T>& out, Stats& stats);
@@ -185,7 +192,8 @@ void integrate(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part,
 /// @brief Nodes of the leaf cells of the same decomposition, appended to @p out.
 ///
 /// Every segment gets degree + 1 equispaced nodes, pulled 1e-5 of its length
-/// inside its ends, with their tags; weights are 0. Leaves are not filtered by
+/// inside its ends, with their tags (a curve part's: those of its base lines;
+/// on 2D cells one node per crossing point); weights are 0. Leaves are not filtered by
 /// the terms where a box needs the level sets to decide: a leaf lies on one
 /// side of each level set as a whole. The height lines below the top do not
 /// split where a surface function vanishes beyond the box above, nor, in an

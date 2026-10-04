@@ -45,7 +45,8 @@ void append_leaves(const ClippedBox<T>& cell, std::span<const Source<T>> phis, s
     }
     const bool surface = zero != 0;
     const int surface_ls = surface ? std::countr_zero(zero) : -1;
-    const int dim = surface ? cell.tdim - 1 : cell.tdim; // of the leaves
+    const int partner_ls = std::popcount(zero) == 2 ? 63 - std::countl_zero(zero) : -1; // a curve's second
+    const int dim = cell.tdim - std::popcount(zero);                                  // of the leaves
     const int p1 = degree + 1;
     int n_nodes = 1;
     for (int d = 0; d < dim; ++d)
@@ -85,11 +86,11 @@ void append_leaves(const ClippedBox<T>& cell, std::span<const Source<T>> phis, s
     auto sub = [](const Vec3<T>& a, const Vec3<T>& b) { return Vec3<T>{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
     auto cross = [](const Vec3<T>& a, const Vec3<T>& b)
     { return Vec3<T>{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}; };
-    // physical gradient of the interface's level set: J^-T grad_u phi
-    auto physical_gradient = [&](const Vec3<T>& u)
+    // physical gradient of a level set: J^-T grad_u phi
+    auto physical_gradient = [&](int ls, const Vec3<T>& u)
     {
         Vec3<T> gu = {0, 0, 0}, gx = {0, 0, 0};
-        gradient(phis[static_cast<std::size_t>(surface_ls)], std::span<const T>(u), std::span<T>(gu));
+        gradient(phis[static_cast<std::size_t>(ls)], std::span<const T>(u), std::span<T>(gu));
         for (int d = 0; d < 3; ++d)
             for (int e = 0; e < 3; ++e)
                 gx[d] += inv[e][d] * gu[e];
@@ -168,22 +169,33 @@ void append_leaves(const ClippedBox<T>& cell, std::span<const Source<T>> phis, s
             }
             if (surface)
             {
-                const Vec3<T> gx = physical_gradient(leaf.u[n_nodes / 2]);
+                const Vec3<T> gx = physical_gradient(surface_ls, leaf.u[n_nodes / 2]);
                 for (int d = 0; d < 3; ++d)
                     orientation += normal[d] * gx[d];
             }
             else
                 orientation = normal[2]; // a 2D cell's leaf, in the plane z = 0
         }
-        else
+        else if (dim == 1)
         {
-            // a curve in the plane: its normal (t_y, -t_x) along the gradient
             const Vec3<T> t = sub(x[degree], x[0]);
-            const Vec3<T> gx = physical_gradient(leaf.u[n_nodes / 2]);
-            orientation = t[1] * gx[0] - t[0] * gx[1];
+            const Vec3<T> gx = physical_gradient(surface_ls, leaf.u[n_nodes / 2]);
+            if (partner_ls >= 0)
+            {
+                // where two level sets vanish: along grad a x grad b
+                const Vec3<T> n = cross(gx, physical_gradient(partner_ls, leaf.u[n_nodes / 2]));
+                orientation = t[0] * n[0] + t[1] * n[1] + t[2] * n[2];
+            }
+            else
+            {
+                // a curve in the plane: its normal (t_y, -t_x) along the gradient
+                orientation = t[1] * gx[0] - t[0] * gx[1];
+            }
         }
         const bool flip = orientation < T(0);
-        if (dim == 1)
+        if (dim == 0)
+            conn[0] = first; // a point where two curves cross
+        else if (dim == 1)
         {
             for (int i = 0; i < p1; ++i)
                 conn[vtk_lagrange_curve_index(flip ? degree - i : i, degree)] = first + i;
@@ -205,11 +217,12 @@ void append_leaves(const ClippedBox<T>& cell, std::span<const Source<T>> phis, s
         }
         mesh.connectivity.insert(mesh.connectivity.end(), conn.begin(), conn.end());
         mesh.offsets.push_back(static_cast<std::int32_t>(mesh.connectivity.size()));
-        mesh.vtk_types.push_back(dim == 1   ? vtk_lagrange_curve
+        mesh.vtk_types.push_back(dim == 0   ? vtk_vertex
+                                 : dim == 1 ? vtk_lagrange_curve
                                  : dim == 2 ? vtk_lagrange_quadrilateral
                                             : vtk_lagrange_hexahedron);
         mesh.parent.push_back(parent_cell);
-        mesh.degree.push_back(degree);
+        mesh.degree.push_back(dim == 0 ? 0 : degree);
     }
 }
 

@@ -80,8 +80,8 @@ domains: a term holds on the whole cell, on a piece of it bounded by the level
 sets that cut it, or nowhere. A cell is in the part whole if some term holds on
 all of it, otherwise it is a cut cell of the part if some term holds on a piece
 (`term_on_cell`). Both backends take any number of level sets per cell (quadrays
-since phase 6); quadrays integrates volumes and interfaces, the curves where two
-level sets vanish come from the lookup tables.
+since phase 6) and integrate volumes, interfaces and the curves where two level
+sets vanish, points in 2D (quadrays since 2026-10-04, `LIBRARY.md`).
 
 ## Faces lying in a zero set
 
@@ -97,6 +97,12 @@ rule of the face merged into the owner's rule, and shows it as a linear face.
 For the plane x = 0.25 at n = 8 that is 64 quadrilaterals or 128 triangles, and
 the interface measures 4 to rounding, as do the volumes below and above it.
 
+Two gaps, in both backends (found 2026-10-04, `LIBRARY.md`): a zero face that
+another level set of the term cuts is left out (the face counts only if the
+term's other clauses hold on all of its owner), and the curve where one level
+set lies in mesh faces is not found (no cell counts as cut by it, and zero
+faces serve interfaces only).
+
 ## Quadrature and visualisation
 
 `part.quadrature(order, mode, backend, options)` gives one rule per cell, cells
@@ -111,13 +117,17 @@ which raise the degree of the integrand by one, so the outermost level needs
 for studies. Whole cells, zero faces and the lookup tables' pieces get the
 reference rule of degree order, or the lowest higher one with positive weights
 (tetrahedra: 4 for 3, 9 for 7 and 8). `python/tests/test_part_order.py` checks
-every moment up to degree order, orders 1 to 10, on cells cut by a plane.
+every moment up to degree order, orders 1 to 10, on cells cut by a plane and on
+the line where two planes vanish. The points where two curves cross on 2D cells
+weigh 1; one on an edge or a vertex that several cells find is kept once, by the
+lowest cell.
 `options` is a `QuadraysOptions` for quadrays and a `LutOptions` for
 `backend="lut"` (None: the defaults).
 `part.visualization_mesh(mode, backend, degree)` gives quadrays' leaves as
-Lagrange cells (a `QuadraysLeafMesh`) or the lookup tables' straight pieces (a
-`CutMesh`), zero faces as linear faces and, with mode `full`, the whole cells as
-linear cells; `write_vtu` writes them.
+Lagrange cells (a `QuadraysLeafMesh`; curves where two level sets vanish as
+Lagrange curves, their crossing points on 2D cells as vertices) or the lookup
+tables' straight pieces (a `CutMesh`), zero faces as linear faces and, with mode
+`full`, the whole cells as linear cells; `write_vtu` writes them.
 
 ## The lookup-table backend (phase 4)
 
@@ -241,7 +251,9 @@ points in 2D), the zero pieces of the first are also cut by the zero set of the
 second; every piece carries the mask of the zero sets it lies in. A curve on a
 face between two sub-cells is counted once, by the sub-cell below the second
 level set. Two planes give their line, in every cell type and template order, to
-5e-15 (`cpp/tests/lut/test_lut.cpp`).
+5e-15 (`cpp/tests/lut/test_lut.cpp`). Curved curves converge as (h / k)^2 in
+the template order k (`python/tests/test_part.py`); quadrays integrates them
+with high order since 2026-10-04 (`LIBRARY.md`).
 
 ## Phase 5: AdaptCell retired
 
@@ -295,8 +307,9 @@ level set. Two planes give their line, in every cell type and template order, to
   and faces (3D).
 - **Several level sets per cell:** a part's terms on a cell are grouped by the
   level set whose zero set they integrate (`cell_terms`): volumes in one engine
-  run, interfaces one run per zero level set. Only the curves (points in 2D)
-  where two level sets vanish are left to the lookup tables.
+  run, interfaces one run per zero level set, and since 2026-10-04 the curves
+  (points in 2D) where two level sets vanish one run per pair (until then they
+  were left to the lookup tables).
 - **Python:** the quadrays options gain `split_bounds`, `rotation_depth`,
   `taylor_subdivisions` and `two_roots_depth`, the stats `two_roots` and
   `surfaces`.
@@ -304,9 +317,14 @@ level set. Two planes give their line, in every cell type and template order, to
 ## Limits
 
 - quadrays: affine cells (parallelograms, parallelepipeds, prisms and pyramids
-  with parallelogram faces); volumes and interfaces, with any number of level
-  sets per cell. Pyramids with Pk level sets bisect towards their apex where a
-  zero set passes near it.
+  with parallelogram faces); volumes, interfaces and the curves (points in 2D)
+  where two level sets vanish, with any number of level sets per cell, not the
+  points where three do. Pyramids with Pk level sets bisect towards their apex
+  where a zero set passes near it. A curve lying in faces between cells, where
+  neither level set vanishes on a whole face (x = y = 0.1 on Kuhn tetrahedra),
+  is counted in either cell or neither.
+- Both backends: zero faces that another level set of the term cuts, and the
+  curves where one level set lies in mesh faces (above).
 - The lookup tables: intervals, triangles, quadrilaterals, tetrahedra,
   hexahedra, prisms and pyramids (pyramids with templates of order 1 and 2),
   affine or multilinear cell maps; volumes, interfaces and the curves (points

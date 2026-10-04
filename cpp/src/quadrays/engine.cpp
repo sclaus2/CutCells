@@ -83,6 +83,11 @@ template <std::floating_point T>
 constexpr T segment_tol = scaled_tolerance<T>(1e-15);
 template <std::floating_point T>
 constexpr T zero_function_tol = scaled_tolerance<T>(1e-12);
+/// Points of a curve part on a 2D cell: a root at an end of a line counts
+/// within this Newton distance |f| / |f'| (box units), and points closer than
+/// twice it are one.
+template <std::floating_point T>
+constexpr T point_tol = std::max(static_cast<T>(1e-10), T(100) * std::numeric_limits<T>::epsilon());
 
 template <std::floating_point T>
 constexpr T infinity = std::numeric_limits<T>::infinity();
@@ -202,12 +207,14 @@ struct Context
     std::vector<Requirement> terms;
     std::uint64_t used = 0; ///< level sets some term constrains
     int surface = -1;       ///< interface parts: the level set whose zero set is integrated
+    int partner = -1;       ///< curve parts: the second level set, whose zero set meets surface's
     Options opt;
     T margin = 0;
     Stats* stats = nullptr;
     int vis_order = 0; ///< > 0: leaf nodes (vis_order + 1 per segment) instead of Gauss points
     T detj = 0;        ///< |det| of the box-to-physical map
     Mat3<T> inv = {};  ///< its inverse (interface weights)
+    Mat3<T> jac = {};  ///< the map itself (curve weights)
     std::array<int, 3> box_ids{};
     int bisections = 0; ///< bisections so far in this cell
 
@@ -1046,6 +1053,62 @@ bool surface_margins(Context<T>& ctx, const Surface<T, D>& s, const VecD<T, D>& 
     return true;
 }
 
+/// True if a surface function's under level set has one sign on [lo, hi]
+/// times the height range [t_lo, t_hi] of the box above: its root, and a curve
+/// on its zero set, do not cross that box over [lo, hi]. (The surface function
+/// follows the root beyond the box, where its bounds may never settle.) Where
+/// the whole range shows no sign, thinner slabs of it, whose bounds are
+/// tighter (Taylor models of an analytic level set), may.
+template <std::floating_point T, int D>
+bool under_signed(Context<T>& ctx, const Surface<T, D>& s, const VecD<T, D>& lo, const VecD<T, D>& hi)
+{
+    VecD<T, D + 1> ilo = insert<T, D + 1>(lo, s.k, s.t_lo), ihi = insert<T, D + 1>(hi, s.k, s.t_hi);
+    const auto sign = [&]()
+    {
+        const Ranges<T, D + 1> r = curved_ranges<T, D + 1>(ctx, s.under, ilo, ihi, ctx.inner_form[D + 1],
+                                                           ctx.inner_deriv[D + 1], ctx.inner_work[D + 1]);
+        return r.valid ? r.sign : 0;
+    };
+    const int whole = sign();
+    if (whole != 0 || !is_analytic(ctx, s.under.ls))
+        return whole != 0;
+    const int pieces = 8;
+    int first = 0;
+    for (int i = 0; i < pieces; ++i)
+    {
+        ilo[s.k] = s.t_lo + (s.t_hi - s.t_lo) * T(i) / T(pieces);
+        ihi[s.k] = s.t_lo + (s.t_hi - s.t_lo) * T(i + 1) / T(pieces);
+        const int piece = sign();
+        if (piece == 0 || (first != 0 && piece != first))
+            return false;
+        first = piece;
+    }
+    return true;
+}
+
+/// True if a surface function is 0 up to rounding, relative to the size of its
+/// on level set, at the centre and the corners of [lo, hi]: the two zero sets
+/// coincide there, and its roots would be rounding noise.
+template <std::floating_point T, int D>
+bool surface_vanishes_identically(Context<T>& ctx, const Surface<T, D>& s, const VecD<T, D>& lo,
+                                  const VecD<T, D>& hi)
+{
+    const T tol = zero_function_tol<T> * ctx.scales[static_cast<std::size_t>(s.on.ls)];
+    VecD<T, D> y;
+    for (int j = 0; j < D; ++j)
+        y[j] = T(0.5) * (lo[j] + hi[j]);
+    if (!(std::abs(surface_value<T, D>(ctx, s, y)) <= tol))
+        return false;
+    for (int corner = 0; corner < (1 << D); ++corner)
+    {
+        for (int j = 0; j < D; ++j)
+            y[j] = ((corner >> j) & 1) ? hi[j] : lo[j];
+        if (!(std::abs(surface_value<T, D>(ctx, s, y)) <= tol))
+            return false;
+    }
+    return true;
+}
+
 /// Roots of a surface function of one coordinate on (a, b), appended to
 /// @p roots: none where bounds show one sign, one where they show a monotone
 /// function whose ends differ in sign, bisection otherwise (down to 2^-24 of
@@ -1255,7 +1318,21 @@ struct Analysis
     std::vector<int> signs;
     std::vector<Requirement> terms;
     int decided = 0;
+    /// Top level: the level set whose roots the height lines take, the
+    /// interface's; in a curve part either of its two level sets, the second
+    /// where only it has a margin.
+    int surface = -1;
 };
+
+/// A curve part's surface function: one of its two level sets on the other's
+/// zero set, which vanishes where the curve crosses the height lines.
+template <std::floating_point T, int D>
+bool partner_surface(const Context<T>& ctx, const Surface<T, D>& s)
+{
+    return ctx.partner >= 0
+           && ((s.under.ls == ctx.surface && s.on.ls == ctx.partner)
+               || (s.under.ls == ctx.partner && s.on.ls == ctx.surface));
+}
 
 /// The terms that the level sets' signs on a box leave: terms contradicted by
 /// a known sign go, conditions met by one are dropped.
@@ -1534,6 +1611,7 @@ template <std::floating_point T, int D>
 Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int depth)
 {
     Analysis<T, D> an;
+    an.surface = ctx.surface;
     BoxBernstein<T>& form = ctx.form[D];
     VecD<T, D> lengths;
     for (int j = 0; j < D; ++j)
@@ -1541,7 +1619,7 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
     if (top)
         an.signs.assign(ctx.phis.size(), 0);
     const bool clipped = ctx.opt.taylor_subdivisions > 1 && box_clipped<T, D>(p.lo, p.hi, p.clips);
-    bool surface_vanishes = false;
+    bool surface_vanishes = false, partner_vanishes = false;
     for (const Func<T, D>& f : p.funcs)
     {
         if (f.linear)
@@ -1575,6 +1653,7 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
             an.ratios.push_back(ratio);
             an.uppers.push_back(upper);
             surface_vanishes |= f.ls == ctx.surface;
+            partner_vanishes |= f.ls == ctx.partner;
             continue;
         }
         bernstein_form<T, D>(ctx, f, p.lo, p.hi, form, ctx.form_work[D]);
@@ -1607,19 +1686,24 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
         an.ratios.push_back(ratio);
         an.uppers.push_back(upper);
         surface_vanishes |= f.ls == ctx.surface;
+        partner_vanishes |= f.ls == ctx.partner;
     }
 
     // Top level: the level sets' signs may decide the terms on the box, and
-    // level sets the remaining terms do not name need no breakpoints.
+    // level sets the remaining terms do not name need no breakpoints. A curve
+    // crosses the box only where both its level sets may vanish.
     if (top)
     {
-        an.decided = residual_terms(ctx.terms, an.signs, ctx.surface, surface_vanishes, an.terms);
+        an.decided = residual_terms(ctx.terms, an.signs, ctx.surface,
+                                    surface_vanishes && (ctx.partner < 0 || partner_vanishes), an.terms);
         std::uint64_t needed = 0;
         if (an.decided == 0)
             for (const Requirement& r : an.terms)
                 needed |= r.negative | r.positive;
         if (ctx.surface >= 0)
             needed |= std::uint64_t(1) << ctx.surface;
+        if (ctx.partner >= 0)
+            needed |= std::uint64_t(1) << ctx.partner;
         if (an.decided == -1)
             needed = 0;
         std::vector<Func<T, D>> funcs;
@@ -1650,7 +1734,7 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
     // margin there; its restrictions to the bounds carry it to the base. Not the
     // level set of an interface, whose roots the top level integrates.
     const auto is_passive = [&](std::size_t c)
-    { return top && ctx.surface >= 0 && an.funcs[static_cast<std::size_t>(an.curved[c])].ls != ctx.surface; };
+    { return top && an.surface >= 0 && an.funcs[static_cast<std::size_t>(an.curved[c])].ls != an.surface; };
     const auto margin_of = [&](std::size_t c, int kk)
     {
         if (is_passive(c))
@@ -1658,15 +1742,19 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
         const VecD<T, D>& upper = an.uppers[c];
         const T norm = scaled_norm(std::span<const T>(upper));
         const bool constant = norm > T(0) && norm < infinity<T> && upper[kk] <= tiny<T> * norm
-                              && !(top && an.funcs[static_cast<std::size_t>(an.curved[c])].ls == ctx.surface);
+                              && !(top && an.funcs[static_cast<std::size_t>(an.curved[c])].ls == an.surface);
         return constant ? T(1) : an.ratios[c][kk];
     };
 
-    // surface functions: dropped where they have no root
+    // surface functions: dropped where they have no root, and a curve part's
+    // where the curve does not cross the box above or its two zero sets coincide
     if constexpr (D <= 2)
     {
         for (const Surface<T, D>& s : p.surfaces)
         {
+            if (partner_surface<T, D>(ctx, s)
+                && (under_signed<T, D>(ctx, s, p.lo, p.hi) || surface_vanishes_identically<T, D>(ctx, s, p.lo, p.hi)))
+                continue;
             VecD<T, D> ratio{};
             if (!surface_margins<T, D>(ctx, s, p.lo, p.hi, ratio))
                 continue;
@@ -1676,17 +1764,38 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
     }
 
     // height direction: the best certified margin over all curved functions
-    for (int kk = 0; kk < D; ++kk)
+    const auto choose_direction = [&]()
     {
-        T best = T(1);
-        for (std::size_t c = 0; c < an.ratios.size(); ++c)
-            best = std::min(best, margin_of(c, kk));
-        for (const VecD<T, D>& r : an.surface_ratios)
-            best = std::min(best, r[kk]);
-        if (best > an.best || (best == an.best && p.hi[kk] - p.lo[kk] > p.hi[an.k] - p.lo[an.k]))
+        an.best = T(-1);
+        an.k = 0;
+        for (int kk = 0; kk < D; ++kk)
         {
-            an.best = best;
-            an.k = kk;
+            T best = T(1);
+            for (std::size_t c = 0; c < an.ratios.size(); ++c)
+                best = std::min(best, margin_of(c, kk));
+            for (const VecD<T, D>& r : an.surface_ratios)
+                best = std::min(best, r[kk]);
+            if (best > an.best || (best == an.best && p.hi[kk] - p.lo[kk] > p.hi[an.k] - p.lo[an.k]))
+            {
+                an.best = best;
+                an.k = kk;
+            }
+        }
+        an.certified
+            = (an.ratios.empty() && an.surface_ratios.empty()) || (an.best > T(0) && an.best >= ctx.margin);
+    };
+    choose_direction();
+    // A curve part takes the roots of either of its level sets: the second
+    // where only it has a margin (the first may have two roots per line in the
+    // box, which no surface function follows).
+    if (!an.certified && top && ctx.partner >= 0)
+    {
+        an.surface = ctx.partner;
+        choose_direction();
+        if (!an.certified)
+        {
+            an.surface = ctx.surface;
+            choose_direction();
         }
     }
     an.two_roots.assign(an.funcs.size(), 0);
@@ -1701,8 +1810,8 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
             an.independent[i] = !an.passive[i] && margin_of(c, an.k) == T(1) && an.ratios[c][an.k] < T(1);
         }
     };
-    an.certified = (an.ratios.empty() && an.surface_ratios.empty()) || (an.best > T(0) && an.best >= ctx.margin);
-    if (an.certified || depth < ctx.opt.two_roots_depth || an.ratios.empty())
+    // curve parts: no two roots per line, which no surface function follows
+    if (an.certified || depth < ctx.opt.two_roots_depth || an.ratios.empty() || (top && ctx.partner >= 0))
     {
         mark_independent();
         return an;
@@ -2324,8 +2433,45 @@ bool holds(Context<T>& ctx, const std::vector<Requirement>& terms, const Vec3<T>
     return false;
 }
 
-/// One free coordinate: Gauss-Legendre on the segments between bounds and roots.
+/// The points where a curve part's two level sets cross, on a 2D cell: the
+/// roots of their surface function on the base line [L, U] of a box, each with
+/// weight 1. An end of the line counts within the Newton distance point_tol
+/// (a point on the face two boxes share is found by both, and merged once the
+/// cell is done); where the two zero sets coincide there are none.
 template <std::floating_point T, typename Emit>
+void crossing_points(Context<T>& ctx, const Problem<T, 1>& p, T L, T U, const Emit& emit)
+{
+    std::vector<T>& nodes = ctx.nodes[1];
+    NodeTag tag;
+    tag.box[0] = ctx.box_ids[0]++;
+    int index = 0;
+    for (const Surface<T, 1>& s : p.surfaces)
+    {
+        if (!partner_surface<T, 1>(ctx, s) || surface_vanishes_identically<T, 1>(ctx, s, {L}, {U}))
+            continue;
+        nodes.clear();
+        surface_line_roots<T>(ctx, s, L, U, nodes);
+        for (const T end : {L, U})
+        {
+            VecD<T, 1> g;
+            surface_gradient<T, 1>(ctx, s, {end}, g);
+            if (std::abs(surface_value<T, 1>(ctx, s, {end})) <= point_tol<T> * std::abs(g[0]))
+                nodes.push_back(end);
+        }
+        std::sort(nodes.begin(), nodes.end());
+        for (const T t : nodes)
+        {
+            tag.segment[0] = index++;
+            tag.node[0] = 0;
+            emit(VecD<T, 1>{t}, T(1), tag, VecD<T, 1>{T(0)});
+        }
+    }
+}
+
+/// One free coordinate: Gauss-Legendre on the segments between bounds and
+/// roots; the derivative of the points along their coordinate is 1. Below the
+/// top of a 2D cell (Points), a curve part's crossing points instead.
+template <std::floating_point T, bool Points, typename Emit>
 void integrate_line(Context<T>& ctx, const Problem<T, 1>& p, const Emit& emit)
 {
     T L = p.lo[0], U = p.hi[0];
@@ -2340,6 +2486,14 @@ void integrate_line(Context<T>& ctx, const Problem<T, 1>& p, const Emit& emit)
     }
     if (!(U > L))
         return;
+    if constexpr (Points)
+    {
+        if (ctx.partner >= 0)
+        {
+            crossing_points<T>(ctx, p, L, U, emit);
+            return;
+        }
+    }
     std::vector<T>& nodes = ctx.nodes[1];
     nodes.clear();
     nodes.push_back(L);
@@ -2383,7 +2537,7 @@ void integrate_line(Context<T>& ctx, const Problem<T, 1>& p, const Emit& emit)
                       [&](int j, T t, T w)
                       {
                           tag.node[0] = j;
-                          emit(VecD<T, 1>{t}, w, tag);
+                          emit(VecD<T, 1>{t}, w, tag, VecD<T, 1>{T(1)});
                       });
     }
 }
@@ -2530,7 +2684,12 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             for (int j = 1; j < D; ++j)
                 if (p.hi[j] - p.lo[j] > p.hi[axis] - p.lo[axis])
                     axis = j;
-            T mid = T(0.5) * (p.lo[axis] + p.hi[axis]);
+            // A curve in the mid-plane of a box (its partner's zero set, say a
+            // plane through a cell's centre, or two balls symmetric about it), or
+            // whose base lies on the mid-line of a base, would lie on the face the
+            // halves share, where neither finds it: curve parts split off-centre.
+            T mid = ctx.partner >= 0 ? p.lo[axis] + T(0.53) * (p.hi[axis] - p.lo[axis])
+                                     : T(0.5) * (p.lo[axis] + p.hi[axis]);
             if constexpr (D == Top)
                 if (interface && interface_on_plane<T, D>(ctx, p, axis, mid))
                     mid = p.lo[axis] + T(0.625) * (p.hi[axis] - p.lo[axis]);
@@ -2542,6 +2701,10 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             return;
         }
         ++ctx.stats->uncertified;
+        // a curve part's top box makes no surface functions uncertified: its
+        // piece of the curve, if any, is lost
+        if (D == Top && ctx.partner >= 0)
+            ++ctx.stats->curve_lost;
         k = uncertified_direction<T, D>(ctx, p, an, k);
     }
 
@@ -2782,9 +2945,11 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                 }
         }
 
-        // the rule along the height lines: the integrand of the base level
+        // the rule along the height lines: the integrand of the base level; dyb
+        // is the derivative of yb along a curve part's parameter
         const int box_id = ctx.box_ids[D - 1]++;
-        const auto line = [&, k, certified, box_id](const VecD<T, D - 1>& yb, T w, const NodeTag& below)
+        const auto line = [&, k, certified, box_id](const VecD<T, D - 1>& yb, T w, const NodeTag& below,
+                                                    const VecD<T, D - 1>& dyb)
         {
             T L = -infinity<T>, U = infinity<T>;
             for (const Bound<T, D>& b : lows)
@@ -2792,9 +2957,71 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             for (const Bound<T, D>& b : ups)
                 U = std::min(U, bound_value<T, D>(b, yb));
             if (!(U > L))
-                return;
+            {
+                // a crossing point at a corner of the region, where the line has
+                // shrunk to it (a triangle's acute corner), still counts
+                bool corner = false;
+                if constexpr (D == Top && Top == 2)
+                    corner = ctx.partner >= 0 && U >= L - point_tol<T>;
+                if (!corner)
+                    return;
+                U = L;
+            }
             std::vector<T>& nodes = ctx.nodes[D];
             nodes.clear();
+            if constexpr (D == 2 && Top == 3)
+            {
+                // A curve part, on the base of the top box: the points where the
+                // curve crosses the line, the roots of its surface function,
+                // instead of segments. Along the curve the surface function stays
+                // 0, so its root moves by dt/ds = -(grad_b s . dyb) / d_t s.
+                if (ctx.partner >= 0)
+                {
+                    NodeTag tag = below;
+                    tag.box[D - 1] = box_id;
+                    tag.node[D - 1] = 0;
+                    int index = 0;
+                    for (const Surface<T, D>& s : p.surfaces)
+                    {
+                        if (!partner_surface<T, D>(ctx, s))
+                            continue;
+                        nodes.clear();
+                        if (certified)
+                        {
+                            const T sl = surface_value<T, D>(ctx, s, insert<T, D>(yb, k, L)),
+                                    su = surface_value<T, D>(ctx, s, insert<T, D>(yb, k, U));
+                            if (opposite(sl, su))
+                                nodes.push_back(illinois_root(
+                                    [&](T t) { return surface_value<T, D>(ctx, s, insert<T, D>(yb, k, t)); }, L, U,
+                                    sl, su));
+                        }
+                        else
+                            surface_line_roots<T>(ctx, surface_on_line<T, D>(s, yb, k), L, U, nodes);
+                        std::sort(nodes.begin(), nodes.end());
+                        for (const T t : nodes)
+                        {
+                            const VecD<T, D> y = insert<T, D>(yb, k, t);
+                            // leaf cells: only crossings in the box above, as below
+                            if (ctx.vis_order > 0)
+                            {
+                                const T r = surface_root<T, D>(ctx, s, y);
+                                if (r < s.t_lo || r > s.t_hi)
+                                    continue;
+                            }
+                            VecD<T, D> g;
+                            surface_gradient<T, D>(ctx, s, y, g);
+                            if (!(std::abs(g[k]) > T(0)))
+                                continue;
+                            T slope = T(0);
+                            for (int jb = 0; jb < D - 1; ++jb)
+                                slope += g[jb < k ? jb : jb + 1] * dyb[jb];
+                            tag.segment[D - 1] = index++;
+                            emit(y, w, tag, insert<T, D>(dyb, k, -slope / g[k]));
+                        }
+                    }
+                    return;
+                }
+            }
             if constexpr (D == Top)
                 std::fill(ctx.top_line_set.begin(), ctx.top_line_set.end(), char(0));
             for (std::size_t i = 0; i < p.funcs.size(); ++i)
@@ -2813,24 +3040,41 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                     }
                     continue;
                 }
-                // An interface part: the roots of the interface's level set; the
-                // others are evaluated at them. Leaf cells do not split at the
-                // others' restrictions below either, which only pair with the
-                // interface's in surface functions: their roots may cross a
-                // surface function's inside a base segment, and the segments of
-                // a leaf would no longer line up.
-                if (ctx.surface >= 0 && f.ls != ctx.surface && (D == Top || ctx.vis_order > 0))
+                // An interface part: the roots of the interface's level set (in a
+                // curve part, of the box's); the others are evaluated at them.
+                // Leaf cells do not split at the others' restrictions below
+                // either, which only pair with the interface's in surface
+                // functions: their roots may cross a surface function's inside a
+                // base segment, and the segments of a leaf would no longer line up.
+                if (an.surface >= 0 && f.ls != an.surface && (D == Top || ctx.vis_order > 0))
                     continue;
                 BoxBernstein<T>* form = &ctx.line[D];
-                if constexpr (D == Top)
+                if (U > L)
                 {
-                    if (!is_analytic(ctx, f.ls))
+                    if constexpr (D == Top)
                     {
-                        form = &ctx.top_lines[static_cast<std::size_t>(f.ls)];
-                        ctx.top_line_set[static_cast<std::size_t>(f.ls)] = 1;
+                        if (!is_analytic(ctx, f.ls))
+                        {
+                            form = &ctx.top_lines[static_cast<std::size_t>(f.ls)];
+                            ctx.top_line_set[static_cast<std::size_t>(f.ls)] = 1;
+                        }
                     }
+                    curved_roots<T, D>(ctx, f, yb, k, L, U, certified, an.two_roots[i] != 0, *form, nodes);
                 }
-                curved_roots<T, D>(ctx, f, yb, k, L, U, certified, an.two_roots[i] != 0, *form, nodes);
+                if constexpr (D == Top && Top == 2)
+                {
+                    // a crossing point at an end of the line counts there too
+                    if (ctx.partner >= 0)
+                        for (const T end : {L, U})
+                        {
+                            const VecD<T, D> y = insert<T, D>(yb, k, end);
+                            if (std::abs(value<T, D>(ctx, f, y))
+                                <= point_tol<T> * std::abs(derivative_along<T, D>(ctx, f, y, k)))
+                                nodes.push_back(end);
+                            if (!(U > L))
+                                break;
+                        }
+                }
             }
             if constexpr (D <= 2)
             {
@@ -2868,10 +3112,13 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             {
                 if (interface)
                 {
-                    // the roots of the level set on each line, weighted by the physical
-                    // surface measure: |det J| |J^-T grad phi| / |d_k phi|
+                    // the roots of the level set on each line, weighted by the
+                    // physical surface measure |det J| |J^-T grad phi| / |d_k phi|;
+                    // on a curve by the physical speed |J dU/ds|, the root moving
+                    // by dr/ds = -(grad_b phi . dyb) / d_k phi along it; a 2D curve
+                    // part's crossing points weigh 1
                     std::sort(nodes.begin(), nodes.end());
-                    const Source<T>& phi = ctx.phis[static_cast<std::size_t>(ctx.surface)];
+                    const Source<T>& phi = ctx.phis[static_cast<std::size_t>(an.surface)];
                     for (std::size_t r = 0; r < nodes.size(); ++r)
                     {
                         tag.segment[D - 1] = static_cast<int>(r);
@@ -2881,19 +3128,43 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                             continue;
                         Vec3<T> g = {0, 0, 0};
                         gradient(phi, std::span<const T>(u), std::span<T>(g));
-                        // d_k phi in the level's (possibly rotated) coordinates
-                        T dk = T(0);
-                        for (int i = 0; i < 3; ++i)
-                            dk += p.frame.A[i][k] * g[i];
-                        dk = std::abs(dk);
+                        // grad phi in the level's (possibly rotated) coordinates
+                        VecD<T, D> dphi{};
+                        for (int j = 0; j < D; ++j)
+                            for (int i = 0; i < 3; ++i)
+                                dphi[j] += p.frame.A[i][j] * g[i];
+                        const T dk = std::abs(dphi[k]);
                         if (!(dk > T(0)))
                             continue;
-                        const T gnorm = scaled_norm(std::span<const T>(g));
-                        Vec3<T> gx = {0, 0, 0};
-                        for (int i = 0; i < 3; ++i)
-                            for (int m = 0; m < 3; ++m)
-                                gx[i] += ctx.inv[m][i] * g[m] / gnorm;
-                        emit(y, w * gnorm / dk * ctx.detj * scaled_norm(std::span<const T>(gx)), tag);
+                        if (ctx.partner < 0)
+                        {
+                            const T gnorm = scaled_norm(std::span<const T>(g));
+                            Vec3<T> gx = {0, 0, 0};
+                            for (int i = 0; i < 3; ++i)
+                                for (int m = 0; m < 3; ++m)
+                                    gx[i] += ctx.inv[m][i] * g[m] / gnorm;
+                            emit(y, w * gnorm / dk * ctx.detj * scaled_norm(std::span<const T>(gx)), tag,
+                                 VecD<T, D>{});
+                        }
+                        else if constexpr (Top == 2)
+                            emit(y, w, tag, VecD<T, D>{});
+                        else
+                        {
+                            T slope = T(0);
+                            for (int jb = 0; jb < D - 1; ++jb)
+                                slope += dphi[jb < k ? jb : jb + 1] * dyb[jb];
+                            const VecD<T, D> dy = insert<T, D>(dyb, k, -slope / dphi[k]);
+                            Vec3<T> dx = {0, 0, 0};
+                            for (int i = 0; i < 3; ++i)
+                            {
+                                T du = T(0);
+                                for (int j = 0; j < D; ++j)
+                                    du += p.frame.A[i][j] * dy[j];
+                                for (int m = 0; m < 3; ++m)
+                                    dx[m] += ctx.jac[m][i] * du;
+                            }
+                            emit(y, w * scaled_norm(std::span<const T>(dx)), tag, dy);
+                        }
                     }
                     return;
                 }
@@ -2921,16 +3192,16 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                                           if (an.decided == 0
                                               && !holds<T>(ctx, an.terms, to_u<T, D>(p.frame, y), (t - L) / (U - L)))
                                               return;
-                                          emit(y, w * wt * ctx.detj, tag);
+                                          emit(y, w * wt * ctx.detj, tag, VecD<T, D>{});
                                           return;
                                       }
                                   }
-                                  emit(y, w * wt, tag);
+                                  emit(y, w * wt, tag, VecD<T, D>{});
                               });
             }
         };
         if constexpr (D == 2)
-            integrate_line<T>(ctx, base, line);
+            integrate_line<T, Top == 2>(ctx, base, line);
         else
             integrate_box<T, D - 1, false, Top>(ctx, std::move(base), line, 0, false);
     };
@@ -3009,6 +3280,13 @@ void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth
     {
         if (interface && an.funcs.empty())
             return;
+        // a curve part, on the base of the top box: nothing where its surface
+        // function has no root, nor need the other functions certify there
+        if constexpr (D == 2 && Top == 3)
+            if (ctx.partner >= 0
+                && std::none_of(an.surfaces.begin(), an.surfaces.end(),
+                                [&ctx](const Surface<T, 2>& s) { return partner_surface<T, 2>(ctx, s); }))
+                return;
     }
     p.funcs = std::move(an.funcs);
     p.surfaces = std::move(an.surfaces);
@@ -3030,8 +3308,14 @@ void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth
                     ++ctx.stats->rotations;
                     r.funcs = std::move(ar.funcs);
                     r.surfaces = std::move(ar.surfaces);
-                    const auto back = [&emit](const VecD<T, 2>& z, T w, const NodeTag& tag)
-                    { emit(VecD<T, 2>{T(0.5) * (z[0] - z[1]), T(0.5) * (z[0] + z[1])}, T(0.5) * w, tag); };
+                    // the frame's factor 1/2 is an area's; a curve's points get
+                    // theirs from the derivative along it, which the map carries
+                    const bool curve = ctx.partner >= 0;
+                    const auto back = [&emit, curve](const VecD<T, 2>& z, T w, const NodeTag& tag, const VecD<T, 2>& dz)
+                    {
+                        emit(VecD<T, 2>{T(0.5) * (z[0] - z[1]), T(0.5) * (z[0] + z[1])}, curve ? w : T(0.5) * w, tag,
+                             VecD<T, 2>{T(0.5) * (dz[0] - dz[1]), T(0.5) * (dz[0] + dz[1])});
+                    };
                     reduce<T, 2, true, Top>(ctx, std::move(r), ar, back, depth, interface);
                     return;
                 }
@@ -3079,13 +3363,16 @@ void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth
                     ++ctx.stats->rotations;
                     r.funcs = std::move(ar.funcs);
                     r.surfaces = std::move(ar.surfaces);
-                    const auto back = [&emit, R](const VecD<T, D>& z, T w, const NodeTag& tag)
+                    const auto back = [&emit, R](const VecD<T, D>& z, T w, const NodeTag& tag, const VecD<T, D>& dz)
                     {
-                        VecD<T, D> y{};
+                        VecD<T, D> y{}, dy{};
                         for (int j = 0; j < D; ++j)
                             for (int m = 0; m < D; ++m)
+                            {
                                 y[j] += R[j][m] * z[m];
-                        emit(y, w, tag);
+                                dy[j] += R[j][m] * dz[m];
+                            }
+                        emit(y, w, tag, dy);
                     };
                     reduce<T, D, true, Top>(ctx, std::move(r), ar, back, depth, interface);
                     return;
@@ -3125,7 +3412,7 @@ void run_top(Context<T>& ctx, const ClippedBox<T>& cell, CellPoints<T>& out, boo
         top.clips.push_back(c);
     }
     const int vis_order = ctx.vis_order;
-    const auto emit = [&out, vis_order](const VecD<T, Top>& y, T w, const NodeTag& tag)
+    const auto emit = [&out, vis_order](const VecD<T, Top>& y, T w, const NodeTag& tag, const VecD<T, Top>&)
     {
         const Vec3<T> u = pad<T, Top>(y);
         out.points.insert(out.points.end(), u.begin(), u.end());
@@ -3134,6 +3421,39 @@ void run_top(Context<T>& ctx, const ClippedBox<T>& cell, CellPoints<T>& out, boo
             out.tags.push_back(tag);
     };
     integrate_box<T, Top, false, Top>(ctx, std::move(top), emit, 0, interface);
+}
+
+/// Points of @p out from @p start on within @p tol (box coordinates) of an
+/// earlier one are dropped: a crossing point on the face two boxes share is
+/// found by both.
+template <std::floating_point T>
+void merge_points(CellPoints<T>& out, int start, T tol)
+{
+    const bool tagged = out.tags.size() == out.weights.size();
+    int kept = start;
+    for (int i = start; i < out.n_points(); ++i)
+    {
+        bool duplicate = false;
+        for (int j = start; j < kept && !duplicate; ++j)
+        {
+            T d = T(0);
+            for (int c = 0; c < 3; ++c)
+                d = std::max(d, std::abs(out.points[3 * i + c] - out.points[3 * j + c]));
+            duplicate = d <= tol;
+        }
+        if (duplicate)
+            continue;
+        for (int c = 0; c < 3; ++c)
+            out.points[3 * kept + c] = out.points[3 * i + c];
+        out.weights[kept] = out.weights[i];
+        if (tagged)
+            out.tags[kept] = out.tags[i];
+        ++kept;
+    }
+    out.points.resize(3 * static_cast<std::size_t>(kept));
+    out.weights.resize(static_cast<std::size_t>(kept));
+    if (tagged)
+        out.tags.resize(static_cast<std::size_t>(kept));
 }
 
 /// The engine on one cell.
@@ -3169,8 +3489,8 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
         const Requirement r = {t.negative_required, t.positive_required, t.zero_required};
         if ((r.negative | r.positive | r.zero) & ~all)
             throw std::invalid_argument("quadrays: a term names a level set the cell does not have");
-        if (std::popcount(r.zero) > 1)
-            throw std::invalid_argument("quadrays: curves where two level sets vanish are not integrated");
+        if (std::popcount(r.zero) > 2)
+            throw std::invalid_argument("quadrays: the points where three level sets vanish are not integrated");
         if (!first && r.zero != zero)
             throw std::invalid_argument("quadrays: the terms ask for different zero sets");
         zero = r.zero;
@@ -3183,7 +3503,10 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     }
     if (ctx.terms.empty())
         return;
+    // a curve part (two zero sets; points on 2D cells) takes the roots of the
+    // first on its height lines and finds the second on its zero set
     ctx.surface = zero != 0 ? std::countr_zero(zero) : -1;
+    ctx.partner = std::popcount(zero) == 2 ? 63 - std::countl_zero(zero) : -1;
     ctx.phis.assign(phis.begin(), phis.end());
     // An analytic level set that is linear on the cell (a plane) is read as its
     // form of degree 1, as a level set of degree 1 is: its zero set then needs
@@ -3206,6 +3529,7 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     const bool interface = ctx.surface >= 0;
     ctx.detj = std::abs(jacobian_determinant(cell));
     ctx.inv = interface ? inverse_jacobian(cell) : Mat3<T>{};
+    ctx.jac = cell.jacobian;
     ctx.box_ids = {0, 0, 0};
     ctx.bisections = 0;
     if (vis_order == 0 && ctx.q != q)
@@ -3213,10 +3537,13 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
         gauss_legendre<T>(q, ctx.gauss_x, ctx.gauss_w);
         ctx.q = q;
     }
+    const int start = out.n_points();
     if (cell.tdim == 3)
         run_top<T, 3>(ctx, cell, out, interface);
     else
         run_top<T, 2>(ctx, cell, out, interface);
+    if (ctx.partner >= 0 && cell.tdim == 2)
+        merge_points(out, start, T(2) * point_tol<T>);
 }
 
 } // namespace

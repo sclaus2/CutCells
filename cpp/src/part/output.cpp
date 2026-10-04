@@ -9,6 +9,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -83,14 +84,70 @@ void cell_terms(const MeshPart<T, I>& part, I cell_id, CellTerms& out)
             out.offsets.push_back(static_cast<int>(i));
 }
 
-/// quadrays integrates volumes and interfaces.
+/// quadrays integrates volumes, interfaces and the curves where two level sets
+/// vanish (points on 2D cells).
 template <std::floating_point T, std::integral I>
 void check_quadrays(const MeshPart<T, I>& part)
 {
     const CutResult<T, I>& r = *part.result;
-    if (r.num_cells > 0 && part.dim < cell::get_tdim(r.mesh->cell_type(I(0))) - 1)
-        throw std::invalid_argument("part: quadrays integrates volumes and interfaces; the curves where two level "
-                                    "sets vanish come from the lookup tables (backend 'lut')");
+    if (r.num_cells > 0 && part.dim < cell::get_tdim(r.mesh->cell_type(I(0))) - 2)
+        throw std::invalid_argument("part: quadrays integrates volumes, interfaces and the curves where two level "
+                                    "sets vanish, not the points where three do");
+}
+
+/// The points of a part of dimension 0, where two curves cross on 2D cells,
+/// that several cells found on an edge or a vertex they share, kept once, by
+/// the lowest cell. @p x holds their physical coordinates (3 each) and
+/// @p size the size of their cells; points closer than twice the engine's
+/// point tolerance, relative to the larger cell, are one.
+template <std::floating_point T>
+void merge_shared_points(quadrature::QuadratureRules<T>& rules, const std::vector<T>& x, const std::vector<T>& size)
+{
+    const T tol = T(2) * std::max(static_cast<T>(1e-10), T(100) * std::numeric_limits<T>::epsilon());
+    const std::size_t n = rules._weights.size();
+    std::vector<std::int32_t> cell(n);
+    for (std::size_t r = 0; r + 1 < rules._offset.size(); ++r)
+        for (std::int32_t i = rules._offset[r]; i < rules._offset[r + 1]; ++i)
+            cell[static_cast<std::size_t>(i)] = rules._parent_map[r];
+    std::vector<std::size_t> order(n);
+    for (std::size_t i = 0; i < n; ++i)
+        order[i] = i;
+    std::sort(order.begin(), order.end(), [&x](std::size_t a, std::size_t b) { return x[3 * a] < x[3 * b]; });
+    const T reach = tol * (size.empty() ? T(0) : *std::max_element(size.begin(), size.end()));
+    std::vector<char> keep(n, 1);
+    for (std::size_t a = 0; a < n; ++a)
+        for (std::size_t b = a + 1; b < n && x[3 * order[b]] - x[3 * order[a]] <= reach; ++b)
+        {
+            const std::size_t i = order[a], j = order[b];
+            if (cell[i] == cell[j])
+                continue;
+            T d = T(0);
+            for (int c = 0; c < 3; ++c)
+                d = std::max(d, std::abs(x[3 * i + c] - x[3 * j + c]));
+            if (d <= tol * std::max(size[i], size[j]))
+                keep[cell[i] < cell[j] ? j : i] = 0;
+        }
+    quadrature::QuadratureRules<T> out;
+    out._tdim = rules._tdim;
+    out._offset.push_back(0);
+    const std::size_t tdim = static_cast<std::size_t>(rules._tdim);
+    for (std::size_t r = 0; r + 1 < rules._offset.size(); ++r)
+    {
+        for (std::int32_t i = rules._offset[r]; i < rules._offset[r + 1]; ++i)
+        {
+            const std::size_t p = static_cast<std::size_t>(i);
+            if (!keep[p])
+                continue;
+            out._points.insert(out._points.end(), rules._points.begin() + static_cast<std::ptrdiff_t>(p * tdim),
+                               rules._points.begin() + static_cast<std::ptrdiff_t>((p + 1) * tdim));
+            out._weights.push_back(rules._weights[p]);
+        }
+        if (static_cast<std::size_t>(out._offset.back()) == out._weights.size())
+            continue;
+        out._offset.push_back(static_cast<std::int32_t>(out._weights.size()));
+        out._parent_map.push_back(rules._parent_map[r]);
+    }
+    rules = std::move(out);
 }
 
 /// The cell's level sets the terms name, as quadrays reads them; throws if
@@ -443,6 +500,7 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
     quadrays::ClippedBox<T> box;
     quadrays::CellPoints<T> points;
     quadrays::Stats stats;
+    std::vector<T> shared_x, shared_size; // a part of dimension 0: its points, physical, and their cells' sizes
     for (std::size_t i = 0; i < entries.size();)
     {
         const I c = entries[i].cell;
@@ -489,16 +547,27 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
         }
         if (points.n_points() == 0)
             continue;
+        T size = T(0);
+        for (int j = 0; j < tdim && part.dim == 0; ++j)
+            size = std::max(size, std::hypot(box.jacobian[0][j], box.jacobian[1][j], box.jacobian[2][j]));
         for (int k = 0; k < points.n_points(); ++k)
         {
             const quadrays::Vec3<T> u = {points.points[3 * k], points.points[3 * k + 1], points.points[3 * k + 2]};
             const quadrays::Vec3<T> xi = quadrays::reference_point(box, u);
             rules._points.insert(rules._points.end(), xi.begin(), xi.begin() + tdim);
             rules._weights.push_back(points.weights[k]);
+            if (part.dim == 0)
+            {
+                const quadrays::Vec3<T> x = quadrays::physical_point(box, u);
+                shared_x.insert(shared_x.end(), x.begin(), x.end());
+                shared_size.push_back(size);
+            }
         }
         rules._offset.push_back(static_cast<std::int32_t>(rules._weights.size()));
         rules._parent_map.push_back(static_cast<std::int32_t>(c));
     }
+    if (part.dim == 0)
+        merge_shared_points(rules, shared_x, shared_size);
     return rules;
 }
 
