@@ -7,3 +7,4 @@
 # test meshes of cpp/tests/quadrays/support, whose exact references it uses.
 
 cutcells_add_test(part_front_end test_part.cpp)
+cutcells_add_test(part_level_sets_made_of test_level_sets_made_of.cpp)

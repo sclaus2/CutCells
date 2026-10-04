@@ -69,11 +69,12 @@ def tape_arrays(shape, parameters=None):
     )
 
 
-def analytic_level_set(shape, parameters=None):
+def analytic_level_set(shape, parameters=None, name=None):
     """A ShapeForest shape, expression or tape as a
     :class:`cutcells.AnalyticLevelSet`, evaluated by CutCells' interpreter of
-    ShapeForest tapes (values, gradients and Taylor-model bounds)."""
-    return analytic_level_set_from_tape(**tape_arrays(shape, parameters))
+    ShapeForest tapes (values, gradients and Taylor-model bounds), with an
+    optional name."""
+    return analytic_level_set_from_tape(**tape_arrays(shape, parameters), name=name)
 
 
 def write_tape(shape, path, parameters=None):

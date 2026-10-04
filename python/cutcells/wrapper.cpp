@@ -141,13 +141,23 @@ std::shared_ptr<void> make_owner_from_objects(nb::object a = nb::object(),
 // Analytic level sets (quadrays/analytic.h)
 // ============================================================================
 
-/// An analytic level set as Python holds it. The interface struct is shared
-/// with the level-set functions and cut results made from it; whoever made it
-/// keeps its context alive through the shared pointer.
+/// An analytic level set as Python holds it, and its name (empty: none). The
+/// interface struct is shared with the level-set functions and cut results
+/// made from it; whoever made it keeps its context alive through the shared
+/// pointer.
 struct PyAnalyticLevelSet
 {
   std::shared_ptr<const quadrays::AnalyticLevelSet> phi;
+  std::string name;
 };
+
+/// @p phi with the name @p name (None: none).
+PyAnalyticLevelSet named(PyAnalyticLevelSet phi, nb::handle name)
+{
+  if (!name.is_none())
+    phi.name = nb::cast<std::string>(name);
+  return phi;
+}
 
 /// The interface struct and the data its context points to, in one allocation.
 template <typename Data>
@@ -336,7 +346,7 @@ void declare_analytic(nb::module_& m)
       .def(
           "__init__",
           [](PyAnalyticLevelSet* self, nb::callable value, nb::callable gradient, nb::callable box_bounds,
-             nb::object taylor_bounds)
+             nb::object taylor_bounds, nb::object name)
           {
             auto holder = std::make_shared<AnalyticHolder<PythonCallbacks>>();
             holder->data.keep.objects = {value, gradient, box_bounds, taylor_bounds,
@@ -347,18 +357,20 @@ void declare_analytic(nb::module_& m)
             phi.gradient = python_gradient;
             phi.box_bounds = python_box_bounds;
             phi.taylor_bounds = taylor_bounds.is_none() ? nullptr : python_taylor_bounds;
-            new (self) PyAnalyticLevelSet(share_analytic(std::move(holder)));
+            new (self) PyAnalyticLevelSet(named(share_analytic(std::move(holder)), name));
           },
           nb::arg("value"), nb::arg("gradient"), nb::arg("box_bounds"), nb::arg("taylor_bounds") = nb::none(),
+          nb::arg("name") = nb::none(),
           "value(x) -> float and gradient(x) -> 3 numbers at a point x (3 coordinates); "
           "box_bounds(lo, hi) -> 8 numbers (phi in [b0, b1], d phi/dx_i in [b(2+2i), b(3+2i)]), "
           "2 if only the value has bounds, or None; optional taylor_bounds(centre, axes) -> "
           "(m+1, m+2) array of first-order Taylor models (alpha, beta_0..beta_{m-1}, eps) of "
           "phi and of d phi/dt_j over {centre + axes t : t in [-1, 1]^m}, axes of shape (3, m), "
-          "its first row if only the value has a model, or None.")
+          "its first row if only the value has a model, or None. name: the level set's name, which "
+          "cut() and str(condition) use, and which it needs among the level_sets of a LevelSetFunction.")
       .def_static(
           "from_capsule",
-          [](nb::capsule capsule)
+          [](nb::capsule capsule, nb::object level_set_name)
           {
             const char* name = PyCapsule_GetName(capsule.ptr());
             if (name == nullptr || std::string_view(name) != analytic_capsule_name)
@@ -375,14 +387,14 @@ void declare_analytic(nb::module_& m)
             auto holder = std::make_shared<AnalyticHolder<CapsuleSource>>();
             holder->phi = *src;
             holder->data.keep.objects = {nb::borrow(capsule)};
-            return share_analytic(std::move(holder));
+            return named(share_analytic(std::move(holder)), level_set_name);
           },
-          nb::arg("capsule"),
+          nb::arg("capsule"), nb::arg("name") = nb::none(),
           "An AnalyticLevelSet from a capsule named 'cutcells.AnalyticLevelSet' that points "
           "to the C struct of quadrays/analytic.h: void* context, then the function pointers "
           "value, gradient, box_bounds, taylor_bounds and hessian_bounds (the last two may be NULL). "
           "The struct is copied; "
-          "the capsule is kept alive, so it may own the context.")
+          "the capsule is kept alive, so it may own the context. name: the level set's name.")
       .def_prop_ro(
           "capsule",
           [](const PyAnalyticLevelSet& self)
@@ -404,6 +416,11 @@ void declare_analytic(nb::module_& m)
           },
           "A capsule named 'cutcells.AnalyticLevelSet' pointing to the C struct; it keeps "
           "this level set alive.")
+      .def_prop_ro(
+          "name",
+          [](const PyAnalyticLevelSet& self) -> nb::object
+          { return self.name.empty() ? nb::none() : nb::cast(self.name); },
+          "The level set's name, or None; cut() names it so unless names are given.")
       .def_prop_ro("has_taylor_bounds",
                    [](const PyAnalyticLevelSet& self) { return self.phi->taylor_bounds != nullptr; })
       .def(
@@ -467,18 +484,18 @@ void declare_analytic(nb::module_& m)
 
   m.def(
       "analytic_sphere",
-      [](const std::vector<double>& centre, double radius, bool signed_distance)
+      [](const std::vector<double>& centre, double radius, bool signed_distance, nb::object name)
       {
         auto holder = std::make_shared<AnalyticHolder<SphereFunctor>>();
         holder->data.c = point3(centre);
         holder->data.r = radius;
         holder->data.distance = signed_distance;
         holder->phi = quadrays::analytic_level_set(holder->data);
-        return share_analytic(std::move(holder));
+        return named(share_analytic(std::move(holder)), name);
       },
-      nb::arg("centre"), nb::arg("radius"), nb::arg("signed_distance") = true,
+      nb::arg("centre"), nb::arg("radius"), nb::arg("signed_distance") = true, nb::arg("name") = nb::none(),
       "The sphere as a compiled analytic level set: |x - centre| - radius, or "
-      "|x - centre|^2 - radius^2 with signed_distance=False.");
+      "|x - centre|^2 - radius^2 with signed_distance=False; name: its name (AnalyticLevelSet).");
 
   m.def(
       "analytic_level_set_from_tape",
@@ -486,7 +503,7 @@ void declare_analytic(nb::module_& m)
          const ndarray1<std::int32_t>& a, const ndarray1<std::int32_t>& b, const ndarray1<std::int32_t>& c,
          const ndarray1<std::int32_t>& out, const ndarray1<double>& imm, int n_registers, int output,
          const ndarray1<std::int32_t>& inputs, const ndarray1<std::int32_t>& extra_registers,
-         const ndarray1<double>& extra_values)
+         const ndarray1<double>& extra_values, nb::object name)
       {
         auto holder = std::make_shared<AnalyticHolder<TapeSource>>();
         quadrays::shapeforest::Tape& t = holder->data.tape;
@@ -508,15 +525,15 @@ void declare_analytic(nb::module_& m)
         quadrays::shapeforest::prepare_tape(t);
         holder->data.functor.tape = &t;
         holder->phi = quadrays::analytic_level_set(holder->data.functor);
-        return share_analytic(std::move(holder));
+        return named(share_analytic(std::move(holder)), name);
       },
       nb::arg("op"), nb::arg("a"), nb::arg("b"), nb::arg("c"), nb::arg("out"), nb::arg("imm"),
       nb::arg("n_registers"), nb::arg("output"), nb::arg("inputs"), nb::arg("extra_registers"),
-      nb::arg("extra_values"),
+      nb::arg("extra_values"), nb::arg("name") = nb::none(),
       "An analytic level set from the arrays of a ShapeForest tape (one entry per "
       "instruction; inputs: the registers of x, y and z; extra_registers/extra_values: "
       "registers preset to constants). cutcells.shapeforest.analytic_level_set builds "
-      "the arrays from a shape.");
+      "the arrays from a shape. name: its name (AnalyticLevelSet).");
 }
 
 // Convert CSR connectivity+offset arrays into VTK packed cells layout
@@ -637,6 +654,59 @@ inline bool part_mode_is_cut_only(std::string_view mode)
   if (mode == "full")
     return false;
   throw std::invalid_argument("mode must be 'cut_only' or 'full'");
+}
+
+/// Makes @p ls a level set made of level sets, from Python: @p level_sets
+/// are LevelSetFunctions of its precision, copied, or AnalyticLevelSets with
+/// names, read in @p gdim coordinates (3 if 0); @p inside is a string, or a
+/// condition on them that cutcells.conditions writes with their names. None
+/// and None leave @p ls as it is.
+template <typename T>
+void make_made_of(cutcells::LevelSetFunction<T, int>& ls, nb::handle level_sets, nb::handle inside, int gdim)
+{
+  using LevelSetT = cutcells::LevelSetFunction<T, int>;
+  if (level_sets.is_none())
+  {
+    if (!inside.is_none())
+      throw std::invalid_argument("LevelSetFunction: inside selects among level_sets; give both");
+    return;
+  }
+  nb::list given;
+  for (nb::handle h : level_sets)
+    given.append(h);
+  if (given.size() == 0)
+    throw std::invalid_argument("LevelSetFunction: level_sets is empty");
+  std::vector<std::string> names;
+  for (nb::handle h : given)
+  {
+    if (nb::isinstance<LevelSetT>(h))
+      ls.level_sets.push_back(nb::cast<const LevelSetT&>(h));
+    else if (nb::isinstance<PyAnalyticLevelSet>(h))
+    {
+      const PyAnalyticLevelSet& phi = nb::cast<const PyAnalyticLevelSet&>(h);
+      if (phi.name.empty())
+        throw std::invalid_argument("LevelSetFunction: the AnalyticLevelSets among level_sets need names, "
+                                    "such as analytic_sphere(centre, radius, name=\"ball\")");
+      ls.level_sets.push_back(cutcells::create_level_set_function<T, int>(phi.phi, gdim > 0 ? gdim : 3, phi.name));
+    }
+    else
+    {
+      const std::string type = std::is_same_v<T, double> ? "LevelSetFunction_float64" : "LevelSetFunction_float32";
+      throw nb::type_error(("LevelSetFunction: level_sets are " + type + "s or AnalyticLevelSets").c_str());
+    }
+    names.push_back(ls.level_sets.back().name);
+  }
+  if (inside.is_none())
+    throw std::invalid_argument("LevelSetFunction: give the inside of its level_sets, the selection of them where "
+                                "it is negative, such as (ball < 0) & (cyl > 0)");
+  if (nb::isinstance<nb::str>(inside))
+    ls.inside = nb::cast<std::string>(inside);
+  else
+  {
+    const nb::object write = nb::module_::import_("cutcells.conditions").attr("selection_text");
+    ls.inside = nb::cast<std::string>(write(inside, given, nb::cast(names), nb::arg("owner") = ls.name));
+  }
+  cutcells::check_level_sets(ls);
 }
 
 template <typename T>
@@ -899,8 +969,28 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
              nb::object value_obj,
              nb::object grad_obj,
              nb::object nodal_values_obj,
-             int gdim)
+             int gdim,
+             nb::object name,
+             nb::object level_sets,
+             nb::object inside)
           {
+            LevelSetT ls;
+            if (!name.is_none())
+              ls.name = nb::cast<std::string>(name);
+            if (nb::isinstance<PyAnalyticLevelSet>(value_obj))
+            {
+              // an analytic value, with its gradient and bounds
+              if (!grad_obj.is_none() || !nodal_values_obj.is_none())
+                throw std::invalid_argument(
+                    "LevelSetFunction: an AnalyticLevelSet value has its own gradient; give no grad or nodal_values");
+              const PyAnalyticLevelSet& phi = nb::cast<const PyAnalyticLevelSet&>(value_obj);
+              const std::string own = name.is_none() && !phi.name.empty() ? phi.name : ls.name;
+              ls = cutcells::create_level_set_function<T, int>(phi.phi, gdim > 0 ? gdim : 3, own);
+              make_made_of<T>(ls, level_sets, inside, gdim);
+              new (self) LevelSetT(std::move(ls));
+              return;
+            }
+
             using ValueFn = std::function<T(const T*, int)>;
             using GradFn = std::function<void(const T*, int, T*)>;
 
@@ -961,26 +1051,54 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
               nodal_owner = nodal_values_obj;
             }
 
-            if (!value_fn && nodal_values.empty())
-              throw std::runtime_error("LevelSetFunction requires at least one of value or nodal_values.");
+            if (!value_fn && nodal_values.empty() && level_sets.is_none())
+              throw std::runtime_error("LevelSetFunction requires at least one of value, nodal_values or level_sets.");
 
             if (grad_fn && !value_fn)
               throw std::runtime_error("LevelSetFunction: grad requires value.");
 
-            new (self) LevelSetT{};
-            self->value_fn = std::move(value_fn);
-            self->grad_fn = std::move(grad_fn);
-            self->nodal_values = nodal_values;
-            self->gdim = gdim;
-            self->owner = make_owner_from_objects(value_obj, grad_obj, nodal_owner);
+            ls.value_fn = std::move(value_fn);
+            ls.grad_fn = std::move(grad_fn);
+            ls.nodal_values = nodal_values;
+            ls.gdim = gdim;
+            ls.owner = make_owner_from_objects(value_obj, grad_obj, nodal_owner);
+            make_made_of<T>(ls, level_sets, inside, gdim);
+            new (self) LevelSetT(std::move(ls));
           },
           nb::arg("value") = nb::none(),
           nb::arg("grad") = nb::none(),
           nb::arg("nodal_values") = nb::none(),
-          nb::arg("gdim") = 0)
+          nb::arg("gdim") = 0,
+          nb::arg("name") = nb::none(),
+          nb::arg("level_sets") = nb::none(),
+          nb::arg("inside") = nb::none(),
+          "A level set from a value (a callable value(x, cell_id) or value(x), or an AnalyticLevelSet), "
+          "nodal_values, or level_sets, with an optional name. A level set made of level sets: "
+          "level_sets, LevelSetFunctions of this precision or named AnalyticLevelSets, and inside, the "
+          "selection of them where it is negative, a condition such as (ball < 0) & (cyl > 0) or a "
+          "string with their names, \"ball < 0 and cyl > 0\". cut() cuts with its level sets in its "
+          "place, named after it (\"ring.ball\"), and selections of it expand into selections of them; "
+          "its own value is optional. AnalyticLevelSets among level_sets are read in gdim coordinates "
+          "(3 if 0).")
       .def_prop_ro("gdim", [](const LevelSetT& self) { return self.gdim; })
       .def_prop_ro("name", [](const LevelSetT& self) { return self.name; },
                    "The level set's name; cut() uses it unless names are given.")
+      .def_prop_ro(
+          "level_sets",
+          [](nb::handle self)
+          {
+            nb::list out;
+            for (const LevelSetT& part : nb::cast<const LevelSetT&>(self).level_sets)
+              out.append(nb::cast(&part, nb::rv_policy::reference_internal, self));
+            return out;
+          },
+          "The level sets it is made of (copies of those given), or [].")
+      .def_prop_ro(
+          "inside",
+          [](const LevelSetT& self) -> nb::object
+          { return self.inside.empty() ? nb::none() : nb::cast(self.inside); },
+          "The selection of its level sets where it is negative, with their names, or None.")
+      .def("has_level_sets", &LevelSetT::has_level_sets)
       .def("has_value", &LevelSetT::has_value)
       .def("has_gradient", &LevelSetT::has_gradient)
       .def("has_nodal_values", &LevelSetT::has_nodal_values)
@@ -1997,7 +2115,7 @@ struct PartCutResult
 {
   std::shared_ptr<const cutcells::MeshView<T, int>> mesh;
   std::shared_ptr<const std::vector<cutcells::LevelSetFunction<T, int>>> level_sets;
-  nb::object level_set_objects = nb::none(); ///< a tuple, in the order of result.level_set_names
+  nb::object level_set_objects = nb::none(); ///< a tuple, in the order of level_sets
   cutcells::part::CutResult<T, int> result;
   std::string backend = "quadrays";
   nb::object options = nb::none();
@@ -2058,7 +2176,8 @@ inline nb::object checked_options(nb::handle options, const std::string& backend
 }
 
 /// The level sets of a cut, a LevelSetFunction or AnalyticLevelSet or a list
-/// of them, classified on the mesh.
+/// of them, classified on the mesh; level sets made of level sets in their
+/// place.
 template <typename T>
 PartCutResult<T> cut_mesh_part(const cutcells::MeshView<T, int>& mesh, nb::handle level_sets, nb::handle names,
                                int max_depth)
@@ -2092,8 +2211,8 @@ PartCutResult<T> cut_mesh_part(const cutcells::MeshView<T, int>& mesh, nb::handl
     else if (nb::isinstance<PyAnalyticLevelSet>(items[i]))
     {
       const PyAnalyticLevelSet& phi = nb::cast<const PyAnalyticLevelSet&>(items[i]);
-      owned->push_back(
-          cutcells::create_level_set_function<T, int>(phi.phi, mesh.gdim, given.empty() ? fallback : given[i]));
+      const std::string own = phi.name.empty() ? fallback : phi.name;
+      owned->push_back(cutcells::create_level_set_function<T, int>(phi.phi, mesh.gdim, given.empty() ? own : given[i]));
     }
     else
       throw nb::type_error("cut: level sets are LevelSetFunctions or AnalyticLevelSets");
@@ -2121,14 +2240,18 @@ PartCutResult<T> cut_mesh_part(const cutcells::MeshView<T, int>& mesh, nb::handl
 
 /// A selection as the string part::select parses: a string as it is, or a
 /// condition such as phi < 0, which cutcells.conditions writes with the names
-/// of the level sets passed to cut, matched by identity.
+/// the level sets passed to cut were cut under, matched by identity (a level
+/// set made of level sets by its own name, not those of its level sets).
 template <typename T>
 std::string selection_text(const PartCutResult<T>& r, nb::handle selection)
 {
   if (nb::isinstance<nb::str>(selection))
     return nb::cast<std::string>(selection);
+  std::vector<std::string> names;
+  for (const cutcells::LevelSetFunction<T, int>& ls : *r.level_sets)
+    names.push_back(ls.name);
   const nb::object write = nb::module_::import_("cutcells.conditions").attr("selection_text");
-  return nb::cast<std::string>(write(selection, r.level_set_objects, nb::cast(r.result.level_set_names)));
+  return nb::cast<std::string>(write(selection, r.level_set_objects, nb::cast(names)));
 }
 
 /// The lookup tables' options from the keywords of the old cut().
@@ -2171,8 +2294,15 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
       "cell that owns each. result[(phi1 < 0) & (phi2 == 0)], a condition built "
       "from the level sets passed to cut, or its string result[\"phi1 < 0 and "
       "phi2 = 0\"], selects a MeshPart. Its parts integrate with result.backend "
-      "('quadrays' or 'lut') and result.options unless a call names others.")
-      .def_prop_ro("level_set_names", [](const ResultT& self) { return self.result.level_set_names; })
+      "('quadrays' or 'lut') and result.options unless a call names others. A level "
+      "set made of level sets is cut as its level sets, named after it (\"ring.ball\"); "
+      "selections of it expand into selections of them.")
+      .def_prop_ro("level_set_names", [](const ResultT& self) { return self.result.level_set_names; },
+                   "The names of the level sets cut, a level set made of level sets replaced by its "
+                   "own, named after it (\"ring.ball\", \"ring.cyl\").")
+      .def_prop_ro("insides", [](const ResultT& self) { return self.result.insides; },
+                   "The level sets made of level sets, by name (nested ones as \"ring.part\"), with "
+                   "their insides as given: selections of their own level sets, by their short names.")
       .def_prop_ro("num_cells", [](const ResultT& self) { return self.result.num_cells; })
       .def_prop_ro("num_level_sets", [](const ResultT& self) { return self.result.n_level_sets(); })
       .def_prop_ro("num_cut_cells",
@@ -2256,7 +2386,10 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
           nb::arg("selection"), nb::keep_alive<0, 1>(),
           "The MeshPart that a selection selects: a condition built from the level sets passed "
           "to cut, such as phi < 0 or (a > 0) & (b == 0), or its string, \"phi < 0\" or "
-          "\"a > 0 and b = 0\".");
+          "\"a > 0 and b = 0\". Strings take parentheses, and name the level sets a level set "
+          "made of level sets is made of in full (\"ring.cyl\") or, where only one has that "
+          "name, short (\"cyl\"). For a level set made of level sets, ring < 0 selects its "
+          "inside, ring > 0 the rest and ring == 0 its faces.");
 
   const std::string part_name = "MeshPart_" + type;
   nb::class_<PartT>(part_module, part_name.c_str(),
@@ -2313,6 +2446,25 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
                                                      nb::handle());
           },
           nb::rv_policy::reference_internal, "Indices into the result's zero_faces.")
+      .def(
+          "on",
+          [](const PartT& self, nb::args faces)
+          {
+            std::vector<std::string> names;
+            for (nb::handle h : faces)
+            {
+              if (!nb::isinstance<nb::str>(h))
+                throw nb::type_error("on: faces are named by strings, such as on(\"hole\")");
+              names.push_back(nb::cast<std::string>(h));
+            }
+            return PartT{cutcells::part::on(self.part, names), self.backend, self.options};
+          },
+          nb::keep_alive<0, 1>(),
+          "The faces of a surface (or curve) part on the level sets named, such as "
+          "result[body == 0].on(\"hole\"): its terms whose zero sets are among them. A name is "
+          "that of a level set (\"body.hole\"), short within the level sets made of level sets "
+          "whose faces the part holds (\"hole\"), or that of a level set made of level sets, for "
+          "all its faces. Several names keep several faces.")
       .def(
           "quadrature",
           [](const PartT& self, int order, const std::string& mode, nb::handle backend, nb::handle options)
@@ -2407,10 +2559,11 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
       nb::arg("mesh"), nb::arg("level_sets"), nb::arg("names") = nb::none(), nb::arg("max_depth") = 12,
       nb::arg("backend") = "quadrays", nb::arg("options") = nb::none(),
       "Classify every cell of the mesh by every level set (LevelSetFunctions with dof "
-      "values, or AnalyticLevelSets, alone or in a list) by their own bounds. Analytic "
-      "level sets are named 'phi', or 'phi1', 'phi2', ... in a list, unless names are "
-      "given. max_depth: bisections of a cell before an unproven sign counts as cut. "
-      "backend and options: the default of the result's parts.");
+      "values, or AnalyticLevelSets, alone or in a list) by their own bounds; a level set "
+      "made of level sets in their place. Unnamed analytic level sets are named 'phi', or "
+      "'phi1', 'phi2', ... in a list, unless names are given. max_depth: bisections of a cell "
+      "before an unproven sign counts as cut. backend and options: the default of the "
+      "result's parts.");
 
   // cutcells.cut, the one entry point: quadrays by default; the keywords of
   // the former cut() set the lookup tables' options
@@ -2449,13 +2602,16 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
       nb::arg("triangulation") = "classical", nb::arg("cut_approximation") = "auto",
       nb::arg("cut_approximation_order") = 1, nb::arg("degree") = nb::none(), nb::arg("name") = nb::none(),
       "Cut a MeshView by level sets (LevelSetFunctions with dof values or AnalyticLevelSets, "
-      "alone or in a list), classifying every cell by their own bounds. backend: the default "
+      "alone or in a list), classifying every cell by their own bounds. A level set made of "
+      "level sets (LevelSetFunction(level_sets=..., inside=...)) is cut as its level sets, "
+      "named after it (result.level_set_names, result.insides). backend: the default "
       "of the result's parts, 'quadrays' (curved pieces, QuadraysOptions) or 'lut' (straight "
       "pieces on Pk-iso-P1 templates, LutOptions). For the lookup tables only, without "
       "options: triangulate and triangulation ('classical', 'midpoint'), and the template "
       "order from cut_approximation: 'auto' (the level sets' degree, or degree for analytic "
       "ones), 'linear' (1) or 'iso_p1' (cut_approximation_order); given with another "
-      "backend they raise. names: of the level sets; name: of a single one. max_depth: "
+      "backend they raise. names: of the level sets, by default their own (unnamed analytic "
+      "ones 'phi', or 'phi1', 'phi2', ... in a list); name: of a single one. max_depth: "
       "bisections of a cell before an unproven sign counts as cut. Returns a "
       "cutcells.part.CutResult; result[(phi1 < 0) & (phi2 == 0)], or the string "
       "result[\"phi1 < 0 and phi2 = 0\"], selects a MeshPart.");

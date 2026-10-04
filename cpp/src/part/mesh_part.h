@@ -7,6 +7,7 @@
 
 #include <concepts>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -83,8 +84,25 @@ TermCell term_on_cell(const SelectionTerm& term, const CutResult<T, I>& result, 
 /// a piece if no term holds on all of it and some term holds on part of it. An
 /// interface part gets the cut cells of its level set and the zero faces of
 /// that level set whose owning cells satisfy the term's other clauses.
+///
+/// Level sets made of level sets expand into terms on theirs
+/// (compile_selection_expr with the result's insides). The dimension is that
+/// of @p expr as written: "body = 0" selects an interface, also where it
+/// expands to no term.
 /// @throws std::runtime_error on syntax errors or unknown level-set names
 template <std::floating_point T, std::integral I>
 MeshPart<T, I> select(const CutResult<T, I>& result, std::string_view expr);
+
+/// @brief The faces of @p part on the level sets named @p names: the part's
+/// terms whose zero sets include one of them (no point is filtered).
+///
+/// A name is that of a level set of the result ("body.hole"); that of a
+/// level set made of level sets, for all its faces ("body"); or a short name
+/// ("hole"), the level set "X.hole" of a level set X made of level sets,
+/// among the part's faces if one is.
+/// @throws std::invalid_argument for parts of full dimension, no names,
+///         unknown or ambiguous names, and names that are no face of the part
+template <std::floating_point T, std::integral I>
+MeshPart<T, I> on(const MeshPart<T, I>& part, const std::vector<std::string>& names);
 
 } // namespace cutcells::part

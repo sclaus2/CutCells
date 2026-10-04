@@ -210,9 +210,23 @@ struct LevelSetFunction
   // A Pk interpolant in dof_values is used by neither.
   std::shared_ptr<const quadrays::AnalyticLevelSet> analytic;
 
+  // Optional: the smooth level sets this level set is made of, each with a
+  // name, and its inside, the selection of them where it is negative,
+  // written with their names ("ball < 0 and cyl > 0", selection_expr.h).
+  // part::cut cuts with them in its place, named after it ("ring.ball"), and
+  // selections of this level set expand into selections of them. Its own
+  // value, if it has one, stays for callers that only evaluate it.
+  std::vector<LevelSetFunction<T, I>> level_sets;
+  std::string inside;
+
   bool has_value() const
   {
     return static_cast<bool>(value_fn);
+  }
+
+  bool has_level_sets() const
+  {
+    return !level_sets.empty();
   }
 
   bool has_gradient() const
@@ -337,5 +351,13 @@ LevelSetFunction<T, I> create_level_set_function_view(
     std::span<const T> dof_values,
     std::string name = "phi",
     std::shared_ptr<const void> owner = nullptr);
+
+/// @brief Check a level set made of level sets, one level down: its level
+/// sets have names that selections can use (is_selection_name), each once,
+/// and its inside selects among them with clauses "< 0" and "> 0". A level
+/// set without level sets passes if it has no inside.
+/// @throws std::invalid_argument otherwise
+template <std::floating_point T, std::integral I>
+void check_level_sets(const LevelSetFunction<T, I>& ls);
 
 } // namespace cutcells

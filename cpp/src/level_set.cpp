@@ -18,6 +18,7 @@
 #include "cell_types.h"
 #include "quadrays/analytic.h"
 #include "reference_cell.h"
+#include "selection_expr.h"
 
 namespace cutcells
 {
@@ -1344,6 +1345,33 @@ LevelSetFunction<T, I> create_level_set_function(
   return ls;
 }
 
+template <std::floating_point T, std::integral I>
+void check_level_sets(const LevelSetFunction<T, I>& ls)
+{
+  if (ls.level_sets.empty())
+  {
+    if (!ls.inside.empty())
+      throw std::invalid_argument("the level set '" + ls.name
+                                  + "' has an inside but no level sets to select from");
+    return;
+  }
+  if (ls.inside.empty())
+    throw std::invalid_argument("the level set '" + ls.name
+                                + "' is made of level sets but has no inside: give the selection of them "
+                                  "where it is negative");
+  std::vector<std::string> names;
+  for (const LevelSetFunction<T, I>& part : ls.level_sets)
+  {
+    if (!is_selection_name(part.name))
+      throw std::invalid_argument("the level sets of '" + ls.name + "' need names that selections can use, "
+                                  "words without spaces, parentheses, <, > or =; got '" + part.name + "'");
+    if (std::find(names.begin(), names.end(), part.name) != names.end())
+      throw std::invalid_argument("two level sets of '" + ls.name + "' are named '" + part.name + "'");
+    names.push_back(part.name);
+  }
+  check_inside(ls.inside, names, ls.name);
+}
+
 template LevelSetMeshData<float, int> create_level_set_mesh_data(
     const MeshView<float, int>& mesh, int degree, float merge_tol);
 template LevelSetMeshData<double, int> create_level_set_mesh_data(
@@ -1445,5 +1473,8 @@ template LevelSetFunction<double, int> create_level_set_function_view(
     std::span<const double> dof_values,
     std::string name,
     std::shared_ptr<const void> owner);
+
+template void check_level_sets(const LevelSetFunction<float, int>& ls);
+template void check_level_sets(const LevelSetFunction<double, int>& ls);
 
 } // namespace cutcells

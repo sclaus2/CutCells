@@ -13,8 +13,8 @@ algorithms
 The main workflow is:
 
 1. Represent the background mesh as a `MeshView`.
-2. Build one or more named level sets: Pk level sets on that mesh, or analytic
-   ones.
+2. Build one or more named level sets: Pk level sets on that mesh, analytic
+   ones, or level sets made of them.
 3. Call `cut(mesh, level_set)` or `cut(mesh, [level_sets...])`; parts integrate
    with quadrays unless you pass `backend="lut"`.
 4. Select mesh parts with conditions built from the level sets, such as

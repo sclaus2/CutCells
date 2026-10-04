@@ -14,6 +14,7 @@
 #include "../bernstein.h"
 #include "../cell_topology.h"
 #include "../reference_cell.h"
+#include "../selection_expr.h"
 #include "cell_source.h"
 #include "classify.h"
 
@@ -238,6 +239,33 @@ void find_zero_facets(const MeshView<T, I>& mesh, const LevelSetCell<T, I>& ls_c
     }
 }
 
+/// Adds a level set to the result under @p name: itself, or, if it is made of
+/// level sets, its own in its place, named "name.part", depth first, and its
+/// inside. @p names gets every name in order, a level set made of level sets
+/// before its own, and @p owned, for each of these, the range of @p names its
+/// own take.
+template <std::floating_point T, std::integral I>
+void add_level_set(const LevelSetFunction<T, I>& ls, const std::string& name, CutResult<T, I>& r,
+                   std::vector<std::string>& names, std::vector<std::array<std::size_t, 2>>& owned)
+{
+    check_level_sets(ls);
+    names.push_back(name);
+    if (!ls.has_level_sets())
+    {
+        r.level_sets.push_back(&ls);
+        r.level_set_names.push_back(name);
+        return;
+    }
+    if (!is_selection_name(ls.name))
+        throw std::invalid_argument("part::cut: a level set made of level sets needs a name that selections can "
+                                    "use, a word without spaces, parentheses, <, > or =; got '" + ls.name + "'");
+    r.insides.emplace(name, ls.inside);
+    const std::size_t first = names.size();
+    for (const LevelSetFunction<T, I>& part : ls.level_sets)
+        add_level_set(part, name + "." + part.name, r, names, owned);
+    owned.push_back({first, names.size()});
+}
+
 } // namespace
 
 template <std::floating_point T, std::integral I>
@@ -246,16 +274,32 @@ CutResult<T, I> cut(const MeshView<T, I>& mesh, std::span<const LevelSetFunction
 {
     if (!mesh.has_cell_types())
         throw std::invalid_argument("part::cut: the mesh needs cell types");
-    if (level_sets.empty() || level_sets.size() > 64)
+    if (level_sets.empty())
         throw std::invalid_argument("part::cut: give 1 to 64 level sets");
 
     CutResult<T, I> r;
     r.mesh = &mesh;
     r.num_cells = static_cast<int>(mesh.num_cells());
+    std::vector<std::string> names;
+    std::vector<std::array<std::size_t, 2>> owned;
     for (const LevelSetFunction<T, I>& ls : level_sets)
+        add_level_set(ls, ls.name, r, names, owned);
+    if (r.level_sets.size() > 64)
+        throw std::invalid_argument("part::cut: give 1 to 64 level sets, counting those that level sets made of "
+                                    "level sets are made of ("
+                                    + std::to_string(r.level_sets.size()) + ")");
+    std::vector<std::string> sorted = names;
+    std::sort(sorted.begin(), sorted.end());
+    if (const auto twice = std::adjacent_find(sorted.begin(), sorted.end()); twice != sorted.end())
+        throw std::invalid_argument("part::cut: two level sets are named '" + *twice + "'");
+    // a level set made of level sets owns the names that begin with its own
+    for (const auto& [first, end] : owned)
     {
-        r.level_sets.push_back(&ls);
-        r.level_set_names.push_back(ls.name);
+        const std::string prefix = names[first - 1] + ".";
+        for (std::size_t k = 0; k < names.size(); ++k)
+            if ((k < first || k >= end) && names[k].starts_with(prefix))
+                throw std::invalid_argument("part::cut: the level set named '" + names[k] + "' would read as one of '"
+                                            + names[first - 1] + "''s own; rename it");
     }
     const int nls = r.n_level_sets();
     r.domains.assign(static_cast<std::size_t>(nls) * static_cast<std::size_t>(r.num_cells), cell::domain::unset);
@@ -269,7 +313,7 @@ CutResult<T, I> cut(const MeshView<T, I>& mesh, std::span<const LevelSetFunction
         bool any_cut = false;
         for (int l = 0; l < nls; ++l)
         {
-            const LevelSetFunction<T, I>& ls = level_sets[static_cast<std::size_t>(l)];
+            const LevelSetFunction<T, I>& ls = *r.level_sets[static_cast<std::size_t>(l)];
             cell::domain dom;
             // the reference frame: simplices are classified on their own
             // Bernstein coefficients, and it is the cheapest box to make

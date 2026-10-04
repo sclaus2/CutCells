@@ -27,6 +27,13 @@ shorthand, as ``df.query`` does in pandas::
 
 The result writes a condition as its selection string, naming each level set
 as the cut named it, matched by identity, so the C++ side keeps taking strings.
+
+A level set made of level sets takes a condition as its inside, built from the
+level sets it is made of::
+
+    ring = cutcells.LevelSetFunction(level_sets=[ball, cyl], inside=(ball < 0) & (cyl > 0), name="ring")
+    result = cutcells.cut(mesh, [ring, fluid])
+    result[(ring > 0) & (fluid < 0)]   # ring > 0 expands to ring.ball > 0 or ring.cyl < 0
 """
 
 import numbers
@@ -70,7 +77,7 @@ class Condition:
     def text(self, names=None):
         """The selection string, e.g. "a < 0 and b = 0 or c > 0". names[level_set]
         gives each level set's name; by default its own name, or a placeholder
-        for a level set without one (an AnalyticLevelSet)."""
+        for a level set without one (an AnalyticLevelSet without a name)."""
         name = _own_name if names is None else names.__getitem__
         return " or ".join(" and ".join(f"{name(ls)} {relation} 0" for ls, relation in term) for term in self.terms)
 
@@ -82,7 +89,8 @@ class Condition:
 
 
 def _own_name(level_set):
-    """A level set's own name, or a placeholder for one without (an AnalyticLevelSet)."""
+    """A level set's own name, or a placeholder for one without (an AnalyticLevelSet
+    without a name)."""
     name = getattr(level_set, "name", None)
     return name if name else f"<{type(level_set).__name__} at {id(level_set):#x}>"
 
@@ -123,10 +131,11 @@ for _cls in (LevelSetFunction_float32, LevelSetFunction_float64, AnalyticLevelSe
         setattr(_cls, _name, getattr(_Comparisons, _name))
 
 
-def selection_text(selection, level_sets, names):
+def selection_text(selection, level_sets, names, owner=None):
     """A selection as the string that a cut of level_sets, named names, parses:
     a string as it is, a condition with each of its level sets named as in the
-    cut, found by identity among level_sets."""
+    cut, found by identity among level_sets. With owner, the name of a level set
+    made of level_sets, the selection is its inside."""
     if isinstance(selection, str):
         return selection
     if not isinstance(selection, Condition):
@@ -135,15 +144,17 @@ def selection_text(selection, level_sets, names):
     found = {}
     for level_set, name in zip(level_sets, names):
         found.setdefault(level_set, []).append(name)
+    among = "the cut's level sets" if owner is None else f"the level sets of {owner}"
+    twice = "was cut twice" if owner is None else f"is among the level sets of {owner} twice"
     used = {}
     for term in selection.terms:
         for level_set, _ in term:
             given = found.get(level_set, [])
             if not given:
-                raise ValueError(f"the condition's level set {_own_name(level_set)} is not one of the cut's "
-                                 f"level sets: {', '.join(names)}")
+                raise ValueError(f"the condition's level set {_own_name(level_set)} is not one of {among}: "
+                                 f"{', '.join(names)}")
             if len(given) > 1:
-                raise ValueError(f"the condition's level set {_own_name(level_set)} was cut twice, as "
+                raise ValueError(f"the condition's level set {_own_name(level_set)} {twice}, as "
                                  f"{' and '.join(given)}: select it with a string")
             used[level_set] = given[0]
     return selection.text(used)

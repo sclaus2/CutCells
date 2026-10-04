@@ -16,7 +16,10 @@
 //    corners) and a napkin ring (a ball outside a cylinder): volumes of
 //    intersections and unions, and interfaces bounded by the other level sets,
 //    to 1e-6 (cylinders 1e-5: they touch where their intersection curves
-//    cross). In 2D, on quadrilaterals and triangles (n = 16): two disks, and
+//    cross). Each shape also as a level set s made of its level sets: s < 0,
+//    s = 0 and s > 0 give the totals of its hand-written volume and faces (to
+//    1e-12) and the exact ones. In 2D, on quadrilaterals and triangles
+//    (n = 16): two disks, and
 //    three disks whose eight parts, integrated one by one, fill the square and
 //    whose circle is the sum of its four pieces.
 //  - The leaves (degree 2) of the solids' faces: every node in its part up to
@@ -43,11 +46,13 @@
 #include <cutcells/selection_expr.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <functional>
+#include <map>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -241,8 +246,10 @@ int main(int argc, char** argv)
         {
             const char* name;
             std::vector<Field> fields;
-            std::vector<std::pair<const char*, double>> parts; ///< text, exact total
+            std::vector<std::pair<const char*, double>> parts; ///< text, exact total; the volume first
             double bound;                                      ///< relative error of the totals
+            const char* inside;                                ///< of the shape as a level set made of the fields
+            std::vector<const char*> faces;                    ///< the parts that are its faces
         };
         std::vector<Shape> shapes;
         {
@@ -258,7 +265,9 @@ int main(int argc, char** argv)
                                {"a = 0 and b < 0", 2 * M_PI * R1 * h1},
                                {"b = 0 and a < 0", 2 * M_PI * R2 * h2},
                                {"a < 0 or b < 0", V1 + V2 - V}},
-                              1e-6});
+                              1e-6,
+                              "a < 0 and b < 0",
+                              {"a = 0 and b < 0", "b = 0 and a < 0"}});
         }
         {
             // two cylinders: the Steinmetz solid and its faces
@@ -268,7 +277,9 @@ int main(int argc, char** argv)
                               {{"a < 0 and b < 0", 16 * r * r * r / 3},
                                {"a = 0 and b < 0", 8 * r * r},
                                {"b = 0 and a < 0", 8 * r * r}},
-                              1e-5}); // the cylinders touch where their intersection curves cross
+                              1e-5, // the cylinders touch where their intersection curves cross
+                              "a < 0 and b < 0",
+                              {"a = 0 and b < 0", "b = 0 and a < 0"}});
         }
         {
             // three cylinders: the tricylinder, its faces, which meet at corners,
@@ -281,7 +292,9 @@ int main(int argc, char** argv)
                                {"b = 0 and a < 0 and c < 0", 8 * s * r * r},
                                {"c = 0 and a < 0 and b < 0", 8 * s * r * r},
                                {"a < 0 or b < 0 or c < 0", 6 * M_PI * r * r - 16 * r * r * r + 8 * s * r * r * r}},
-                              1e-5});
+                              1e-5,
+                              "a < 0 and b < 0 and c < 0",
+                              {"a = 0 and b < 0 and c < 0", "b = 0 and a < 0 and c < 0", "c = 0 and a < 0 and b < 0"}});
         }
         {
             // a ball outside a cylinder: the napkin ring, its sphere zone and
@@ -292,7 +305,9 @@ int main(int argc, char** argv)
                               {{"a < 0 and b > 0", M_PI * h * h * h / 6},
                                {"a = 0 and b > 0", 2 * M_PI * R * h},
                                {"b = 0 and a < 0", 2 * M_PI * r * h}},
-                              1e-6});
+                              1e-6,
+                              "a < 0 and b > 0",
+                              {"a = 0 and b > 0", "b = 0 and a < 0"}});
         }
         for (const Shape& shape : shapes)
             for (const std::string mesh : {"hex", "tet"})
@@ -301,13 +316,47 @@ int main(int argc, char** argv)
                 for (const bool analytic : sources)
                 {
                     const char* source = analytic ? "analytic" : "P2";
+                    std::map<std::string, std::array<double, 2>> totals; // computed, exact
                     for (const auto& [text, exact_total] : shape.parts)
                     {
                         const Run r = run(shape.fields, text, cells, 0.25, 5, analytic, {});
+                        totals[text] = {r.total, exact_total};
                         char what[160];
                         std::snprintf(what, sizeof what, "%-11s %-9s %s q = 5 %-26s total error", shape.name, source,
                                       mesh.c_str(), text);
                         report(what, r, std::abs(r.total / exact_total - 1), shape.bound);
+                    }
+                    // the shape as a level set s made of its level sets: s < 0 and
+                    // s = 0 expand into the terms of its hand-written volume and
+                    // faces, whose totals they match to rounding; s > 0 against
+                    // the exact outside
+                    std::array<double, 2> faces = {0, 0};
+                    for (const char* face : shape.faces)
+                        for (int k = 0; k < 2; ++k)
+                            faces[k] += totals.at(face)[k];
+                    const std::array<double, 2> volume = totals.at(shape.parts.front().first);
+                    struct MadeOf
+                    {
+                        const char* text;
+                        double hand_written; ///< the total of its hand-written selection, or 0
+                        double exact;
+                    };
+                    const MadeOf made_of[] = {{"s < 0", volume[0], volume[1]},
+                                              {"s = 0", faces[0], faces[1]},
+                                              {"s > 0", 0.0, 8 - volume[1]}};
+                    for (const MadeOf& m : made_of)
+                    {
+                        const Run r = run(shape.fields, m.text, cells, 0.25, 5, analytic, {}, Options{}, shape.inside);
+                        char what[160];
+                        std::snprintf(what, sizeof what, "%-11s %-9s %s q = 5 %-26s total error", shape.name, source,
+                                      mesh.c_str(), m.text);
+                        report(what, r, std::abs(r.total / m.exact - 1), shape.bound);
+                        if (m.hand_written != 0 && !(std::abs(r.total / m.hand_written - 1) <= 1e-12))
+                        {
+                            std::printf("FAILED: %s differs from its hand-written selection by %.1e\n", what,
+                                        r.total / m.hand_written - 1);
+                            ++failures;
+                        }
                     }
                     for (const auto& [text, exact_total] : shape.parts)
                     {

@@ -15,6 +15,9 @@ itself, a string such as `"phi < 0"` by its name. `cut` takes two kinds:
 - **analytic level sets** (`AnalyticLevelSet`), evaluated exactly, with
   bounds that classify cells and drive the quadrays backend.
 
+A level set can also be **made of level sets** of these kinds, for shapes
+with sharp edges (see below).
+
 ## Batched interpolation
 
 The primary helper is `create_level_set`:
@@ -72,6 +75,7 @@ the level set itself, with no interpolant:
 ```python
 ball = cutcells.analytic_sphere([0.0, 0.0, 0.0], 0.5)  # |x - c| - r
 result = cutcells.cut(mesh, ball)                       # named "phi"
+named = cutcells.analytic_sphere([0.0, 0.0, 0.0], 0.5, name="ball")
 ```
 
 Other sources:
@@ -82,6 +86,8 @@ Other sources:
   C struct of function pointers (fast, for compiled geometry libraries);
 - `cutcells.shapeforest.analytic_level_set(shape)` for ShapeForest shapes,
   expressions and tapes (ShapeForest is optional).
+
+Each takes `name=`; `cut` calls an analytic level set without one `phi`.
 
 ## Multiple level sets
 
@@ -96,7 +102,50 @@ disk = result[(plane == 0) & (sphere < 0)]
 curve = result[(plane == 0) & (sphere == 0)]
 ```
 
-Analytic level sets in a list are named `phi1`, `phi2`, ..., unless `names` is
-given: `cutcells.cut(mesh, [ball, plane], names=["ball", "plane"])`. The result
-stores `level_set_names` and, per level set and cell, the cell's domain
-(`result.domains`).
+Analytic level sets without a name are called `phi1`, `phi2`, ... in a list.
+`names` overrides all names: `cutcells.cut(mesh, [ball, plane], names=["ball",
+"plane"])`. The result stores `level_set_names` and, per level set and cell,
+the cell's domain (`result.domains`).
+
+## Level sets made of level sets
+
+Shapes built with unions, intersections and differences have sharp edges and
+corners. Given as one level set, they lose accuracy along the edges. Given as
+the smooth level sets they are made of, the edges are exact. A
+`LevelSetFunction` takes them as `level_sets`, and `inside`, the selection of
+them where it is negative:
+
+```python
+ball = cutcells.analytic_sphere(c, 0.8, signed_distance=False, name="ball")
+cyl = cutcells.create_level_set(mesh, cylinder, degree=2, name="cyl")
+
+# a napkin ring: the ball outside the cylinder
+ring = cutcells.LevelSetFunction(level_sets=[ball, cyl],
+                                 inside=(ball < 0) & (cyl > 0), name="ring")
+ring.inside           # "ball < 0 and cyl > 0"
+
+result = cutcells.cut(mesh, [ring, fluid])
+result.level_set_names   # ['ring.ball', 'ring.cyl', 'fluid']
+result.insides           # {'ring': 'ball < 0 and cyl > 0'}
+
+solid = result[ring < 0]
+surface = result[ring == 0]
+hole = surface.on("cyl")    # the face on the cylinder
+```
+
+- **Its level sets** are `LevelSetFunction`s of its precision, or
+  `AnalyticLevelSet`s with a name. Their names must differ, and each is a
+  word without spaces, parentheses, `<`, `>` or `=`.
+- **Its inside** is a condition built from them, or a string with their names,
+  of clauses `< 0` and `> 0` joined with `and` and `or` (`&` and `|` in
+  conditions), with parentheses as needed.
+- **Its own value** is optional. `value=` takes a callable or an
+  `AnalyticLevelSet`, such as the whole shape, for code that evaluates the
+  level set; `cut` uses its level sets.
+- **In a cut**, its level sets take its place, named after it (`ring.ball`).
+  A cut takes up to 64 of them, counting all levels.
+- **Nesting:** a level set made of level sets can be one of the `level_sets` of
+  another; its own are then named `outer.ring.ball`.
+
+Selections of it expand into selections of its level sets; see
+[Cut results and selections](selections.md).

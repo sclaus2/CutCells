@@ -23,6 +23,12 @@ QuadraysOptions), or the lookup tables on Pk-iso-P1 templates,
     straight = result["phi < 0"].quadrature(order=2, backend="lut",
                                             options=cutcells.LutOptions(template_order=3))
 
+A level set made of level sets, ``LevelSetFunction(level_sets=[ball, cyl],
+inside=(ball < 0) & (cyl > 0), name="ring")``, is cut as its level sets, named
+after it (``ring.ball``, ``ring.cyl``); ``result[ring < 0]``, ``result[ring > 0]``
+and ``result[ring == 0]`` expand into selections of them, and
+``result[ring == 0].on("cyl")`` keeps the face on one of them.
+
 ``cut``, ``cut_float32`` and ``cut_float64`` here are deprecated aliases of
 ``cutcells.cut``.
 """

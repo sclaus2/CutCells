@@ -29,10 +29,12 @@ reference/index
 - [Mesh views](user-guide/mesh-views.md): represent background meshes with
   coordinates, connectivity, offsets, and VTK cell types.
 - [Level sets](user-guide/level-sets.md): interpolate implicit geometry on a
-  mesh, or give it analytically, and name level sets.
+  mesh, or give it analytically, name level sets, and make level sets of level
+  sets for shapes with sharp edges.
 - [Cut results and selections](user-guide/selections.md): select parts with
   conditions such as `result[phi < 0]` or their strings, combine several level
-  sets, and infer the dimension.
+  sets, pick the faces of a level set made of level sets, and infer the
+  dimension.
 - [Quadrature and output](user-guide/quadrature-output.md): create quadrature
   rules, visualisation meshes, and VTU files.
 - [Algorithms and scope](user-guide/algorithms.md): supported cell types,

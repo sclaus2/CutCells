@@ -11,6 +11,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include "../bernstein.h"
@@ -32,13 +33,15 @@ namespace
 /// What a part asks of one cut cell, for quadrays: the level sets that cut
 /// the cell and that some term holding on a piece of it names, and those
 /// terms with bits over them (local indices), grouped by the zero set they
-/// ask for: volume terms first (zero 0), then one group per level set.
-/// Conditions on level sets that do not cut the cell hold on all of it.
+/// ask for and the signs of its normals: volume terms first (zero 0), then
+/// one group per level set and sign, so that each run of the engine lies on
+/// one zero set with one normal. Conditions on level sets that do not cut
+/// the cell hold on all of it.
 struct CellTerms
 {
     std::vector<int> level_sets;
     std::vector<SelectionTerm> terms;
-    std::vector<int> offsets = {0}; ///< groups of terms with the same zero mask
+    std::vector<int> offsets = {0}; ///< groups of terms with the same zero and normal masks
 };
 
 template <std::floating_point T, std::integral I>
@@ -75,12 +78,14 @@ void cell_terms(const MeshPart<T, I>& part, I cell_id, CellTerms& out)
         t.negative_required = to_local(term.negative_required);
         t.positive_required = to_local(term.positive_required);
         t.zero_required = to_local(term.zero_required);
+        t.normal_flipped = to_local(term.normal_flipped);
         out.terms.push_back(t);
     }
-    std::stable_sort(out.terms.begin(), out.terms.end(), [](const SelectionTerm& a, const SelectionTerm& b)
-                     { return a.zero_required < b.zero_required; });
+    auto group = [](const SelectionTerm& t) { return std::make_pair(t.zero_required, t.normal_flipped); };
+    std::stable_sort(out.terms.begin(), out.terms.end(),
+                     [&group](const SelectionTerm& a, const SelectionTerm& b) { return group(a) < group(b); });
     for (std::size_t i = 1; i <= out.terms.size(); ++i)
-        if (i == out.terms.size() || out.terms[i].zero_required != out.terms[i - 1].zero_required)
+        if (i == out.terms.size() || group(out.terms[i]) != group(out.terms[i - 1]))
             out.offsets.push_back(static_cast<int>(i));
 }
 

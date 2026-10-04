@@ -6,7 +6,8 @@
 // Several level sets on the cells of a test mesh: balls, planes and cylinders
 // as Bernstein forms or analytic level sets, the rules of a selection on every
 // cell with their checks (finite, positive, inside the cell, in the part), and
-// the leaves of a selection. Shared by test_level_sets and test_curves.
+// the leaves of a selection; selections may name a level set made of the
+// level sets. Shared by test_level_sets and test_curves.
 
 #pragma once
 
@@ -163,6 +164,44 @@ inline void accumulate(Run& sum, const Run& r)
     sum.weights.insert(sum.weights.end(), r.weights.begin(), r.weights.end());
 }
 
+/// The terms of the selection @p text over the level sets a, b, c (the first
+/// @p n), compiled, in groups that ask for the same zero sets with the same
+/// normals, as the engine takes them. With an @p inside, the level sets are
+/// those of a level set s made of them ("s.a", "s.b", "s.c"), which the
+/// selection may name, and @p inside is its inside.
+inline std::vector<std::vector<SelectionTerm>> term_groups(const char* text, std::size_t n,
+                                                           const std::string& inside)
+{
+    std::vector<std::string> names;
+    for (std::size_t l = 0; l < n; ++l)
+        names.push_back((inside.empty() ? "" : "s.") + std::string(1, static_cast<char>('a' + l)));
+    std::map<std::string, std::string> insides;
+    if (!inside.empty())
+        insides["s"] = inside;
+    SelectionExpr expr = parse_selection_expr(text);
+    compile_selection_expr(expr, names, insides);
+    std::vector<std::vector<SelectionTerm>> groups;
+    for (const SelectionTerm& t : expr.terms)
+    {
+        const auto same = [&t](const std::vector<SelectionTerm>& g)
+        { return g.front().zero_required == t.zero_required && g.front().normal_flipped == t.normal_flipped; };
+        const auto it = std::find_if(groups.begin(), groups.end(), same);
+        if (it == groups.end())
+            groups.push_back({t});
+        else
+            it->push_back(t);
+    }
+    return groups;
+}
+
+inline std::vector<SelectionTerm> all_terms(const std::vector<std::vector<SelectionTerm>>& groups)
+{
+    std::vector<SelectionTerm> terms;
+    for (const std::vector<SelectionTerm>& g : groups)
+        terms.insert(terms.end(), g.begin(), g.end());
+    return terms;
+}
+
 /// The level sets on one cell as sources: analytic, or their P2 (P1)
 /// interpolants in Bernstein form, kept in @p forms.
 template <typename Cell>
@@ -189,16 +228,17 @@ std::vector<Source<double>> cell_sources(const std::vector<Field>& fields, const
 
 /// The rules of the part @p text of the level sets @p fields (named a, b, c) on
 /// every cell, their checks, and the per-cell errors if @p exact (per cell) is
-/// given.
+/// given. With an @p inside, @p text may name the level set s made of them
+/// (term_groups).
 template <typename Cell>
 Run run(const std::vector<Field>& fields, const char* text, const std::vector<Cell>& cells, double h, int q,
-        bool analytic, const std::vector<double>& exact, const Options& opt = Options{})
+        bool analytic, const std::vector<double>& exact, const Options& opt = Options{},
+        const std::string& inside = {})
 {
     constexpr bool planar = std::is_same_v<Cell, TestCell2D>;
     constexpr int tdim = planar ? 2 : 3;
-    const std::vector<std::string> names = {"a", "b", "c"};
-    SelectionExpr expr = parse_selection_expr(text);
-    compile_selection_expr(expr, std::vector<std::string>(names.begin(), names.begin() + fields.size()));
+    const std::vector<std::vector<SelectionTerm>> groups = term_groups(text, fields.size(), inside);
+    const std::vector<SelectionTerm> terms = all_terms(groups);
     std::vector<AnalyticLevelSet> als;
     for (const Field& f : fields)
         als.push_back(analytic_level_set(f));
@@ -215,8 +255,9 @@ Run run(const std::vector<Field>& fields, const char* text, const std::vector<Ce
         Stats stats;
         try
         {
-            append_rules<double>(box, std::span<const Source<double>>(sources),
-                                 std::span<const SelectionTerm>(expr.terms), q, opt, 0, rule, stats);
+            for (const std::vector<SelectionTerm>& g : groups)
+                append_rules<double>(box, std::span<const Source<double>>(sources), std::span<const SelectionTerm>(g),
+                                     q, opt, 0, rule, stats);
         }
         catch (const std::exception&)
         {
@@ -246,7 +287,7 @@ Run run(const std::vector<Field>& fields, const char* text, const std::vector<Ce
                 x = physical(cell, std::array<double, 2>{xi[0], xi[1]});
             else
                 x = physical(cell, V3{xi[0], xi[1], xi[2]});
-            r.side += !in_part(fields, expr.terms, x, h);
+            r.side += !in_part(fields, terms, x, h);
             r.points.push_back(x);
             r.weights.push_back(w);
         }
@@ -272,12 +313,11 @@ struct LeafRun
 
 template <typename Cell>
 LeafRun leaves_of(const std::vector<Field>& fields, const char* text, const std::vector<Cell>& cells, double h,
-                  bool analytic)
+                  bool analytic, const std::string& inside = {})
 {
     constexpr int tdim = std::is_same_v<Cell, TestCell2D> ? 2 : 3;
-    const std::vector<std::string> names = {"a", "b", "c"};
-    SelectionExpr expr = parse_selection_expr(text);
-    compile_selection_expr(expr, std::vector<std::string>(names.begin(), names.begin() + fields.size()));
+    const std::vector<std::vector<SelectionTerm>> groups = term_groups(text, fields.size(), inside);
+    const std::vector<SelectionTerm> terms = all_terms(groups);
     std::vector<AnalyticLevelSet> als;
     for (const Field& f : fields)
         als.push_back(analytic_level_set(f));
@@ -291,9 +331,9 @@ LeafRun leaves_of(const std::vector<Field>& fields, const char* text, const std:
         const std::vector<Source<double>> sources = cell_sources(fields, als, cells[i], box, analytic, coeffs, forms);
         LeafMesh<double> leaves;
         Stats stats;
-        append_leaves<double>(box, std::span<const Source<double>>(sources),
-                              std::span<const SelectionTerm>(expr.terms), 2, Options{}, static_cast<std::int32_t>(i),
-                              leaves, stats);
+        for (const std::vector<SelectionTerm>& g : groups)
+            append_leaves<double>(box, std::span<const Source<double>>(sources), std::span<const SelectionTerm>(g), 2,
+                                  Options{}, static_cast<std::int32_t>(i), leaves, stats);
         r.leaves += leaves.n_cells();
         r.incomplete += stats.incomplete_leaves;
         for (const std::uint8_t type : leaves.vtk_types)
@@ -301,7 +341,7 @@ LeafRun leaves_of(const std::vector<Field>& fields, const char* text, const std:
         for (int p = 0; p < leaves.n_points(); ++p)
         {
             const double* x = leaves.points.data() + 3 * p;
-            r.outside += !in_part(fields, expr.terms, V3{x[0], x[1], x[2]}, h, 1e-5);
+            r.outside += !in_part(fields, terms, V3{x[0], x[1], x[2]}, h, 1e-5);
         }
     }
     return r;

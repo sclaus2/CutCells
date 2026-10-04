@@ -20,26 +20,28 @@ in `cutcells.conditions` (re-exported as `cutcells.Condition`).
 
 | Name | Purpose |
 | --- | --- |
-| `LevelSetFunction` | Scalar level-set function object; `cut` needs it with degree-of-freedom values. `name` (read-only) gives its name. |
+| `LevelSetFunction` | Scalar level-set function object; `cut` needs it with degree-of-freedom values, an analytic value, or level sets it is made of. `name` (read-only) gives its name. |
+| `LevelSetFunction(value=None, grad=None, nodal_values=None, gdim=0, name=None, level_sets=None, inside=None)` | A level set from a callable or an `AnalyticLevelSet` (`value`), nodal values, or level sets: with `level_sets` (`LevelSetFunction`s of its precision or named `AnalyticLevelSet`s) and `inside` (a condition on them, or a string with their names), a level set made of level sets; its own value is then optional. |
+| `level_set.level_sets`, `level_set.inside` | The level sets it is made of (copies), or `[]`; its inside, or `None`. |
 | `LevelSetMeshData` | Interpolation mesh data for level-set degrees of freedom. |
 | `create_level_set_mesh_data(mesh, degree, merge_tol=-1.0)` | Build level-set interpolation data. |
 | `create_level_set_function(mesh_data, dof_values, name="phi")` | Build a named level set from mesh data and values. |
 | `create_level_set(mesh, phi, degree, name="phi")` | Interpolate a batched callback where `X.shape == (gdim, num_dofs)`. |
 | `interpolate_level_set(mesh, phi, degree, name="phi")` | Interpolate a batched callback where `X.shape == (num_dofs, gdim)`. |
-| `AnalyticLevelSet(value, gradient, box_bounds, taylor_bounds=None)` | Analytic level set from Python callables (slow, for experiments). |
-| `AnalyticLevelSet.from_capsule(capsule)` | Analytic level set from a capsule holding its C struct (fast, for compiled libraries); `level_set.capsule` gives one. |
-| `analytic_sphere(centre, radius, signed_distance=True)` | Compiled sphere, `\|x - centre\| - radius` (a disk in 2D). |
-| `analytic_level_set_from_tape(...)` | Analytic level set from the arrays of a ShapeForest tape. |
-| `cutcells.shapeforest.analytic_level_set(shape, parameters=None)` | Analytic level set from a ShapeForest shape, expression or tape. |
+| `AnalyticLevelSet(value, gradient, box_bounds, taylor_bounds=None, name=None)` | Analytic level set from Python callables (slow, for experiments). `name` (read-only) gives its name, or `None`. |
+| `AnalyticLevelSet.from_capsule(capsule, name=None)` | Analytic level set from a capsule holding its C struct (fast, for compiled libraries); `level_set.capsule` gives one. |
+| `analytic_sphere(centre, radius, signed_distance=True, name=None)` | Compiled sphere, `\|x - centre\| - radius` (a disk in 2D). |
+| `analytic_level_set_from_tape(..., name=None)` | Analytic level set from the arrays of a ShapeForest tape. |
+| `cutcells.shapeforest.analytic_level_set(shape, parameters=None, name=None)` | Analytic level set from a ShapeForest shape, expression or tape. |
 
 ## Conditions
 
 | Name | Purpose |
 | --- | --- |
-| `level_set < 0`, `level_set > 0`, `level_set == 0` | A `Condition`, for `LevelSetFunction` and `AnalyticLevelSet`; a number other than 0 raises. |
+| `level_set < 0`, `level_set > 0`, `level_set == 0` | A `Condition`, for `LevelSetFunction` and `AnalyticLevelSet`; a number other than 0 raises. For a level set made of level sets: its inside, the rest, and its faces. |
 | `a & b`, `a \| b` | Conditions combined: and, or. Each comparison needs parentheses. |
 | `Condition` | A selection built from level sets. `str(condition)` writes it as a selection string with the level sets' own names, `condition.text(names)` with `names[level_set]`. |
-| `cutcells.conditions.selection_text(selection, level_sets, names)` | The string of a selection for a cut of `level_sets` named `names`: a string as it is, a condition with its level sets matched by identity. For libraries that pass selections on as strings. |
+| `cutcells.conditions.selection_text(selection, level_sets, names, owner=None)` | The string of a selection for a cut of `level_sets` named `names`: a string as it is, a condition with its level sets matched by identity. For libraries that pass selections on as strings. With `owner`, the inside of the level set of that name, made of `level_sets`. |
 
 ## Cutting
 
@@ -57,7 +59,7 @@ in `cutcells.conditions` (re-exported as `cutcells.Condition`).
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
-| `names` | `None` | Names of the level sets, in order; analytic ones default to `phi`, or `phi1`, `phi2`, ... in a list. |
+| `names` | `None` | Names of the level sets, in order; by default their own, and `phi`, or `phi1`, `phi2`, ... in a list, for analytic ones without a name. |
 | `name` | `None` | Name of a single level set (not with `names`). |
 | `max_depth` | `12` | Bisections of a cell before an unproven sign counts as cut. |
 | `backend` | `"quadrays"` | Default backend of the selected parts; `"lut"` (also `"straight"`) gives straight pieces. |
@@ -78,13 +80,14 @@ The lookup-table keywords raise when given with another backend.
 | --- | --- |
 | `num_cells` | Number of background cells. |
 | `num_cut_cells` | Number of cells that some level set cuts. |
-| `num_level_sets` | Number of level sets. |
-| `level_set_names` | Names used in selection strings and for the level sets of conditions. |
+| `num_level_sets` | Number of level sets, a level set made of level sets counted as its own. |
+| `level_set_names` | Names used in selection strings; the level sets a level set made of level sets is made of are named after it (`ring.ball`). |
+| `insides` | The level sets made of level sets, by name, with their insides (`{"ring": "ball < 0 and cyl > 0"}`). |
 | `cut_cells` | Cells that some level set cuts, ascending. |
 | `domains` | Per level set and cell: 0 inside, 1 cut, 2 outside; shape `(num_level_sets, num_cells)`. |
 | `zero_faces` | Faces lying in a zero set, each with the cell that owns it. |
 | `backend`, `options` | Backend and options of the parts selected from now on (settable). |
-| `result[selection]` | Select a `MeshPart` with a condition (`phi < 0`, `(a > 0) & (b == 0)`) or a string (`"phi < 0"`, `"a > 0 and b = 0"`). |
+| `result[selection]` | Select a `MeshPart` with a condition (`phi < 0`, `(a > 0) & (b == 0)`) or a string (`"phi < 0"`, `"a > 0 and b = 0"`, `"(a < 0 or b < 0) and c > 0"`). |
 
 `MeshPart`:
 
@@ -96,6 +99,7 @@ The lookup-table keywords raise when given with another backend.
 | `cut_cells` | Selected cut cells. |
 | `uncut_cells` | Cells wholly in a volume part. |
 | `zero_faces` | Faces lying in a zero set that belong to the part. |
+| `on(*names)` | The faces of a surface on the level sets named, such as `result[ring == 0].on("cyl")`: full or short names, or a level set made of level sets for all its faces. |
 | `backend`, `options` | The part's backend and options. |
 | `quadrature(order=3, mode="full", backend=None, options=None)` | Quadrature rules with positive weights; `order` is the polynomial degree integrated exactly on flat pieces (1 to 10). |
 | `visualization_mesh(mode="full", backend=None, degree=3, options=None)` | `QuadraysLeafMesh` of Lagrange cells (quadrays) or `CutMesh` of straight cells (lookup tables). |

@@ -7,6 +7,7 @@
 
 #include <concepts>
 #include <cstdint>
+#include <map>
 #include <span>
 #include <string>
 #include <vector>
@@ -52,12 +53,20 @@ struct ClassifyOptions
 
 /// Every cell classified by every level set as inside (phi < 0), outside
 /// (phi > 0) or cut, and the faces lying in a level set's zero set.
+///
+/// A level set made of level sets is replaced by its own: level_sets and
+/// level_set_names hold them, named after it ("body.hole"), and insides keeps
+/// its inside for selections.
 template <std::floating_point T, std::integral I = int>
 struct CutResult
 {
     const MeshView<T, I>* mesh = nullptr;                  ///< not owned
     std::vector<const LevelSetFunction<T, I>*> level_sets; ///< not owned
     std::vector<std::string> level_set_names;
+    /// The level sets made of level sets, by name ("body", or "body.part"
+    /// when nested), with their insides as given: selections of their own
+    /// level sets, by the names those have within them.
+    std::map<std::string, std::string> insides;
     int num_cells = 0;
     /// domains[l * num_cells + c]: inside, outside or intersected
     std::vector<cell::domain> domains;
@@ -102,10 +111,19 @@ std::uint64_t cut_mask(const CutResult<T, I>& result, I cell_id)
 /// handle. Other cells (intervals, and prisms and pyramids for Pk level sets)
 /// use the signs of their Bernstein coefficients.
 ///
-/// @param level_sets  Pk level sets (dof values) or analytic ones; they and
-///                    @p mesh must outlive the result
+/// A level set made of level sets (LevelSetFunction::level_sets and inside)
+/// is replaced by its own level sets, depth first, named after it: "body.a",
+/// "body.b", or "body.c.d" if c is made of level sets in turn.
+///
+/// @param level_sets  Pk level sets (dof values) or analytic ones, or level
+///                    sets made of them; they and @p mesh must outlive the
+///                    result
 /// @throws std::invalid_argument for level sets with neither, more than 64
-///         level sets, or analytic level sets on cells quadrays does not take
+///         level sets (counting those level sets made of level sets are made
+///         of), analytic level sets on cells quadrays does not take, two
+///         level sets of one name, a name that reads as one of the level
+///         sets of a level set made of level sets ("body.x" next to body),
+///         and level sets made of level sets that check_level_sets rejects
 template <std::floating_point T, std::integral I>
 CutResult<T, I> cut(const MeshView<T, I>& mesh, std::span<const LevelSetFunction<T, I>> level_sets,
                     const ClassifyOptions& options = {});
