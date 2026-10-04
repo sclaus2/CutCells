@@ -1,0 +1,13 @@
+# Documentation build requirements
+sphinx>=5.0
+pydata-sphinx-theme>=0.13
+sphinx-copybutton
+sphinx-design
+myst-parser
+linkify-it-py
+tomli; python_version < "3.11"
+
+# Optional examples and local inspection
+numpy
+pyvista
+sphinx-autobuild
