@@ -1,7 +1,8 @@
 # Python API overview
 
 The top-level `cutcells` package re-exports the primary C++ bindings and Python
-mesh utilities. `CutResult` and `MeshPart` live in `cutcells.part`.
+mesh utilities. `CutResult` and `MeshPart` live in `cutcells.part`, `Condition`
+in `cutcells.conditions` (re-exported as `cutcells.Condition`).
 
 ## Mesh construction
 
@@ -19,7 +20,7 @@ mesh utilities. `CutResult` and `MeshPart` live in `cutcells.part`.
 
 | Name | Purpose |
 | --- | --- |
-| `LevelSetFunction` | Scalar level-set function object; `cut` needs it with degree-of-freedom values. |
+| `LevelSetFunction` | Scalar level-set function object; `cut` needs it with degree-of-freedom values. `name` (read-only) gives its name. |
 | `LevelSetMeshData` | Interpolation mesh data for level-set degrees of freedom. |
 | `create_level_set_mesh_data(mesh, degree, merge_tol=-1.0)` | Build level-set interpolation data. |
 | `create_level_set_function(mesh_data, dof_values, name="phi")` | Build a named level set from mesh data and values. |
@@ -30,6 +31,15 @@ mesh utilities. `CutResult` and `MeshPart` live in `cutcells.part`.
 | `analytic_sphere(centre, radius, signed_distance=True)` | Compiled sphere, `\|x - centre\| - radius` (a disk in 2D). |
 | `analytic_level_set_from_tape(...)` | Analytic level set from the arrays of a ShapeForest tape. |
 | `cutcells.shapeforest.analytic_level_set(shape, parameters=None)` | Analytic level set from a ShapeForest shape, expression or tape. |
+
+## Conditions
+
+| Name | Purpose |
+| --- | --- |
+| `level_set < 0`, `level_set > 0`, `level_set == 0` | A `Condition`, for `LevelSetFunction` and `AnalyticLevelSet`; a number other than 0 raises. |
+| `a & b`, `a \| b` | Conditions combined: and, or. Each comparison needs parentheses. |
+| `Condition` | A selection built from level sets. `str(condition)` writes it as a selection string with the level sets' own names, `condition.text(names)` with `names[level_set]`. |
+| `cutcells.conditions.selection_text(selection, level_sets, names)` | The string of a selection for a cut of `level_sets` named `names`: a string as it is, a condition with its level sets matched by identity. For libraries that pass selections on as strings. |
 
 ## Cutting
 
@@ -69,12 +79,12 @@ The lookup-table keywords raise when given with another backend.
 | `num_cells` | Number of background cells. |
 | `num_cut_cells` | Number of cells that some level set cuts. |
 | `num_level_sets` | Number of level sets. |
-| `level_set_names` | Names used in selection expressions. |
+| `level_set_names` | Names used in selection strings and for the level sets of conditions. |
 | `cut_cells` | Cells that some level set cuts, ascending. |
 | `domains` | Per level set and cell: 0 inside, 1 cut, 2 outside; shape `(num_level_sets, num_cells)`. |
 | `zero_faces` | Faces lying in a zero set, each with the cell that owns it. |
 | `backend`, `options` | Backend and options of the parts selected from now on (settable). |
-| `result[expr]` | Select a `MeshPart` with a string expression. |
+| `result[selection]` | Select a `MeshPart` with a condition (`phi < 0`, `(a > 0) & (b == 0)`) or a string (`"phi < 0"`, `"a > 0 and b = 0"`). |
 
 `MeshPart`:
 

@@ -7,8 +7,8 @@ CutCells uses the sign convention:
 - `phi > 0`: outside region.
 - `phi = 0`: embedded interface.
 
-Named level sets are important because selection expressions refer to them by
-name. `cut` takes two kinds:
+Selections refer to level sets: a condition such as `phi < 0` by the object
+itself, a string such as `"phi < 0"` by its name. `cut` takes two kinds:
 
 - **Pk level sets** (`LevelSetFunction` with degree-of-freedom values),
   interpolated on the background mesh;
@@ -85,15 +85,15 @@ Other sources:
 
 ## Multiple level sets
 
-Each level set must have a stable name:
+Each level set needs a stable name, which strings and `str(condition)` use:
 
 ```python
 sphere = cutcells.create_level_set(mesh, sphere_phi, degree=1, name="sphere")
 plane = cutcells.create_level_set(mesh, plane_phi, degree=1, name="plane")
 
 result = cutcells.cut(mesh, [sphere, plane])
-disk = result["plane = 0 and sphere < 0"]
-curve = result["plane = 0 and sphere = 0"]
+disk = result[(plane == 0) & (sphere < 0)]
+curve = result[(plane == 0) & (sphere == 0)]
 ```
 
 Analytic level sets in a list are named `phi1`, `phi2`, ..., unless `names` is

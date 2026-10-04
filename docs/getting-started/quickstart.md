@@ -20,9 +20,9 @@ def phi(X):
 level_set = cutcells.create_level_set(mesh, phi, degree=2, name="phi")
 result = cutcells.cut(mesh, level_set)
 
-inside = result["phi < 0"]
-interface = result["phi = 0"]
-outside = result["phi > 0"]
+inside = result[level_set < 0]
+interface = result[level_set == 0]
+outside = result[level_set > 0]
 
 print("cut parent cells:", result.num_cut_cells)
 print("inside:   ", inside.num_cut_cells, "cut cells")
@@ -41,7 +41,9 @@ The important pieces are:
 - `MeshView`: a lightweight background mesh view.
 - `create_level_set`: interpolation of an implicit function on the mesh.
 - `cut`: classification of every cell by every level set.
-- `result["phi < 0"]`: selection of a region, interface, or intersection.
+- `result[level_set < 0]`: selection of a region, interface (`== 0`), or
+  intersection, by a condition built from the level set; the string
+  `result["phi < 0"]` does the same.
 - `MeshPart.quadrature`: quadrature rules for selected mesh parts; `order` is
   the polynomial degree integrated exactly on flat pieces.
 
@@ -55,8 +57,8 @@ An analytic level set skips the interpolant altogether:
 
 ```python
 circle = cutcells.analytic_sphere([0.0, 0.0, 0.0], 0.55)
-result = cutcells.cut(mesh, circle)   # named "phi"
-area = result["phi < 0"].quadrature(order=4).weights.sum()
+result = cutcells.cut(mesh, circle)
+area = result[circle < 0].quadrature(order=4).weights.sum()
 ```
 
 ## Write a visualisation mesh

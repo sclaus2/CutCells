@@ -228,8 +228,9 @@ tables give straight pieces:
 
 ```python
 result = cutcells.cut(mesh, phi)                    # quadrays
-rules = result["phi < 0"].quadrature(order=4)       # exact for degree 4 on flat pieces
-straight = result["phi < 0"].quadrature(order=4, backend="lut")
+rules = result[phi < 0].quadrature(order=4)         # exact for degree 4 on flat pieces
+straight = result[phi < 0].quadrature(order=4, backend="lut")
+same = result["phi < 0"]                            # a selection string does the same
 ```
 
 ### Algoim (benchmarks only)

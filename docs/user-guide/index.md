@@ -17,7 +17,8 @@ The main workflow is:
    ones.
 3. Call `cut(mesh, level_set)` or `cut(mesh, [level_sets...])`; parts integrate
    with quadrays unless you pass `backend="lut"`.
-4. Select mesh parts with expressions such as `"phi < 0"` or
-   `"sphere = 0 and plane < 0"`.
+4. Select mesh parts with conditions built from the level sets, such as
+   `phi < 0` or `(sphere == 0) & (plane < 0)`, or with their strings,
+   `"phi < 0"` or `"sphere = 0 and plane < 0"`.
 5. Request quadrature rules, visualisation meshes, or VTU output from the
    selected part.

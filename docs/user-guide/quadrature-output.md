@@ -5,8 +5,8 @@ A `MeshPart` gives quadrature rules, a visualisation mesh, or a VTU file.
 ## Quadrature rules
 
 ```python
-inside = result["phi < 0"]
-interface = result["phi = 0"]
+inside = result[phi < 0]
+interface = result[phi == 0]
 
 volume_rules = inside.quadrature(order=4, mode="full")
 interface_rules = interface.quadrature(order=4, mode="cut_only")

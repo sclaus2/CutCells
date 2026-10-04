@@ -49,7 +49,7 @@ Choose the backend when cutting, or per part:
 ```python
 result = cutcells.cut(mesh, phi)                    # quadrays
 straight = cutcells.cut(mesh, phi, backend="lut")   # lookup tables
-rules = result["phi < 0"].quadrature(order=4, backend="lut")
+rules = result[phi < 0].quadrature(order=4, backend="lut")
 ```
 
 Options go through `QuadraysOptions` and `LutOptions` (see the
