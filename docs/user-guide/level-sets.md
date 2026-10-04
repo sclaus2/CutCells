@@ -135,7 +135,8 @@ hole = surface.on("cyl")    # the face on the cylinder
 
 - **Its level sets** are `LevelSetFunction`s of its precision, or
   `AnalyticLevelSet`s with a name. Their names must differ, and each is a
-  word without spaces, parentheses, `<`, `>` or `=`.
+  word without spaces, parentheses, `<`, `>` or `=`. `ring.level_sets` returns
+  them as given, so conditions on them select in a cut: `result[cyl < 0]`.
 - **Its inside** is a condition built from them, or a string with their names,
   of clauses `< 0` and `> 0` joined with `and` and `or` (`&` and `|` in
   conditions), with parentheses as needed.

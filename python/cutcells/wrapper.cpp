@@ -709,6 +709,15 @@ void make_made_of(cutcells::LevelSetFunction<T, int>& ls, nb::handle level_sets,
   cutcells::check_level_sets(ls);
 }
 
+/// Keeps the Python objects given as @p level_sets on @p self, the level set
+/// made of them, since it holds copies: level_sets returns them, and conditions
+/// on them find them by identity in a cut. None keeps nothing.
+inline void keep_level_set_objects(nb::handle self, nb::handle level_sets)
+{
+  if (!level_sets.is_none())
+    nb::setattr(self, "_level_set_objects", nb::tuple(level_sets));
+}
+
 template <typename T>
 void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
 {
@@ -962,10 +971,10 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
       nb::arg("cell_types") = nb::none());
 
   const std::string ls_name = "LevelSetFunction_" + suffix;
-  nb::class_<LevelSetT>(m, ls_name.c_str(), "Level-set function")
+  nb::class_<LevelSetT>(m, ls_name.c_str(), "Level-set function", nb::dynamic_attr())
       .def(
           "__init__",
-          [](LevelSetT* self,
+          [](nb::pointer_and_handle<LevelSetT> self,
              nb::object value_obj,
              nb::object grad_obj,
              nb::object nodal_values_obj,
@@ -987,7 +996,8 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
               const std::string own = name.is_none() && !phi.name.empty() ? phi.name : ls.name;
               ls = cutcells::create_level_set_function<T, int>(phi.phi, gdim > 0 ? gdim : 3, own);
               make_made_of<T>(ls, level_sets, inside, gdim);
-              new (self) LevelSetT(std::move(ls));
+              new (self.p) LevelSetT(std::move(ls));
+              keep_level_set_objects(self.h, level_sets);
               return;
             }
 
@@ -1063,7 +1073,8 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
             ls.gdim = gdim;
             ls.owner = make_owner_from_objects(value_obj, grad_obj, nodal_owner);
             make_made_of<T>(ls, level_sets, inside, gdim);
-            new (self) LevelSetT(std::move(ls));
+            new (self.p) LevelSetT(std::move(ls));
+            keep_level_set_objects(self.h, level_sets);
           },
           nb::arg("value") = nb::none(),
           nb::arg("grad") = nb::none(),
@@ -1088,11 +1099,18 @@ void declare_meshview_and_levelset(nb::module_& m, const std::string& suffix)
           [](nb::handle self)
           {
             nb::list out;
+            const nb::object given = nb::getattr(self, "_level_set_objects", nb::none());
+            if (!given.is_none())
+            {
+              for (nb::handle h : given)
+                out.append(h);
+              return out;
+            }
             for (const LevelSetT& part : nb::cast<const LevelSetT&>(self).level_sets)
               out.append(nb::cast(&part, nb::rv_policy::reference_internal, self));
             return out;
           },
-          "The level sets it is made of (copies of those given), or [].")
+          "The level sets it is made of, the objects given (copies for one made in C++), or [].")
       .def_prop_ro(
           "inside",
           [](const LevelSetT& self) -> nb::object

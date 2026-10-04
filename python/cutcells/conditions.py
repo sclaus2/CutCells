@@ -34,6 +34,7 @@ level sets it is made of::
     ring = cutcells.LevelSetFunction(level_sets=[ball, cyl], inside=(ball < 0) & (cyl > 0), name="ring")
     result = cutcells.cut(mesh, [ring, fluid])
     result[(ring > 0) & (fluid < 0)]   # ring > 0 expands to ring.ball > 0 or ring.cyl < 0
+    result[ball < 0]                   # ring.ball < 0: ring keeps the level sets given
 """
 
 import numbers
@@ -131,18 +132,36 @@ for _cls in (LevelSetFunction_float32, LevelSetFunction_float64, AnalyticLevelSe
         setattr(_cls, _name, getattr(_Comparisons, _name))
 
 
+def _with_level_sets_made_of(level_sets, names):
+    """The level sets of a cut with the names it gives them, and those each is
+    made of, at every depth, named after it as the cut names them ("ring.ball")."""
+    named = []
+
+    def add(level_set, name):
+        named.append((level_set, name))
+        for piece in getattr(level_set, "_level_set_objects", ()):
+            add(piece, f"{name}.{piece.name}")
+
+    for level_set, name in zip(level_sets, names):
+        add(level_set, name)
+    return named
+
+
 def selection_text(selection, level_sets, names, owner=None):
     """A selection as the string that a cut of level_sets, named names, parses:
     a string as it is, a condition with each of its level sets named as in the
-    cut, found by identity among level_sets. With owner, the name of a level set
+    cut, found by identity among level_sets and the level sets they are made of
+    ("ring.ball" for ball, one of ring's). With owner, the name of a level set
     made of level_sets, the selection is its inside."""
     if isinstance(selection, str):
         return selection
     if not isinstance(selection, Condition):
         raise TypeError(f"a selection is a condition such as phi < 0, or a string such as \"phi < 0\", "
                         f"not {type(selection).__name__}")
+    named = list(zip(level_sets, names)) if owner is not None else _with_level_sets_made_of(level_sets, names)
+    names = [name for _, name in named]
     found = {}
-    for level_set, name in zip(level_sets, names):
+    for level_set, name in named:
         found.setdefault(level_set, []).append(name)
     among = "the cut's level sets" if owner is None else f"the level sets of {owner}"
     twice = "was cut twice" if owner is None else f"is among the level sets of {owner} twice"

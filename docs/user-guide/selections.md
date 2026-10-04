@@ -117,6 +117,11 @@ names (`ring.ball`, `ring.cyl`), and strings may use them. Short names
 `.on(...)`, a short name resolves among the part's faces first.
 `result.insides` maps each level set made of level sets to its inside.
 
+Conditions on its level sets select them by their full names:
+`result[cyl < 0]` is `result["ring.cyl < 0"]`, at any depth. A level set given
+to two level sets made of level sets of one cut raises; select it with a string
+then.
+
 ## Dimension inference
 
 The selected entity dimension is inferred from equality clauses:

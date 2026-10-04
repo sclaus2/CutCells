@@ -15,8 +15,9 @@ expand into selections of them.
   around it; both backends.
 - Nested insides (parentheses) and level sets made of level sets made of level
   sets give the parts of their hand-written expansions.
-- Conditions and strings, short and qualified names, names of analytic level
-  sets, float32, and the errors."""
+- Conditions and strings, short and qualified names, conditions on the level
+  sets a level set is made of, names of analytic level sets, float32, and the
+  errors."""
 
 import math
 import re
@@ -255,6 +256,40 @@ def test_conditions_and_names():
     assert_same_part(both["s = 0"].on("hole"), both["s = 0"].on("s.hole"), "a short name among the part's faces")
     with pytest.raises(ValueError, match="could be any of s.hole, t.hole"):
         both["s = 0 or t = 0"].on("hole")
+
+
+def test_conditions_on_the_level_sets_made_of():
+    """A level set made of level sets keeps the objects given, so conditions on
+    them select as their full names do, at every depth; one given in two level
+    sets made of level sets raises, as a level set cut twice does."""
+    mesh = box_mesh("hex", 4)
+    ball = cutcells.analytic_sphere(CENTRE, 0.8, signed_distance=False, name="ball")
+    cyl = cylinder_level_set(mesh, 0.45, 2, "cyl")
+    fluid = planes(mesh, [(2, 0.2, "fluid")])[0]
+    ring = made_of([ball, cyl], (ball < 0) & (cyl > 0), "ring")
+    assert ring.level_sets[0] is ball and ring.level_sets[1] is cyl
+    result = cutcells.cut(mesh, [ring, fluid], names=["body", "fluid"])
+    for selection, text in ((ball < 0, "body.ball < 0"), (cyl == 0, "body.cyl = 0"),
+                            ((ball < 0) & (fluid > 0), "body.ball < 0 and fluid > 0"),
+                            ((ring == 0) & (cyl > 0), "body = 0 and body.cyl > 0")):
+        assert_same_part(result[selection], result[text], text)
+    # nested: outer, made of ring and a plane
+    plane = planes(mesh, [(2, -0.2, "plane")])[0]
+    outer = made_of([ring, plane], (ring < 0) & (plane > 0), "outer")
+    assert outer.level_sets[0] is ring
+    nested = cutcells.cut(mesh, outer)
+    assert_same_part(nested[ball < 0], nested["outer.ring.ball < 0"], "a level set two levels down")
+    assert_same_part(nested[ring < 0], nested["outer.ring < 0"], "a level set made of level sets within")
+    assert_same_part(nested[plane < 0], nested["outer.plane < 0"], "a level set one level down")
+    # the same ball in two level sets made of level sets
+    other = made_of([ball, fluid], (ball < 0) & (fluid < 0), "other")
+    both = cutcells.cut(mesh, [ring, other])
+    with pytest.raises(ValueError, match="was cut twice, as ring.ball and other.ball: select it with a string"):
+        both[ball < 0]
+    assert_same_part(both[cyl < 0], both["ring.cyl < 0"], "a level set given once")
+    lonely = cylinder_level_set(mesh, 0.3, 1, "lonely")
+    with pytest.raises(ValueError, match="not one of the cut's level sets: ring, ring.ball, ring.cyl, other"):
+        both[lonely < 0]
 
 
 def test_analytic_level_sets_have_names():

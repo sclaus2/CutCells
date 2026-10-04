@@ -22,7 +22,7 @@ in `cutcells.conditions` (re-exported as `cutcells.Condition`).
 | --- | --- |
 | `LevelSetFunction` | Scalar level-set function object; `cut` needs it with degree-of-freedom values, an analytic value, or level sets it is made of. `name` (read-only) gives its name. |
 | `LevelSetFunction(value=None, grad=None, nodal_values=None, gdim=0, name=None, level_sets=None, inside=None)` | A level set from a callable or an `AnalyticLevelSet` (`value`), nodal values, or level sets: with `level_sets` (`LevelSetFunction`s of its precision or named `AnalyticLevelSet`s) and `inside` (a condition on them, or a string with their names), a level set made of level sets; its own value is then optional. |
-| `level_set.level_sets`, `level_set.inside` | The level sets it is made of (copies), or `[]`; its inside, or `None`. |
+| `level_set.level_sets`, `level_set.inside` | The level sets it is made of, as given, or `[]`; its inside, or `None`. Conditions on them select in a cut by their full names (`result[cyl < 0]` is `result["ring.cyl < 0"]`). |
 | `LevelSetMeshData` | Interpolation mesh data for level-set degrees of freedom. |
 | `create_level_set_mesh_data(mesh, degree, merge_tol=-1.0)` | Build level-set interpolation data. |
 | `create_level_set_function(mesh_data, dof_values, name="phi")` | Build a named level set from mesh data and values. |
