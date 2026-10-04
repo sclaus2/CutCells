@@ -3,7 +3,7 @@
 // This file is part of CutCells
 // SPDX-License-Identifier: MIT
 
-// The robustness cases (docs/quadrays/RESULTS.md, v1.2). Batch 1: spheres and
+// The robustness cases. Batch 1: spheres and
 // planes placed on the test meshes so that they pass through vertices, touch
 // faces, cut tiny caps or lie in faces, and scaled level sets. Batch 2: several
 // components, close roots and singular points (two touching or nearly touching

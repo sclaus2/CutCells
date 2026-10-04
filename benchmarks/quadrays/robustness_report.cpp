@@ -3,7 +3,7 @@
 // This file is part of CutCells
 // SPDX-License-Identifier: MIT
 
-// Robustness report (docs/quadrays/RESULTS.md, v1.2). Every cell of [-1, 1]^3,
+// Robustness report. Every cell of [-1, 1]^3,
 // cut or not, goes to every generator for every case of
 // cpp/tests/quadrays/support/robustness_cases.h and is checked against exact
 // per-cell values; for cones, the double root and the torus only the totals are

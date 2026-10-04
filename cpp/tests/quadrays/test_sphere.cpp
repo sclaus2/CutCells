@@ -7,8 +7,8 @@
 // on hexahedra and Kuhn tetrahedra of [-1, 1]^3 with n = 8. Per-cell L1 (relative
 // to the ball volume or the sphere area) and the worst cell (relative to the
 // cell's exact value) must stay within 25% of the expected numbers, and so must
-// the bisections: in the reference frame (BoxFrame) the prototype's
-// (docs/quadrays/RESULTS.md); in the orthogonal frame of the tetrahedra (the
+// the bisections: in the reference frame (BoxFrame) the prototype's; in
+// the orthogonal frame of the tetrahedra (the
 // default), those it gave when it came. It bisects 19 times less and keeps 5
 // times fewer points, so that at the same q its errors are larger (caps of
 // 1e-3 h^3 in a single leaf: 0.4 % at q = 3), at the same number of points not.
