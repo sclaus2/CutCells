@@ -9,11 +9,19 @@ and analytic level sets, and any number of level sets per cell.
 
 | Dimension | Cells |
 | ---: | --- |
-| 1 | interval (lookup tables) |
+| 1 | interval |
 | 2 | triangle, quadrilateral |
 | 3 | tetrahedron, hexahedron, prism, pyramid |
 
 Pk level sets of any degree are supported; pyramids take degree 2 at most.
+
+A cell may lie in a space of higher dimension than its own: the facets of a
+mesh (triangles and quadrilaterals in 3D, intervals in 2D or 3D), its edges,
+or the cells of a surface mesh. Such a cell is cut and integrated as the cell
+it is: quadrays maps it to an orthonormal frame of its plane or line, so that
+areas and lengths are measured on it, points are its own reference
+coordinates, and an analytic level set's derivative normal to it does not
+count.
 
 ## Classification
 
@@ -35,10 +43,11 @@ The parts of a result integrate and visualise with a backend:
   dimension one height direction at a time. It integrates the level sets
   themselves, curved pieces included, to high order. It takes any number of
   level sets per cell, follows the edges where two zero sets meet and the
-  corners where three meet, and works on affine cells: triangles,
+  corners where three meet, and works on affine cells: intervals, triangles,
   parallelograms, tetrahedra, parallelepipeds, and prisms and pyramids with
   parallelogram faces. It integrates volumes, interfaces, and the curves
-  where two level sets vanish (points with unit weights in 2D).
+  where two level sets vanish (points with unit weights in 2D). On intervals
+  an interface is points with unit weights.
 - **`"lut"`** (also `"straight"`): the lookup tables. A cut cell is subdivided
   by a Pk-iso-P1 template, and each sub-cell is cut by the level sets' P1
   interpolants. The pieces are straight; they include the curves (points in

@@ -26,7 +26,10 @@ namespace cutcells::quadrays
 /// restricts a Bernstein form itself (restrict_affine); an analytic level set
 /// gives them through affine_bounds and line_roots below.
 ///
-/// Box coordinates have 3 entries; on 2D cells (tdim 2) u2 is 0.
+/// Box coordinates have 3 entries; u_j is 0 for j >= tdim. The physical
+/// point has 3 coordinates too: a cell of dimension tdim < 3 may lie in 3D,
+/// as a facet does, and gradients with respect to u then have a component
+/// normal to the cell, which only its first tdim components exclude.
 template <std::floating_point T>
 struct Source
 {

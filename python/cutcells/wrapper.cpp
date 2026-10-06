@@ -1991,13 +1991,20 @@ void declare_quadrays(nb::module_& m, const std::string& type)
       .def("n_points", &LeafMeshT::n_points)
       .def("n_cells", &LeafMeshT::n_cells);
 
-  // one cell given by its type, vertices and level-set Bernstein coefficients
-  auto cell_inputs = [](cell::type cell_type, const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords,
-                        int degree, const ndarray1<T>& coeffs, qr::ClippedBox<T>& box,
-                        qr::BoxBernstein<T>& phi)
+  // one cell given by its type and vertices, with tdim coordinates each or
+  // more for a facet in a space of higher dimension
+  auto cell_box = [](cell::type cell_type, const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords,
+                     qr::ClippedBox<T>& box)
   {
-    qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()),
-                            cell::get_tdim(cell_type), box);
+    const int gdim = static_cast<int>(vertex_coords.size()) / cell::get_num_vertices(cell_type);
+    qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()), gdim, box);
+  };
+  // one cell given by its type, vertices and level-set Bernstein coefficients
+  auto cell_inputs = [cell_box](cell::type cell_type,
+                                const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords, int degree,
+                                const ndarray1<T>& coeffs, qr::ClippedBox<T>& box, qr::BoxBernstein<T>& phi)
+  {
+    cell_box(cell_type, vertex_coords, box);
     qr::cell_bernstein_on_box<T>(cell_type, degree, std::span<const T>(coeffs.data(), coeffs.size()), box, phi);
   };
   auto cell_part = [](const std::string& selection, const std::string& name)
@@ -2030,9 +2037,10 @@ void declare_quadrays(nb::module_& m, const std::string& type)
         nb::arg("cell_type"), nb::arg("vertex_coords"), nb::arg("degree"), nb::arg("bernstein_coeffs"),
         nb::arg("selection"), nb::arg("q") = 3, nb::arg("options") = qr::Options{},
         nb::arg("level_set_name") = "phi",
-        "Quadrature rule of one part of one cell (triangle, quadrilateral, tetrahedron, "
-        "hexahedron, prism or pyramid) from its vertices (Basix order, tdim coordinates each) and the Bernstein "
-        "coefficients of its level set (CutCells' order). Returns (QuadratureRules, QuadraysStats).");
+        "Quadrature rule of one part of one cell (interval, triangle, quadrilateral, tetrahedron, "
+        "hexahedron, prism or pyramid) from its vertices (Basix order, tdim coordinates each, or up to 3 for a "
+        "facet in a space of higher dimension) and the Bernstein coefficients of its level set (CutCells' order). "
+        "Returns (QuadratureRules, QuadraysStats).");
 
   m.def(("quadrays_cell_leaves_" + type).c_str(),
         [cell_inputs, cell_part](cell::type cell_type,
@@ -2058,13 +2066,12 @@ void declare_quadrays(nb::module_& m, const std::string& type)
         "Leaf cells of one part of one cell, as quadrays_cell_rules takes it.");
 
   m.def(("quadrays_cell_rules_" + type).c_str(),
-        [cell_part](cell::type cell_type, const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords,
-                    const PyAnalyticLevelSet& level_set, const std::string& selection, int q,
-                    const qr::Options& options, const std::string& level_set_name)
+        [cell_box, cell_part](cell::type cell_type, const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords,
+                              const PyAnalyticLevelSet& level_set, const std::string& selection, int q,
+                              const qr::Options& options, const std::string& level_set_name)
         {
           qr::ClippedBox<T> box;
-          qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()),
-                                  cell::get_tdim(cell_type), box);
+          cell_box(cell_type, vertex_coords, box);
           const qr::Part part = cell_part(selection, level_set_name);
           quadrature::QuadratureRules<T> rules;
           qr::Stats stats;
@@ -2077,16 +2084,15 @@ void declare_quadrays(nb::module_& m, const std::string& type)
         nb::arg("cell_type"), nb::arg("vertex_coords"), nb::arg("level_set"), nb::arg("selection"),
         nb::arg("q") = 3, nb::arg("options") = qr::Options{}, nb::arg("level_set_name") = "phi",
         "Quadrature rule of one part of one cell for an AnalyticLevelSet; any cell of quadrays "
-        "(vertices with tdim coordinates each). Returns (QuadratureRules, QuadraysStats).");
+        "(vertices with tdim coordinates each, or up to 3 for a facet). Returns (QuadratureRules, QuadraysStats).");
 
   m.def(("quadrays_cell_leaves_" + type).c_str(),
-        [cell_part](cell::type cell_type, const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords,
-                    const PyAnalyticLevelSet& level_set, const std::string& selection, int leaf_degree,
-                    const qr::Options& options, const std::string& level_set_name)
+        [cell_box, cell_part](cell::type cell_type, const nb::ndarray<const T, nb::numpy, nb::c_contig>& vertex_coords,
+                              const PyAnalyticLevelSet& level_set, const std::string& selection, int leaf_degree,
+                              const qr::Options& options, const std::string& level_set_name)
         {
           qr::ClippedBox<T> box;
-          qr::make_clipped_box<T>(cell_type, std::span<const T>(vertex_coords.data(), vertex_coords.size()),
-                                  cell::get_tdim(cell_type), box);
+          cell_box(cell_type, vertex_coords, box);
           const qr::Part part = cell_part(selection, level_set_name);
           LeafMeshT leaves;
           qr::Stats stats;

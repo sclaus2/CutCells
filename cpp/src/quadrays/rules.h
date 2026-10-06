@@ -20,12 +20,13 @@
 ///
 /// Every cell is a box clipped by half-spaces (make_clipped_box): a triangle,
 /// tetrahedron or prism its smallest bounding box in an orthonormal frame,
-/// clipped by its facets; a quadrilateral or hexahedron its own box; a pyramid
-/// the box of its reference map, clipped by two planes. The
-/// engine reduces the dimension one height direction at a time, accepts a
-/// direction only where bounds of the level sets certify it, and bisects the
-/// box otherwise (engine.h). This header is the module's entry point:
-/// quadrature rules for one cell and a selection.
+/// clipped by its facets; an interval, quadrilateral or hexahedron its own
+/// box; a pyramid the box of its reference map, clipped by two planes. A cell
+/// in a space of higher dimension, a facet say, gets the box of the cell it
+/// is in its own plane or line. The engine reduces the dimension one height
+/// direction at a time, accepts a direction only where bounds of the level
+/// sets certify it, and bisects the box otherwise (engine.h). This header is
+/// the module's entry point: quadrature rules for one cell and a selection.
 namespace cutcells::quadrays
 {
 
@@ -63,9 +64,11 @@ void append_rules(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part pa
 /// @brief Quadrature rule of one part of one cell given by its type, vertices
 /// and the Bernstein coefficients of its level set, appended to @p rules.
 ///
-/// @param cell_type      triangle, quadrilateral, tetrahedron, hexahedron, prism
-///                       or pyramid
-/// @param vertex_coords  vertices in Basix order, flat, tdim per vertex
+/// @param cell_type      interval, triangle, quadrilateral, tetrahedron,
+///                       hexahedron, prism or pyramid
+/// @param vertex_coords  vertices in Basix order, flat, gdim per vertex: tdim
+///                       of them, or more for a cell in a space of higher
+///                       dimension (a facet), up to 3
 /// @param degree         degree of the level set
 /// @param coeffs         Bernstein coefficients in CutCells' order (bernstein.h)
 /// @param term           compiled selection term on one level set
@@ -77,9 +80,9 @@ void append_cell_rules(cell::type cell_type, std::span<const T> vertex_coords, i
                        quadrature::QuadratureRules<T>& rules, Stats& stats);
 
 /// @brief Quadrature rule of one part of one cell given by its type and
-/// vertices (tdim coordinates each), for an analytic level set in physical
-/// coordinates (u2 = 0 on 2D cells), appended to @p rules. Any cell type of
-/// make_clipped_box.
+/// vertices (gdim coordinates each, as above), for an analytic level set in
+/// physical coordinates (missing coordinates 0), appended to @p rules. Any
+/// cell type of make_clipped_box.
 template <std::floating_point T>
 void append_cell_rules(cell::type cell_type, std::span<const T> vertex_coords, const AnalyticLevelSet& phi,
                        const SelectionTerm& term, int level_set, int q, const Options& opt,

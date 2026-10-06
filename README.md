@@ -23,6 +23,10 @@ Current parent cell support:
 * 2D: **triangle**, **quadrilateral**
 * 3D: **tetrahedron**, **hexahedron**, **prism**, **pyramid**
 
+Cells may lie in a space of higher dimension: the facets of a mesh (triangles
+and quadrilaterals in 3D, intervals in 2D or 3D) and surface meshes are cut and
+integrated as the cells they are, with areas and lengths on them.
+
 Level sets can be **Pk** (interpolated, any degree) or **analytic** (exact
 geometry, e.g. from ShapeForest), with any number of level sets per cell. A
 level set can also be **made of level sets**, for shapes with sharp edges:

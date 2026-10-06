@@ -46,7 +46,7 @@ struct CellSources
 };
 
 /// @brief Reference coordinates of vertex @p v (Basix numbering) of a cell
-/// that quadrays takes (xi2 = 0 on 2D cells).
+/// that quadrays takes (xi_j = 0 for j >= tdim).
 template <std::floating_point T>
 quadrays::Vec3<T> reference_vertex(cell::type type, int v)
 {
@@ -64,26 +64,27 @@ quadrays::Vec3<T> reference_vertex(cell::type type, int v)
         return {T(v % 3 == 1), T(v % 3 == 2), T(v >= 3)};
     case cell::type::pyramid:
         return v == 4 ? quadrays::Vec3<T>{0, 0, 1} : quadrays::Vec3<T>{T(v & 1), T((v >> 1) & 1), 0};
-    default: // quadrilaterals and hexahedra
+    default: // intervals, quadrilaterals and hexahedra
         return {T(v & 1), T((v >> 1) & 1), T((v >> 2) & 1)};
     }
 }
 
 /// @brief Box coordinates of vertex @p v (Basix numbering) of a cell that
-/// quadrays takes, in its box @p box (u2 = 0 on 2D cells).
+/// quadrays takes, in its box @p box (u_j = 0 for j >= tdim).
 template <std::floating_point T>
 quadrays::Vec3<T> box_vertex(const quadrays::ClippedBox<T>& box, cell::type type, int v)
 {
     return quadrays::box_point(box, reference_vertex<T>(type, v));
 }
 
-/// @brief True if quadrays takes level sets on cells of type @p type in a mesh
-/// of geometric dimension @p gdim: triangles and quadrilaterals in 2D,
-/// tetrahedra, hexahedra, prisms and pyramids in 3D.
+/// @brief True if quadrays takes cells of type @p type in a mesh of geometric
+/// dimension @p gdim: intervals, triangles, quadrilaterals, tetrahedra,
+/// hexahedra, prisms and pyramids, in a space of their dimension or a higher
+/// one, as the facets of a mesh or the cells of a surface mesh are.
 template <std::floating_point T, std::integral I>
 bool quadrays_takes(cell::type type, int gdim, const LevelSetFunction<T, I>&)
 {
-    return quadrays::supported_cell(type) && gdim == cell::get_tdim(type);
+    return quadrays::supported_cell(type) && gdim >= cell::get_tdim(type) && gdim <= 3;
 }
 
 /// @brief Fill @p out for level set @p ls on cell @p cell_id, in a box of the

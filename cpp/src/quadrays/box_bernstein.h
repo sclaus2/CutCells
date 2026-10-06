@@ -53,7 +53,9 @@ struct BoxBernstein
 /// its reference coordinates, the polynomial extended to the whole box, and
 /// the form is exact: simplices are converted by a fixed matrix per degree,
 /// computed once in exact rational arithmetic; tensor cells are only
-/// reordered; a prism's layers are triangles. A pyramid's level set phi of
+/// reordered, an interval's form is its own; a prism's layers are triangles.
+/// The form depends only on the reference coordinates: a facet in 3D takes
+/// the form of the triangle or quadrilateral it is. A pyramid's level set phi of
 /// degree n is rational in its reference coordinates; (1 - z)^n phi is a
 /// polynomial of degree (n, n, 2n), which inside the pyramid has the sign and
 /// the zero set of phi and on the zero set its normal: the apex, where the
@@ -65,7 +67,7 @@ struct BoxBernstein
 /// and n along its lateral edge, the third. The form is interpolated at the
 /// equispaced points of the box, exact up to rounding.
 ///
-/// @param cell_type  triangle, tetrahedron, quadrilateral, hexahedron, prism or pyramid
+/// @param cell_type  interval, triangle, tetrahedron, quadrilateral, hexahedron, prism or pyramid
 /// @param degree     polynomial degree (at most 12 for simplices)
 /// @param coeffs     Bernstein coefficients in CutCells' order (bernstein.h)
 /// @param box        the cell's box (make_clipped_box), whose frame the form takes

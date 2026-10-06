@@ -412,6 +412,16 @@ void reference_form(cell::type cell_type, int degree, std::span<const T> coeffs,
     const int n1 = degree + 1;
     switch (cell_type)
     {
+    case cell::type::interval:
+    {
+        // CutCells' order is the box's: coeffs[i] of B^n_i(xi)
+        if (static_cast<int>(coeffs.size()) != n1)
+            throw std::invalid_argument("quadrays: wrong number of interval Bernstein coefficients");
+        out.dim = 1;
+        out.degree = {degree, 0, 0};
+        out.coeffs.assign(coeffs.begin(), coeffs.end());
+        return;
+    }
     case cell::type::triangle:
     case cell::type::tetrahedron:
     {

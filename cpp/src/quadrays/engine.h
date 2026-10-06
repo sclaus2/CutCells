@@ -142,7 +142,7 @@ struct NodeTag
 template <std::floating_point T>
 struct CellPoints
 {
-    std::vector<T> points;     ///< box coordinates, 3 per point (u2 = 0 on 2D cells)
+    std::vector<T> points;     ///< box coordinates, 3 per point (u_j = 0 for j >= tdim)
     std::vector<T> weights;    ///< physical weights (0 for leaf nodes)
     std::vector<NodeTag> tags; ///< leaf nodes only
 
@@ -158,9 +158,16 @@ struct CellPoints
 /// (a curve part). A curve's points lie on the base lines of the boxes where
 /// both level sets vanish, Gauss-Legendre in the line's coordinate, weighted by
 /// the physical speed along the curve; on 2D cells the curve is the points
-/// where the two zero sets cross, each with weight 1.
+/// where the two zero sets cross, each with weight 1. On an interval, the
+/// roots of the level sets split the cell into segments, and an interface is
+/// the points where its level set vanishes, each with weight 1.
 ///
-/// @param cell   the cell as a clipped box
+/// Weights are measures in the cell itself: on a facet in 3D, areas and
+/// lengths on the facet. An analytic level set's derivative normal to the
+/// cell does not count.
+///
+/// @param cell   the cell as a clipped box (intervals, 2D and 3D cells, in
+///               any space of their dimension or higher)
 /// @param phis   the cell's level sets: Bernstein forms on its box or analytic
 ///               level sets (bernstein_source, analytic_source), at most 64
 /// @param terms  the selection, an or of terms
@@ -168,8 +175,8 @@ struct CellPoints
 /// @param opt    engine options
 /// @param out    points in box coordinates and physical weights
 /// @param stats  counters, accumulated
-/// @throws std::invalid_argument if terms ask for different zero sets, or for
-///         three zero sets at once
+/// @throws std::invalid_argument if terms ask for different zero sets, for
+///         three zero sets at once, or for two on an interval
 template <std::floating_point T>
 void integrate(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms,
                int q, const Options& opt, CellPoints<T>& out, Stats& stats);
@@ -193,7 +200,8 @@ void integrate(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part,
 ///
 /// Every segment gets degree + 1 equispaced nodes, pulled 1e-5 of its length
 /// inside its ends, with their tags (a curve part's: those of its base lines;
-/// on 2D cells one node per crossing point); weights are 0. Leaves are not filtered by
+/// on 2D cells one node per crossing point, on intervals one per point of an
+/// interface); weights are 0. Leaves are not filtered by
 /// the terms where a box needs the level sets to decide: a leaf lies on one
 /// side of each level set as a whole. The height lines below the top do not
 /// split where a surface function vanishes beyond the box above, nor, in an

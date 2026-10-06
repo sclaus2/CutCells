@@ -57,6 +57,32 @@ Use C-contiguous arrays with numeric dtypes (`float64` for coordinates and
 `int32` for connectivity metadata) unless you have a reason to use the
 `float32` bindings.
 
+## Facets and surface meshes
+
+The coordinates may have more components than the cells' dimension: the
+facets of a mesh, or a surface mesh, are triangles or quadrilaterals with
+`tdim=2` in 3D, or intervals with `tdim=1` in 2D or 3D. Each cell is cut and
+integrated as the cell it is, so weights are areas and lengths on the cells
+and points are in their own reference coordinates:
+
+```python
+# two triangles of the plane z = x / 2 in 3D
+coordinates = np.array(
+    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.5], [1.0, 1.0, 0.5], [0.0, 1.0, 0.0]]
+)
+facets = cutcells.MeshView(
+    coordinates=coordinates,
+    connectivity=np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
+    offsets=np.array([0, 3, 6], dtype=np.int32),
+    cell_types=np.array([5, 5], dtype=np.int32),
+    tdim=2,
+)
+ball = cutcells.analytic_sphere([0.5, 0.5, 0.25], 0.3)
+result = cutcells.cut(facets, ball)
+rules = result[ball < 0].quadrature(order=4)   # rules.tdim == 2
+area = rules.weights.sum()                      # the disk on the plane
+```
+
 ## Structured mesh helpers
 
 CutCells provides lightweight helpers for common examples:

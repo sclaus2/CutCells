@@ -156,6 +156,63 @@ bool frame_from(const Vec3<T>& e0, const Vec3<T>& b, Mat3<T>& f)
     return true;
 }
 
+/// The coordinate axis most normal to the unit vector @p e, made normal to it
+/// (Gram-Schmidt): a unit vector.
+template <std::floating_point T>
+Vec3<T> normal_to(const Vec3<T>& e)
+{
+    int a = 0;
+    for (int i = 1; i < 3; ++i)
+        if (std::abs(e[i]) < std::abs(e[a]))
+            a = i;
+    Vec3<T> w = {-e[a] * e[0], -e[a] * e[1], -e[a] * e[2]};
+    w[a] += T(1);
+    const T lw = norm(w); // at least sqrt(2/3): |e[a]| <= 1/sqrt(3)
+    for (T& c : w)
+        c /= lw;
+    return w;
+}
+
+/// An orthonormal right-handed frame (rows) whose first @p tdim rows span the
+/// plane (tdim 2) or the line (tdim 1) of a cell in 3D: the plane of its
+/// vertices 0, 1 and 2, with the coordinate axis most parallel to it,
+/// projected on it, as first row, so that a cell in a coordinate plane gets
+/// the physical axes; the line of its vertices 0 and 1. A degenerate cell
+/// takes the line of its longest edge.
+template <std::floating_point T>
+Mat3<T> embedding_frame(int tdim, std::span<const Vec3<T>> v)
+{
+    auto sub = [](const Vec3<T>& a, const Vec3<T>& b) { return Vec3<T>{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
+    auto cross = [](const Vec3<T>& a, const Vec3<T>& b)
+    { return Vec3<T>{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}; };
+    Mat3<T> f = identity<T>();
+    if (tdim == 2)
+    {
+        const Vec3<T> e1 = sub(v[1], v[0]), e2 = sub(v[2], v[0]);
+        Vec3<T> n = cross(e1, e2);
+        const T ln = norm(n);
+        if (ln > T(1e-10) * norm(e1) * norm(e2))
+        {
+            for (T& c : n)
+                c /= ln;
+            const Vec3<T> t0 = normal_to(n);
+            return {t0, cross(n, t0), n};
+        }
+    }
+    Vec3<T> e = sub(v[1], v[0]);
+    for (std::size_t a = 0; a < v.size(); ++a)
+        for (std::size_t b = a + 1; b < v.size() && tdim == 2; ++b)
+            if (norm(sub(v[b], v[a])) > norm(e))
+                e = sub(v[b], v[a]);
+    const T le = norm(e);
+    if (!(le > T(0)))
+        return f;
+    for (T& c : e)
+        c /= le;
+    frame_from(e, normal_to(e), f);
+    return f;
+}
+
 /// The reference map xi -> v0 + a xi of a cell, the box maps x(u) set in
 /// @p box, and the cell's facets c . xi <= d in reference coordinates: the
 /// box's reference map, and the facets as clips unless they hold on the
@@ -379,13 +436,43 @@ void make_clipped_box(cell::type cell_type, std::span<const T> vertex_coords, in
     if (!supported_cell(cell_type))
         throw std::invalid_argument("quadrays: unsupported cell type " + cell::cell_type_to_str(cell_type));
     const int tdim = cell::get_tdim(cell_type);
-    if (gdim != tdim)
+    if (gdim < tdim || gdim > 3)
     {
-        throw std::invalid_argument("quadrays: a " + cell::cell_type_to_str(cell_type) + " must lie in "
-                                    + std::to_string(tdim) + "D (gdim = " + std::to_string(tdim) + ")");
+        throw std::invalid_argument("quadrays: a " + cell::cell_type_to_str(cell_type) + " lies in " + std::to_string(tdim)
+                                    + "D to 3D (gdim = " + std::to_string(gdim) + ")");
     }
-    if (static_cast<int>(vertex_coords.size()) != cell::get_num_vertices(cell_type) * gdim)
+    const int nv = cell::get_num_vertices(cell_type);
+    if (static_cast<int>(vertex_coords.size()) != nv * gdim)
         throw std::invalid_argument("quadrays: wrong number of vertex coordinates");
+    if (gdim > tdim)
+    {
+        // a facet, say: its box in an orthonormal frame of its plane or line,
+        // mapped back by the frame, whose normals complete the maps
+        std::array<Vec3<T>, 4> v{};
+        for (int j = 0; j < nv; ++j)
+            for (int i = 0; i < gdim; ++i)
+                v[j][i] = vertex_coords[j * gdim + i];
+        const Mat3<T> r = embedding_frame<T>(tdim, std::span<const Vec3<T>>(v.data(), static_cast<std::size_t>(nv)));
+        std::array<T, 8> local{};
+        for (int j = 0; j < nv; ++j)
+            for (int k = 0; k < tdim; ++k)
+                for (int i = 0; i < 3; ++i)
+                    local[j * tdim + k] += r[k][i] * (v[j][i] - v[0][i]);
+        make_clipped_box<T>(cell_type, std::span<const T>(local.data(), static_cast<std::size_t>(nv * tdim)), tdim, box,
+                            frame);
+        const Vec3<T> origin = box.origin;
+        const Mat3<T> jacobian = box.jacobian;
+        box.origin = v[0];
+        box.jacobian = {};
+        for (int i = 0; i < 3; ++i)
+            for (int m = 0; m < 3; ++m)
+            {
+                box.origin[i] += r[m][i] * origin[m];
+                for (int k = 0; k < 3; ++k)
+                    box.jacobian[i][k] += r[m][i] * jacobian[m][k];
+            }
+        return;
+    }
     if (frame == BoxFrame::orthogonal)
     {
         if ((cell_type == cell::type::triangle || cell_type == cell::type::tetrahedron)
@@ -410,8 +497,8 @@ void make_clipped_box(cell::type cell_type, std::span<const T> vertex_coords, in
         for (int k = 0; k < tdim; ++k)
             box.jacobian[i][k] = vertex_coords[axes[k] * gdim + i] - vertex_coords[i];
     }
-    if (tdim == 2)
-        box.jacobian[2][2] = T(1);
+    for (int k = tdim; k < 3; ++k)
+        box.jacobian[k][k] = T(1);
     box.ref_origin = {0, 0, 0};
     box.ref_jacobian = identity<T>();
     box.clips.clear();
@@ -476,8 +563,8 @@ Vec3<T> box_point(const ClippedBox<T>& box, const Vec3<T>& xi)
     for (int i = 0; i < 3; ++i)
         for (int k = 0; k < 3; ++k)
             u[i] += inv[i][k] * (xi[k] - box.ref_origin[k]);
-    if (box.tdim == 2)
-        u[2] = T(0);
+    for (int j = box.tdim; j < 3; ++j)
+        u[j] = T(0);
     return u;
 }
 

@@ -155,6 +155,11 @@ void merge_shared_points(quadrature::QuadratureRules<T>& rules, const std::vecto
     rules = std::move(out);
 }
 
+/// The cells quadrays takes, for errors.
+constexpr const char* quadrays_cells
+    = "part: quadrays takes intervals, triangles, quadrilaterals, tetrahedra, hexahedra, prisms and pyramids, in "
+      "a space of their dimension or a higher one up to 3D (facets, surface meshes)";
+
 /// The cell's level sets the terms name, as quadrays reads them; throws if
 /// quadrays does not take the cell.
 template <std::floating_point T, std::integral I>
@@ -166,11 +171,7 @@ void sources_of(const MeshPart<T, I>& part, I cell_id, const CellTerms& ct, Cell
     for (const int l : ct.level_sets)
         level_sets.push_back(r.level_sets[static_cast<std::size_t>(l)]);
     if (!cell_sources(*r.mesh, std::span<const LevelSetFunction<T, I>* const>(level_sets), cell_id, cs))
-    {
-        throw std::invalid_argument("part: quadrays takes triangles and quadrilaterals in 2D, tetrahedra, "
-                                    "hexahedra, prisms and pyramids in 3D (Pk level sets not on prisms and "
-                                    "pyramids)");
-    }
+        throw std::invalid_argument(quadrays_cells);
 }
 
 /// The reference rule of a cell type exact for @p degree: the lowest at least
@@ -205,12 +206,20 @@ void append_cell_points(const quadrays::ClippedBox<T>& box, cell::type type, int
 }
 
 /// The reference rule of facet @p f of a cell (a face in 3D, an edge in 2D),
-/// in box coordinates with physical weights.
+/// in box coordinates with physical weights; a vertex of an interval is a
+/// point of weight 1.
 template <std::floating_point T>
 void append_face_points(const quadrays::ClippedBox<T>& box, cell::type type, int f, int degree,
                         quadrays::CellPoints<T>& out)
 {
     const std::span<const int> fv = facet_vertices(type, f);
+    if (cell::get_tdim(type) == 1)
+    {
+        const quadrays::Vec3<T> u = box_vertex<T>(box, type, fv[0]);
+        out.points.insert(out.points.end(), u.begin(), u.end());
+        out.weights.push_back(T(1));
+        return;
+    }
     const bool edge = cell::get_tdim(type) == 2;
     const quadrays::Vec3<T> ua = box_vertex<T>(box, type, fv[0]), ub = box_vertex<T>(box, type, fv[1]),
                             uc = box_vertex<T>(box, type, fv[edge ? 1 : 2]);
@@ -511,11 +520,8 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
         const I c = entries[i].cell;
         const cell::type type = mesh.cell_type(c);
         const int tdim = cell::get_tdim(type);
-        if (!quadrays::supported_cell(type) || mesh.gdim != tdim)
-        {
-            throw std::invalid_argument("part: quadrays takes triangles and quadrilaterals in 2D, tetrahedra, "
-                                        "hexahedra, prisms and pyramids in 3D");
-        }
+        if (!quadrays::supported_cell(type) || mesh.gdim < tdim || mesh.gdim > 3)
+            throw std::invalid_argument(quadrays_cells);
         cell_vertex_coords_basix(mesh, c, cs.vertices, cs.nodes);
         // a cut cell's points come in the frame of its sources; whole cells and
         // zero faces take the reference box, which costs nothing to build

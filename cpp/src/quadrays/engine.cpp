@@ -297,7 +297,7 @@ Vec3<T> to_u(const Func<T, D>& f, const VecD<T, D>& y)
     return u;
 }
 
-/// Box coordinates of a top-level point (the identity map, u2 = 0 on 2D cells).
+/// Box coordinates of a top-level point (the identity map, u_j = 0 for j >= D).
 template <typename T, int D>
 Vec3<T> pad(const VecD<T, D>& y)
 {
@@ -3128,6 +3128,12 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                             continue;
                         Vec3<T> g = {0, 0, 0};
                         gradient(phi, std::span<const T>(u), std::span<T>(g));
+                        // the cell's own directions only: on a 2D cell, the
+                        // derivative of an analytic level set normal to it (off
+                        // the plane z = 0, or off a facet's plane) is no part of
+                        // the curve's gradient
+                        for (int i = Top; i < 3; ++i)
+                            g[i] = T(0);
                         // grad phi in the level's (possibly rotated) coordinates
                         VecD<T, D> dphi{};
                         for (int j = 0; j < D; ++j)
@@ -3423,6 +3429,73 @@ void run_top(Context<T>& ctx, const ClippedBox<T>& cell, CellPoints<T>& out, boo
     integrate_box<T, Top, false, Top>(ctx, std::move(top), emit, 0, interface);
 }
 
+/// The top level of an interval: the roots of its level sets in (0, 1) split
+/// it into segments on which each has one sign. A volume part takes the
+/// segments where a term holds at their midpoints; an interface part the
+/// roots of its level set where a term holds, each a point of weight 1, as
+/// the crossing points of 2D cells. A root at an end lies in a facet (a
+/// vertex) of the cell, which the front end gives to one cell as a zero face.
+template <std::floating_point T>
+void run_interval(Context<T>& ctx, CellPoints<T>& out, bool interface)
+{
+    const Vec3<T> origin = {0, 0, 0}, direction = {1, 0, 0};
+    std::vector<T>& nodes = ctx.nodes[1];
+    nodes.clear();
+    // the roots of level set l in (0, 1), appended to nodes
+    const auto roots = [&](int l)
+    {
+        const Source<T>& phi = ctx.phis[static_cast<std::size_t>(l)];
+        if (phi.is_analytic())
+            line_roots(phi, std::span<const T>(origin), std::span<const T>(direction), T(0), T(1),
+                       zero_function_tol<T> * ctx.scales[static_cast<std::size_t>(l)], nodes);
+        else
+            isolate_roots(std::span<const T>(phi.bernstein->coeffs), T(0), T(1), nodes, ctx.root_work[1]);
+    };
+    const auto emit = [&](T t, T w, const NodeTag& tag)
+    {
+        out.points.insert(out.points.end(), {t, T(0), T(0)});
+        out.weights.push_back(w);
+        if (ctx.vis_order > 0)
+            out.tags.push_back(tag);
+    };
+    NodeTag tag;
+    tag.box[0] = 0;
+    if (interface)
+    {
+        roots(ctx.surface);
+        std::sort(nodes.begin(), nodes.end());
+        int index = 0;
+        for (const T t : nodes)
+        {
+            if (!holds<T>(ctx, ctx.terms, Vec3<T>{t, 0, 0}, T(0)))
+                continue;
+            tag.segment[0] = index++;
+            emit(t, ctx.vis_order > 0 ? T(0) : T(1), tag);
+        }
+        return;
+    }
+    nodes.push_back(T(0));
+    nodes.push_back(T(1));
+    for (int l = 0; l < static_cast<int>(ctx.phis.size()); ++l)
+        if ((ctx.used >> l) & 1)
+            roots(l);
+    std::sort(nodes.begin(), nodes.end());
+    int segment = 0;
+    for (std::size_t s = 0; s + 1 < nodes.size(); ++s)
+    {
+        const T a = nodes[s], b = nodes[s + 1];
+        if (b - a <= segment_tol<T> || !holds<T>(ctx, ctx.terms, Vec3<T>{T(0.5) * (a + b), 0, 0}, T(0)))
+            continue;
+        tag.segment[0] = segment++;
+        segment_nodes(ctx, a, b,
+                      [&](int j, T t, T w)
+                      {
+                          tag.node[0] = j;
+                          emit(t, w * ctx.detj, tag);
+                      });
+    }
+}
+
 /// Points of @p out from @p start on within @p tol (box coordinates) of an
 /// earlier one are dropped: a crossing point on the face two boxes share is
 /// found by both.
@@ -3463,8 +3536,8 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
 {
     if (phis.empty() || phis.size() > 64)
         throw std::invalid_argument("quadrays: give 1 to 64 level sets");
-    if (cell.tdim != 2 && cell.tdim != 3)
-        throw std::invalid_argument("quadrays: cells of dimension 2 or 3");
+    if (cell.tdim < 1 || cell.tdim > 3)
+        throw std::invalid_argument("quadrays: cells of dimension 1, 2 or 3");
     for (const Source<T>& phi : phis)
     {
         if ((phi.bernstein == nullptr) == (phi.analytic == nullptr))
@@ -3491,6 +3564,9 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
             throw std::invalid_argument("quadrays: a term names a level set the cell does not have");
         if (std::popcount(r.zero) > 2)
             throw std::invalid_argument("quadrays: the points where three level sets vanish are not integrated");
+        if (cell.tdim == 1 && std::popcount(r.zero) > 1)
+            throw std::invalid_argument("quadrays: on intervals, the points where two level sets vanish are not "
+                                        "integrated");
         if (!first && r.zero != zero)
             throw std::invalid_argument("quadrays: the terms ask for different zero sets");
         zero = r.zero;
@@ -3540,8 +3616,10 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     const int start = out.n_points();
     if (cell.tdim == 3)
         run_top<T, 3>(ctx, cell, out, interface);
-    else
+    else if (cell.tdim == 2)
         run_top<T, 2>(ctx, cell, out, interface);
+    else
+        run_interval<T>(ctx, out, interface);
     if (ctx.partner >= 0 && cell.tdim == 2)
         merge_points(out, start, T(2) * point_tol<T>);
 }

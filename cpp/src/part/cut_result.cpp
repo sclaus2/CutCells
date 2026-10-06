@@ -31,8 +31,9 @@ cell::domain coefficient_domain(const LevelSetFunction<T, I>& ls, I cell_id, Lev
 {
     if (ls.analytic)
     {
-        throw std::invalid_argument("part::cut: analytic level sets need triangles or quadrilaterals in 2D, or "
-                                    "tetrahedra, hexahedra, prisms or pyramids in 3D");
+        throw std::invalid_argument("part::cut: analytic level sets need intervals, triangles, quadrilaterals, "
+                                    "tetrahedra, hexahedra, prisms or pyramids, in a space of their dimension or "
+                                    "a higher one up to 3D");
     }
     if (!(ls.type == LevelSetType::Polynomial && ls.has_mesh_data() && ls.has_dof_values()))
     {
@@ -55,9 +56,10 @@ struct FaceEntry
     int side = 0; ///< -1: phi < 0 next to the face in the cell, +1: > 0, 0: unknown
 };
 
-/// The facets of a cell (faces in 3D, edges in 2D) on which level set l
-/// vanishes, appended to @p entries: the level set is 0 up to the engine's
-/// tolerance at the facet's vertices and, by its bounds, on the whole facet.
+/// The facets of a cell (faces in 3D, edges in 2D, vertices in 1D) on which
+/// level set l vanishes, appended to @p entries: the level set is 0 up to the
+/// engine's tolerance at the facet's vertices and, by its bounds, on the whole
+/// facet.
 template <std::floating_point T, std::integral I>
 void find_zero_faces(const MeshView<T, I>& mesh, CellSource<T, I>& cs, I cell_id, int l, cell::domain dom,
                      std::vector<FaceEntry<I>>& entries)
@@ -87,33 +89,38 @@ void find_zero_faces(const MeshView<T, I>& mesh, CellSource<T, I>& cs, I cell_id
             zero &= std::abs(values[v]) <= tol;
         if (!zero)
             continue;
-        // the facet as the image of [0, 1]^m: u_a + s (u_b - u_a) (+ t (u_c - u_a))
-        const quadrays::Vec3<T> ua = box_vertex<T>(cs.box, type, fv[0]), ub = box_vertex<T>(cs.box, type, fv[1]),
-                                uc = box_vertex<T>(cs.box, type, fv[m > 1 ? 2 : 1]);
-        std::array<T, 6> matrix{};
-        for (int i = 0; i < 3; ++i)
+        // a vertex of an interval is its value; a face or an edge the image of
+        // [0, 1]^m: u_a + s (u_b - u_a) (+ t (u_c - u_a))
+        if (m > 0)
         {
-            matrix[i * m] = ub[i] - ua[i];
-            if (m > 1)
-                matrix[i * m + 1] = uc[i] - ua[i];
+            const quadrays::Vec3<T> ua = box_vertex<T>(cs.box, type, fv[0]),
+                                    ub = box_vertex<T>(cs.box, type, fv[1]),
+                                    uc = box_vertex<T>(cs.box, type, fv[m > 1 ? 2 : 1]);
+            std::array<T, 6> matrix{};
+            for (int i = 0; i < 3; ++i)
+            {
+                matrix[i * m] = ub[i] - ua[i];
+                if (m > 1)
+                    matrix[i * m + 1] = uc[i] - ua[i];
+            }
+            if (cs.source.bernstein != nullptr)
+            {
+                const std::size_t dim = static_cast<std::size_t>(cs.source.bernstein->dim);
+                quadrays::restrict_affine(*cs.source.bernstein, std::span<const T>(ua.data(), dim),
+                                          std::span<const T>(matrix.data(), dim * static_cast<std::size_t>(m)), m,
+                                          face_form, work);
+                zero = quadrays::max_abs(std::span<const T>(face_form.coeffs)) <= tol;
+            }
+            else
+            {
+                quadrays::AffineBounds<T> b;
+                zero = quadrays::affine_bounds(cs.source, std::span<const T>(ua),
+                                               std::span<const T>(matrix.data(), 3 * m), m, b)
+                       && b.magnitude <= tol;
+            }
+            if (!zero)
+                continue;
         }
-        if (cs.source.bernstein != nullptr)
-        {
-            const std::size_t dim = static_cast<std::size_t>(cs.source.bernstein->dim);
-            quadrays::restrict_affine(*cs.source.bernstein, std::span<const T>(ua.data(), dim),
-                                      std::span<const T>(matrix.data(), dim * static_cast<std::size_t>(m)), m,
-                                      face_form, work);
-            zero = quadrays::max_abs(std::span<const T>(face_form.coeffs)) <= tol;
-        }
-        else
-        {
-            quadrays::AffineBounds<T> b;
-            zero = quadrays::affine_bounds(cs.source, std::span<const T>(ua), std::span<const T>(matrix.data(), 3 * m),
-                                           m, b)
-                   && b.magnitude <= tol;
-        }
-        if (!zero)
-            continue;
 
         FaceEntry<I> e;
         e.level_set = l;

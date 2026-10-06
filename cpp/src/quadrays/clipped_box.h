@@ -44,13 +44,18 @@ struct HalfSpace
 /// bounding box in an orthonormal frame, clipped by its facets. Maps are
 /// affine, as everywhere in CutCells.
 ///
-/// Cells of dimension 2 (triangles, quadrilaterals) live in the plane u2 = 0:
-/// their box is [0, 1]^2 x {0}, the third column of the maps is e2 (so their
-/// determinants are the cells' areas), and points keep u2 = 0.
+/// Cells of dimension 2 (triangles, quadrilaterals) live in the plane u2 = 0,
+/// intervals on the line u1 = u2 = 0: their box is [0, 1]^tdim x {0}, and
+/// points keep u_j = 0 for j >= tdim. The columns j >= tdim of the maps are
+/// unit vectors normal to the cell and to each other (e2 for a cell in the
+/// plane), so that determinants are the cells' measures. A cell may lie in a
+/// space of higher dimension, as the facets of a mesh do: its box is made in
+/// an orthonormal frame of the plane or line through it (make_clipped_box),
+/// and x(u) maps into 3D.
 template <std::floating_point T>
 struct ClippedBox
 {
-    int tdim = 3; ///< 2 or 3
+    int tdim = 3; ///< 1, 2 or 3
     Vec3<T> origin = {0, 0, 0};
     Mat3<T> jacobian = {};
     Vec3<T> ref_origin = {0, 0, 0};
@@ -99,10 +104,18 @@ enum class BoxFrame : std::uint8_t
 /// exact only if they are affine images of their reference cells
 /// (parallelograms, parallelepipeds, ...).
 ///
-/// @param cell_type      triangle or quadrilateral (gdim 2); tetrahedron,
-///                       hexahedron, prism or pyramid (gdim 3)
+/// A cell in a space of higher dimension (gdim > tdim: the facets of a mesh,
+/// the cells of a surface mesh) is mapped to an orthonormal frame of the
+/// plane or line through it, whose axes are the physical ones where it lies
+/// in a coordinate plane or along an axis. Its box is made there as for a
+/// cell of that dimension, and the frame maps it back, completed by unit
+/// normals: a facet integrates as the cell it is, with its own measure. A
+/// quadrilateral takes the plane of its vertices 0, 1 and 2.
+///
+/// @param cell_type      interval, triangle, quadrilateral, tetrahedron,
+///                       hexahedron, prism or pyramid
 /// @param vertex_coords  vertices in Basix order, flat, gdim per vertex
-/// @param gdim           geometric dimension, the cell's dimension
+/// @param gdim           geometric dimension, from the cell's dimension to 3
 /// @param box            output
 /// @param frame          the frame of the box (BoxFrame)
 template <std::floating_point T>
@@ -114,6 +127,7 @@ inline bool supported_cell(cell::type cell_type)
 {
     switch (cell_type)
     {
+    case cell::type::interval:
     case cell::type::triangle:
     case cell::type::quadrilateral:
     case cell::type::tetrahedron:
@@ -158,7 +172,8 @@ template <std::floating_point T>
 bool reference_frame(const ClippedBox<T>& box);
 
 /// @brief Child covering [lo, hi] of the box coordinates of @p box; clips carry
-/// over. Boxes of 2D cells keep lo[2] = 0 and hi[2] = 1.
+/// over. Boxes of cells of dimension tdim < 3 keep lo[j] = 0 and hi[j] = 1 for
+/// j >= tdim.
 template <std::floating_point T>
 ClippedBox<T> sub_box(const ClippedBox<T>& box, const Vec3<T>& lo, const Vec3<T>& hi);
 

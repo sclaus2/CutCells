@@ -174,22 +174,37 @@ void append_leaves(const ClippedBox<T>& cell, std::span<const Source<T>> phis, s
                     orientation += normal[d] * gx[d];
             }
             else
-                orientation = normal[2]; // a 2D cell's leaf, in the plane z = 0
+            {
+                // a 2D cell's leaf: along the cell's normal, the third column
+                // of its map (e2 for a cell in the plane z = 0)
+                for (int d = 0; d < 3; ++d)
+                    orientation += normal[d] * cell.jacobian[d][2];
+            }
         }
         else if (dim == 1)
         {
             const Vec3<T> t = sub(x[degree], x[0]);
-            const Vec3<T> gx = physical_gradient(surface_ls, leaf.u[n_nodes / 2]);
-            if (partner_ls >= 0)
+            if (!surface)
+            {
+                // an interval's leaf: along the interval
+                for (int d = 0; d < 3; ++d)
+                    orientation += t[d] * cell.jacobian[d][0];
+            }
+            else if (partner_ls >= 0)
             {
                 // where two level sets vanish: along grad a x grad b
+                const Vec3<T> gx = physical_gradient(surface_ls, leaf.u[n_nodes / 2]);
                 const Vec3<T> n = cross(gx, physical_gradient(partner_ls, leaf.u[n_nodes / 2]));
                 orientation = t[0] * n[0] + t[1] * n[1] + t[2] * n[2];
             }
             else
             {
-                // a curve in the plane: its normal (t_y, -t_x) along the gradient
-                orientation = t[1] * gx[0] - t[0] * gx[1];
+                // a curve in a 2D cell: its normal in the cell, t x n for the
+                // cell's normal n (t x e2 = (t_y, -t_x) in the plane), along the
+                // gradient
+                const Vec3<T> gx = physical_gradient(surface_ls, leaf.u[n_nodes / 2]);
+                const Vec3<T> m = cross(t, Vec3<T>{cell.jacobian[0][2], cell.jacobian[1][2], cell.jacobian[2][2]});
+                orientation = m[0] * gx[0] + m[1] * gx[1] + m[2] * gx[2];
             }
         }
         const bool flip = orientation < T(0);
@@ -249,6 +264,9 @@ void append_linear_cell(cell::type cell_type, std::span<const T> vertex_coords, 
     std::uint8_t vtk_type = 0;
     switch (cell_type)
     {
+    case cell::type::point:
+        vtk_type = vtk_vertex;
+        break;
     case cell::type::interval:
         vtk_type = vtk_line;
         break;

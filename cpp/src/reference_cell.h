@@ -61,6 +61,7 @@ inline std::vector<T> reference_vertices(type cell_type)
 
 inline std::span<const int> vtk_to_basix_vertex_permutation(type cell_type)
 {
+    static constexpr std::array<int, 1> point = {0};
     static constexpr std::array<int, 2> interval = {0, 1};
     static constexpr std::array<int, 3> triangle = {0, 1, 2};
     static constexpr std::array<int, 4> quadrilateral = {0, 1, 3, 2};
@@ -71,6 +72,7 @@ inline std::span<const int> vtk_to_basix_vertex_permutation(type cell_type)
 
     switch (cell_type)
     {
+        case type::point: return std::span(point);
         case type::interval: return std::span(interval);
         case type::triangle: return std::span(triangle);
         case type::quadrilateral: return std::span(quadrilateral);

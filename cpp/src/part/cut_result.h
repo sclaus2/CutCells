@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <array>
 #include <concepts>
 #include <cstdint>
 #include <map>
@@ -23,23 +24,46 @@
 namespace cutcells::part
 {
 
-/// The facets of a cell: its faces in 3D, its edges in 2D.
+/// The facets of a cell: its faces in 3D, its edges in 2D, its vertices in 1D.
 inline int num_facets(cell::type type)
 {
-    return cell::get_tdim(type) == 3 ? cell::num_faces(type) : cell::num_edges(type);
+    switch (cell::get_tdim(type))
+    {
+    case 3:
+        return cell::num_faces(type);
+    case 2:
+        return cell::num_edges(type);
+    default:
+        return cell::get_num_vertices(type);
+    }
 }
 
 /// The vertices of facet @p f (Basix numbering of the cell).
 inline std::span<const int> facet_vertices(cell::type type, int f)
 {
-    if (cell::get_tdim(type) == 3)
+    static constexpr std::array<int, 2> interval_vertices = {0, 1};
+    switch (cell::get_tdim(type))
+    {
+    case 3:
         return cell::face_vertices(type, f);
-    return std::span<const int>(cell::edges(type)[static_cast<std::size_t>(f)]);
+    case 2:
+        return std::span<const int>(cell::edges(type)[static_cast<std::size_t>(f)]);
+    default:
+        return std::span<const int>(interval_vertices.data() + f, 1);
+    }
 }
 
 inline cell::type facet_type(cell::type type, int f)
 {
-    return cell::get_tdim(type) == 3 ? cell::face_type(type, f) : cell::type::interval;
+    switch (cell::get_tdim(type))
+    {
+    case 3:
+        return cell::face_type(type, f);
+    case 2:
+        return cell::type::interval;
+    default:
+        return cell::type::point;
+    }
 }
 
 /// Options of cut().
@@ -72,10 +96,10 @@ struct CutResult
     std::vector<cell::domain> domains;
     /// Cells that some level set cuts, ascending.
     std::vector<I> cut_cells;
-    /// Facets (faces in 3D, edges in 2D) in the zero set of a level set, each
-    /// once: level set, owning cell, and the facet in that cell (Basix
-    /// numbering). The owner is the cell on the negative side, or the lower
-    /// cell index if neither or both sides are negative.
+    /// Facets (faces in 3D, edges in 2D, vertices of intervals) in the zero set
+    /// of a level set, each once: level set, owning cell, and the facet in that
+    /// cell (Basix numbering). The owner is the cell on the negative side, or
+    /// the lower cell index if neither or both sides are negative.
     std::vector<int> zero_face_level_sets;
     std::vector<I> zero_face_cells;
     std::vector<std::int8_t> zero_face_local;
@@ -103,13 +127,13 @@ std::uint64_t cut_mask(const CutResult<T, I>& result, I cell_id)
 /// @brief Classify every cell of @p mesh by every level set, and find the faces
 /// lying in their zero sets.
 ///
-/// The cells quadrays takes (triangles and quadrilaterals in 2D, tetrahedra,
-/// hexahedra, prisms and pyramids in 3D) are classified by bounds of the level
-/// set itself: Bernstein coefficients of a Pk level set, or Taylor models of
-/// an analytic one, over the cell and its halves (cell_sign in classify.h). A
-/// cell whose sign the bounds cannot prove counts as cut, which the backends
-/// handle. Other cells (intervals, and prisms and pyramids for Pk level sets)
-/// use the signs of their Bernstein coefficients.
+/// The cells quadrays takes (intervals, triangles, quadrilaterals, tetrahedra,
+/// hexahedra, prisms and pyramids, in a space of their dimension or a higher
+/// one, as facets are) are classified by bounds of the level set itself:
+/// Bernstein coefficients of a Pk level set, or Taylor models of an analytic
+/// one, over the cell and its halves (cell_sign in classify.h). A cell whose
+/// sign the bounds cannot prove counts as cut, which the backends handle.
+/// Other cells use the signs of their Bernstein coefficients.
 ///
 /// A level set made of level sets (LevelSetFunction::level_sets and inside)
 /// is replaced by its own level sets, depth first, named after it: "body.a",

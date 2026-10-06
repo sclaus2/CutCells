@@ -366,7 +366,7 @@ bool linear_form(const Source<T>& phi, BoxBernstein<T>& form)
             return false;
     // degree 1: the coefficients are the values at the corners
     form.dim = m;
-    form.degree = {1, 1, m == 3 ? 1 : 0};
+    form.degree = {1, m >= 2 ? 1 : 0, m == 3 ? 1 : 0};
     form.coeffs.resize(static_cast<std::size_t>(1) << m);
     for (int c = 0; c < (1 << m); ++c)
     {
@@ -426,8 +426,8 @@ int cell_sign(const ClippedBox<T>& cell, const AnalyticLevelSet& phi, int max_de
 template <std::floating_point T>
 int cell_sign(const ClippedBox<T>& cell, const Source<T>& phi, int max_depth)
 {
-    // boxes of 2D cells are flat: u2 = 0
-    const Vec3<T> lo = {0, 0, 0}, hi = {1, 1, T(cell.tdim == 3 ? 1 : 0)};
+    // boxes of cells of dimension tdim < 3 are flat: u_j = 0 for j >= tdim
+    const Vec3<T> lo = {0, 0, 0}, hi = {1, T(cell.tdim >= 2 ? 1 : 0), T(cell.tdim == 3 ? 1 : 0)};
     // the whole box first: most cells are far from the zero set
     const int s = box_sign(cell, phi, lo, hi, 0, 0);
     if (s == 1 || s == -1)

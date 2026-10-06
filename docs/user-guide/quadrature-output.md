@@ -17,7 +17,9 @@ print(volume_rules.weights.sum())
 
 `QuadratureRules` stores flat arrays for points, weights, offsets and parent
 cells: one rule per cell, points in the cell's reference coordinates, weights
-physical.
+physical. On a mesh of facets in a space of higher dimension, points are the
+facets' reference coordinates (`tdim` of them) and weights are measured on the
+facets.
 
 `order` is the polynomial degree integrated exactly on flat pieces, from 1 to
 10, with both backends. On curved pieces quadrays converges with the order.
