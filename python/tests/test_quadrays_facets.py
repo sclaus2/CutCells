@@ -187,6 +187,26 @@ def test_plane_on_the_surface(backend):
     assert total(result["phi = 0"], order=2, mode="cut_only") == pytest.approx(8.0, rel=1e-13)
 
 
+@pytest.mark.parametrize("backend", ["quadrays", "lut"])
+def test_plane_on_mesh_edges_of_the_surface(backend):
+    """The plane z = 0.5 of the rotated cube on its surface mesh: its zero set,
+    the square around the cube's sides, lies on 16 mesh edges, rules on the
+    edges measured in 3D with the two triangles sharing each on either side."""
+    mesh = cube_surface("tri", 4)
+    normal = Q @ np.array([0.0, 0.0, 1.0])
+    phi = cutcells.create_level_set(mesh, lambda x: sum(normal[i] * (x[i] - SHIFT[i]) for i in range(3)) - 0.5,
+                                    degree=1, name="phi")
+    result = cutcells.cut(mesh, phi, backend=backend)
+    assert len(result.cut_cells) == 0
+    part = result["phi = 0"]
+    edges = part.entity_quadrature(order=2).facets
+    assert len(edges.cell_offsets) - 1 == 16
+    np.testing.assert_array_equal(np.diff(edges.cell_offsets), np.full(16, 2))
+    assert np.sum(edges.weights) == pytest.approx(8.0, rel=1e-13)
+    assert total(part, order=2) == pytest.approx(8.0, rel=1e-13)
+    assert total(result["phi < 0"], order=2) == pytest.approx(16.0, rel=1e-13)
+
+
 def test_off_plane_sphere_on_a_2d_mesh():
     """On a mesh in the plane z = 0, a sphere centred off the plane cuts the
     circle of radius sqrt(r^2 - z^2): its normal derivative does not count."""
@@ -299,16 +319,25 @@ def test_intervals_in_1d():
 
 
 def test_zero_at_vertices():
-    """A level set vanishing at two mesh vertices: no cell is cut there, and
-    each point is a zero face, kept once with weight 1."""
+    """A level set vanishing at two mesh vertices, changing sign across them:
+    no cell is cut there, and each point is the rule of its vertex, the facet
+    of the two intervals sharing it, one on either side. By default each
+    interval takes half of it; with entities="owner" the lower one takes it."""
     mesh = interval_mesh(8)
     phi = cutcells.create_level_set(mesh, lambda x: (x[0] - 0.25) * (x[0] + 0.5), degree=2, name="phi")
     result = cutcells.cut(mesh, phi)
+    assert len(result.cut_cells) == 0
     assert total(result["phi < 0"], order=4) == pytest.approx(0.75, rel=1e-13)
-    rules = result["phi = 0"].quadrature(order=4)
-    np.testing.assert_array_equal(np.asarray(rules.weights), [1.0, 1.0])
-    np.testing.assert_allclose(np.sort(facet_points(mesh, rules)[:, 0]), [-0.5, 0.25], atol=1e-15)
-    assert result["phi = 0"].visualization_mesh(mode="cut_only").n_cells() == 2
+    part = result["phi = 0"]
+    on = part.entity_quadrature(order=4).facets
+    np.testing.assert_array_equal(on.weights, [1.0, 1.0])
+    np.testing.assert_array_equal(np.diff(on.cell_offsets), [2, 2])
+    assert np.all((np.asarray(on.negative).reshape(2, 2) != 0).sum(axis=1) == 1)
+    np.testing.assert_array_equal(np.asarray(part.quadrature(order=4).weights), np.full(4, 0.5))
+    owner = part.quadrature(order=4, entities="owner")
+    np.testing.assert_array_equal(np.asarray(owner.weights), [1.0, 1.0])
+    np.testing.assert_allclose(np.sort(facet_points(mesh, owner)[:, 0]), [-0.5, 0.25], atol=1e-15)
+    assert part.visualization_mesh(mode="cut_only").n_cells() == 2
 
 
 def test_two_zero_sets_on_intervals():

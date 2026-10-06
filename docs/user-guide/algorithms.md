@@ -15,13 +15,14 @@ and analytic level sets, and any number of level sets per cell.
 
 Pk level sets of any degree are supported; pyramids take degree 2 at most.
 
-A cell may lie in a space of higher dimension than its own: the facets of a
-mesh (triangles and quadrilaterals in 3D, intervals in 2D or 3D), its edges,
-or the cells of a surface mesh. Such a cell is cut and integrated as the cell
-it is: quadrays maps it to an orthonormal frame of its plane or line, so that
-areas and lengths are measured on it, points are its own reference
-coordinates, and an analytic level set's derivative normal to it does not
-count.
+A mesh's cells may lie in a space of higher dimension than their own: the
+facets of another mesh taken as cells (triangles and quadrilaterals in 3D,
+intervals in 2D or 3D), its edges, or a surface mesh. Each such cell is cut and
+integrated as the cell it is: quadrays maps it to an orthonormal frame of its
+plane or line, so that areas and lengths are measured on it, points are its
+own reference coordinates, and an analytic level set's derivative normal to it
+does not count. Its own facets, edges and vertices (below) are those of the
+cell: the edges of a triangle in 3D, the vertices of an interval.
 
 ## Classification
 
@@ -31,9 +32,32 @@ Bernstein coefficients of a Pk level set, or Taylor models of an analytic one,
 over the cell and its halves. A cell whose sign the bounds cannot prove after
 `max_depth` bisections counts as cut, and the backend finds out what it holds.
 
-Where a level set vanishes on a whole mesh face (a plane through grid faces,
-for example), no cell is cut there. `cut` finds such faces and gives each one
-to a single cell, so interface parts integrate it exactly once.
+## Facets, edges and vertices
+
+Every point of the mesh lies in the interior of exactly one entity: a cell, a
+facet, an edge or a vertex. A piece of a part is integrated on that entity,
+once, and cells keep to their interiors.
+
+Where a level set vanishes on a whole mesh facet (a plane through grid faces,
+for example), no cell is cut there. `cut` finds the facets, edges and
+vertices on which a level set vanishes, each with every cell that shares it.
+It decides once per entity, from the level set's restriction to the entity:
+the restriction of its Bernstein form, or Taylor bounds over the entity itself
+for an analytic level set. One threshold, 64 eps relative to
+the level set's largest magnitude over the cells at its zero set, decides
+both that and whether the cells beside the entity touch zero there, so a
+plane slightly off grid faces is either on the faces or cuts the cells next
+to them, never both. It counts as surface only where it changes sign across
+the entity (or on the mesh boundary).
+
+Rules on those entities are made once, in the entity's reference cell, and
+come into the cells as the selection's `entities` option says (by default
+1/n to each of the n cells sharing an entity). The backends keep to the
+cells' interiors: the lookup tables drop pieces lying in a facet or an edge on
+which their zero sets vanish, quadrays leaves level sets vanishing on its
+boxes' faces and curves lying in a cell's faces to the entities, and the
+points where two curves cross on 2D cells go to the edge or vertex holding
+them.
 
 ## Backends
 

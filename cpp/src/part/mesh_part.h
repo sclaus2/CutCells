@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <array>
 #include <concepts>
 #include <cstdint>
 #include <string>
@@ -19,7 +20,8 @@ namespace cutcells::part
 
 /// A part of the mesh selected by an expression such as "phi1 < 0 and
 /// phi2 = 0": the cells wholly in it, the cut cells holding a piece of it,
-/// which a backend integrates, and the zero faces in it.
+/// which a backend integrates, and the facets, edges and vertices wholly in
+/// it, whose rules are made once, on the entity (entity_rules).
 template <std::floating_point T, std::integral I = int>
 struct MeshPart
 {
@@ -28,7 +30,16 @@ struct MeshPart
     int dim = -1;                ///< tdim for volume parts, tdim - 1 for interfaces
     std::vector<I> uncut_cells;  ///< cells wholly in a volume part, ascending
     std::vector<I> cut_cells;    ///< cells holding a piece the backend integrates, ascending
-    std::vector<int> zero_faces; ///< zero faces of the result in an interface part
+    /// The entities wholly in a part of lower dimension, by dimension: indices
+    /// into result->entities[d], ascending. A piece of the part is a whole
+    /// entity where the zero sets it lies in all vanish there (and change sign
+    /// across it), and the term's other clauses hold on all of it.
+    std::array<std::vector<std::int32_t>, 3> entities;
+    /// For each of them, the zero level sets of the terms that select it.
+    std::array<std::vector<std::uint64_t>, 3> entity_zero;
+    /// The result's zero faces whose facet and level set the part holds (the
+    /// facets among entities, with one owner each; CutResult::zero_face_cells).
+    std::vector<int> zero_faces;
 
     int n_uncut_cells() const { return static_cast<int>(uncut_cells.size()); }
     int n_cut_cells() const { return static_cast<int>(cut_cells.size()); }
@@ -81,9 +92,13 @@ TermCell term_on_cell(const SelectionTerm& term, const CutResult<T, I>& result, 
 /// @brief The part of @p result that @p expr selects.
 ///
 /// A cell is wholly in a volume part if some term holds on all of it; it holds
-/// a piece if no term holds on all of it and some term holds on part of it. An
-/// interface part gets the cut cells of its level set and the zero faces of
-/// that level set whose owning cells satisfy the term's other clauses.
+/// a piece if no term holds on all of it and some term holds on part of it.
+/// A part of lower dimension also holds the entities of its dimension on which
+/// a term's zero clauses all count (they vanish there and change sign across
+/// it, or it lies on the mesh boundary), none of its strict clauses is on a
+/// level set vanishing there, and its other clauses hold on a sharing cell
+/// whole. (Where every sharing cell is cut by such a level set, the piece
+/// would be a part of the entity, which is not integrated yet.)
 ///
 /// Level sets made of level sets expand into terms on theirs
 /// (compile_selection_expr with the result's insides). The dimension is that

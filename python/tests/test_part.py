@@ -458,17 +458,27 @@ def test_crossing_points(mesh_kind, ls_kind):
 @pytest.mark.parametrize("mesh_kind", ["quad", "tri"])
 @pytest.mark.parametrize("where", ["vertex", "edge"])
 def test_crossing_point_on_cells_shared(mesh_kind, where):
-    """Two lines crossing at a mesh vertex or on a mesh edge: the cells sharing
-    the point find it, and the rules keep it once, with weight 1. Both lines'
-    slopes lie in (0, 1), so that both enter the cells north-east and
-    south-west of a vertex (triangles split along x = y)."""
+    """Two lines crossing at a mesh vertex or on a mesh edge: the point is the
+    entity's, once, with weight 1 and every cell sharing the entity. With
+    entities="owner" the lowest of them takes it whole; by default each takes
+    1/n of it. Both lines' slopes lie in (0, 1), so that both enter the cells
+    north-east and south-west of a vertex (triangles split along x = y)."""
     mesh = square_mesh(mesh_kind, 16)
     point = np.array([0.125, -0.25]) if where == "vertex" else np.array([0.125, -0.21])
     level_sets = [cutcells.create_level_set(mesh, lambda x, s=s: s * (x[0] - point[0]) - (x[1] - point[1]), degree=1,
                                             name=name) for s, name in ((0.37, "a"), (0.8, "b"))]
-    rules = cutcells.cut(mesh, level_sets)[CURVE].quadrature(order=2)
+    part = cutcells.cut(mesh, level_sets)[CURVE]
+    rules = part.quadrature(order=2, entities="owner")
     np.testing.assert_array_equal(np.asarray(rules.weights), [1.0])
     np.testing.assert_allclose(physical_points(mesh, rules)[0], point, atol=1e-12)
+    on = part.entity_quadrature(order=2)[0 if where == "vertex" else 1]
+    np.testing.assert_array_equal(on.weights, [1.0])
+    n = len(on.cells)
+    assert n == ({"quad": 4, "tri": 6}[mesh_kind] if where == "vertex" else 2)
+    split = part.quadrature(order=2)
+    np.testing.assert_allclose(np.asarray(split.weights), np.full(n, 1.0 / n), rtol=1e-15)
+    np.testing.assert_array_equal(np.asarray(split.parent_map), on.cells)
+    np.testing.assert_allclose(physical_points(mesh, split), np.tile(point, (n, 1)), atol=1e-12)
 
 
 def test_curve_leaves(tmp_path):

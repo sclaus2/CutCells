@@ -13,11 +13,13 @@
 //    many triangles per face in 3D: a sphere about a point near the centre
 //    cuts a disk from each face, whose areas and circles part::cut and
 //    quadrays give to 1e-9; rule points lie in the facets' reference cells
-//    and on the sphere; the faces add up to 24.
+//    and on the sphere; the faces add up to 24. A plane through mesh edges of
+//    that surface lies on 16 of them: rules on the edges, measured in 3D, with
+//    the two triangles sharing each, on either side.
 //  - The edges of the square [-1, 1]^2 as intervals in 2D and rotated into
 //    3D, and the interval [-1, 1] in 1D: a circle's chords, and its crossing
 //    points, each once with weight 1; a level set vanishing at mesh vertices
-//    gives each of them once.
+//    gives a rule on each, of weight 1, with the two intervals sharing it.
 // Exits non-zero on failure.
 
 #include <cutcells/bernstein.h>
@@ -414,6 +416,42 @@ void test_cube_surface()
     std::printf("cube surface: largest relative error %.1e\n", worst);
 }
 
+/// The plane z = 0.5 of the cube, moved, on the surface with 4 x 4 x 2
+/// triangles per face: its zero set, the square around the cube's sides, lies
+/// on 16 mesh edges of length 0.5, each a rule on the edge with the two
+/// triangles sharing it, below and above.
+void test_surface_entities()
+{
+    Surface s;
+    make_surface("tri", 4, s);
+    const V3 n = {Q[0][2], Q[1][2], Q[2][2]};
+    const LevelSetFunction<double, int> ls = pk_level_set(
+        s.view, 1, [&n](const V3& y) { return exact::dot(n, exact::sub(y, V3{shift[0], shift[1], shift[2]})) - 0.5; });
+    const std::vector<LevelSetFunction<double, int>> level_sets = {ls};
+    const part::CutResult<double, int> result
+        = part::cut<double, int>(s.view, std::span<const LevelSetFunction<double, int>>(level_sets));
+    const part::MeshPart<double, int> zero = part::select(result, "phi = 0");
+    const std::vector<part::EntityRules<double>> on = part::entity_rules(zero, 2);
+    const part::EntityRules<double>& edges = on[1];
+    bool sides = edges.n_rules() == 16;
+    for (int r = 0; sides && r < edges.n_rules(); ++r)
+    {
+        const std::int32_t s0 = edges.cell_offsets[r];
+        sides = edges.cell_offsets[r + 1] - s0 == 2 && (edges.negative[s0] ^ edges.negative[s0 + 1]) == 1
+                && (edges.positive[s0] ^ edges.positive[s0 + 1]) == 1;
+    }
+    check(result.cut_cells.empty() && sides,
+          "surface entities: 16 edge rules, each with its two triangles on either side ("
+              + std::to_string(edges.n_rules()) + " rules)");
+    check(std::abs(sum(edges.weights) - 8) <= 1e-13,
+          "surface entities: the edges' length " + std::to_string(sum(edges.weights)));
+    check(std::abs(sum(part::quadrature_rules(zero, 2, false)._weights) - 8) <= 1e-13,
+          "surface entities: the cells' rules share the edges' length");
+    check(std::abs(sum(part::quadrature_rules(part::select(result, "phi < 0"), 2, true)._weights) - 16) <= 1e-13,
+          "surface entities: the surface below the plane");
+    std::printf("surface entities: done\n");
+}
+
 // ============================================================================
 // Intervals
 // ============================================================================
@@ -545,14 +583,37 @@ void test_intervals()
                 check(std::abs(lo + 0.47) <= 1e-13 && std::abs(hi - 0.73) <= 1e-13, what + ": the points");
             }
         }
-        // (x - 0.25) (x + 0.5) vanishes at two vertices, which belong to no cut
-        // cell: each point once, as a zero face
+        // (x - 0.25) (x + 0.5) vanishes at two vertices and changes sign across
+        // them: no cell is cut, and each point is the rule of its vertex, the
+        // facet of the two intervals sharing it, one on either side. By
+        // default each interval takes half of it; with owner the lower takes it.
         const LevelSetFunction<double, int> ls
             = pk_level_set(l.view, 2, [](const V3& y) { return (y[0] - 0.25) * (y[0] + 0.5); });
         const LineParts p = line_parts(l.view, ls);
         check(std::abs(p.inside - 0.75) <= 1e-13 && std::abs(p.outside - 1.25) <= 1e-13,
               "zero vertices: lengths " + std::to_string(p.inside) + " and " + std::to_string(p.outside));
-        check(p.points == 2 && p.where.size() == 2, "zero vertices: 2 points, got " + std::to_string(p.points));
+        const std::vector<LevelSetFunction<double, int>> level_sets = {ls};
+        const part::CutResult<double, int> result
+            = part::cut<double, int>(l.view, std::span<const LevelSetFunction<double, int>>(level_sets));
+        const part::MeshPart<double, int> zero = part::select(result, "phi = 0");
+        check(result.cut_cells.empty(), "zero vertices: no cut cell");
+        const std::vector<part::EntityRules<double>> on = part::entity_rules(zero, 4);
+        bool sides = on.size() == 1 && on[0].n_rules() == 2 && on[0].weights == std::vector<double>{1.0, 1.0};
+        for (int r = 0; sides && r < on[0].n_rules(); ++r)
+        {
+            const std::int32_t s0 = on[0].cell_offsets[r], s1 = on[0].cell_offsets[r + 1];
+            sides = s1 - s0 == 2 && (on[0].negative[s0] ^ on[0].negative[s0 + 1]) == 1
+                    && (on[0].positive[s0] ^ on[0].positive[s0 + 1]) == 1;
+        }
+        check(sides, "zero vertices: two vertex rules of weight 1, each with its two intervals on either side");
+        const auto split = part::quadrature_rules(zero, 4, true);
+        check(split._weights == std::vector<double>(4, 0.5), "zero vertices: half a point to each sharing interval");
+        const auto owner = part::quadrature_rules(zero, 4, true, quadrays::Options{}, part::EntityPolicy::owner);
+        const std::vector<V3> where = physical_points(l.view, owner);
+        check(owner._weights == std::vector<double>{1.0, 1.0} && where.size() == 2
+                  && std::abs(std::min(where[0][0], where[1][0]) + 0.5) <= 1e-15
+                  && std::abs(std::max(where[0][0], where[1][0]) - 0.25) <= 1e-15,
+              "zero vertices: with owner, the points -0.5 and 0.25 of weight 1");
     }
     std::printf("intervals: done\n");
 }
@@ -563,6 +624,7 @@ int main()
 {
     test_moved_cells();
     test_cube_surface();
+    test_surface_entities();
     test_intervals();
     if (failures > 0)
     {

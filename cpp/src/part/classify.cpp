@@ -134,12 +134,13 @@ std::pair<Vertices<T, NV>, Vertices<T, NV>> halves(const Vertices<T, NV>& v, int
 }
 
 /// Sign of a polynomial on a piece of a simplex from its Bernstein
-/// coefficients on the piece, bisecting the longest edge.
+/// coefficients on the piece, bisecting the longest edge; values within
+/// @p touch of 0 count as touching zero.
 template <std::floating_point T, int NV>
 int bernstein_simplex_sign(const quadrays::ClippedBox<T>& box, std::span<const T> c, int n, const Vertices<T, NV>& v,
-                           int depth, int max_depth, std::vector<std::vector<T>>& scratch)
+                           int depth, int max_depth, T touch, std::vector<std::vector<T>>& scratch)
 {
-    const int s = quadrays::coefficient_sign(c);
+    const int s = quadrays::coefficient_sign(c, touch);
     if (s != 0 || depth >= max_depth)
         return s;
     const auto [p, q] = longest_edge<T, NV>(box, v);
@@ -147,10 +148,12 @@ int bernstein_simplex_sign(const quadrays::ClippedBox<T>& box, std::span<const T
     std::vector<T>& b = scratch[static_cast<std::size_t>(2 * depth + 1)];
     bisect_simplex(NV - 1, c, n, p, q, a, b);
     const auto [va, vb] = halves<T, NV>(v, p, q);
-    const int sa = bernstein_simplex_sign<T, NV>(box, std::span<const T>(a), n, va, depth + 1, max_depth, scratch);
+    const int sa
+        = bernstein_simplex_sign<T, NV>(box, std::span<const T>(a), n, va, depth + 1, max_depth, touch, scratch);
     if (sa == 0)
         return 0;
-    const int sb = bernstein_simplex_sign<T, NV>(box, std::span<const T>(b), n, vb, depth + 1, max_depth, scratch);
+    const int sb
+        = bernstein_simplex_sign<T, NV>(box, std::span<const T>(b), n, vb, depth + 1, max_depth, touch, scratch);
     return sa == sb ? sa : 0;
 }
 
@@ -158,10 +161,10 @@ int bernstein_simplex_sign(const quadrays::ClippedBox<T>& box, std::span<const T
 /// the parallelepiped (parallelogram) of the piece's edges from its vertex 0,
 /// whose linear part takes its extremes over the piece at the piece's
 /// vertices, or without Taylor models, intervals over the piece's bounding
-/// box.
+/// box. Values within @p touch of 0 count as touching zero.
 template <std::floating_point T, int NV>
 int analytic_simplex_sign(const quadrays::ClippedBox<T>& box, const quadrays::AnalyticLevelSet& phi,
-                          const Vertices<T, NV>& v, int depth, int max_depth)
+                          const Vertices<T, NV>& v, int depth, int max_depth, double touch)
 {
     constexpr int m = NV - 1;
     if (phi.taylor_bounds == nullptr)
@@ -182,7 +185,7 @@ int analytic_simplex_sign(const quadrays::ClippedBox<T>& box, const quadrays::An
         }
         if (phi.box_bounds(lo, hi, b, phi.context) != 0)
         {
-            const double tol = 10 * std::numeric_limits<double>::epsilon() * 0.5 * (b[1] - b[0]);
+            const double tol = std::max(10 * std::numeric_limits<double>::epsilon() * 0.5 * (b[1] - b[0]), touch);
             if (b[0] > -tol)
                 return 1;
             if (b[1] < tol)
@@ -192,10 +195,10 @@ int analytic_simplex_sign(const quadrays::ClippedBox<T>& box, const quadrays::An
             return 0;
         const auto [p, q] = longest_edge<T, NV>(box, v);
         const auto [va, vb] = halves<T, NV>(v, p, q);
-        const int sa = analytic_simplex_sign<T, NV>(box, phi, va, depth + 1, max_depth);
+        const int sa = analytic_simplex_sign<T, NV>(box, phi, va, depth + 1, max_depth, touch);
         if (sa == 0)
             return 0;
-        const int sb = analytic_simplex_sign<T, NV>(box, phi, vb, depth + 1, max_depth);
+        const int sb = analytic_simplex_sign<T, NV>(box, phi, vb, depth + 1, max_depth, touch);
         return sa == sb ? sa : 0;
     }
     double centre[3], axes[3 * m];
@@ -235,7 +238,7 @@ int analytic_simplex_sign(const quadrays::ClippedBox<T>& box, const quadrays::An
             deviation += std::abs(models[1 + j]);
         }
         // a few rounding errors of tolerance, as in quadrays::certain_sign
-        const double tol = 10 * std::numeric_limits<double>::epsilon() * deviation;
+        const double tol = std::max(10 * std::numeric_limits<double>::epsilon() * deviation, touch);
         if (lo - eps > -tol)
             return 1;
         if (hi + eps < tol)
@@ -245,16 +248,16 @@ int analytic_simplex_sign(const quadrays::ClippedBox<T>& box, const quadrays::An
         return 0;
     const auto [p, q] = longest_edge<T, NV>(box, v);
     const auto [va, vb] = halves<T, NV>(v, p, q);
-    const int sa = analytic_simplex_sign<T, NV>(box, phi, va, depth + 1, max_depth);
+    const int sa = analytic_simplex_sign<T, NV>(box, phi, va, depth + 1, max_depth, touch);
     if (sa == 0)
         return 0;
-    const int sb = analytic_simplex_sign<T, NV>(box, phi, vb, depth + 1, max_depth);
+    const int sb = analytic_simplex_sign<T, NV>(box, phi, vb, depth + 1, max_depth, touch);
     return sa == sb ? sa : 0;
 }
 
 /// cell_sign on a triangle (NV = 3) or tetrahedron (NV = 4).
 template <std::floating_point T, std::integral I, int NV>
-int simplex_sign(const CellSource<T, I>& cs, int max_depth)
+int simplex_sign(const CellSource<T, I>& cs, int max_depth, T touch)
 {
     // the vertices in box coordinates
     const cell::type type = NV == 4 ? cell::type::tetrahedron : cell::type::triangle;
@@ -273,30 +276,31 @@ int simplex_sign(const CellSource<T, I>& cs, int max_depth)
         corners[2] = c[static_cast<std::size_t>(pos[(n + 1) * n])];
         if constexpr (NV == 4)
             corners[3] = c[static_cast<std::size_t>(pos[(n + 1) * (n + 1) * n])];
-        const int whole = quadrays::coefficient_sign(c);
+        const int whole = quadrays::coefficient_sign(c, touch);
         if (whole != 0)
             return whole;
-        const bool positive = std::any_of(corners.begin(), corners.end(), [](T x) { return x > T(0); });
-        const bool negative = std::any_of(corners.begin(), corners.end(), [](T x) { return x < T(0); });
+        const bool positive = std::any_of(corners.begin(), corners.end(), [touch](T x) { return x > touch; });
+        const bool negative = std::any_of(corners.begin(), corners.end(), [touch](T x) { return x < -touch; });
         if (positive && negative)
             return 0;
         thread_local std::vector<std::vector<T>> scratch;
         scratch.resize(static_cast<std::size_t>(2 * (max_depth + 1)));
-        return bernstein_simplex_sign<T, NV>(cs.box, c, n, v, 0, max_depth, scratch);
+        return bernstein_simplex_sign<T, NV>(cs.box, c, n, v, 0, max_depth, touch, scratch);
     }
-    const int whole = analytic_simplex_sign<T, NV>(cs.box, *cs.source.analytic, v, 0, 0);
+    const double t = static_cast<double>(touch);
+    const int whole = analytic_simplex_sign<T, NV>(cs.box, *cs.source.analytic, v, 0, 0, t);
     if (whole != 0)
         return whole;
     bool positive = false, negative = false;
     for (const quadrays::Vec3<T>& u : v)
     {
         const T value = quadrays::evaluate(cs.source, std::span<const T>(u));
-        positive |= value > T(0);
-        negative |= value < T(0);
+        positive |= value > touch;
+        negative |= value < -touch;
     }
     if (positive && negative)
         return 0;
-    return analytic_simplex_sign<T, NV>(cs.box, *cs.source.analytic, v, 0, max_depth);
+    return analytic_simplex_sign<T, NV>(cs.box, *cs.source.analytic, v, 0, max_depth, t);
 }
 
 } // namespace
@@ -316,14 +320,14 @@ void bisect_triangle(std::span<const T> coeffs, int n, int p, int q, std::vector
 }
 
 template <std::floating_point T, std::integral I>
-int cell_sign(const CellSource<T, I>& cs, cell::type type, int max_depth)
+int cell_sign(const CellSource<T, I>& cs, cell::type type, int max_depth, T touch)
 {
     if (type == cell::type::tetrahedron)
-        return simplex_sign<T, I, 4>(cs, max_depth);
+        return simplex_sign<T, I, 4>(cs, max_depth, touch);
     if (type == cell::type::triangle)
-        return simplex_sign<T, I, 3>(cs, max_depth);
+        return simplex_sign<T, I, 3>(cs, max_depth, touch);
     // boxes, and the boxes of prisms and pyramids with their clips
-    return quadrays::cell_sign(cs.box, cs.source, max_depth);
+    return quadrays::cell_sign(cs.box, cs.source, max_depth, touch);
 }
 
 // ============================================================================
@@ -338,7 +342,7 @@ template void bisect_triangle<float>(std::span<const float>, int, int, int, std:
                                      std::vector<float>&);
 template void bisect_triangle<double>(std::span<const double>, int, int, int, std::vector<double>&,
                                       std::vector<double>&);
-template int cell_sign<float, int>(const CellSource<float, int>&, cell::type, int);
-template int cell_sign<double, int>(const CellSource<double, int>&, cell::type, int);
+template int cell_sign<float, int>(const CellSource<float, int>&, cell::type, int, float);
+template int cell_sign<double, int>(const CellSource<double, int>&, cell::type, int, double);
 
 } // namespace cutcells::part

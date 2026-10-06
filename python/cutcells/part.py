@@ -23,6 +23,15 @@ QuadraysOptions), or the lookup tables on Pk-iso-P1 templates,
     straight = result["phi < 0"].quadrature(order=2, backend="lut",
                                             options=cutcells.LutOptions(template_order=3))
 
+A piece lying on a facet, an edge or a vertex of the mesh (a plane through grid
+faces, say) is integrated once, on that entity: ``part.entity_quadrature(order)``
+gives these rules (EntityRules: points in the entity's reference cell, the
+cells sharing it with their local numbers, sides and points), and
+``part.quadrature(order, entities="split")`` gives each sharing cell its share
+(``"negative"``, ``"positive"``, ``"owner"`` or ``"exclude"`` choose otherwise).
+``result.entities(dim)`` lists the facets, edges and vertices near the zero
+sets (an EntityTable).
+
 A level set made of level sets, ``LevelSetFunction(level_sets=[ball, cyl],
 inside=(ball < 0) & (cyl > 0), name="ring")``, is cut as its level sets, named
 after it (``ring.ball``, ``ring.cyl``); ``result[ring < 0]``, ``result[ring > 0]``
@@ -43,6 +52,13 @@ CutResult_float64 = _part.CutResult_float64
 MeshPart = _part.MeshPart
 MeshPart_float32 = _part.MeshPart_float32
 MeshPart_float64 = _part.MeshPart_float64
+EntityTable = _part.EntityTable
+EntityRules = _part.EntityRules
+EntityRules_float32 = _part.EntityRules_float32
+EntityRules_float64 = _part.EntityRules_float64
+EntityQuadrature = _part.EntityQuadrature
+EntityQuadrature_float32 = _part.EntityQuadrature_float32
+EntityQuadrature_float64 = _part.EntityQuadrature_float64
 
 
 def _retired(name):

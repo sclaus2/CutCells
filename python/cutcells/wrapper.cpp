@@ -47,6 +47,8 @@
 #include <cutcells/quadrays/leaves.h>
 #include <cutcells/quadrays/rules.h>
 #include <cutcells/part/cut_result.h>
+#include <cutcells/part/entities.h>
+#include <cutcells/part/entity_rules.h>
 #include <cutcells/part/mesh_part.h>
 #include <cutcells/part/output.h>
 #include <cutcells/reference_cell.h>
@@ -2154,6 +2156,85 @@ struct PartSelection
   nb::object options;
 };
 
+/// A part's rules on facets, edges and vertices, one EntityRules per entity
+/// dimension, as MeshPart.entity_quadrature returns them.
+template <typename T>
+struct PartEntityRules
+{
+  std::vector<cutcells::part::EntityRules<T>> rules;
+  int tdim = 0;
+};
+
+/// An array viewing a vector of a struct that Python holds, kept alive by it.
+template <typename V, typename Owner>
+auto view(const V& x, const Owner& self)
+{
+  return nb::ndarray<const typename V::value_type, nb::numpy>(x.data(), {x.size()},
+                                                               nb::cast(self, nb::rv_policy::reference));
+}
+
+/// The same, as rows of @p width entries.
+template <typename V, typename Owner>
+auto view(const V& x, std::size_t width, const Owner& self)
+{
+  const std::size_t rows = width == 0 ? 0 : x.size() / width;
+  return nb::ndarray<const typename V::value_type, nb::numpy>(x.data(), {rows, width},
+                                                               nb::cast(self, nb::rv_policy::reference));
+}
+
+/// Cell types as their integer values (cutcells.CellType).
+template <typename Owner>
+auto view_types(const std::vector<cell::type>& types, const Owner& self)
+{
+  static_assert(std::is_same_v<std::underlying_type_t<cell::type>, int>);
+  return nb::ndarray<const int, nb::numpy>(reinterpret_cast<const int*>(types.data()), {types.size()},
+                                           nb::cast(self, nb::rv_policy::reference));
+}
+
+/// cutcells.part.EntityTable: the facets, edges or vertices near the zero
+/// sets, of one dimension (CutResult.entities(dim)).
+void declare_entity_table(nb::module_& part_module)
+{
+  using ET = cutcells::part::EntityTable<int>;
+  nb::class_<ET>(part_module, "EntityTable",
+      "The facets, edges or vertices of one dimension on which a level set "
+      "vanishes, sorted by their sorted mesh nodes, each with every cell that "
+      "shares it. "
+      "CSR arrays: entity e has nodes nodes[node_offsets[e]:node_offsets[e+1]] "
+      "(its chart: sorted, a quadrilateral's lowest node, its lower and higher "
+      "neighbours, the opposite node) and sharing cells cells[cell_offsets[e]:"
+      "cell_offsets[e+1]], with local_index (Basix numbering), negative and "
+      "positive per sharing cell.")
+      .def_prop_ro("dim", [](const ET& self) { return self.dim; })
+      .def_prop_ro("num_entities", &ET::n_entities)
+      .def_prop_ro("types", [](const ET& self) { return view_types(self.types, self); },
+                   nb::rv_policy::reference_internal, "Per entity, its cutcells.CellType as an int.")
+      .def_prop_ro("nodes", [](const ET& self) { return view(self.nodes, self); },
+                   nb::rv_policy::reference_internal, "The entities' mesh nodes in chart order.")
+      .def_prop_ro("node_offsets", [](const ET& self) { return view(self.node_offsets, self); },
+                   nb::rv_policy::reference_internal)
+      .def_prop_ro("cell_offsets", [](const ET& self) { return view(self.cell_offsets, self); },
+                   nb::rv_policy::reference_internal)
+      .def_prop_ro("cells", [](const ET& self) { return view(self.cells, self); },
+                   nb::rv_policy::reference_internal, "The cells sharing each entity, ascending.")
+      .def_prop_ro("local_index", [](const ET& self) { return view(self.local_index, self); },
+                   nb::rv_policy::reference_internal,
+                   "The entity's number in each sharing cell (Basix numbering, basix.topology).")
+      .def_prop_ro("vanishing", [](const ET& self) { return view(self.vanishing, self); },
+                   nb::rv_policy::reference_internal, "Per entity: bit l, level set l vanishes on it.")
+      .def_prop_ro("zero", [](const ET& self) { return view(self.zero, self); }, nb::rv_policy::reference_internal,
+                   "Per entity: the vanishing level sets that count there: those that change sign across it "
+                   "(some sharing cell on each side), or all of them on the mesh boundary.")
+      .def_prop_ro("negative", [](const ET& self) { return view(self.negative, self); },
+                   nb::rv_policy::reference_internal,
+                   "Per sharing cell: bit l, the cell lies where the vanishing level set l < 0.")
+      .def_prop_ro("positive", [](const ET& self) { return view(self.positive, self); },
+                   nb::rv_policy::reference_internal,
+                   "Per sharing cell: bit l, the cell lies where the vanishing level set l > 0.")
+      .def_prop_ro("boundary", [](const ET& self) { return view(self.boundary, self); },
+                   nb::rv_policy::reference_internal, "Per entity: 1 on the mesh boundary.");
+}
+
 /// A backend's name; "straight" is the lookup tables' old name.
 inline std::string part_backend(const std::string& backend)
 {
@@ -2311,11 +2392,88 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
   using ResultT = PartCutResult<T>;
   using PartT = PartSelection<T>;
 
+  using ER = cutcells::part::EntityRules<T>;
+  nb::class_<ER>(part_module, ("EntityRules_" + type).c_str(),
+      "The rules of a part on the entities of one dimension (facets, edges or "
+      "vertices), one rule per entity: points in the entity's reference cell, "
+      "physical weights, the cells sharing the entity with their local numbers "
+      "and sides, and the points in each sharing cell's reference coordinates. "
+      "Rule r has points[offsets[r]:offsets[r+1]] and sharing cells "
+      "cells[cell_offsets[r]:cell_offsets[r+1]]; sharing cell s has its points in "
+      "cell_points[cell_point_offsets[s]:cell_point_offsets[s+1]], in the order of "
+      "the rule's points.")
+      .def_prop_ro("tdim", [](const ER& self) { return self.tdim; }, "Of the background cells.")
+      .def_prop_ro("entity_dim", [](const ER& self) { return self.entity_dim; },
+                   "tdim - 1 for facets, ..., 0 for vertices.")
+      .def_prop_ro("num_rules", &ER::n_rules)
+      .def_prop_ro("entity_types", [](const ER& self) { return view_types(self.entity_types, self); },
+                   nb::rv_policy::reference_internal, "Per rule, the entity's cutcells.CellType as an int.")
+      .def_prop_ro("entity_nodes", [](const ER& self) { return view(self.entity_nodes, self); },
+                   nb::rv_policy::reference_internal,
+                   "Per rule, the entity's mesh nodes in chart order (CSR, node_offsets).")
+      .def_prop_ro("node_offsets", [](const ER& self) { return view(self.node_offsets, self); },
+                   nb::rv_policy::reference_internal)
+      .def_prop_ro("zero", [](const ER& self) { return view(self.zero, self); }, nb::rv_policy::reference_internal,
+                   "Per rule: bit l, the points lie in level set l's zero set.")
+      .def_prop_ro("points",
+                   [](const ER& self) { return view(self.points, static_cast<std::size_t>(self.entity_dim), self); },
+                   nb::rv_policy::reference_internal,
+                   "Points in the entity's reference cell, shape (num_points, entity_dim).")
+      .def_prop_ro("weights", [](const ER& self) { return view(self.weights, self); },
+                   nb::rv_policy::reference_internal, "Physical weights (1 for a point).")
+      .def_prop_ro("offsets", [](const ER& self) { return view(self.offsets, self); },
+                   nb::rv_policy::reference_internal, "Per rule, CSR over points and weights.")
+      .def_prop_ro("cell_offsets", [](const ER& self) { return view(self.cell_offsets, self); },
+                   nb::rv_policy::reference_internal, "Per rule, CSR over its sharing cells.")
+      .def_prop_ro("cells", [](const ER& self) { return view(self.cells, self); }, nb::rv_policy::reference_internal,
+                   "The sharing cells, ascending per rule.")
+      .def_prop_ro("local_index", [](const ER& self) { return view(self.local_index, self); },
+                   nb::rv_policy::reference_internal, "The entity in each sharing cell (Basix numbering).")
+      .def_prop_ro("negative", [](const ER& self) { return view(self.negative, self); },
+                   nb::rv_policy::reference_internal,
+                   "Per sharing cell: bit l, the cell lies where level set l < 0 (level sets vanishing on the "
+                   "entity).")
+      .def_prop_ro("positive", [](const ER& self) { return view(self.positive, self); },
+                   nb::rv_policy::reference_internal, "Per sharing cell: bit l, the cell lies where level set l > 0.")
+      .def_prop_ro("cell_points",
+                   [](const ER& self) { return view(self.cell_points, static_cast<std::size_t>(self.tdim), self); },
+                   nb::rv_policy::reference_internal,
+                   "Per sharing cell, the rule's points in its reference coordinates, shape (n, tdim).")
+      .def_prop_ro("cell_point_offsets", [](const ER& self) { return view(self.cell_point_offsets, self); },
+                   nb::rv_policy::reference_internal, "Per sharing cell, CSR over cell_points.");
+
+  using PER = PartEntityRules<T>;
+  nb::class_<PER>(part_module, ("EntityQuadrature_" + type).c_str(),
+      "A part's rules on facets, edges and vertices (MeshPart.entity_quadrature): one "
+      "EntityRules per entity dimension, as facets, ridges (codimension 2) and vertices "
+      "(in 3D; None in 2D, where the ridges are the vertices, and on intervals, whose facets "
+      "are the vertices), or [dim].")
+      .def_prop_ro("tdim", [](const PER& self) { return self.tdim; })
+      .def_prop_ro(
+          "facets", [](const PER& self) -> const ER* { return self.tdim >= 1 ? &self.rules[self.tdim - 1] : nullptr; },
+          nb::rv_policy::reference_internal, "The rules on facets (faces in 3D, edges in 2D, vertices of intervals).")
+      .def_prop_ro(
+          "ridges", [](const PER& self) -> const ER* { return self.tdim >= 2 ? &self.rules[self.tdim - 2] : nullptr; },
+          nb::rv_policy::reference_internal, "The rules on entities of codimension 2 (edges in 3D, vertices in 2D).")
+      .def_prop_ro(
+          "vertices", [](const PER& self) -> const ER* { return self.tdim == 3 ? &self.rules[0] : nullptr; },
+          nb::rv_policy::reference_internal, "The rules on vertices in 3D; None in 2D.")
+      .def("__len__", [](const PER& self) { return self.rules.size(); })
+      .def(
+          "__getitem__",
+          [](const PER& self, int dim) -> const ER&
+          {
+            if (dim < 0 || dim >= static_cast<int>(self.rules.size()))
+              throw nb::index_error("entity dimension out of range");
+            return self.rules[static_cast<std::size_t>(dim)];
+          },
+          nb::rv_policy::reference_internal, "The rules on the entities of dimension dim.");
+
   const std::string result_name = "CutResult_" + type;
   nb::class_<ResultT>(part_module, result_name.c_str(),
       "Every cell classified by every level set as inside, outside or cut, by "
-      "the level sets' own bounds, and the faces lying in a zero set with the "
-      "cell that owns each. result[(phi1 < 0) & (phi2 == 0)], a condition built "
+      "the level sets' own bounds, and the facets, edges and vertices on which "
+      "a level set vanishes (entities(dim)). result[(phi1 < 0) & (phi2 == 0)], a condition built "
       "from the level sets passed to cut, or its string result[\"phi1 < 0 and "
       "phi2 = 0\"], selects a MeshPart. Its parts integrate with result.backend "
       "('quadrays' or 'lut') and result.options unless a call names others. A level "
@@ -2384,9 +2542,22 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
             return as_nbarray(std::move(z), {n, std::size_t(3)});
           },
           nb::rv_policy::move,
-          "Faces in a zero set, each once: (level set, owning cell, face of the cell in "
-          "Basix numbering), shape (n, 3). The owner is the cell on the negative side, "
-          "else the lower cell index.")
+          "Facets in a zero set, from entities(tdim - 1): (level set, owning cell, facet of the "
+          "cell in Basix numbering), shape (n, 3), each facet once per level set that counts "
+          "there. The owner is the cell on the negative side, else the lowest sharing cell.")
+      .def(
+          "entities",
+          [](const ResultT& self, int dim) -> const cutcells::part::EntityTable<int>&
+          {
+            if (dim < 0 || dim >= self.result.tdim())
+              throw nb::index_error("entities: the dimension goes from 0 to tdim - 1");
+            return self.result.entities[static_cast<std::size_t>(dim)];
+          },
+          nb::arg("dim"), nb::rv_policy::reference_internal,
+          "The facets, edges or vertices (dimension dim < tdim) on which a level set vanishes, with "
+          "their sharing cells, local numbers (Basix), the level sets vanishing on each, those that "
+          "count there (sign change, or the mesh boundary), and each sharing cell's sides (an "
+          "EntityTable).")
       .def_prop_rw(
           "backend", [](const ResultT& self) { return self.backend; },
           [](ResultT& self, const std::string& backend)
@@ -2469,7 +2640,22 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
             return nb::ndarray<const int, nb::numpy>(self.part.zero_faces.data(), {self.part.zero_faces.size()},
                                                      nb::handle());
           },
-          nb::rv_policy::reference_internal, "Indices into the result's zero_faces.")
+          nb::rv_policy::reference_internal,
+          "Indices into the result's zero_faces: the facets the part holds whole, with their owners.")
+      .def(
+          "entities",
+          [](const PartT& self, int dim)
+          {
+            const int tdim = self.part.result->tdim();
+            if (dim < 0 || dim >= tdim)
+              throw nb::index_error("entities: the dimension goes from 0 to tdim - 1");
+            const std::vector<std::int32_t>& e = self.part.entities[static_cast<std::size_t>(dim)];
+            return nb::ndarray<const std::int32_t, nb::numpy>(e.data(), {e.size()}, nb::handle());
+          },
+          nb::arg("dim"), nb::rv_policy::reference_internal,
+          "The entities of dimension dim the part holds whole: indices into result.entities(dim). "
+          "A piece is a whole entity where the zero sets it lies in vanish there and change sign "
+          "across it (or it lies on the mesh boundary), and the rest of its term holds on all of it.")
       .def(
           "on",
           [](const PartT& self, nb::args faces)
@@ -2491,32 +2677,63 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
           "all its faces. Several names keep several faces.")
       .def(
           "quadrature",
-          [](const PartT& self, int order, const std::string& mode, nb::handle backend, nb::handle options)
+          [](const PartT& self, int order, const std::string& mode, nb::handle backend, nb::handle options,
+             const std::string& entities)
           {
             const std::string b = call_backend(backend, self.backend);
             const bool cut_only = part_mode_is_cut_only(mode);
+            const cutcells::part::EntityPolicy policy = cutcells::part::string_to_entity_policy(entities);
             if (b == "lut")
             {
               const auto o = call_options<cutcells::lut::Options>(options, self.options, b, "LutOptions");
               nb::gil_scoped_release release;
-              return cutcells::part::quadrature_rules(self.part, order, !cut_only, o);
+              return cutcells::part::quadrature_rules(self.part, order, !cut_only, o, policy);
             }
             const auto o = call_options<qr::Options>(options, self.options, b, "QuadraysOptions");
             nb::gil_scoped_release release;
-            return cutcells::part::quadrature_rules(self.part, order, !cut_only, o);
+            return cutcells::part::quadrature_rules(self.part, order, !cut_only, o, policy);
           },
           nb::arg("order") = 3, nb::arg("mode") = "full", nb::arg("backend") = nb::none(),
-          nb::arg("options") = nb::none(),
-          "Quadrature rules, one per cell: the backend's on cut cells, rules on owned "
-          "zero faces, and with mode 'full' those of the whole cells. order: the polynomial "
-          "degree integrated exactly on flat pieces, 1 to 10, in both backends. backend: "
-          "'quadrays' (options: QuadraysOptions) or 'lut' ('straight'), the lookup tables on "
-          "Pk-iso-P1 templates (options: LutOptions); None: the part's. quadrays takes "
+          nb::arg("options") = nb::none(), nb::arg("entities") = "split",
+          "Quadrature rules, one per cell: the backend's on cut cells, with mode 'full' those of "
+          "the whole cells, and the rules on the facets, edges and vertices the part holds "
+          "(entity_quadrature), taken by the cells that share them as entities says: 'split' "
+          "(every sharing cell, weight 1/n), 'negative' or 'positive' (the cells on that side of "
+          "the zero level sets, all if none is), 'owner' (the lowest sharing cell) or 'exclude' "
+          "(none: only the pieces inside cells). Each piece counts once in total. order: the "
+          "polynomial degree integrated exactly on flat pieces, 1 to 10, in both backends. "
+          "backend: 'quadrays' (options: QuadraysOptions) or 'lut' ('straight'), the lookup "
+          "tables on Pk-iso-P1 templates (options: LutOptions); None: the part's. quadrays takes "
           "ceil((order + dim) / 2) Gauss-Legendre points per segment of its height lines, or "
           "QuadraysOptions.points_per_segment; the lookup tables' pieces, whole cells and "
-          "faces get the reference rules of degree order. Both backends integrate the curves "
+          "entities get the reference rules of degree order. Both backends integrate the curves "
           "where two level sets vanish ('a = 0 and b = 0'); on 2D cells these are points of "
           "weight 1.")
+      .def(
+          "entity_quadrature",
+          [](const PartT& self, int order, nb::handle backend, nb::handle options)
+          {
+            const std::string b = call_backend(backend, self.backend);
+            PER out;
+            out.tdim = self.part.result->tdim();
+            if (b == "lut")
+            {
+              const auto o = call_options<cutcells::lut::Options>(options, self.options, b, "LutOptions");
+              nb::gil_scoped_release release;
+              out.rules = cutcells::part::entity_rules(self.part, order, o);
+              return out;
+            }
+            const auto o = call_options<qr::Options>(options, self.options, b, "QuadraysOptions");
+            nb::gil_scoped_release release;
+            out.rules = cutcells::part::entity_rules(self.part, order, o);
+            return out;
+          },
+          nb::arg("order") = 3, nb::arg("backend") = nb::none(), nb::arg("options") = nb::none(),
+          "The rules on the facets, edges and vertices the part holds, computed once per entity "
+          "(an EntityQuadrature: .facets, .ridges, .vertices, each an EntityRules): the entities it "
+          "holds whole, with their reference rules of degree order, and on 2D cells the points "
+          "where two curves cross that the backend finds on an edge or a vertex. The pieces inside "
+          "cells come from quadrature(order, entities='exclude').")
       .def(
           "visualization_mesh",
           [](const PartT& self, const std::string& mode, nb::handle backend, int degree,
@@ -2641,15 +2858,17 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
       "result[\"phi1 < 0 and phi2 = 0\"], selects a MeshPart.");
 
   m.def(("quadrays_quadrature_" + type).c_str(),
-        [](const PartT& part, int order, const std::string& mode, nb::handle options)
+        [](const PartT& part, int order, const std::string& mode, nb::handle options, const std::string& entities)
         {
           const bool cut_only = part_mode_is_cut_only(mode);
           const auto o = call_options<qr::Options>(options, nb::handle(), "quadrays", "QuadraysOptions");
+          const cutcells::part::EntityPolicy policy = cutcells::part::string_to_entity_policy(entities);
           nb::gil_scoped_release release;
-          return cutcells::part::quadrature_rules(part.part, order, !cut_only, o);
+          return cutcells::part::quadrature_rules(part.part, order, !cut_only, o, policy);
         },
         nb::arg("part"), nb::arg("order") = 3, nb::arg("mode") = "full", nb::arg("options") = nb::none(),
-        "part.quadrature(order, mode, backend='quadrays', options). order: the polynomial "
+        nb::arg("entities") = "split",
+        "part.quadrature(order, mode, backend='quadrays', options, entities). order: the polynomial "
         "degree integrated exactly on flat pieces, 1 to 10.");
 
   m.def(("quadrays_leaves_" + type).c_str(),
@@ -2669,6 +2888,8 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
   {
     part_module.attr("CutResult") = part_module.attr(result_name.c_str());
     part_module.attr("MeshPart") = part_module.attr(part_name.c_str());
+    part_module.attr("EntityRules") = part_module.attr(("EntityRules_" + type).c_str());
+    part_module.attr("EntityQuadrature") = part_module.attr(("EntityQuadrature_" + type).c_str());
     part_module.attr("cut") = part_module.attr("cut_float64");
     m.attr("quadrays_quadrature") = m.attr("quadrays_quadrature_float64");
     m.attr("quadrays_leaves") = m.attr("quadrays_leaves_float64");
@@ -2929,6 +3150,7 @@ NB_MODULE(_cutcellscpp, m)
               "own bounds; result[selection], a condition such as phi < 0 or its string, "
               "selects a MeshPart, whose quadrature and visualisation come from a backend "
               "(quadrays, or the lookup tables: 'lut').");
+  declare_entity_table(part_module);
   declare_part<float>(m, part_module, "float32");
   declare_part<double>(m, part_module, "float64");
 }

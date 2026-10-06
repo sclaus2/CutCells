@@ -13,6 +13,8 @@ set(PART_HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_source.h
   ${CMAKE_CURRENT_SOURCE_DIR}/classify.h
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_result.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/entities.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/entity_rules.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mesh_part.h
   ${CMAKE_CURRENT_SOURCE_DIR}/output.h
   PARENT_SCOPE)
@@ -21,6 +23,8 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/cell_source.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/classify.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/cut_result.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/entities.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/entity_rules.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mesh_part.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/output.cpp
 )

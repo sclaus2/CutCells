@@ -112,11 +112,24 @@ void isolate(const Source<T>& phi, const std::array<double, 3>& p, const std::ar
     isolate(phi, p, v, m, b, zero, depth + 1, visited, roots);
 }
 
+/// Sign of a Taylor model row as row_sign gives it, where values within
+/// @p touch of 0 also count as touching zero.
+int touching_row_sign(const double* row, int m, double touch)
+{
+    double alpha, deviation;
+    const int s = row_sign(row, m, alpha, deviation);
+    if (s != 0 || !(touch > 0))
+        return s;
+    // the model's lower or upper bound is within touch of 0
+    return alpha - deviation >= -touch ? 1 : (alpha + deviation <= touch ? -1 : 0);
+}
+
 /// Sign of phi on the sub-box [lo, hi] of a cell: +1, -1, 0 if it may vanish,
-/// or 2 if the sub-box misses the clipped region.
+/// or 2 if the sub-box misses the clipped region. Values within @p touch of 0
+/// count as touching zero.
 template <std::floating_point T>
 int box_sign(const ClippedBox<T>& cell, const Source<T>& phi, const Vec3<T>& lo, const Vec3<T>& hi, int depth,
-             int max_depth)
+             int max_depth, T touch)
 {
     if (!may_meet_clips(cell, lo, hi))
         return 2;
@@ -136,7 +149,7 @@ int box_sign(const ClippedBox<T>& cell, const Source<T>& phi, const Vec3<T>& lo,
         thread_local BoxBernstein<T> sub;
         thread_local std::vector<T> work;
         subdivide(*phi.bernstein, std::span<const T>(lo), std::span<const T>(hi), sub, work);
-        const int s = coefficient_sign(std::span<const T>(sub.coeffs));
+        const int s = coefficient_sign(std::span<const T>(sub.coeffs), touch);
         if (s != 0)
             return s;
     }
@@ -145,8 +158,7 @@ int box_sign(const ClippedBox<T>& cell, const Source<T>& phi, const Vec3<T>& lo,
         double models[4 * 5];
         if (parallelepiped_bounds(*phi.analytic, centre, axes, 3, models) != 0)
         {
-            double alpha, dev;
-            const int s = row_sign(models, 3, alpha, dev);
+            const int s = touching_row_sign(models, 3, static_cast<double>(touch));
             if (s != 0)
                 return s;
         }
@@ -169,10 +181,10 @@ int box_sign(const ClippedBox<T>& cell, const Source<T>& phi, const Vec3<T>& lo,
     }
     Vec3<T> first_hi = hi, second_lo = lo;
     first_hi[axis] = second_lo[axis] = T(0.5) * (lo[axis] + hi[axis]);
-    const int a = box_sign(cell, phi, lo, first_hi, depth + 1, max_depth);
+    const int a = box_sign(cell, phi, lo, first_hi, depth + 1, max_depth, touch);
     if (a == 0)
         return 0;
-    const int b = box_sign(cell, phi, second_lo, hi, depth + 1, max_depth);
+    const int b = box_sign(cell, phi, second_lo, hi, depth + 1, max_depth, touch);
     if (b == 0)
         return 0;
     if (a == 2)
@@ -402,12 +414,12 @@ T line_root(const Source<T>& phi, std::span<const T> origin, std::span<const T> 
 }
 
 template <std::floating_point T>
-int coefficient_sign(std::span<const T> coeffs)
+int coefficient_sign(std::span<const T> coeffs, T touch)
 {
     const T m = max_abs(coeffs);
     if (!(m > T(0)))
         return 0;
-    const T tol = T(64) * std::numeric_limits<T>::epsilon() * m;
+    const T tol = std::max(touch_tolerance<T> * m, touch);
     bool positive = true, negative = true;
     for (const T c : coeffs)
     {
@@ -424,12 +436,12 @@ int cell_sign(const ClippedBox<T>& cell, const AnalyticLevelSet& phi, int max_de
 }
 
 template <std::floating_point T>
-int cell_sign(const ClippedBox<T>& cell, const Source<T>& phi, int max_depth)
+int cell_sign(const ClippedBox<T>& cell, const Source<T>& phi, int max_depth, T touch)
 {
     // boxes of cells of dimension tdim < 3 are flat: u_j = 0 for j >= tdim
     const Vec3<T> lo = {0, 0, 0}, hi = {1, T(cell.tdim >= 2 ? 1 : 0), T(cell.tdim == 3 ? 1 : 0)};
     // the whole box first: most cells are far from the zero set
-    const int s = box_sign(cell, phi, lo, hi, 0, 0);
+    const int s = box_sign(cell, phi, lo, hi, 0, 0, touch);
     if (s == 1 || s == -1)
         return s;
     // corners of the clipped region with both signs
@@ -440,11 +452,11 @@ int cell_sign(const ClippedBox<T>& cell, const Source<T>& phi, int max_depth)
         if (!inside_clips(cell, u, scaled_tolerance<T>(1e-12)))
             continue;
         const T v = evaluate(phi, std::span<const T>(u));
-        seen |= (v > T(0) ? 1 : 0) | (v < T(0) ? 2 : 0);
+        seen |= (v > touch ? 1 : 0) | (v < -touch ? 2 : 0);
     }
     if (seen == 3)
         return 0;
-    const int r = box_sign(cell, phi, lo, hi, 0, max_depth);
+    const int r = box_sign(cell, phi, lo, hi, 0, max_depth, touch);
     return r == 2 ? 0 : r;
 }
 
@@ -480,10 +492,10 @@ template float line_root<float>(const Source<float>&, std::span<const float>, st
                                 float, float);
 template double line_root<double>(const Source<double>&, std::span<const double>, std::span<const double>, double,
                                   double, double, double);
-template int coefficient_sign<float>(std::span<const float>);
-template int coefficient_sign<double>(std::span<const double>);
-template int cell_sign<float>(const ClippedBox<float>&, const Source<float>&, int);
-template int cell_sign<double>(const ClippedBox<double>&, const Source<double>&, int);
+template int coefficient_sign<float>(std::span<const float>, float);
+template int coefficient_sign<double>(std::span<const double>, double);
+template int cell_sign<float>(const ClippedBox<float>&, const Source<float>&, int, float);
+template int cell_sign<double>(const ClippedBox<double>&, const Source<double>&, int, double);
 template int cell_sign<float>(const ClippedBox<float>&, const AnalyticLevelSet&, int);
 template int cell_sign<double>(const ClippedBox<double>&, const AnalyticLevelSet&, int);
 

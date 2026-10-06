@@ -10,6 +10,7 @@
 #include <span>
 #include <vector>
 
+#include "../tolerances.h"
 #include "analytic.h"
 #include "box_bernstein.h"
 #include "clipped_box.h"
@@ -119,8 +120,10 @@ T line_root(const Source<T>& phi, std::span<const T> origin, std::span<const T> 
 
 /// @brief +1 or -1 if Bernstein coefficients prove that sign (coefficients
 /// that are 0 up to rounding allowed: the polynomial may touch zero), else 0.
+/// @param touch  coefficients within this absolute bound count as 0 too, as do
+///               those within touch_tolerance of the largest
 template <std::floating_point T>
-int coefficient_sign(std::span<const T> coeffs);
+int coefficient_sign(std::span<const T> coeffs, T touch = T(0));
 
 /// @brief The sign of a level set on a cell, for classifying cells as inside,
 /// outside or cut.
@@ -129,11 +132,15 @@ int coefficient_sign(std::span<const T> coeffs);
 /// restriction, or Taylor models), or its corners show both; otherwise the box
 /// is bisected, along its longest edge, down to @p max_depth levels, and
 /// sub-boxes outside the clips are skipped.
+/// @param touch  values within this absolute bound count as touching zero,
+///               beyond the rounding allowance of the bounds (cut uses it for
+///               the cells around a facet, edge or vertex the level set
+///               vanishes on)
 /// @return +1 or -1 if phi has that sign on the cell (up to touching zero), 0 if
 ///         it changes sign or the bounds cannot tell (where it touches zero
 ///         inside, or where a bound is lost)
 template <std::floating_point T>
-int cell_sign(const ClippedBox<T>& cell, const Source<T>& phi, int max_depth = 12);
+int cell_sign(const ClippedBox<T>& cell, const Source<T>& phi, int max_depth = 12, T touch = T(0));
 
 /// @brief cell_sign for an analytic level set.
 template <std::floating_point T>

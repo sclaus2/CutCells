@@ -9,3 +9,4 @@
 cutcells_add_test(part_front_end test_part.cpp)
 cutcells_add_test(part_level_sets_made_of test_level_sets_made_of.cpp)
 cutcells_add_test(part_facets test_facets.cpp)
+cutcells_add_test(part_entities test_entities.cpp)

@@ -23,6 +23,39 @@ int result_tdim(const CutResult<T, I>& result)
     return result.num_cells > 0 ? cell::get_tdim(result.mesh->cell_type(I(0))) : 3;
 }
 
+/// Whether @p term has a piece on entity @p e of @p table that is the whole
+/// entity: its zero clauses all count there, none of its strict clauses is on
+/// a level set vanishing there, and a sharing cell holds each of its other
+/// clauses whole (no sharing cell holding the opposite).
+template <std::floating_point T, std::integral I>
+bool term_on_entity(const SelectionTerm& term, const CutResult<T, I>& result, const EntityTable<I>& table,
+                    std::int32_t e)
+{
+    const std::uint64_t strict = term.negative_required | term.positive_required;
+    if (term.zero_required == 0 || (term.zero_required & ~table.zero[static_cast<std::size_t>(e)]) != 0
+        || (strict & table.vanishing[static_cast<std::size_t>(e)]) != 0
+        || (term.negative_required & term.positive_required) != 0)
+        return false;
+    for (std::uint64_t bits = strict; bits != 0; bits &= bits - 1)
+    {
+        const int l = std::countr_zero(bits);
+        const bool negative = (term.negative_required >> l) & 1;
+        const cell::domain side = negative ? cell::domain::inside : cell::domain::outside;
+        const cell::domain opposite = negative ? cell::domain::outside : cell::domain::inside;
+        bool holds = false;
+        for (const I c : table.entity_cells(e))
+        {
+            const cell::domain d = result.domain(l, c);
+            if (d == opposite)
+                return false;
+            holds |= d == side;
+        }
+        if (!holds)
+            return false; // every sharing cell is cut by l: a part of the entity
+    }
+    return true;
+}
+
 /// The part of @p result that the compiled @p expr selects, of dimension @p dim.
 template <std::floating_point T, std::integral I>
 MeshPart<T, I> select_compiled(const CutResult<T, I>& result, SelectionExpr expr, int dim)
@@ -48,25 +81,47 @@ MeshPart<T, I> select_compiled(const CutResult<T, I>& result, SelectionExpr expr
             part.cut_cells.push_back(c);
     }
 
+    // the entities of the part's dimension that it holds whole
+    if (part.dim >= 0 && part.dim < tdim)
+    {
+        const std::size_t d = static_cast<std::size_t>(part.dim);
+        const EntityTable<I>& table = result.entities[d];
+        for (std::int32_t e = 0; e < table.n_entities(); ++e)
+        {
+            if (table.zero[static_cast<std::size_t>(e)] == 0)
+                continue;
+            std::uint64_t zero = 0;
+            for (const SelectionTerm& term : part.expr.terms)
+                if (term_on_entity(term, result, table, e))
+                    zero |= term.zero_required;
+            if (zero == 0)
+                continue;
+            part.entities[d].push_back(e);
+            part.entity_zero[d].push_back(zero);
+        }
+    }
+    // the zero faces among them
     if (part.dim == tdim - 1)
     {
+        const EntityTable<I>& facets = result.entities[static_cast<std::size_t>(part.dim)];
+        const std::vector<std::int32_t>& held = part.entities[static_cast<std::size_t>(part.dim)];
+        std::vector<I> nodes, scratch, local;
         for (int z = 0; z < result.n_zero_faces(); ++z)
         {
-            const std::uint64_t bit = std::uint64_t(1) << result.zero_face_level_sets[static_cast<std::size_t>(z)];
             const I owner = result.zero_face_cells[static_cast<std::size_t>(z)];
-            for (const SelectionTerm& term : part.expr.terms)
-            {
-                if (!(term.zero_required & bit))
-                    continue;
-                // the term without its zero clause must hold on the whole owner
-                SelectionTerm rest = term;
-                rest.zero_required &= ~bit;
-                if (term_on_cell(rest, result, owner) == TermCell::whole)
-                {
-                    part.zero_faces.push_back(z);
-                    break;
-                }
-            }
+            const cell::type type = result.mesh->cell_type(owner);
+            cell_vertex_nodes(*result.mesh, owner, nodes, scratch);
+            local.clear();
+            for (const int v : facet_vertices(type, result.zero_face_local[static_cast<std::size_t>(z)]))
+                local.push_back(nodes[static_cast<std::size_t>(v)]);
+            const std::int32_t e = find_entity(facets, entity_key(std::span<const I>(local)));
+            const auto it = std::lower_bound(held.begin(), held.end(), e);
+            if (it == held.end() || *it != e)
+                continue;
+            const std::uint64_t zero
+                = part.entity_zero[static_cast<std::size_t>(part.dim)][static_cast<std::size_t>(it - held.begin())];
+            if ((zero >> result.zero_face_level_sets[static_cast<std::size_t>(z)]) & 1)
+                part.zero_faces.push_back(z);
         }
     }
     return part;

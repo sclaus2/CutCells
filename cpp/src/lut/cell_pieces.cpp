@@ -14,6 +14,7 @@
 #include <string>
 #include <utility>
 
+#include "../tolerances.h"
 #include "cut_cell.h"
 #include "iso_refine.h"
 #include "triangulation.h"
@@ -175,16 +176,16 @@ void append_part(const cell::CutCell<T>& part, cell::type cut_type, int tdim, st
 }
 
 /// Values the lookup tables read as we classify them: values within
-/// 64 eps max|v| of 0 become that bound, so they count as positive here and in
-/// both of the tables' case masks (which treat values within 2 eps |v_0| as 0),
-/// and intersections next to them land on the vertex.
+/// touch_tolerance max|v| (64 eps) of 0 become that bound, so they count as
+/// positive here and in both of the tables' case masks (which treat values
+/// within 2 eps |v_0| as 0), and intersections next to them land on the vertex.
 template <std::floating_point T>
 void snap_values(std::vector<T>& v)
 {
     T scale = T(0);
     for (const T x : v)
         scale = std::max(scale, std::abs(x));
-    const T zero = T(64) * std::numeric_limits<T>::epsilon() * scale;
+    const T zero = touch_tolerance<T> * scale;
     for (T& x : v)
         if (std::abs(x) <= zero)
             x = zero;

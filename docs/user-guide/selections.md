@@ -142,6 +142,26 @@ All `or` terms of one selection (joined by `|`, or by `or` in a string) must
 infer the same dimension. Curves get line rules, and points in 2D get unit
 weights: `curve.quadrature(order=4)`.
 
+## Pieces on facets, edges and vertices
+
+A selection of lower dimension can hold whole facets, edges or vertices of
+the mesh: the interface `plane == 0` where the plane runs through grid faces,
+the curve `(a == 0) & (b == 0)` where both vanish along mesh edges, the point
+where two lines cross at a mesh vertex in 2D. A term holds such an entity
+whole when
+
+- every level set of its `== 0` clauses vanishes on the entity and changes
+  sign across it: some cell sharing the entity lies on its negative side and
+  some on its positive side (on the mesh boundary, one side is enough);
+- none of its `< 0` or `> 0` clauses is on a level set vanishing there;
+- each of its other clauses holds on a cell sharing the entity, whole.
+
+A level set that vanishes on an entity without changing sign across it is no
+surface there: `min(box1, box2)` vanishes on the face two boxes share and is
+negative on both sides. `part.entities(dim)` lists the entities a part holds,
+and `part.entity_quadrature(order)` gives their rules (see
+[Quadrature and output](quadrature-output.md)).
+
 ## Result fields
 
 Useful `CutResult` fields:
@@ -153,10 +173,34 @@ print(result.num_level_sets)
 print(list(result.level_set_names))
 print(result.cut_cells)       # cells that some level set cuts
 print(result.domains.shape)   # (num_level_sets, num_cells): 0 inside, 1 cut, 2 outside
-print(result.zero_faces)      # faces lying in a zero set, with their owning cells
+print(result.entities(2))     # the facets of a 3D mesh on which a level set vanishes
+print(result.zero_faces)      # facets lying in a zero set, with one owning cell each
 print(result.insides)         # level sets made of level sets, with their insides
 print(result.backend)         # the default backend of parts selected from now on
 ```
+
+`result.entities(dim)` is an `EntityTable` of the entities of dimension `dim`
+(vertices, edges, facets) on which a level set vanishes. Each comes with
+every cell that shares it, its number in each (Basix numbering), the level sets that
+vanish on it (`vanishing`), those of them that count there (`zero`: they
+change sign across it, or it lies on the mesh boundary), and each sharing
+cell's side of them (`negative`, `positive`). Its arrays are CSR:
+
+```python
+facets = result.entities(2)
+for e in range(facets.num_entities):
+    nodes = facets.nodes[facets.node_offsets[e]:facets.node_offsets[e + 1]]
+    cells = facets.cells[facets.cell_offsets[e]:facets.cell_offsets[e + 1]]
+```
+
+A level set vanishes on an entity if the bound of its restriction there (its
+Bernstein coefficients restricted to the entity, Taylor bounds over the
+entity itself for an analytic level set) is within 64 eps of the level set's
+largest magnitude over the cells at its zero set. The same threshold decides
+whether a cell beside the entity touches zero there, so that no zero set is
+both on an entity and in a cell next to it. `result.zero_faces` lists the
+facets in a zero set with one owning cell each, the cell on the negative side
+(else the lowest).
 
 Useful `MeshPart` fields:
 
@@ -167,6 +211,7 @@ print(part.num_cut_cells, part.num_uncut_cells)
 print(part.cut_cells)
 print(part.uncut_cells)
 print(part.backend)
+print(result[phi == 0].entities(2))   # facets it holds whole: indices into result.entities(2)
 ```
 
 `num_uncut_cells` matters for volume selections: `mode="full"` includes those

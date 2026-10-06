@@ -43,7 +43,11 @@ void bisect_triangle(std::span<const T> coeffs, int n, int p, int q, std::vector
 /// a Pk level set, or Taylor models over the parallelepiped of a piece's edges
 /// whose linear part is bounded at the piece's vertices. Either way down to
 /// @p max_depth splits.
+/// @param touch  values within this absolute bound count as touching zero,
+///               beyond the rounding allowance of the bounds (cut passes it for
+///               the cells around a facet, edge or vertex a level set vanishes
+///               on, so that both decisions use one threshold)
 template <std::floating_point T, std::integral I>
-int cell_sign(const CellSource<T, I>& cs, cell::type type, int max_depth);
+int cell_sign(const CellSource<T, I>& cs, cell::type type, int max_depth, T touch = T(0));
 
 } // namespace cutcells::part

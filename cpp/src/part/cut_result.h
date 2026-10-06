@@ -18,6 +18,7 @@
 #include "../cell_types.h"
 #include "../level_set.h"
 #include "../mesh_view.h"
+#include "entities.h"
 
 /// The front end: every cell classified by every level set, mesh parts
 /// selected by expressions, and their quadrature and visualisation by backend.
@@ -27,43 +28,19 @@ namespace cutcells::part
 /// The facets of a cell: its faces in 3D, its edges in 2D, its vertices in 1D.
 inline int num_facets(cell::type type)
 {
-    switch (cell::get_tdim(type))
-    {
-    case 3:
-        return cell::num_faces(type);
-    case 2:
-        return cell::num_edges(type);
-    default:
-        return cell::get_num_vertices(type);
-    }
+    return cell::num_sub_entities(type, cell::get_tdim(type) - 1);
 }
 
-/// The vertices of facet @p f (Basix numbering of the cell).
+/// The vertices of facet @p f (Basix numbering of the cell and of the facet's
+/// vertices).
 inline std::span<const int> facet_vertices(cell::type type, int f)
 {
-    static constexpr std::array<int, 2> interval_vertices = {0, 1};
-    switch (cell::get_tdim(type))
-    {
-    case 3:
-        return cell::face_vertices(type, f);
-    case 2:
-        return std::span<const int>(cell::edges(type)[static_cast<std::size_t>(f)]);
-    default:
-        return std::span<const int>(interval_vertices.data() + f, 1);
-    }
+    return cell::sub_entity_vertices(type, cell::get_tdim(type) - 1, f);
 }
 
 inline cell::type facet_type(cell::type type, int f)
 {
-    switch (cell::get_tdim(type))
-    {
-    case 3:
-        return cell::face_type(type, f);
-    case 2:
-        return cell::type::interval;
-    default:
-        return cell::type::point;
-    }
+    return cell::sub_entity_type(type, cell::get_tdim(type) - 1, f);
 }
 
 /// Options of cut().
@@ -76,7 +53,8 @@ struct ClassifyOptions
 };
 
 /// Every cell classified by every level set as inside (phi < 0), outside
-/// (phi > 0) or cut, and the faces lying in a level set's zero set.
+/// (phi > 0) or cut, and the facets, edges and vertices on which a level set
+/// vanishes.
 ///
 /// A level set made of level sets is replaced by its own: level_sets and
 /// level_set_names hold them, named after it ("body.hole"), and insides keeps
@@ -96,15 +74,24 @@ struct CutResult
     std::vector<cell::domain> domains;
     /// Cells that some level set cuts, ascending.
     std::vector<I> cut_cells;
-    /// Facets (faces in 3D, edges in 2D, vertices of intervals) in the zero set
-    /// of a level set, each once: level set, owning cell, and the facet in that
-    /// cell (Basix numbering). The owner is the cell on the negative side, or
-    /// the lower cell index if neither or both sides are negative.
+    /// The vertices, edges and facets on which a level set vanishes,
+    /// entities[d] those of dimension d < tdim, with all the cells that share
+    /// each, their local numbers and their sides of each level set vanishing
+    /// there.
+    std::array<EntityTable<I>, 3> entities;
+    /// Facets (faces in 3D, edges in 2D, vertices of intervals) in the zero
+    /// set of a level set, from entities[tdim - 1]: each facet once per level
+    /// set in its zero mask, with an owning cell and the facet in that cell
+    /// (Basix numbering). The owner is the cell on the negative side, or the
+    /// lowest sharing cell if none or several are. For codes that take a
+    /// facet's rule from one cell; rules on facets come from the entities
+    /// (entity_rules, part::EntityPolicy).
     std::vector<int> zero_face_level_sets;
     std::vector<I> zero_face_cells;
     std::vector<std::int8_t> zero_face_local;
 
     int n_level_sets() const { return static_cast<int>(level_sets.size()); }
+    int tdim() const { return num_cells > 0 ? cell::get_tdim(mesh->cell_type(I(0))) : 0; }
     int n_zero_faces() const { return static_cast<int>(zero_face_cells.size()); }
     cell::domain domain(int level_set, I cell_id) const
     {
@@ -124,8 +111,8 @@ std::uint64_t cut_mask(const CutResult<T, I>& result, I cell_id)
     return mask;
 }
 
-/// @brief Classify every cell of @p mesh by every level set, and find the faces
-/// lying in their zero sets.
+/// @brief Classify every cell of @p mesh by every level set, and find the
+/// facets, edges and vertices on which they vanish.
 ///
 /// The cells quadrays takes (intervals, triangles, quadrilaterals, tetrahedra,
 /// hexahedra, prisms and pyramids, in a space of their dimension or a higher
@@ -134,6 +121,19 @@ std::uint64_t cut_mask(const CutResult<T, I>& result, I cell_id)
 /// one, over the cell and its halves (cell_sign in classify.h). A cell whose
 /// sign the bounds cannot prove counts as cut, which the backends handle.
 /// Other cells use the signs of their Bernstein coefficients.
+///
+/// A level set vanishes on a facet, edge or vertex if the bound of its
+/// restriction there (the restriction of its Bernstein form, Taylor bounds
+/// over the entity itself, a value at a vertex) is within one threshold:
+/// touch_tolerance (64 eps) times the level set's largest magnitude over the
+/// cells at its zero set (those it cuts or is about 0 at a vertex of). The
+/// same threshold decides touching zero there: a cell sharing such an entity
+/// and found cut is classified again with values within it counted as
+/// touching, so that a level set does not both vanish on an entity and cut a
+/// cell next to it. Each sharing cell's side of a vanishing level set comes
+/// from its domain, or for a cut cell from the level set just inside it, next
+/// to the entity. A vanishing level set counts on the entity (EntityTable::zero)
+/// where it changes sign across it, or on the mesh boundary.
 ///
 /// A level set made of level sets (LevelSetFunction::level_sets and inside)
 /// is replaced by its own level sets, depth first, named after it: "body.a",

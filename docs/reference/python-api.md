@@ -1,8 +1,9 @@
 # Python API overview
 
 The top-level `cutcells` package re-exports the primary C++ bindings and Python
-mesh utilities. `CutResult` and `MeshPart` live in `cutcells.part`, `Condition`
-in `cutcells.conditions` (re-exported as `cutcells.Condition`).
+mesh utilities. `CutResult`, `MeshPart`, `EntityTable`, `EntityRules` and
+`EntityQuadrature` live in `cutcells.part`, `Condition` in
+`cutcells.conditions` (re-exported as `cutcells.Condition`).
 
 ## Mesh construction
 
@@ -85,7 +86,8 @@ The lookup-table keywords raise when given with another backend.
 | `insides` | The level sets made of level sets, by name, with their insides (`{"ring": "ball < 0 and cyl > 0"}`). |
 | `cut_cells` | Cells that some level set cuts, ascending. |
 | `domains` | Per level set and cell: 0 inside, 1 cut, 2 outside; shape `(num_level_sets, num_cells)`. |
-| `zero_faces` | Faces lying in a zero set, each with the cell that owns it. |
+| `entities(dim)` | The entities of dimension `dim` < tdim on which a level set vanishes, an `EntityTable` (below). |
+| `zero_faces` | Facets lying in a zero set, `(level set, owning cell, facet of the cell in Basix numbering)`, shape `(n, 3)`: from `entities(tdim - 1)`, one owner each, the cell on the negative side, else the lowest. |
 | `backend`, `options` | Backend and options of the parts selected from now on (settable). |
 | `result[selection]` | Select a `MeshPart` with a condition (`phi < 0`, `(a > 0) & (b == 0)`) or a string (`"phi < 0"`, `"a > 0 and b = 0"`, `"(a < 0 or b < 0) and c > 0"`). |
 
@@ -98,15 +100,49 @@ The lookup-table keywords raise when given with another backend.
 | `num_uncut_cells` | Number of cells wholly in a volume part. |
 | `cut_cells` | Selected cut cells. |
 | `uncut_cells` | Cells wholly in a volume part. |
-| `zero_faces` | Faces lying in a zero set that belong to the part. |
+| `entities(dim)` | The entities of dimension `dim` the part holds whole: indices into `result.entities(dim)`. |
+| `zero_faces` | Indices into `result.zero_faces`: the facets the part holds. |
 | `on(*names)` | The faces of a surface on the level sets named, such as `result[ring == 0].on("cyl")`: full or short names, or a level set made of level sets for all its faces. |
 | `backend`, `options` | The part's backend and options. |
-| `quadrature(order=3, mode="full", backend=None, options=None)` | Quadrature rules with positive weights; `order` is the polynomial degree integrated exactly on flat pieces (1 to 10). |
+| `quadrature(order=3, mode="full", backend=None, options=None, entities="split")` | Quadrature rules with positive weights, one per cell; `order` is the polynomial degree integrated exactly on flat pieces (1 to 10). `entities`: how the cells sharing a facet, edge or vertex take its rule: `"split"` (1/n each), `"negative"`, `"positive"` (the cells on that side), `"owner"` (the lowest cell) or `"exclude"` (none). |
+| `entity_quadrature(order=3, backend=None, options=None)` | The rules on the facets, edges and vertices the part holds, once per entity: an `EntityQuadrature`. |
 | `visualization_mesh(mode="full", backend=None, degree=3, options=None)` | `QuadraysLeafMesh` of Lagrange cells (quadrays) or `CutMesh` of straight cells (lookup tables). |
 | `write_vtu(filename, mode="full", backend=None, degree=3, options=None)` | Write the visualisation mesh to a `.vtu` file. |
 
 `mode` is `"full"` (cut cells plus whole cells) or `"cut_only"`. `backend=None`
 uses the part's backend.
+
+`EntityTable` (`result.entities(dim)`), CSR arrays over entities and their
+sharing cells:
+
+| Member | Meaning |
+| --- | --- |
+| `dim`, `num_entities` | Dimension and number of the entities. |
+| `types` | Per entity, its `CellType` as an int (point, interval, triangle, quadrilateral). |
+| `nodes`, `node_offsets` | The entities' mesh nodes in chart order (sorted; a quadrilateral's lowest node, its lower and higher neighbours, the opposite node). |
+| `cells`, `cell_offsets` | The cells sharing each entity, ascending. |
+| `local_index` | The entity's number in each sharing cell (Basix numbering, `basix.topology`). |
+| `vanishing` | Per entity: bit `l`, level set `l` vanishes on it. |
+| `zero` | Per entity: the vanishing level sets that change sign across it (or all, on the mesh boundary). |
+| `negative`, `positive` | Per sharing cell: bit `l`, the cell lies where the vanishing level set `l` is negative, positive. |
+| `boundary` | Per entity: 1 on the mesh boundary. |
+
+`EntityQuadrature` (`part.entity_quadrature(order)`): `facets`, `ridges`
+(codimension 2) and `vertices` (3D; `None` in 2D), each an `EntityRules`;
+`on[dim]` gives those of dimension `dim`. On a mesh of intervals the facets
+are the vertices.
+
+`EntityRules`, one rule per entity, CSR arrays:
+
+| Member | Meaning |
+| --- | --- |
+| `tdim`, `entity_dim`, `num_rules` | Dimensions of the cells and of the entities; number of rules. |
+| `entity_types`, `entity_nodes`, `node_offsets` | Per rule, the entity's `CellType` and its nodes in chart order. |
+| `zero` | Per rule: bit `l`, the points lie in level set `l`'s zero set. |
+| `points`, `weights`, `offsets` | Points in the entity's reference cell, shape `(n, entity_dim)`; physical weights (1 for a point). |
+| `cells`, `cell_offsets`, `local_index` | Per rule, the cells sharing the entity and its number in each (Basix). |
+| `negative`, `positive` | Per sharing cell: its sides of the level sets vanishing on the entity. |
+| `cell_points`, `cell_point_offsets` | Per sharing cell, the rule's points in its reference coordinates, shape `(m, tdim)`. |
 
 ## Backend options
 

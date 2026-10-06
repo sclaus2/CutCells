@@ -84,9 +84,9 @@ template <std::floating_point T>
 void append_leaves(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part, int degree,
                    const Options& opt, std::int32_t parent_cell, LeafMesh<T>& mesh, Stats& stats);
 
-/// @brief A whole cell or a facet of one as a linear VTK cell (point,
-/// interval, triangle, quadrilateral, tetrahedron, hexahedron, prism or
-/// pyramid), appended to @p mesh.
+/// @brief A whole cell, a facet, an edge or a vertex of one as a linear VTK
+/// cell (point, interval, triangle, quadrilateral, tetrahedron, hexahedron,
+/// prism or pyramid), appended to @p mesh.
 ///
 /// @param vertex_coords  vertices in Basix order, flat, gdim per vertex
 template <std::floating_point T>

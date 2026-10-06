@@ -304,4 +304,80 @@ inline std::span<const int> face_vertices(type cell_type, int face_id)
     }
 }
 
+//-----------------------------------------------------------------------------
+// Sub-entities in Basix numbering
+//-----------------------------------------------------------------------------
+
+/// The edges and faces of prisms and pyramids as Basix numbers them
+/// (basix.topology), which DOLFINx and CutFEMx use. The tables above number
+/// them differently; the lookup tables keep those.
+inline constexpr std::array<std::array<int, 2>, 9> basix_prism_edges = {{
+    {0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 4}, {2, 5}, {3, 4}, {3, 5}, {4, 5}
+}};
+inline constexpr std::array<std::array<int, 4>, 5> basix_prism_faces = {{
+    {0, 1, 2, -1}, {0, 1, 3, 4}, {0, 2, 3, 5}, {1, 2, 4, 5}, {3, 4, 5, -1}
+}};
+inline constexpr std::array<int, 5> basix_prism_face_sizes = {3, 4, 4, 4, 3};
+inline constexpr std::array<std::array<int, 2>, 8> basix_pyramid_edges = {{
+    {0, 1}, {0, 2}, {0, 4}, {1, 3}, {1, 4}, {2, 3}, {2, 4}, {3, 4}
+}};
+inline constexpr std::array<std::array<int, 4>, 5> basix_pyramid_faces = {{
+    {0, 1, 2, 3}, {0, 1, 4, -1}, {0, 2, 4, -1}, {1, 3, 4, -1}, {2, 3, 4, -1}
+}};
+inline constexpr std::array<int, 5> basix_pyramid_face_sizes = {4, 3, 3, 3, 3};
+
+/// The number of sub-entities of dimension @p dim of a cell (vertices for 0,
+/// the cell itself for its own dimension).
+inline int num_sub_entities(type cell_type, int dim)
+{
+    const int tdim = get_tdim(cell_type);
+    if (dim < 0 || dim > tdim)
+        throw std::invalid_argument("num_sub_entities: dimension out of range");
+    if (dim == 0)
+        return get_num_vertices(cell_type);
+    if (dim == tdim)
+        return 1;
+    return dim == 1 ? num_edges(cell_type) : num_faces(cell_type);
+}
+
+/// The vertices of sub-entity @p i of dimension @p dim of a cell, in Basix
+/// numbering and in Basix's vertex order of the sub-entity (basix.topology).
+inline std::span<const int> sub_entity_vertices(type cell_type, int dim, int i)
+{
+    static constexpr std::array<int, 8> vertices = {0, 1, 2, 3, 4, 5, 6, 7};
+    const std::size_t e = static_cast<std::size_t>(i);
+    if (i < 0 || i >= num_sub_entities(cell_type, dim))
+        throw std::invalid_argument("sub_entity_vertices: sub-entity out of range");
+    if (dim == 0)
+        return std::span<const int>(vertices.data() + i, 1);
+    if (dim == get_tdim(cell_type))
+        return std::span<const int>(vertices.data(), static_cast<std::size_t>(get_num_vertices(cell_type)));
+    if (dim == 1)
+    {
+        if (cell_type == type::prism)
+            return std::span<const int>(basix_prism_edges[e]);
+        if (cell_type == type::pyramid)
+            return std::span<const int>(basix_pyramid_edges[e]);
+        return std::span<const int>(edges(cell_type)[e]);
+    }
+    if (cell_type == type::prism)
+        return std::span<const int>(basix_prism_faces[e].data(), static_cast<std::size_t>(basix_prism_face_sizes[e]));
+    if (cell_type == type::pyramid)
+        return std::span<const int>(basix_pyramid_faces[e].data(),
+                                    static_cast<std::size_t>(basix_pyramid_face_sizes[e]));
+    return face_vertices(cell_type, i);
+}
+
+/// The type of sub-entity @p i of dimension @p dim of a cell.
+inline type sub_entity_type(type cell_type, int dim, int i)
+{
+    if (dim == 0)
+        return type::point;
+    if (dim == 1)
+        return type::interval;
+    if (dim == get_tdim(cell_type))
+        return cell_type;
+    return sub_entity_vertices(cell_type, dim, i).size() == 3 ? type::triangle : type::quadrilateral;
+}
+
 } // namespace cutcells::cell
