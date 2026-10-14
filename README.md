@@ -239,25 +239,6 @@ straight = result[phi < 0].quadrature(order=4, backend="lut")
 same = result["phi < 0"]                            # a selection string does the same
 ```
 
-### Level sets made of level sets
-
-A shape with sharp edges, such as a ball outside a cylinder, is given as the
-smooth level sets it is made of and its inside, the selection of them where
-it is negative. Selections of it expand into selections of them, and `.on`
-picks a face:
-
-```python
-ball = cutcells.analytic_sphere(c, 0.8, signed_distance=False, name="ball")
-cyl = cutcells.create_level_set(mesh, cylinder, degree=2, name="cyl")
-ring = cutcells.LevelSetFunction(level_sets=[ball, cyl],
-                                 inside=(ball < 0) & (cyl > 0), name="ring")
-
-result = cutcells.cut(mesh, [ring, fluid])
-solid = result[ring < 0]                    # ring.ball < 0 and ring.cyl > 0
-around = result[(ring > 0) & (fluid < 0)]
-hole = result[ring == 0].on("cyl")          # the face on the cylinder
-```
-
 ### Algoim (benchmarks only)
 
 Algoim is no longer part of the library or the Python package;
