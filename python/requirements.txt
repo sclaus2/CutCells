@@ -1,0 +1,14 @@
+# surely
+numpy
+nanobind
+
+scikit_build_core
+Sphinx
+sphinx-autoapi
+sphinx-autodoc-typehints
+sphinx-copybutton
+sphinx_design
+sphinx_mdinclude
+
+# maybe
+typing_extensions
