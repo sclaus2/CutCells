@@ -15,7 +15,7 @@ try:
     with (project_root / "python" / "pyproject.toml").open("rb") as f:
         release = tomllib.load(f)["project"]["version"]
 except Exception:
-    release = "0.4.0"
+    release = "0.5.0"
 
 version = ".".join(release.split(".")[:2])
 
