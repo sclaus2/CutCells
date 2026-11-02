@@ -11,7 +11,10 @@ mesh utilities. `CutResult`, `MeshPart`, `EntityTable`, `EntityRules` and
 | --- | --- |
 | `MeshView` | Background mesh view from coordinates, connectivity, offsets, cell types, and `tdim`. |
 | `mesh_from_pyvista(grid, tdim=None)` | Convert a PyVista `UnstructuredGrid` to `MeshView`. |
-| `structured_triangle_mesh_view(...)` | Pure NumPy structured triangular mesh helper. |
+| `structured_triangle_mesh_view(x0, y0, x1, y1, nx, ny)` | Pure NumPy structured triangular `MeshView`; `nx`, `ny` grid points. |
+| `structured_quadrilateral_mesh_view(x0, y0, x1, y1, nx, ny)` | Pure NumPy structured quadrilateral `MeshView`. |
+| `structured_tetrahedron_mesh_view(x0, y0, z0, x1, y1, z1, nx, ny, nz)` | Pure NumPy conforming tetrahedral `MeshView`, six tetrahedra per grid cube. |
+| `structured_hexahedron_mesh_view(x0, y0, z0, x1, y1, z1, nx, ny, nz)` | Pure NumPy structured hexahedral `MeshView`. |
 | `rectangle_triangle_mesh(...)` | PyVista triangular rectangle mesh helper. |
 | `rectangle_quad_mesh(...)` | PyVista quadrilateral rectangle mesh helper. |
 | `box_tetrahedron_mesh(...)` | PyVista tetrahedral box mesh helper. |
@@ -178,6 +181,7 @@ are the vertices.
 
 | Name | Purpose |
 | --- | --- |
+| `to_pyvista(mesh)` | Convert a `MeshView`, a `CutMesh` or a `QuadraysLeafMesh` (curved Lagrange cells, with the cell array `parent`) to a PyVista `UnstructuredGrid`. |
 | `cutmesh_to_pyvista(cut_mesh)` | Convert a CutCells `CutMesh` to PyVista. |
 | `QuadraysLeafMesh` | Lagrange cells of the quadrays decomposition: `points`, `connectivity`, `offsets`, `vtk_types`, `parent`, `degree`. |
 | `write_vtk(filename, vertex_coordinates, connectivity, offsets, element_types, gdim)` | Low-level VTK/VTU writer for flat arrays. |

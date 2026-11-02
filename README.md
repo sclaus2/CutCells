@@ -1,6 +1,7 @@
 # CutCells
 
 [![CutCells CI](https://github.com/sclaus2/cutcells/actions/workflows/python-app.yml/badge.svg)](https://github.com/sclaus2/cutcells/actions/workflows/python-app.yml)
+[![Docs](https://github.com/sclaus2/CutCells/actions/workflows/docs.yml/badge.svg)](https://sclaus2.github.io/CutCells/)
 
 
 **CutCells** is a lightweight **C++20 geometry kernel with Python bindings** to compute **cut-cell decompositions** of standard mesh elements by an **implicit surface / level set** `φ(x)`.
@@ -188,15 +189,18 @@ cmake --build build/cut_triangle
 from the repository root. If CutCells was installed into a custom prefix, pass
 that prefix through `CMAKE_PREFIX_PATH`.
 
-The Python demos are located in `python/demo`.
+The Python demos are located in `python/demo`. The `demo_*.py` scripts at its
+top level are the chapters of the tutorial book in the documentation; they
+need NumPy, and PyVista or matplotlib for their views.
 
 ## Documentation
 
-The initial Sphinx/MyST documentation source is in `docs/`. It covers
-installation, a Python quickstart, mesh views, level sets, selection
-expressions, quadrature/output, and a compact API overview.
+The documentation is online at <https://sclaus2.github.io/CutCells/>. It
+covers installation, a Python quickstart, mesh views, level sets, selection
+expressions, quadrature and output, a tutorial book of six demos, and a
+compact API overview. Its source is in `docs/`.
 
-Build it with:
+Build it locally with:
 
 ```console
 cd docs

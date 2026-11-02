@@ -14,13 +14,25 @@ finite element workflows.
 
 getting-started/index
 user-guide/index
+tutorials/index
 reference/index
+```
+
+```{raw} html
+<figure class="tutorial-figure">
+  <img class="tutorial-image" src="_static/tutorials/gyroid-scene.png" alt="A gyroid cut out of a hexahedral mesh with CutCells">
+  <figcaption>A gyroid cut out of a hexahedral mesh: the curved pieces of the cut cells (left) and a sheet selected between two level sets (right). See the <a href="tutorials/gyroid.html">Gyroid tutorial</a>.</figcaption>
+</figure>
+```
+
+```bash
+pip install cutcells
 ```
 
 ## Getting started
 
-- [Installation](getting-started/installation.md): build the C++ core and
-  Python package in one environment.
+- [Installation](getting-started/installation.md): install the wheel from PyPI,
+  or build the C++ core and Python package in one environment.
 - [Quickstart](getting-started/quickstart.md): cut a structured triangular mesh
   with a circular level set and integrate the selected part.
 
@@ -39,6 +51,12 @@ reference/index
   rules, visualisation meshes, and VTU files.
 - [Algorithms and scope](user-guide/algorithms.md): supported cell types,
   classification, and the two backends, quadrays and the lookup tables.
+
+## Tutorials
+
+- [Tutorial book](tutorials/index.md): six chapters, each following a runnable
+  demo in `python/demo`, from a disk in a square to a gyroid sheet, with exact
+  values to check against and PyVista views.
 
 ## Reference
 

@@ -49,6 +49,7 @@ exclude_patterns = [
     "Thumbs.db",
     ".DS_Store",
     "__pycache__",
+    "tutorials/*.py",
     "quadrays",  # developer notes and plans, not part of the site
 ]
 
@@ -73,9 +74,14 @@ html_theme_options = {
     "primary_sidebar_end": [],
     "secondary_sidebar_items": [],
     "show_nav_level": 2,
+    "show_toc_level": 2,
+    "navigation_with_keys": True,
     "navigation_depth": 4,
     "collapse_navigation": False,
     "sidebar_includehidden": True,
+    "footer_start": ["copyright"],
+    "footer_center": ["sphinx-version"],
+    "footer_end": [],
     "show_prev_next": False,
     "search_bar_text": "Search the docs...",
     "icon_links": [
@@ -91,6 +97,19 @@ html_theme_options = {
 html_sidebars = {
     "**": ["sidebar-collapse.html", "global-sidebar.html"],
 }
+
+html_context = {
+    "github_user": "sclaus2",
+    "github_repo": "CutCells",
+    "github_version": "main",
+    "doc_path": "docs",
+}
+
+html_static_path = ["_static"]
+html_css_files = ["custom_pydata.css"]
+
+copybutton_prompt_text = r">>> |\.\.\. |\$ "
+copybutton_prompt_is_regexp = True
 
 html_title = f"{project} {version}"
 htmlhelp_basename = "CutCellsdoc"

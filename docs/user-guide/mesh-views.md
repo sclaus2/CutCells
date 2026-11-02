@@ -85,11 +85,19 @@ area = rules.weights.sum()                      # the disk on the plane
 
 ## Structured mesh helpers
 
-CutCells provides lightweight helpers for common examples:
+CutCells provides lightweight helpers for common examples. They build a
+`MeshView` on a rectangle or a box with NumPy alone; the arguments are the
+corners and the numbers of grid points per direction:
 
 ```python
-mesh = cutcells.structured_triangle_mesh_view(-1, -1, 1, 1, 41, 41)
+tri = cutcells.structured_triangle_mesh_view(-1, -1, 1, 1, 41, 41)
+quad = cutcells.structured_quadrilateral_mesh_view(-1, -1, 1, 1, 41, 41)
+tet = cutcells.structured_tetrahedron_mesh_view(-1, -1, -1, 1, 1, 1, 13, 13, 13)
+hexes = cutcells.structured_hexahedron_mesh_view(-1, -1, -1, 1, 1, 1, 13, 13, 13)
 ```
+
+The tetrahedral mesh splits every grid cube into six tetrahedra around its
+diagonal, so it is conforming.
 
 The following helpers return PyVista grids and require `pyvista`:
 
@@ -107,6 +115,18 @@ mesh = cutcells.mesh_from_pyvista(tet_grid, tdim=3)
 
 If `tdim` is not supplied, `mesh_from_pyvista` tries to infer it from the first
 cell type.
+
+The other way, `cutcells.to_pyvista` converts a `MeshView`, or the
+visualisation mesh of a selected part, to a PyVista grid:
+
+```python
+grid = cutcells.to_pyvista(mesh)
+pieces = cutcells.to_pyvista(part.visualization_mesh(mode="cut_only", degree=3))
+surface = pieces.extract_surface(nonlinear_subdivision=3, algorithm="dataset_surface")
+```
+
+The pieces of quadrays are Lagrange cells; `nonlinear_subdivision` draws them
+curved.
 
 ## Inspecting a mesh
 
