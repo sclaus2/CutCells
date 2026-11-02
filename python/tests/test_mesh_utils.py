@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 import cutcells
 
@@ -29,3 +30,49 @@ def test_mesh_from_pyvista_infers_tdim():
     assert mesh.tdim == 2
     assert mesh.gdim == 3
     assert mesh.num_cells() == grid.n_cells
+
+
+@pytest.mark.parametrize(
+    "make, num_cells, volume",
+    [
+        (lambda: cutcells.structured_quadrilateral_mesh_view(-1, -1, 1, 1, 5, 4), 12, 4.0),
+        (lambda: cutcells.structured_tetrahedron_mesh_view(0, 0, 0, 1, 2, 1, 3, 4, 2), 36, 2.0),
+        (lambda: cutcells.structured_hexahedron_mesh_view(0, 0, 0, 1, 2, 1, 3, 4, 2), 6, 2.0),
+    ],
+)
+def test_structured_mesh_views(make, num_cells, volume):
+    mesh = make()
+    assert mesh.num_cells() == num_cells
+    assert mesh.gdim == mesh.tdim
+    # A plane away from the box leaves every cell inside: the box's volume.
+    plane = cutcells.create_level_set(mesh, lambda X: X[0] - 5.0, degree=1, name="plane")
+    rules = cutcells.cut(mesh, plane)[plane < 0].quadrature(order=1)
+    assert rules.weights.sum() == pytest.approx(volume)
+    assert (rules.weights > 0).all()
+
+
+def test_tetrahedra_are_conforming():
+    mesh = cutcells.structured_tetrahedron_mesh_view(0, 0, 0, 1, 1, 1, 3, 3, 3)
+    tets = mesh.connectivity.reshape(-1, 4)
+    x = mesh.coordinates[tets]
+    det = np.linalg.det(x[:, 1:] - x[:, :1])
+    assert (det > 0).all()
+    # Every interior face is shared by exactly two tetrahedra.
+    faces = np.sort(tets[:, [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]]].reshape(-1, 3), axis=1)
+    _, counts = np.unique(faces, axis=0, return_counts=True)
+    assert set(counts.tolist()) <= {1, 2}
+    boundary = (counts == 1).sum()
+    assert boundary == 6 * 2 * 2 * 2  # two triangles per boundary grid square
+
+
+def test_to_pyvista():
+    pytest.importorskip("pyvista")
+    mesh = cutcells.structured_triangle_mesh_view(-1, -1, 1, 1, 9, 9)
+    ball = cutcells.analytic_sphere([0.0, 0.0, 0.0], 0.6, name="ball")
+    result = cutcells.cut(mesh, ball)
+    grid = cutcells.to_pyvista(mesh)
+    assert grid.n_cells == mesh.num_cells()
+    assert int(grid.celltypes[0]) == 5
+    curve = cutcells.to_pyvista(result[ball == 0].visualization_mesh(mode="cut_only", degree=2))
+    assert curve.n_cells > 0
+    assert "parent" in curve.cell_data
