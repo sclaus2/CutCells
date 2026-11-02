@@ -13,6 +13,23 @@ permissions:
   contents: read
 
 jobs:
+  bundled:
+    name: Build the Python package with the C++ core bundled (the PyPI build)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install CutCells with its C++ core
+      run: |
+        python -m pip install --upgrade pip
+        pip install .[test]
+    - name: Test with pytest
+      run: pytest python/tests
+
   build:
     name: Build using C++ and Python parts separately and run tests
     runs-on: ubuntu-latest

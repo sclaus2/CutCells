@@ -16,6 +16,23 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Keep this optional and quiet so builds without OpenMP still proceed.
 find_package(OpenMP QUIET COMPONENTS CXX)
 
+# Wheels and source distributions (the pyproject.toml in the repository root)
+# build the C++ core into the extension module. The default is to use an
+# installed CutCells CMake package, as downstream packages do.
+option(CUTCELLS_PYTHON_BUNDLE_CORE
+  "Build the C++ core from ../cpp into the extension instead of using an installed CutCells."
+  OFF)
+
+if(CUTCELLS_PYTHON_BUNDLE_CORE AND NOT TARGET CUTCELLS::cutcells)
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+  # EXCLUDE_FROM_ALL keeps the core's install rules (headers, CMake package)
+  # out of the wheel.
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../cpp" cutcells_core EXCLUDE_FROM_ALL)
+  add_library(CUTCELLS::cutcells ALIAS cutcells)
+endif()
+
 if(NOT TARGET CUTCELLS::cutcells)
   find_package(CutCells 0.4.0 REQUIRED CONFIG)
 endif()
@@ -45,23 +62,28 @@ if(HAVE_PEDANTIC)
   target_compile_options(_cutcellscpp PRIVATE -Wall -Wextra -Wno-comment)
 endif()
 
-set(_build_rpath "$<TARGET_FILE_DIR:CUTCELLS::cutcells>")
-if(APPLE)
-  set(_install_rpath "@loader_path/../${CMAKE_INSTALL_LIBDIR}")
-elseif(UNIX)
-  set(_install_rpath "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+if(CUTCELLS_PYTHON_BUNDLE_CORE)
+  # The core is linked statically into the module: nothing to find at run time.
+  install(TARGETS _cutcellscpp LIBRARY DESTINATION cutcells)
 else()
-  set(_install_rpath "")
+  set(_build_rpath "$<TARGET_FILE_DIR:CUTCELLS::cutcells>")
+  if(APPLE)
+    set(_install_rpath "@loader_path/../${CMAKE_INSTALL_LIBDIR}")
+  elseif(UNIX)
+    set(_install_rpath "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+  else()
+    set(_install_rpath "")
+  endif()
+
+  set_target_properties(_cutcellscpp PROPERTIES
+    BUILD_RPATH "${_build_rpath}"
+    INSTALL_RPATH "${_install_rpath}"
+    BUILD_WITH_INSTALL_RPATH FALSE
+    INSTALL_RPATH_USE_LINK_PATH FALSE
+  )
+
+  install(TARGETS _cutcellscpp LIBRARY DESTINATION cutcells)
+  install(IMPORTED_RUNTIME_ARTIFACTS CUTCELLS::cutcells
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
-
-set_target_properties(_cutcellscpp PROPERTIES
-  BUILD_RPATH "${_build_rpath}"
-  INSTALL_RPATH "${_install_rpath}"
-  BUILD_WITH_INSTALL_RPATH FALSE
-  INSTALL_RPATH_USE_LINK_PATH FALSE
-)
-
-install(TARGETS _cutcellscpp LIBRARY DESTINATION cutcells)
-install(IMPORTED_RUNTIME_ARTIFACTS CUTCELLS::cutcells
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+
+# Build trees and distributions
+/build*/
+/cpp/build*/
+/python/build*/
+/dist/
+*.egg-info/
