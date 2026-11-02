@@ -4,6 +4,23 @@ CutCells can be used as a standalone C++ library, a Python package, or a
 geometry backend for CutFEMx. Downstream packages expect the C++ CMake package
 and the Python extension to come from the same environment.
 
+## Install from PyPI
+
+To use CutCells from Python, install the wheel. It contains the C++ core and
+needs no other installation:
+
+```bash
+pip install cutcells
+```
+
+Wheels are published for Linux and macOS (Python 3.10 and newer). On other
+platforms pip builds the source distribution, which needs CMake and a C++20
+compiler.
+
+The rest of this page is for developing CutCells and for downstream packages
+such as CutFEMx, which build the Python extension against an installed C++
+package so that both come from the same environment.
+
 ## Create an environment
 
 For a standalone CutCells development environment:

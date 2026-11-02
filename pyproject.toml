@@ -1,0 +1,101 @@
+# Release packaging for PyPI: wheels and the source distribution build the C++
+# core from cpp/ into the extension module, so `pip install cutcells` needs no
+# separately installed CutCells.
+#
+# Downstream packages that build the Python extension against an installed
+# CutCells CMake package (CutFEMx, conda-forge) use python/pyproject.toml.
+# Keep the version and the dependencies of the two files in step.
+
+[build-system]
+requires = ["scikit-build-core>=0.11", "nanobind>=2.0.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "cutcells"
+version = "0.4.0"
+description = "Cut-cell geometry and quadrature for level set meshes (CutFEM, unfitted FEM)"
+readme = "python/README.md"
+requires-python = ">=3.10"
+license = "MIT AND BSD-3-Clause"
+license-files = [
+    "LICENSE",
+    "third_party/THIRD_PARTY_NOTICES.md",
+    "third_party/VTK-Copyright.txt",
+    "third_party/Basix-LICENSE.txt",
+]
+authors = [{ name = "Susanne Claus", email = "susanne.claus@onera.fr" }]
+keywords = ["cut cells", "level set", "CutFEM", "unfitted finite elements", "quadrature"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = ["numpy>=1.21"]
+
+[project.urls]
+Homepage = "https://github.com/sclaus2/CutCells"
+Source = "https://github.com/sclaus2/CutCells"
+Issues = "https://github.com/sclaus2/CutCells/issues"
+
+[project.optional-dependencies]
+docs = ["markdown"]
+lint = ["ruff"]
+optional = ["pyvista"]
+test = ["pytest", "numpy"]
+ci = ["mypy", "pytest-xdist", "cutcells[test]"]
+
+[tool.scikit-build]
+minimum-version = "0.11"
+cmake.version = ">=3.21"
+cmake.source-dir = "python"
+cmake.build-type = "Release"
+wheel.packages = ["python/cutcells"]
+wheel.exclude = ["**/wrapper.cpp", "**/__pycache__/**"]
+
+[tool.scikit-build.cmake.define]
+CUTCELLS_PYTHON_BUNDLE_CORE = "ON"
+
+[tool.scikit-build.sdist]
+# Only what the build needs, plus the licences and the Python tests.
+exclude = ["*"]
+include = [
+    "/pyproject.toml",
+    "/LICENSE",
+    "/python/README.md",
+    "/python/CMakeLists.txt",
+    "/python/cutcells/*.py",
+    "/python/cutcells/wrapper.cpp",
+    "/python/tests/*.py",
+    "/cpp/CMakeLists.txt",
+    "/cpp/CutCellsConfig.cmake.in",
+    "/cpp/src/",
+    "/third_party/THIRD_PARTY_NOTICES.md",
+    "/third_party/VTK-Copyright.txt",
+    "/third_party/Basix-LICENSE.txt",
+]
+
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = "*-musllinux_* *-win32 *_i686"
+test-requires = ["pytest", "numpy"]
+test-command = "python -m pytest {project}/python/tests -q"
+
+[tool.cibuildwheel.macos]
+# Needed for the C++20 library features the core uses. Apple's compiler has no
+# OpenMP, so the macOS wheels are built without it instead of picking up a
+# libomp from the build machine.
+environment = { MACOSX_DEPLOYMENT_TARGET = "13.0", CMAKE_ARGS = "-DCMAKE_DISABLE_FIND_PACKAGE_OpenMP=ON" }
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
