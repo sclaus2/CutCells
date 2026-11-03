@@ -43,7 +43,7 @@ def cylinder(X: np.ndarray) -> np.ndarray:
 
 
 def build(n: int = 13, degree: int = 3, order: int = 4) -> dict:
-    mesh = cutcells.structured_tetrahedron_mesh_view(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, n, n, n)
+    mesh = cutcells.box_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, n, n, n, cell_type="tetrahedron")
 
     ball = cutcells.analytic_sphere([0.0, 0.0, 0.0], BALL_RADIUS, name="ball")
     cyl = cutcells.create_level_set(mesh, cylinder, degree=degree, name="cyl")

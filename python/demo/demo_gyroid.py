@@ -46,7 +46,7 @@ def gyroid(X: np.ndarray) -> np.ndarray:
 
 
 def build(n: int = 17, degree: int = 3, order: int = 4) -> dict:
-    mesh = cutcells.structured_hexahedron_mesh_view(0.0, 0.0, 0.0, LENGTH, LENGTH, LENGTH, n, n, n)
+    mesh = cutcells.box_mesh(0.0, 0.0, 0.0, LENGTH, LENGTH, LENGTH, n, n, n, cell_type="hexahedron")
     g = cutcells.create_level_set(mesh, gyroid, degree=degree, name="g")
     result = cutcells.cut(mesh, g)
 

@@ -37,7 +37,7 @@ def sphere(X: np.ndarray) -> np.ndarray:
 
 
 def build(n: int = 13, order: int = 4) -> dict:
-    mesh = cutcells.structured_tetrahedron_mesh_view(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, n, n, n)
+    mesh = cutcells.box_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, n, n, n, cell_type="tetrahedron")
 
     exact = cutcells.analytic_sphere(CENTER, RADIUS, name="ball")
     interpolated = cutcells.create_level_set(mesh, sphere, degree=2, name="ball")

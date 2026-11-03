@@ -47,14 +47,15 @@ $$
 ## Background Mesh
 
 A `MeshView` holds the background mesh as flat arrays: coordinates,
-connectivity, offsets and cell types. `structured_triangle_mesh_view` builds
-one on a rectangle with NumPy, splitting each grid square into two triangles.
+connectivity, offsets and cell types. `rectangle_mesh` builds one on a
+rectangle with NumPy, splitting each grid square into two triangles; the
+`MeshView` holds the NumPy arrays it built.
 
 ```python
 import numpy as np
 import cutcells
 
-mesh = cutcells.structured_triangle_mesh_view(-1.0, -1.0, 1.0, 1.0, n, n)
+mesh = cutcells.rectangle_mesh(-1.0, -1.0, 1.0, 1.0, n, n, cell_type="triangle")
 ```
 
 `n` is the number of grid points per side; the demo's default `n = 25` gives

@@ -297,6 +297,8 @@ from .mesh_utils import (
     rectangle_quad_mesh,
     safe_part_name,
     to_pyvista,
+    rectangle_mesh,
+    box_mesh,
     structured_triangle_mesh_view,
     structured_quadrilateral_mesh_view,
     structured_tetrahedron_mesh_view,

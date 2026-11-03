@@ -26,12 +26,12 @@ exchangers and scaffolds.
 
 ## Hexahedral Mesh
 
-`structured_hexahedron_mesh_view` builds a box of hexahedra in VTK node order;
+`box_mesh(..., cell_type="hexahedron")` builds a box of hexahedra in VTK node order;
 `n = 17` points per side give 4096 cells. The level set is a P3 interpolant
 of $g$:
 
 ```python
-mesh = cutcells.structured_hexahedron_mesh_view(0.0, 0.0, 0.0, LENGTH, LENGTH, LENGTH, n, n, n)
+mesh = cutcells.box_mesh(0.0, 0.0, 0.0, LENGTH, LENGTH, LENGTH, n, n, n, cell_type="hexahedron")
 g = cutcells.create_level_set(mesh, gyroid, degree=3, name="g")
 result = cutcells.cut(mesh, g)
 

@@ -22,7 +22,7 @@ Cut a triangle mesh by a circle and integrate the inside and the interface:
 import numpy as np
 import cutcells
 
-mesh = cutcells.structured_triangle_mesh_view(-1.0, -1.0, 1.0, 1.0, 41, 41)
+mesh = cutcells.rectangle_mesh(-1.0, -1.0, 1.0, 1.0, 41, 41, cell_type="triangle")
 
 def phi(X):
     # X has shape (gdim, num_points)

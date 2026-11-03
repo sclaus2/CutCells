@@ -38,7 +38,7 @@ The ball is analytic and the plane a P1 level set; `cut` takes them as a
 list:
 
 ```python
-mesh = cutcells.structured_tetrahedron_mesh_view(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, n, n, n)
+mesh = cutcells.box_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, n, n, n, cell_type="tetrahedron")
 ball = cutcells.analytic_sphere([0.0, 0.0, 0.0], RADIUS, name="ball")
 plane = cutcells.create_level_set(mesh, lambda X: X[2] - HEIGHT, degree=1, name="plane")
 result = cutcells.cut(mesh, [ball, plane])

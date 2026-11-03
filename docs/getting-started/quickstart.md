@@ -7,10 +7,11 @@ integrates the selected region.
 import numpy as np
 import cutcells
 
-mesh = cutcells.structured_triangle_mesh_view(
+mesh = cutcells.rectangle_mesh(
     -1.0, -1.0,
      1.0,  1.0,
     41, 41,
+    cell_type="triangle",
 )
 
 def phi(X):

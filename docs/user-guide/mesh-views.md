@@ -57,6 +57,22 @@ Use C-contiguous arrays with numeric dtypes (`float64` for coordinates and
 `int32` for connectivity metadata) unless you have a reason to use the
 `float32` bindings.
 
+## Where the data lives
+
+A `MeshView` does not copy the mesh. It points into the NumPy arrays it was
+given and keeps a reference to them, so they stay alive as long as the view
+does. Its `coordinates`, `connectivity` and `offsets` properties are those
+same arrays, and editing an array in place changes the mesh the view
+describes. Arrays of another dtype or layout, such as `int64` connectivity,
+are converted once when the view is made; the view then holds the converted
+copy. The view converts the VTK cell types into its own small array.
+
+This makes a `MeshView` cheap to put over a mesh that already lives
+elsewhere, such as the geometry of a DOLFINx mesh. The arrays of a mesh built
+with `rectangle_mesh` or `box_mesh` are held by the view alone, so there the
+view is in effect the mesh. `mesh_from_pyvista` may share the grid's point
+array.
+
 ## Facets and surface meshes
 
 The coordinates may have more components than the cells' dimension: the
@@ -90,10 +106,10 @@ CutCells provides lightweight helpers for common examples. They build a
 corners and the numbers of grid points per direction:
 
 ```python
-tri = cutcells.structured_triangle_mesh_view(-1, -1, 1, 1, 41, 41)
-quad = cutcells.structured_quadrilateral_mesh_view(-1, -1, 1, 1, 41, 41)
-tet = cutcells.structured_tetrahedron_mesh_view(-1, -1, -1, 1, 1, 1, 13, 13, 13)
-hexes = cutcells.structured_hexahedron_mesh_view(-1, -1, -1, 1, 1, 1, 13, 13, 13)
+tri = cutcells.rectangle_mesh(-1, -1, 1, 1, 41, 41, cell_type="triangle")
+quad = cutcells.rectangle_mesh(-1, -1, 1, 1, 41, 41, cell_type="quadrilateral")
+tet = cutcells.box_mesh(-1, -1, -1, 1, 1, 1, 13, 13, 13, cell_type="tetrahedron")
+hexes = cutcells.box_mesh(-1, -1, -1, 1, 1, 1, 13, 13, 13, cell_type="hexahedron")
 ```
 
 The tetrahedral mesh splits every grid cube into six tetrahedra around its

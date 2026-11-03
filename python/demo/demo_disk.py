@@ -50,7 +50,7 @@ def physical_points(mesh, rules) -> np.ndarray:
 
 def build(n: int = 25, degree: int = 2, order: int = 4) -> dict:
     """Cut the mesh and build the quadrature rules of the demo."""
-    mesh = cutcells.structured_triangle_mesh_view(-1.0, -1.0, 1.0, 1.0, n, n)
+    mesh = cutcells.rectangle_mesh(-1.0, -1.0, 1.0, 1.0, n, n, cell_type="triangle")
     phi = cutcells.create_level_set(mesh, circle, degree=degree, name="phi")
     result = cutcells.cut(mesh, phi)
 

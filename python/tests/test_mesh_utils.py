@@ -3,8 +3,8 @@ import pytest
 import cutcells
 
 
-def test_structured_triangle_mesh_view():
-    mesh = cutcells.structured_triangle_mesh_view(-1, -1, 1, 1, 5, 4)
+def test_rectangle_mesh():
+    mesh = cutcells.rectangle_mesh(-1, -1, 1, 1, 5, 4, cell_type="triangle")
     assert mesh.tdim == 2
     assert mesh.gdim == 2
     assert mesh.num_nodes() == 20
@@ -35,9 +35,9 @@ def test_mesh_from_pyvista_infers_tdim():
 @pytest.mark.parametrize(
     "make, num_cells, volume",
     [
-        (lambda: cutcells.structured_quadrilateral_mesh_view(-1, -1, 1, 1, 5, 4), 12, 4.0),
-        (lambda: cutcells.structured_tetrahedron_mesh_view(0, 0, 0, 1, 2, 1, 3, 4, 2), 36, 2.0),
-        (lambda: cutcells.structured_hexahedron_mesh_view(0, 0, 0, 1, 2, 1, 3, 4, 2), 6, 2.0),
+        (lambda: cutcells.rectangle_mesh(-1, -1, 1, 1, 5, 4, cell_type="quadrilateral"), 12, 4.0),
+        (lambda: cutcells.box_mesh(0, 0, 0, 1, 2, 1, 3, 4, 2, cell_type="tetrahedron"), 36, 2.0),
+        (lambda: cutcells.box_mesh(0, 0, 0, 1, 2, 1, 3, 4, 2, cell_type="hexahedron"), 6, 2.0),
     ],
 )
 def test_structured_mesh_views(make, num_cells, volume):
@@ -51,8 +51,18 @@ def test_structured_mesh_views(make, num_cells, volume):
     assert (rules.weights > 0).all()
 
 
+def test_mesh_builder_names():
+    with pytest.raises(ValueError):
+        cutcells.rectangle_mesh(0, 0, 1, 1, 3, 3, cell_type="hexahedron")
+    with pytest.warns(DeprecationWarning, match="rectangle_mesh"):
+        old = cutcells.structured_triangle_mesh_view(0, 0, 1, 1, 3, 3)
+    new = cutcells.rectangle_mesh(0, 0, 1, 1, 3, 3)
+    assert np.array_equal(old.connectivity, new.connectivity)
+    assert np.array_equal(old.coordinates, new.coordinates)
+
+
 def test_tetrahedra_are_conforming():
-    mesh = cutcells.structured_tetrahedron_mesh_view(0, 0, 0, 1, 1, 1, 3, 3, 3)
+    mesh = cutcells.box_mesh(0, 0, 0, 1, 1, 1, 3, 3, 3, cell_type="tetrahedron")
     tets = mesh.connectivity.reshape(-1, 4)
     x = mesh.coordinates[tets]
     det = np.linalg.det(x[:, 1:] - x[:, :1])
@@ -67,7 +77,7 @@ def test_tetrahedra_are_conforming():
 
 def test_to_pyvista():
     pytest.importorskip("pyvista")
-    mesh = cutcells.structured_triangle_mesh_view(-1, -1, 1, 1, 9, 9)
+    mesh = cutcells.rectangle_mesh(-1, -1, 1, 1, 9, 9, cell_type="triangle")
     ball = cutcells.analytic_sphere([0.0, 0.0, 0.0], 0.6, name="ball")
     result = cutcells.cut(mesh, ball)
     grid = cutcells.to_pyvista(mesh)

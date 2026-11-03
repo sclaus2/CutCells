@@ -1,5 +1,7 @@
 """Structured mesh generation and pyvista ↔ MeshView conversion utilities."""
 
+import warnings
+
 import numpy as np
 
 try:
@@ -138,7 +140,7 @@ def to_pyvista(mesh):
     return grid
 
 
-def structured_triangle_mesh_view(x0, y0, x1, y1, nx, ny):
+def _triangle_grid(x0, y0, x1, y1, nx, ny):
     """Pure NumPy structured triangular MeshView on [x0,x1] x [y0,y1].
 
     Each quadrilateral grid cell is split along the bottom-left to top-right
@@ -199,7 +201,7 @@ def _mesh_view(coordinates, cells, vtk_type, tdim):
     return MeshView(coordinates, connectivity, offsets, cell_types, tdim=tdim)
 
 
-def structured_quadrilateral_mesh_view(x0, y0, x1, y1, nx, ny):
+def _quadrilateral_grid(x0, y0, x1, y1, nx, ny):
     """Pure NumPy structured quadrilateral MeshView on [x0,x1] x [y0,y1].
 
     ``nx`` and ``ny`` are numbers of grid points, so the mesh has
@@ -212,7 +214,7 @@ def structured_quadrilateral_mesh_view(x0, y0, x1, y1, nx, ny):
     return _mesh_view(_grid_points((x0, y0), (x1, y1), n), cells, 9, 2)  # VTK_QUAD
 
 
-def structured_tetrahedron_mesh_view(x0, y0, z0, x1, y1, z1, nx, ny, nz):
+def _tetrahedron_grid(x0, y0, z0, x1, y1, z1, nx, ny, nz):
     """Pure NumPy structured tetrahedral MeshView on a box.
 
     Each grid hexahedron is split into six tetrahedra around its diagonal
@@ -237,7 +239,7 @@ def structured_tetrahedron_mesh_view(x0, y0, z0, x1, y1, z1, nx, ny, nz):
     return _mesh_view(_grid_points((x0, y0, z0), (x1, y1, z1), n), cells, 10, 3)  # VTK_TETRA
 
 
-def structured_hexahedron_mesh_view(x0, y0, z0, x1, y1, z1, nx, ny, nz):
+def _hexahedron_grid(x0, y0, z0, x1, y1, z1, nx, ny, nz):
     """Pure NumPy structured hexahedral MeshView on a box.
 
     ``nx``, ``ny`` and ``nz`` are numbers of grid points, so the mesh has
@@ -251,6 +253,54 @@ def structured_hexahedron_mesh_view(x0, y0, z0, x1, y1, z1, nx, ny, nz):
         c[0, 0, 1], c[1, 0, 1], c[1, 1, 1], c[0, 1, 1],
     ])
     return _mesh_view(_grid_points((x0, y0, z0), (x1, y1, z1), n), cells, 12, 3)  # VTK_HEXAHEDRON
+
+
+def rectangle_mesh(x0, y0, x1, y1, nx, ny, cell_type="triangle"):
+    """Structured mesh of the rectangle [x0,x1] x [y0,y1], built with NumPy.
+
+    ``nx`` and ``ny`` are numbers of grid points. ``cell_type`` is
+    ``"triangle"`` (two per grid cell, split along the bottom-left to
+    top-right diagonal) or ``"quadrilateral"``. Returns a ``MeshView`` that
+    holds the mesh's NumPy arrays.
+    """
+    builders = {"triangle": _triangle_grid, "quadrilateral": _quadrilateral_grid}
+    if cell_type not in builders:
+        raise ValueError(f"cell_type must be 'triangle' or 'quadrilateral', not {cell_type!r}")
+    return builders[cell_type](x0, y0, x1, y1, nx, ny)
+
+
+def box_mesh(x0, y0, z0, x1, y1, z1, nx, ny, nz, cell_type="tetrahedron"):
+    """Structured mesh of the box [x0,x1] x [y0,y1] x [z0,z1], built with NumPy.
+
+    ``nx``, ``ny`` and ``nz`` are numbers of grid points. ``cell_type`` is
+    ``"tetrahedron"`` (six per grid cell around its diagonal, conforming and
+    positively oriented) or ``"hexahedron"`` (VTK node order). Returns a
+    ``MeshView`` that holds the mesh's NumPy arrays.
+    """
+    builders = {"tetrahedron": _tetrahedron_grid, "hexahedron": _hexahedron_grid}
+    if cell_type not in builders:
+        raise ValueError(f"cell_type must be 'tetrahedron' or 'hexahedron', not {cell_type!r}")
+    return builders[cell_type](x0, y0, z0, x1, y1, z1, nx, ny, nz)
+
+
+def _renamed(old, new, build):
+    def builder(*args, **kwargs):
+        warnings.warn(f"cutcells.{old} is deprecated; use cutcells.{new}", DeprecationWarning, stacklevel=2)
+        return build(*args, **kwargs)
+
+    builder.__name__ = old
+    builder.__doc__ = f"Deprecated: use ``cutcells.{new}``."
+    return builder
+
+
+structured_triangle_mesh_view = _renamed(
+    "structured_triangle_mesh_view", 'rectangle_mesh(..., cell_type="triangle")', _triangle_grid)
+structured_quadrilateral_mesh_view = _renamed(
+    "structured_quadrilateral_mesh_view", 'rectangle_mesh(..., cell_type="quadrilateral")', _quadrilateral_grid)
+structured_tetrahedron_mesh_view = _renamed(
+    "structured_tetrahedron_mesh_view", 'box_mesh(..., cell_type="tetrahedron")', _tetrahedron_grid)
+structured_hexahedron_mesh_view = _renamed(
+    "structured_hexahedron_mesh_view", 'box_mesh(..., cell_type="hexahedron")', _hexahedron_grid)
 
 
 # ---------------------------------------------------------------------------

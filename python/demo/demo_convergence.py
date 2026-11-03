@@ -56,7 +56,7 @@ def errors(sizes, order: int = 6) -> dict:
     """Area and perimeter errors per method and mesh size."""
     table = {method: {"h": [], "area": [], "perimeter": []} for method in METHODS}
     for n in sizes:
-        mesh = cutcells.structured_triangle_mesh_view(-1.0, -1.0, 1.0, 1.0, n, n)
+        mesh = cutcells.rectangle_mesh(-1.0, -1.0, 1.0, 1.0, n, n, cell_type="triangle")
         for method in METHODS:
             phi, backend = level_set(mesh, method)
             result = cutcells.cut(mesh, phi, backend=backend)

@@ -31,12 +31,12 @@ $$
 
 ## Background Mesh
 
-`structured_tetrahedron_mesh_view` splits every grid cube into six
+`box_mesh(..., cell_type="tetrahedron")` splits every grid cube into six
 tetrahedra around its diagonal. The mesh is conforming and needs only NumPy;
 `n = 13` points per side give 10368 tetrahedra.
 
 ```python
-mesh = cutcells.structured_tetrahedron_mesh_view(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, n, n, n)
+mesh = cutcells.box_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, n, n, n, cell_type="tetrahedron")
 ```
 
 For meshes from elsewhere, `MeshView(coordinates, connectivity, offsets,

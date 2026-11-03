@@ -26,7 +26,7 @@ The primary helper is `create_level_set`:
 import numpy as np
 import cutcells
 
-mesh = cutcells.structured_triangle_mesh_view(-1, -1, 1, 1, 41, 41)
+mesh = cutcells.rectangle_mesh(-1, -1, 1, 1, 41, 41, cell_type="triangle")
 
 def circle(X):
     # X has shape (gdim, num_dofs).

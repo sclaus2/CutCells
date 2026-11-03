@@ -11,10 +11,8 @@ mesh utilities. `CutResult`, `MeshPart`, `EntityTable`, `EntityRules` and
 | --- | --- |
 | `MeshView` | Background mesh view from coordinates, connectivity, offsets, cell types, and `tdim`. |
 | `mesh_from_pyvista(grid, tdim=None)` | Convert a PyVista `UnstructuredGrid` to `MeshView`. |
-| `structured_triangle_mesh_view(x0, y0, x1, y1, nx, ny)` | Pure NumPy structured triangular `MeshView`; `nx`, `ny` grid points. |
-| `structured_quadrilateral_mesh_view(x0, y0, x1, y1, nx, ny)` | Pure NumPy structured quadrilateral `MeshView`. |
-| `structured_tetrahedron_mesh_view(x0, y0, z0, x1, y1, z1, nx, ny, nz)` | Pure NumPy conforming tetrahedral `MeshView`, six tetrahedra per grid cube. |
-| `structured_hexahedron_mesh_view(x0, y0, z0, x1, y1, z1, nx, ny, nz)` | Pure NumPy structured hexahedral `MeshView`. |
+| `rectangle_mesh(x0, y0, x1, y1, nx, ny, cell_type="triangle")` | Structured `MeshView` of a rectangle built with NumPy; `nx`, `ny` grid points; `"triangle"` or `"quadrilateral"`. |
+| `box_mesh(x0, y0, z0, x1, y1, z1, nx, ny, nz, cell_type="tetrahedron")` | Structured `MeshView` of a box built with NumPy; `"tetrahedron"` (conforming, six per grid cube) or `"hexahedron"`. |
 | `rectangle_triangle_mesh(...)` | PyVista triangular rectangle mesh helper. |
 | `rectangle_quad_mesh(...)` | PyVista quadrilateral rectangle mesh helper. |
 | `box_tetrahedron_mesh(...)` | PyVista tetrahedral box mesh helper. |
