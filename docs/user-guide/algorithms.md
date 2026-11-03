@@ -72,6 +72,15 @@ The parts of a result integrate and visualise with a backend:
   parallelogram faces. It integrates volumes, interfaces, and the curves
   where two level sets vanish (points with unit weights in 2D). On intervals
   an interface is points with unit weights.
+
+  With several curved level sets, these pieces are as accurate as those of
+  one: with exact level sets (analytic, or polynomials of the level set's
+  degree) each cell's error is rounding, and with Pk interpolants the
+  quadrature error stays far below the interpolation error, which falls as
+  $h^{k+1}$. Cells where two zero sets meet take several times the points of
+  cells with one; `compress_rules` (see
+  [Quadrature and output](quadrature-output.md)) reduces them to the moments
+  of a polynomial space.
 - **`"lut"`** (also `"straight"`): the lookup tables. A cut cell is subdivided
   by a Pk-iso-P1 template, and each sub-cell is cut by the level sets' P1
   interpolants. The pieces are straight; they include the curves (points in

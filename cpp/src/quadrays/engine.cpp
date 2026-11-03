@@ -2092,6 +2092,9 @@ void diagnose_failure(Context<T>& ctx, const Problem<T, D>& p, const Analysis<T,
 {
     std::map<std::string, std::int64_t>& causes = ctx.stats->causes;
     const std::string level = "level " + std::to_string(D);
+    // the origin of a function, with its level set's index
+    const auto name = [](const Func<T, D>& f)
+    { return origin_name(f.origin) + (f.linear ? std::string() : "[" + std::to_string(f.ls) + "]"); };
     const std::vector<VecD<T, D>>& ratios = an.ratios;
     if (ratios.empty())
     {
@@ -2120,7 +2123,7 @@ void diagnose_failure(Context<T>& ctx, const Problem<T, D>& p, const Analysis<T,
         else
             category = "margin fails near the zero set in the cell";
     }
-    ++causes[level + " | " + origin_name(f.origin) + " | "
+    ++causes[level + " | " + name(f) + " | "
              + (an.best > T(0) ? "bound below margin" : "no certain sign") + " | " + category];
     ++causes[level + " | depth " + std::to_string(depth)];
 
@@ -2133,7 +2136,7 @@ void diagnose_failure(Context<T>& ctx, const Problem<T, D>& p, const Analysis<T,
         for (int j = 0; j < D; ++j)
             top = std::max(top, ratios[i][j]);
         if (top < level_margin<T, D>(ctx))
-            axes = "one function fails on every axis: " + origin_name(p.funcs[an.curved[i]].origin);
+            axes = "one function fails on every axis: " + name(p.funcs[an.curved[i]]);
     }
     if (axes.empty())
     {
@@ -2144,7 +2147,7 @@ void diagnose_failure(Context<T>& ctx, const Problem<T, D>& p, const Analysis<T,
             for (std::size_t i = 1; i < ratios.size(); ++i)
                 if (ratios[i][j] < ratios[b][j])
                     b = i;
-            names.push_back(origin_name(p.funcs[an.curved[b]].origin));
+            names.push_back(name(p.funcs[an.curved[b]]));
         }
         std::sort(names.begin(), names.end());
         names.erase(std::unique(names.begin(), names.end()), names.end());
