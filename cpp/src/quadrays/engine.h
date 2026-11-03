@@ -50,13 +50,15 @@ struct Options
     /// sphere near its pole, say, the zero set on the face is a circle of any
     /// radius, whose branch points can lie just beyond the base segments, and
     /// the points then converge slowly in q and not under mesh refinement.
+    /// anchor_folds anchors the segments near them; the check bisects where
+    /// the points still converge slowly.
     /// 0: the rule's own rate, (h kappa / 2)^(2 q) with h = |det J|^(1/tdim)
     /// the cell's size and kappa the curvature of the zero sets in the box, so
     /// that the error falls as h^(2q) and pieces that converge as expected
     /// are not bisected. < 0: no check. Flat pieces are not checked.
     double tolerance = 0;
-    /// Prototype. On a box with two free coordinates, where the zero set of a
-    /// curved function turns back along the height direction (a fold, where
+    /// On a box with two free coordinates, where the zero set of a curved
+    /// function turns back along the height direction (a fold, where
     /// d_k psi = 0) at or within four segment lengths beyond an end of a base
     /// segment, its height function has a square-root branch point there, and
     /// Gauss-Legendre points in x converge slowly. n > 0: such segments take
@@ -66,13 +68,14 @@ struct Options
     /// q points do at four lengths; otherwise both, by x = c + r (3t - t^3) / 2,
     /// whose derivative vanishes at both folds, with ceil(3 n q / 2) points.
     /// They integrate polynomials of degree n q - 1 in x exactly (q points:
-    /// 2 q - 1), so n = 2 keeps the degree. Below a 3D box, the zero set of
-    /// its level set turns back along its height direction where its normal
+    /// 2 q - 1), so n = 2 keeps the degree, and n = 1 halves the rate at which
+    /// the error falls under refinement. Below a 3D box, the zero set of its
+    /// level set turns back along its height direction where its normal
     /// turns perpendicular to it, beyond the box (its silhouette): the height
     /// lines of the base boxes are anchored likewise at the silhouette's
     /// coordinate on them, and their base segments where it crosses the
     /// lines' bounds. 0: off.
-    int anchor_folds = 0;
+    int anchor_folds = 2;
     /// Bisections allowed per level along a branch. Bernstein bounds certify
     /// after a few; Taylor models of an analytic level set, a distance function
     /// in particular, need boxes small against the radius of curvature, which

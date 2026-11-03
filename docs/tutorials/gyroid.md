@@ -72,17 +72,17 @@ view above.
 
 ```text
 hexahedra: 4096, cut by g: 1248
-volume fraction of g < 0:  0.500000000000  (exact 1/2, error 8.7e-15)
-area of g = 0, quadrays:   3.09164489 L^2
+volume fraction of g < 0:  0.500000000000  (exact 1/2, error 1.6e-13)
+area of g = 0, quadrays:   3.09164526 L^2
 area of g = 0, lut:        3.09422760 L^2
-volume fraction of sheet:  0.25832661
+volume fraction of sheet:  0.25832662
 ```
 
-The volume fraction is exact up to round-off, as the interpolant keeps the
-point symmetry $g(L-x)=-g(x)$ that swaps the two labyrinths. The area has no
-closed form; the straight pieces of the lookup tables differ from the curved
-pieces of quadrays by $2.6\cdot10^{-3}$, almost $10^{-3}$ relative, on this
-mesh.
+The volume fraction is exact up to the quadrature error, as the interpolant
+keeps the point symmetry $g(L-x)=-g(x)$ that swaps the two labyrinths. The
+area has no closed form; the straight pieces of the lookup tables differ from
+the curved pieces of quadrays by $2.6\cdot10^{-3}$, almost $10^{-3}$ relative,
+on this mesh.
 
 ## Run the Demo
 

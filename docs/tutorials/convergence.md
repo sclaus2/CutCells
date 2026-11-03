@@ -27,8 +27,8 @@ triangular meshes of size $h=2/(n-1)$.
 
 `exact + quadrays`
 : The analytic circle `cutcells.analytic_sphere`, integrated by quadrays. The
-  geometry is exact, only the quadrature error remains, and it falls to
-  round-off.
+  geometry is exact, only the quadrature error remains, and it is near
+  round-off on every mesh.
 
 ## Implementation
 
@@ -65,22 +65,24 @@ which the third is ignored.
 ```text
 area error (rate)
         h                  P1 + lut             P3 + quadrays          exact + quadrays
-   0.2500         3.271e-02                 1.729e-05                 3.244e-08
-   0.1250         8.127e-03 ( 2.01)         9.483e-07 ( 4.19)         1.466e-11 (11.11)
-   0.0625         2.085e-03 ( 1.96)         2.738e-08 ( 5.11)         3.197e-14 ( 8.84)
-   0.0312         5.136e-04 ( 2.02)         1.330e-09 ( 4.36)         2.442e-15 ( 3.71)
+   0.2500         3.271e-02                 1.731e-05                 4.952e-14
+   0.1250         8.127e-03 ( 2.01)         9.483e-07 ( 4.19)         4.834e-13 (-3.29)
+   0.0625         2.085e-03 ( 1.96)         2.738e-08 ( 5.11)         2.465e-14 ( 4.29)
+   0.0312         5.136e-04 ( 2.02)         1.330e-09 ( 4.36)         2.442e-15 ( 3.33)
 
 perimeter error (rate)
         h                  P1 + lut             P3 + quadrays          exact + quadrays
-   0.2500         3.170e-02                 2.659e-05                 1.827e-07
-   0.1250         7.739e-03 ( 2.03)         1.548e-06 ( 4.10)         3.887e-10 ( 8.88)
-   0.0625         1.921e-03 ( 2.01)         4.509e-08 ( 5.10)         8.047e-13 ( 8.92)
-   0.0312         4.796e-04 ( 2.00)         2.209e-09 ( 4.35)         1.510e-14 ( 5.74)
+   0.2500         3.170e-02                 2.650e-05                 6.510e-13
+   0.1250         7.739e-03 ( 2.03)         1.547e-06 ( 4.10)         7.998e-12 (-3.62)
+   0.0625         1.921e-03 ( 2.01)         4.509e-08 ( 5.10)         5.373e-13 ( 3.90)
+   0.0312         4.796e-04 ( 2.00)         2.209e-09 ( 4.35)         1.510e-14 ( 5.15)
 ```
 
-The straight pieces converge with rate 2, the interpolated level set with
-rate 4, and exact geometry with rate $2q = 8$ until it reaches round-off on the
-third mesh.
+The straight pieces converge with rate 2 and the interpolated level set with
+rate 4. With exact geometry the quadrature error is below $10^{-11}$ on every
+mesh, and its rates say nothing: quadrays takes the points of the segments
+near the circle's turning points in a variable anchored there (see *Curved
+pieces in 3D* below).
 
 :::{admonition} Reading the rates
 :class: practice
@@ -102,31 +104,44 @@ that sizes its leaves by the geometry, not by $h$, and nested meshes bring the
 same leaves back. The margin bounds the slope of the height functions, not how
 close their turning points come: where a cell face cuts a sphere near its
 pole, the zero set on the face is a circle of any radius, whose turning point
-can lie just beyond a box, and the order's Gauss-Legendre points converge
-slowly there, on every mesh. So quadrays checks each curved box against one
-more point per segment and bisects it while the two differ by more than the
-order's own rate allows at the cell's size, $(h\kappa/2)^{2q}$ for curvature
-$\kappa$; pieces that converge as they should get no extra points, flat
-pieces are not checked.
+can lie just beyond a box, and so can the sphere's silhouette seen along the
+height direction. At such a fold the height function has a square-root branch
+point, and the order's Gauss-Legendre points converge slowly near it, on
+every mesh. So quadrays finds the folds near each curved box and gives the
+segments that end within four lengths of one twice the points (three times
+between two folds), in $s$ with $x = x_f \mp s^2$ anchored at the fold $x_f$,
+in which the integrand is smooth (`QuadraysOptions.anchor_folds`). Anchoring
+leaves about the same error on every mesh, so quadrays also checks each
+curved box against one more point per segment and bisects it while the two
+differ by more than the order's own rate allows at the cell's size,
+$(h\kappa/2)^{2q}$ for curvature $\kappa$; pieces that converge as they should
+get no extra points, flat pieces are not checked.
 
 For the sphere of radius 0.6 about $(0.1, -0.05, 0.03)$ in $[-1, 1]^3$ at
 `order=6`, the error of the area summed over the cells:
 
 ```text
-                     n = 5      n = 9     n = 17     n = 33
+                       n = 5      n = 9     n = 17     n = 33     n = 65
 hexahedra
-  without the check  3.0e-06    3.1e-06    5.1e-06    4.0e-07
-  with the check     4.5e-06    2.5e-07    1.3e-08    5.1e-11
+  plain points         3.0e-06    3.1e-06    5.1e-06    4.0e-07    4.8e-09
+  the check alone      4.5e-06    2.5e-07    1.3e-08    5.1e-11    3.4e-13
+  anchored alone       5.4e-12    5.5e-12    6.5e-12    2.2e-11    8.1e-12
+  both (the default)   5.4e-12    5.5e-12    6.5e-12    2.1e-11    3.0e-13
 tetrahedra
-  without the check  3.1e-06    1.8e-06    2.3e-06    1.5e-07
-  with the check     3.1e-06    5.2e-07    1.7e-08    9.0e-11
+  plain points         3.1e-06    1.8e-06    2.3e-06    1.5e-07    3.4e-08
+  the check alone      3.1e-06    5.2e-07    1.7e-08    8.9e-11    6.0e-13
+  anchored alone       8.7e-12    1.0e-11    1.5e-11    1.5e-11    6.8e-12
+  both (the default)   8.7e-12    1.0e-11    1.5e-11    1.4e-11    4.9e-13
 ```
 
 The total over the mesh hides most of this: cells that share a face near a
-pole err by opposite amounts. At $n = 33$ the check costs 1.9 times the points
-on the surface of hexahedra (1.2 on tetrahedra) and a quarter more in the
-volume (8 % on tetrahedra). `QuadraysOptions.tolerance`
-sets a relative accuracy instead (negative: no check), and
+pole err by opposite amounts. Anchored, the error stays near $10^{-11}$, where
+the check alone starts from $10^{-6}$, until the check takes over on the
+finest mesh. On the cut cells of the meshes up to $n = 33$ the default takes
+1.3 to 2.7 times the points of plain points and 3 to 6 times their time, about
+half of it for the check, and 1.1 to 3.6 times the time of the check alone.
+`QuadraysOptions.anchor_folds = 0` gives plain points, `tolerance` sets a
+relative accuracy instead of the order's rate (negative: no check), and
 `points_per_segment` still fixes the points for studies.
 :::
 

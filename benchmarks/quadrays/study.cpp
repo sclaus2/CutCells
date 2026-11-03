@@ -25,7 +25,7 @@
 //
 // Generators: quadrays (margin 0.25) or quadrays:<margin>[:<tolerance>]
 // (Options::tolerance, -1 for no accuracy check), quadrays-f<n>[:...] with
-// Options::anchor_folds = n; with
+// Options::anchor_folds = n (2 by default, quadrays-f0 for plain points); with
 // CUTCELLS_WITH_ALGOIM also algoim-auto, algoim-gl, gl-cellmask, alpha, split,
 // alpha-split and quadgen (hex only). Analytic level sets: quadrays and quadgen.
 //

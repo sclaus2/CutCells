@@ -61,7 +61,7 @@ def test_small_rules_are_copied():
         np.array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1], dtype=float),
         cutcells.analytic_sphere([0.0, 0.0, 0.0], 0.5),
         "phi < 0",
-        q=2,
+        q=1,
     )
     assert len(rules.weights) <= 11**3
     compressed, stats = cutcells.compress_rules(rules, 10)

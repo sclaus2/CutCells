@@ -110,7 +110,7 @@ def plot(table: dict, screenshot: Path | None = None) -> None:
         for side in ("top", "right"):
             ax.spines[side].set_visible(False)
     axes[0].set_ylabel("absolute error")
-    axes[1].legend(frameon=False, loc="lower right")
+    axes[1].legend(frameon=False, loc="center right")
     fig.tight_layout()
     if screenshot is not None:
         fig.savefig(screenshot, dpi=150)

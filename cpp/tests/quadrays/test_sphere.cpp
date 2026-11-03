@@ -12,8 +12,9 @@
 // default), those it gave when it came. It bisects 19 times less and keeps 5
 // times fewer points, so that at the same q its errors are larger (caps of
 // 1e-3 h^3 in a single leaf: 0.4 % at q = 3), at the same number of points not.
-// These numbers are without the accuracy checks (Options::tolerance < 0); with
-// them, the errors must not be larger. Exits non-zero on failure.
+// These numbers are with plain Gauss-Legendre points and without the accuracy
+// checks (Options::anchor_folds = 0, tolerance < 0); with the defaults, the
+// errors must not be larger. Exits non-zero on failure.
 
 #include <cutcells/quadrays/rules.h>
 #include <cutcells/selection_expr.h>
@@ -72,12 +73,13 @@ int main()
 
     int failures = 0;
     std::vector<double> coeffs;
-    Options unchecked;
-    unchecked.tolerance = -1;
+    Options plain;
+    plain.tolerance = -1;
+    plain.anchor_folds = 0;
     for (const Expected& e : expected)
-    for (const Options& options : {unchecked, Options{}})
+    for (const Options& options : {plain, Options{}})
     {
-        const bool checked = options.tolerance >= 0;
+        const bool defaults = options.tolerance >= 0;
         SelectionExpr expr = parse_selection_expr(e.part);
         compile_selection_expr(expr, {"phi"});
         const SelectionTerm& term = expr.terms.front();
@@ -118,11 +120,11 @@ int main()
                     }
                 }
         const double l1 = sum_abs / (surface ? sphere : ball);
-        const bool ok = checked ? l1 <= 1.25 * e.l1 && worst <= 1.25 * e.worst
-                                : l1 <= 1.25 * e.l1 && worst <= 1.25 * e.worst && stats.bisections <= 1.25 * e.bisections;
+        const bool ok = defaults ? l1 <= 1.25 * e.l1 && worst <= 1.25 * e.worst
+                                 : l1 <= 1.25 * e.l1 && worst <= 1.25 * e.worst && stats.bisections <= 1.25 * e.bisections;
         std::printf("%s %-10s q = %d %-8s %-9s L1 %.1e (expected %.1e), worst %.1e (%.1e), bisections %d (%ld) %s\n",
                     e.mesh, e.frame == reference ? "reference" : "orthogonal", e.q, e.part,
-                    checked ? "checked" : "unchecked", l1, e.l1, worst, e.worst, stats.bisections, e.bisections,
+                    defaults ? "default" : "plain", l1, e.l1, worst, e.worst, stats.bisections, e.bisections,
                     ok ? "" : "FAILED");
         failures += !ok;
     }

@@ -113,17 +113,20 @@ def cell_error(part, options, reference):
 
 @pytest.mark.parametrize("kind", ["hex", "tet"])
 def test_curved_pieces_converge_under_refinement(kind):
-    """The error of each cell's piece falls with h. The traces of a sphere on
-    the faces of the cells near its poles are circles of any radius, whose
-    branch points can lie just beyond the base segments of a certified box:
-    there the points per segment of the order converge slowly, whatever h,
-    unless the accuracy check bisects (QuadraysOptions.tolerance). Whole
-    meshes hide it: neighbours sharing such a face err by opposite amounts."""
+    """With plain points (QuadraysOptions.anchor_folds = 0) the error of each
+    cell's piece falls with h. The traces of a sphere on the faces of the
+    cells near its poles are circles of any radius, whose branch points can
+    lie just beyond the base segments of a certified box: there the points
+    per segment of the order converge slowly, whatever h, unless the accuracy
+    check bisects (QuadraysOptions.tolerance). Whole meshes hide it:
+    neighbours sharing such a face err by opposite amounts."""
     make = {"hex": cutcells.structured_hexahedron_mesh_view, "tet": cutcells.structured_tetrahedron_mesh_view}
     phi = cutcells.analytic_sphere([0.1, -0.05, 0.03], 0.6, name="b")
     reference = cutcells.QuadraysOptions()
     reference.points_per_segment = 14
-    unchecked = cutcells.QuadraysOptions()
+    reference.tolerance = -1
+    checked, unchecked = cutcells.QuadraysOptions(), cutcells.QuadraysOptions()
+    checked.anchor_folds = unchecked.anchor_folds = 0
     unchecked.tolerance = -1
     errors = {"surface": [], "volume": []}
     first_unchecked = last_unchecked = None
@@ -131,7 +134,7 @@ def test_curved_pieces_converge_under_refinement(kind):
         result = cutcells.cut(make[kind](-1, -1, -1, 1, 1, 1, n, n, n), phi)
         for name, part in (("surface", result[phi == 0]), ("volume", result[phi < 0])):
             exact = cell_totals(part.quadrature(order=6, options=reference))
-            errors[name].append(cell_error(part, cutcells.QuadraysOptions(), exact))
+            errors[name].append(cell_error(part, checked, exact))
             if name == "surface":
                 last_unchecked = cell_error(part, unchecked, exact)
                 first_unchecked = first_unchecked or last_unchecked
@@ -145,19 +148,20 @@ def test_curved_pieces_converge_under_refinement(kind):
 
 @pytest.mark.parametrize("kind", ["hex", "tet"])
 def test_anchored_folds_cut_the_cells_errors(kind):
-    """Prototype (QuadraysOptions.anchor_folds): where a face trace of the
-    sphere turns back along the height direction near a base segment (a
-    fold), the segment's Gauss points are taken in s, x = x_f -+ s^2,
-    anchored at the fold. Without the accuracy check, the cells' errors fall
-    far below those of the plain points, for a few more points with n = 1,
-    and complementary volumes still add up to the box."""
+    """QuadraysOptions.anchor_folds: where a face trace of the sphere turns
+    back along the height direction near a base segment (a fold), the
+    segment's Gauss points are taken in s, x = x_f -+ s^2, anchored at the
+    fold. Without the accuracy check, the cells' errors fall far below those
+    of the plain points, for a few more points with n = 1, and complementary
+    volumes still add up to the box."""
     make = {"hex": cutcells.structured_hexahedron_mesh_view, "tet": cutcells.structured_tetrahedron_mesh_view}
     phi = cutcells.analytic_sphere([0.1, -0.05, 0.03], 0.6, name="b")
     result = cutcells.cut(make[kind](-1, -1, -1, 1, 1, 1, 17, 17, 17), phi)
     reference = cutcells.QuadraysOptions()
     reference.points_per_segment = 14
     plain, anchored = cutcells.QuadraysOptions(), cutcells.QuadraysOptions()
-    plain.tolerance = anchored.tolerance = -1
+    reference.tolerance = plain.tolerance = anchored.tolerance = -1
+    plain.anchor_folds = 0
     anchored.anchor_folds = 1
     for part in (result[phi == 0], result[phi < 0]):
         exact = cell_totals(part.quadrature(order=6, options=reference))
@@ -172,23 +176,26 @@ def test_anchored_folds_cut_the_cells_errors(kind):
 
 @pytest.mark.parametrize("kind", ["hex", "tet"])
 def test_anchored_folds_follow_the_silhouette(kind):
-    """Prototype (QuadraysOptions.anchor_folds): on coarse cells the sphere
-    turns perpendicular to a box's height direction just beyond the box (its
+    """QuadraysOptions.anchor_folds: on coarse cells the sphere turns
+    perpendicular to a box's height direction just beyond the box (its
     silhouette), where the height function has a square-root branch point
     too. The height lines of the base boxes are anchored at it, and their
-    base segments where it crosses the lines' bounds: with n = 2 the cells'
-    surface errors fall far below those the accuracy check leaves."""
+    base segments where it crosses the lines' bounds: with n = 2, the
+    default, the cells' surface errors fall far below those the accuracy
+    check leaves on plain points, with or without the check."""
     make = {"hex": cutcells.structured_hexahedron_mesh_view, "tet": cutcells.structured_tetrahedron_mesh_view}
     phi = cutcells.analytic_sphere([0.1, -0.05, 0.03], 0.6, name="b")
     part = cutcells.cut(make[kind](-1, -1, -1, 1, 1, 1, 9, 9, 9), phi)[phi == 0]
-    reference, anchored = cutcells.QuadraysOptions(), cutcells.QuadraysOptions()
-    reference.tolerance = anchored.tolerance = -1
-    reference.anchor_folds = anchored.anchor_folds = 2
+    reference, unchecked, plain = (cutcells.QuadraysOptions() for _ in range(3))
+    reference.tolerance = unchecked.tolerance = -1
     reference.points_per_segment = 14
+    plain.anchor_folds = 0
     exact = cell_totals(part.quadrature(order=6, options=reference))
-    error = cell_error(part, anchored, exact)
-    assert error < 1e-10
-    assert error < cell_error(part, cutcells.QuadraysOptions(), exact) / 1000
+    checked_plain = cell_error(part, plain, exact)
+    for options in (cutcells.QuadraysOptions(), unchecked):
+        error = cell_error(part, options, exact)
+        assert error < 1e-10
+        assert error < checked_plain / 1000
 
 
 def test_flat_pieces_get_no_extra_points():
