@@ -61,14 +61,17 @@ struct Options
     /// segment, its height function has a square-root branch point there, and
     /// Gauss-Legendre points in x converge slowly. n > 0: such segments take
     /// n q Gauss-Legendre points in s, x = x_f -+ s^2 anchored at the fold x_f,
-    /// which makes the integrand analytic; with folds beyond both ends, each
-    /// half takes its own. They integrate polynomials of degree n q - 1 in x
-    /// exactly (q points: 2 q - 1), so n = 2 keeps the degree. Below a 3D box,
-    /// the zero set of its level set turns back along its height direction
-    /// where its normal turns perpendicular to it, beyond the box (its
-    /// silhouette): the height lines of the base boxes are anchored likewise
-    /// at the silhouette's coordinate on them, and their base segments where
-    /// it crosses the lines' bounds. 0: off.
+    /// which makes the integrand analytic. With folds beyond both ends, one of
+    /// them anchors the segment if its points converge at the other as fast as
+    /// q points do at four lengths; otherwise both, by x = c + r (3t - t^3) / 2,
+    /// whose derivative vanishes at both folds, with ceil(3 n q / 2) points.
+    /// They integrate polynomials of degree n q - 1 in x exactly (q points:
+    /// 2 q - 1), so n = 2 keeps the degree. Below a 3D box, the zero set of
+    /// its level set turns back along its height direction where its normal
+    /// turns perpendicular to it, beyond the box (its silhouette): the height
+    /// lines of the base boxes are anchored likewise at the silhouette's
+    /// coordinate on them, and their base segments where it crosses the
+    /// lines' bounds. 0: off.
     int anchor_folds = 0;
     /// Bisections allowed per level along a branch. Bernstein bounds certify
     /// after a few; Taylor models of an analytic level set, a distance function

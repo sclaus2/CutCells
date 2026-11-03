@@ -249,8 +249,9 @@ struct Context
     // Gauss-Legendre rule on [0, 1], and the one with a point more for accuracy checks
     int q = 0;
     std::vector<T> gauss_x, gauss_w, check_x, check_w;
-    // the rules of segments anchored at folds (Options::anchor_folds), and of the checks
-    std::vector<T> fold_x, fold_w, fold_check_x, fold_check_w;
+    // the rules of segments anchored at a fold and at folds beyond both ends
+    // (Options::anchor_folds, anchored_nodes), and those of the checks
+    std::vector<T> fold_x, fold_w, fold_check_x, fold_check_w, cubic_x, cubic_w, cubic_check_x, cubic_check_w;
     CellPoints<T>* out = nullptr; ///< the points emitted so far, which accuracy checks roll back
     std::vector<char> flat;       ///< per level set: affine on the cell
     bool curved = false;          ///< the current top box has a curved function that may vanish
@@ -2444,14 +2445,29 @@ void segment_nodes(const Context<T>& ctx, T a, T b, F&& f)
         f(j, a + (b - a) * ctx.gauss_x[j], (b - a) * ctx.gauss_w[j]);
 }
 
+/// The parameter of the Bernstein ellipse through a point at distance d (in
+/// lengths of a segment) beyond an end of the segment: m Gauss-Legendre points
+/// on it err by about rho^(-2m) at a branch point there.
+template <std::floating_point T>
+T ellipse_parameter(T d)
+{
+    const T u = 1 + 2 * d;
+    return u + std::sqrt(u * u - 1);
+}
+
 /// Nodes on a base segment [a, b] with the folds of the level above
 /// (fold_anchors): where one lies at or beyond an end, within fold_reach
 /// segment lengths, the anchored rule, Gauss-Legendre points in s with
-/// x = x_f -+ s^2, which makes the square-root branch point there analytic;
-/// with folds beyond both ends, the halves each take theirs (@p next starts
-/// the second). Otherwise segment_nodes.
-template <std::floating_point T, typename F, typename Next>
-void anchored_nodes(const Context<T>& ctx, T a, T b, const std::vector<T>& folds, F&& f, Next&& next)
+/// x = x_f -+ s^2, which makes the square-root branch point there analytic.
+/// With folds beyond both ends, the rule anchored at one of them if its
+/// n q points in s converge at the other as fast as q points do at
+/// fold_reach lengths (rho^n >= ellipse_parameter(fold_reach), rho the other
+/// fold's in s); otherwise x = c + r (3t - t^3) / 2, whose derivative
+/// vanishes at both, x = c -+ r, with ceil(3 n q / 2) points in t, which
+/// integrate polynomials of the same degree n q - 1 in x exactly. Otherwise
+/// segment_nodes.
+template <std::floating_point T, typename F>
+void anchored_nodes(const Context<T>& ctx, T a, T b, const std::vector<T>& folds, F&& f)
 {
     const T len = b - a, tol = T(1e-12) * len;
     T left = -infinity<T>, right = infinity<T>;
@@ -2468,27 +2484,46 @@ void anchored_nodes(const Context<T>& ctx, T a, T b, const std::vector<T>& folds
         segment_nodes(ctx, a, b, f);
         return;
     }
-    // x = x_f - s^2 (a fold above hi) or x_f + s^2 (below lo) on [lo, hi]
-    const auto anchored = [&](T lo, T hi, T fold)
+    // x = x_f - s^2 (a fold above b) or x_f + s^2 (below a) on [a, b]
+    const auto anchored = [&](T fold)
     {
-        const bool above = fold >= hi - tol;
-        const T s0 = std::sqrt(std::max(above ? fold - hi : lo - fold, T(0)));
-        const T s1 = std::sqrt(std::max(above ? fold - lo : hi - fold, T(0)));
+        const bool above = fold >= b - tol;
+        const T s0 = std::sqrt(std::max(above ? fold - b : a - fold, T(0)));
+        const T s1 = std::sqrt(std::max(above ? fold - a : b - fold, T(0)));
         for (std::size_t i = 0; i < ctx.fold_x.size(); ++i)
         {
             const T s = s0 + (s1 - s0) * ctx.fold_x[i];
             f(static_cast<int>(i), above ? fold - s * s : fold + s * s, (s1 - s0) * ctx.fold_w[i] * 2 * s);
         }
     };
-    if (has_left && has_right)
+    if (!has_left || !has_right)
     {
-        const T mid = T(0.5) * (a + b);
-        anchored(a, mid, left);
-        next();
-        anchored(mid, b, right);
+        anchored(has_right ? right : left);
         return;
     }
-    anchored(a, b, has_right ? right : left);
+    // the other fold beyond the far end of the segment in s, in its lengths,
+    // anchored at the right fold (s^2 = right - x) or the left one
+    const T width = right - left, sw = std::sqrt(width);
+    const T sa = std::sqrt(std::max(right - a, T(0))), sb = std::sqrt(std::max(right - b, T(0)));
+    const T ta = std::sqrt(std::max(a - left, T(0))), tb = std::sqrt(std::max(b - left, T(0)));
+    const T other_left = std::max(a - left, T(0)) * (sa + sb) / (len * (sw + sa));
+    const T other_right = std::max(right - b, T(0)) * (ta + tb) / (len * (sw + tb));
+    if (std::pow(ellipse_parameter(std::max(other_left, other_right)), T(ctx.opt.anchor_folds))
+        >= ellipse_parameter(fold_reach<T>))
+    {
+        anchored(other_left >= other_right ? right : left);
+        return;
+    }
+    // x = c + r phi(t), phi(t) = (3t - t^3) / 2 = sin(3 theta) for t = 2 sin(theta)
+    const T c = T(0.5) * (left + right), r = T(0.5) * width;
+    const auto t_of = [&](T x) { return 2 * std::sin(std::asin(std::clamp((x - c) / r, T(-1), T(1))) / 3); };
+    const T t0 = t_of(a), t1 = t_of(b);
+    for (std::size_t i = 0; i < ctx.cubic_x.size(); ++i)
+    {
+        const T t = t0 + (t1 - t0) * ctx.cubic_x[i];
+        f(static_cast<int>(i), c + r * T(0.5) * (3 * t - t * t * t),
+          (t1 - t0) * ctx.cubic_w[i] * r * T(1.5) * (1 - t * t));
+    }
 }
 
 /// Roots in (L, U) of a curved function on the height line y = insert(yb, k, t),
@@ -2869,7 +2904,7 @@ void integrate_line(Context<T>& ctx, const Problem<T, 1>& p, const Emit& emit, c
             emit(VecD<T, 1>{t}, w, tag, VecD<T, 1>{T(1)});
         };
         if (folds != nullptr && ctx.vis_order == 0)
-            anchored_nodes(ctx, a, b, *folds, node, [&] { tag.segment[0] = segment++; });
+            anchored_nodes(ctx, a, b, *folds, node);
         else
             segment_nodes(ctx, a, b, node);
     }
@@ -3082,6 +3117,8 @@ void swap_rules(Context<T>& ctx)
     std::swap(ctx.gauss_w, ctx.check_w);
     std::swap(ctx.fold_x, ctx.fold_check_x);
     std::swap(ctx.fold_w, ctx.fold_check_w);
+    std::swap(ctx.cubic_x, ctx.cubic_check_x);
+    std::swap(ctx.cubic_w, ctx.cubic_check_w);
     ctx.q = static_cast<int>(ctx.gauss_x.size());
 }
 
@@ -3724,7 +3761,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                 if (folds_above.empty())
                     segment_nodes(ctx, a, b, node);
                 else
-                    anchored_nodes(ctx, a, b, folds_above, node, [] {});
+                    anchored_nodes(ctx, a, b, folds_above, node);
             }
         };
         if constexpr (D == 2)
@@ -4172,6 +4209,10 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
             gauss_legendre<T>(opt.anchor_folds * q, ctx.fold_x, ctx.fold_w);
         if (static_cast<int>(ctx.fold_check_x.size()) != opt.anchor_folds * (q + 1))
             gauss_legendre<T>(opt.anchor_folds * (q + 1), ctx.fold_check_x, ctx.fold_check_w);
+        if (static_cast<int>(ctx.cubic_x.size()) != (3 * opt.anchor_folds * q + 1) / 2)
+            gauss_legendre<T>((3 * opt.anchor_folds * q + 1) / 2, ctx.cubic_x, ctx.cubic_w);
+        if (static_cast<int>(ctx.cubic_check_x.size()) != (3 * opt.anchor_folds * (q + 1) + 1) / 2)
+            gauss_legendre<T>((3 * opt.anchor_folds * (q + 1) + 1) / 2, ctx.cubic_check_x, ctx.cubic_check_w);
     }
     ctx.flat.assign(n, 0);
     for (std::size_t l = 0; l < n; ++l)
