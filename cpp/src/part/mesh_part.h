@@ -37,6 +37,13 @@ struct MeshPart
     std::array<std::vector<std::int32_t>, 3> entities;
     /// For each of them, the zero level sets of the terms that select it.
     std::array<std::vector<std::uint64_t>, 3> entity_zero;
+    /// The entities of the part's dimension it holds a part of, by dimension:
+    /// a term's zero clauses all count there, but a level set of its other
+    /// clauses cuts every sharing cell, so the piece is bounded inside the
+    /// entity (TermEntity::part). Indices into result->entities[d], ascending.
+    std::array<std::vector<std::int32_t>, 3> partial_entities;
+    /// For each of them, the zero level sets of the terms that select a part of it.
+    std::array<std::vector<std::uint64_t>, 3> partial_entity_zero;
     /// The result's zero faces whose facet and level set the part holds (the
     /// facets among entities, with one owner each; CutResult::zero_face_cells).
     std::vector<int> zero_faces;
@@ -52,6 +59,25 @@ enum class TermCell : std::uint8_t
     whole, ///< the whole cell
     piece  ///< a piece bounded by the level sets that cut the cell
 };
+
+/// How a selection term meets a facet, an edge or a vertex of the mesh.
+enum class TermEntity : std::uint8_t
+{
+    none,  ///< the term selects nothing on it
+    whole, ///< the whole entity
+    part   ///< a part of it, bounded by level sets that cut every sharing cell
+};
+
+/// @brief How @p term meets entity @p e of @p table: its zero clauses must all
+/// count there (they vanish there) and none of its strict clauses be on a
+/// level set vanishing there; a strict clause holds on all of it where a
+/// sharing cell holds it whole, on none where one holds the opposite, and on a
+/// part where every sharing cell is cut by its level set.
+/// @param cutting  output: for TermEntity::part, the level sets of the strict
+///                 clauses that cut every sharing cell
+template <std::floating_point T, std::integral I>
+TermEntity term_on_entity(const SelectionTerm& term, const CutResult<T, I>& result, const EntityTable<I>& table,
+                          std::int32_t e, std::uint64_t& cutting);
 
 /// @brief How @p term meets cell @p cell_id, from the cell's domains.
 template <std::floating_point T, std::integral I>
@@ -97,8 +123,9 @@ TermCell term_on_cell(const SelectionTerm& term, const CutResult<T, I>& result, 
 /// a term's zero clauses all count (they vanish there and change sign across
 /// it, or it lies on the mesh boundary), none of its strict clauses is on a
 /// level set vanishing there, and its other clauses hold on a sharing cell
-/// whole. (Where every sharing cell is cut by such a level set, the piece
-/// would be a part of the entity, which is not integrated yet.)
+/// whole (entities). Where every sharing cell is cut by the level set of such
+/// a clause, the part holds the piece of the entity where it holds
+/// (partial_entities).
 ///
 /// Level sets made of level sets expand into terms on theirs
 /// (compile_selection_expr with the result's insides). The dimension is that
