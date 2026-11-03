@@ -29,6 +29,13 @@ weight (the tetrahedron's rules of degree 3, 7 and 8), the lowest higher
 degree with positive weights is used instead, so all weights stay positive.
 quadrays chooses its Gauss-Legendre points per segment from the order; setting
 `points_per_segment` on a `QuadraysOptions` fixes them instead, for studies.
+Where a curved zero set turns back along the height direction just beyond a
+segment (a fold), the height function has a square-root branch point there;
+such segments take twice the points, in a variable anchored at the fold in
+which the integrand is smooth (`QuadraysOptions.anchor_folds`). On curved
+pieces quadrays also checks each box against one more point per segment and
+bisects where they disagree by more than the order's rate allows at the cell's
+size, so that the error falls with $h$ (`QuadraysOptions.tolerance`).
 
 Modes:
 

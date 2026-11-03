@@ -23,7 +23,9 @@
 //                  [--diagnose] [--only cell] [--masks M] [--taylor M] [--no-diagonal]
 //                  [--analytic distance|quadratic] [--tape file] [--frame reference|orthogonal]
 //
-// Generators: quadrays (margin 0.25) or quadrays:<margin>; with
+// Generators: quadrays (margin 0.25) or quadrays:<margin>[:<tolerance>]
+// (Options::tolerance, -1 for no accuracy check), quadrays-f<n>[:...] with
+// Options::anchor_folds = n (2 by default, quadrays-f0 for plain points); with
 // CUTCELLS_WITH_ALGOIM also algoim-auto, algoim-gl, gl-cellmask, alpha, split,
 // alpha-split and quadgen (hex only). Analytic level sets: quadrays and quadgen.
 //
@@ -215,8 +217,16 @@ bool is_quadrays(const std::string& gen) { return gen.rfind("quadrays", 0) == 0;
 Options quadrays_options(const std::string& gen, const StudyConfig& cfg)
 {
     Options opt;
-    if (gen.find(':') != std::string::npos)
-        opt.margin = std::stod(gen.substr(gen.find(':') + 1));
+    // quadrays-f<n>...: Options::anchor_folds = n
+    if (gen.rfind("quadrays-f", 0) == 0 && gen.size() > 10 && gen[10] >= '0' && gen[10] <= '9')
+        opt.anchor_folds = gen[10] - '0';
+    if (const std::size_t colon = gen.find(':'); colon != std::string::npos)
+    {
+        const std::size_t second = gen.find(':', colon + 1);
+        opt.margin = std::stod(gen.substr(colon + 1, second - colon - 1));
+        if (second != std::string::npos)
+            opt.tolerance = std::stod(gen.substr(second + 1));
+    }
     opt.diagnose = cfg.diagnose;
     opt.mask_subdivisions = cfg.masks;
     opt.taylor_subdivisions = cfg.taylor;

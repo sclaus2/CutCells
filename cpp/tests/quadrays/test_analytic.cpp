@@ -447,7 +447,8 @@ int main()
 
     // The distance against the polynomial sphere's numbers at n = 8
     // (test_sphere.cpp, the prototype's Bernstein path), 25% slack, with Taylor
-    // models over whole boxes as in phase 2.
+    // models over whole boxes as in phase 2, with plain Gauss-Legendre points
+    // and without the accuracy checks.
     struct Expected
     {
         const char* mesh;
@@ -463,6 +464,8 @@ int main()
     };
     Options whole_boxes;
     whole_boxes.taylor_subdivisions = 1;
+    whole_boxes.tolerance = -1;
+    whole_boxes.anchor_folds = 0;
     int whole_tet_bisections = 0;
     for (const Expected& p : polynomial)
     {
@@ -477,16 +480,23 @@ int main()
 
     // Taylor models over the sub-boxes that meet a tetrahedron (the default):
     // at most half the whole boxes' bisections, and at q = 5 the errors of the
-    // polynomial path in the same (orthogonal) frame, 25% slack. Whole boxes
-    // bisect more, and so integrate more accurately at the same q.
+    // polynomial path in the same (orthogonal) frame, 25% slack, both with
+    // plain points and without the accuracy checks, which bisect to the same
+    // tolerance; with the defaults, no larger errors. Whole boxes bisect more,
+    // and so integrate more accurately at the same q.
+    Options plain;
+    plain.tolerance = -1;
+    plain.anchor_folds = 0;
     for (const Expected& p : polynomial)
     {
         if (std::string(p.mesh) != "tet" || p.q != 5)
             continue;
-        const Errors bernstein = sphere_errors(nullptr, "tet", 8, 5, p.part);
-        const Errors e = sphere_errors(&phi_distance, "tet", 8, 5, p.part);
+        const Errors bernstein = sphere_errors(nullptr, "tet", 8, 5, p.part, plain);
+        const Errors e = sphere_errors(&phi_distance, "tet", 8, 5, p.part, plain);
+        const Errors defaults = sphere_errors(&phi_distance, "tet", 8, 5, p.part);
         const bool ok = e.l1 <= 1.25 * bernstein.l1 && e.worst <= 1.25 * bernstein.worst
-                        && 2 * e.bisections <= whole_tet_bisections;
+                        && 2 * e.bisections <= whole_tet_bisections && defaults.l1 <= e.l1
+                        && defaults.worst <= e.worst;
         std::printf("distance tet sub-boxes q = 5 %-8s L1 %.1e (Bernstein %.1e), worst %.1e (%.1e), bisections %d "
                     "(whole boxes %d) %s\n",
                     p.part, e.l1, bernstein.l1, e.worst, bernstein.worst, e.bisections, whole_tet_bisections,
@@ -494,11 +504,14 @@ int main()
         failures += !ok;
     }
 
-    // The quadratic sphere as a functor: the polynomial path's errors on hexahedra.
+    // The quadratic sphere as a functor: the polynomial path's errors on
+    // hexahedra, with plain points (with anchored ones both are round-off).
+    Options unanchored;
+    unanchored.anchor_folds = 0;
     for (const char* part : {"phi < 0", "phi = 0"})
     {
-        const Errors a = sphere_errors(&phi_quadratic, "hex", 8, 5, part);
-        const Errors b = sphere_errors(nullptr, "hex", 8, 5, part);
+        const Errors a = sphere_errors(&phi_quadratic, "hex", 8, 5, part, unanchored);
+        const Errors b = sphere_errors(nullptr, "hex", 8, 5, part, unanchored);
         const bool ok = std::abs(a.l1 - b.l1) <= 1e-2 * b.l1 && std::abs(a.worst - b.worst) <= 1e-2 * b.worst;
         std::printf("quadratic functor hex q = 5 %-8s L1 %.3e (Bernstein %.3e), worst %.3e (%.3e) %s\n", part, a.l1, b.l1,
                     a.worst, b.worst, ok ? "" : "FAILED");

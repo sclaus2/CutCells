@@ -95,14 +95,14 @@ ball.cell_data["cut"] = np.isin(ball.cell_data["parent"], result.cut_cells).asty
 ```text
 background cells: 10368, cut cells: 1524
  level set   volume error   area error
-     exact       5.55e-09     6.22e-06
-        P2       1.38e-05     1.32e-04
+     exact       5.24e-13     5.53e-09
+        P2       1.38e-05     1.19e-04
 ```
 
 With the P2 level set both errors are the interpolation error. With exact
 geometry the area error at `order=4` is set by the Gauss points per segment
 on the curved pieces (see [Convergence](convergence.md)); with
-`QuadraysOptions.points_per_segment = 12` it drops to 2e-12.
+`QuadraysOptions.points_per_segment = 6` it drops to round-off.
 
 ## Run the Demo
 
