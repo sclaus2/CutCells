@@ -89,6 +89,10 @@ constexpr T accuracy_floor = scaled_tolerance<T>(1e-13);
 /// level_margin: the margin of a level with D free coordinates is at most margin_cap / sqrt(D).
 template <std::floating_point T>
 constexpr T margin_cap = T(0.9);
+/// A fold anchors the rule of a base segment that ends within this many segment
+/// lengths of it (anchored_nodes, fold_anchors).
+template <std::floating_point T>
+constexpr T fold_reach = T(4);
 /// Points of a curve part on a 2D cell: a root at an end of a line counts
 /// within this Newton distance |f| / |f'| (box units), and points closer than
 /// twice it are one.
@@ -227,6 +231,8 @@ struct Context
     // Gauss-Legendre rule on [0, 1], and the one with a point more for accuracy checks
     int q = 0;
     std::vector<T> gauss_x, gauss_w, check_x, check_w;
+    // the rules of segments anchored at folds (Options::anchor_folds), and of the checks
+    std::vector<T> fold_x, fold_w, fold_check_x, fold_check_w;
     CellPoints<T>* out = nullptr; ///< the points emitted so far, which accuracy checks roll back
     std::vector<char> flat;       ///< per level set: affine on the cell
     bool curved = false;          ///< the current top box has a curved function that may vanish
@@ -358,6 +364,26 @@ T derivative_along(const Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>&
     for (int i = 0; i < 3; ++i)
         s += g[i] * f.A[i][k];
     return s;
+}
+
+/// The gradient of a function in its level's coordinates.
+template <std::floating_point T, int D>
+void func_gradient(const Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& y, VecD<T, D>& g)
+{
+    if (f.linear)
+    {
+        g = f.a;
+        return;
+    }
+    const Vec3<T> u = to_u<T, D>(f, y);
+    Vec3<T> gu = {0, 0, 0};
+    gradient(ctx.phis[static_cast<std::size_t>(f.ls)], std::span<const T>(u), std::span<T>(gu));
+    for (int d = 0; d < D; ++d)
+    {
+        g[d] = T(0);
+        for (int i = 0; i < 3; ++i)
+            g[d] += gu[i] * f.A[i][d];
+    }
 }
 
 template <typename T, int D>
@@ -2353,6 +2379,53 @@ void segment_nodes(const Context<T>& ctx, T a, T b, F&& f)
         f(j, a + (b - a) * ctx.gauss_x[j], (b - a) * ctx.gauss_w[j]);
 }
 
+/// Nodes on a base segment [a, b] with the folds of the level above
+/// (fold_anchors): where one lies at or beyond an end, within fold_reach
+/// segment lengths, the anchored rule, Gauss-Legendre points in s with
+/// x = x_f -+ s^2, which makes the square-root branch point there analytic;
+/// with folds beyond both ends, the halves each take theirs (@p next starts
+/// the second). Otherwise segment_nodes.
+template <std::floating_point T, typename F, typename Next>
+void anchored_nodes(const Context<T>& ctx, T a, T b, const std::vector<T>& folds, F&& f, Next&& next)
+{
+    const T len = b - a, tol = T(1e-12) * len;
+    T left = -infinity<T>, right = infinity<T>;
+    for (const T x : folds)
+    {
+        if (x >= b - tol && x - b <= fold_reach<T> * len)
+            right = std::min(right, x);
+        if (x <= a + tol && a - x <= fold_reach<T> * len)
+            left = std::max(left, x);
+    }
+    const bool has_left = left > -infinity<T>, has_right = right < infinity<T>;
+    if (!has_left && !has_right)
+    {
+        segment_nodes(ctx, a, b, f);
+        return;
+    }
+    // x = x_f - s^2 (a fold above hi) or x_f + s^2 (below lo) on [lo, hi]
+    const auto anchored = [&](T lo, T hi, T fold)
+    {
+        const bool above = fold >= hi - tol;
+        const T s0 = std::sqrt(std::max(above ? fold - hi : lo - fold, T(0)));
+        const T s1 = std::sqrt(std::max(above ? fold - lo : hi - fold, T(0)));
+        for (std::size_t i = 0; i < ctx.fold_x.size(); ++i)
+        {
+            const T s = s0 + (s1 - s0) * ctx.fold_x[i];
+            f(static_cast<int>(i), above ? fold - s * s : fold + s * s, (s1 - s0) * ctx.fold_w[i] * 2 * s);
+        }
+    };
+    if (has_left && has_right)
+    {
+        const T mid = T(0.5) * (a + b);
+        anchored(a, mid, left);
+        next();
+        anchored(mid, b, right);
+        return;
+    }
+    anchored(a, b, has_right ? right : left);
+}
+
 /// Roots in (L, U) of a curved function on the height line y = insert(yb, k, t),
 /// appended to @p roots: on a certified box the one root the ends bracket, or
 /// with two roots per line the roots on either side of the extreme point;
@@ -2428,6 +2501,114 @@ void curved_roots(Context<T>& ctx, const Func<T, D>& f, const VecD<T, D - 1>& yb
         roots.push_back(bracketed_root(c, L, U, L, U, gl, gu));
 }
 
+/// The folds near a certified level-2 box with height direction k: points where
+/// the zero set of a curved function turns back along k (f = d_k f = 0). Its
+/// height function has a square-root branch point at the fold's coordinate on
+/// the base line, which slows Gauss-Legendre points on the base segments that
+/// end near it. Each zero set is followed from where it leaves the box: Newton's
+/// method on (f, d_k f) starts at the points of the osculating circle there
+/// whose tangent runs along k. The base coordinates of the folds within
+/// fold_reach times the box's extent of it along the base line are appended
+/// (Options::anchor_folds).
+template <std::floating_point T>
+void fold_anchors(Context<T>& ctx, const Problem<T, 2>& p, int k, std::vector<T>& folds)
+{
+    const int j = 1 - k;
+    const T extent = p.hi[j] - p.lo[j], size = std::max(extent, p.hi[k] - p.lo[k]);
+    if (!(size > T(0)))
+        return;
+    const T eps = T(1e-5) * size;
+    // gradient and Hessian at y divided by the gradient's largest component, so
+    // that level sets scaled by 1e+-200 give the same folds; 0 if singular
+    const auto local = [&](const Func<T, 2>& f, const VecD<T, 2>& y, VecD<T, 2>& g, std::array<VecD<T, 2>, 2>& h)
+    {
+        func_gradient<T, 2>(ctx, f, y, g);
+        const T scale = std::max(std::abs(g[0]), std::abs(g[1]));
+        if (!(scale > T(0)) || !(scale < infinity<T>))
+            return T(0);
+        for (int d = 0; d < 2; ++d)
+        {
+            VecD<T, 2> yp = y, ym = y, gp, gm;
+            yp[d] += eps;
+            ym[d] -= eps;
+            func_gradient<T, 2>(ctx, f, yp, gp);
+            func_gradient<T, 2>(ctx, f, ym, gm);
+            for (int e = 0; e < 2; ++e)
+                h[d][e] = (gp[e] - gm[e]) / (2 * eps * scale);
+        }
+        h[0][1] = h[1][0] = T(0.5) * (h[0][1] + h[1][0]);
+        g[0] /= scale;
+        g[1] /= scale;
+        return scale;
+    };
+    std::vector<T>& exits = ctx.nodes[2];
+    std::vector<VecD<T, 2>> starts;
+    for (const Func<T, 2>& f : p.funcs)
+    {
+        if (f.linear || ctx.flat[static_cast<std::size_t>(f.ls)])
+            continue;
+        // where the zero set leaves the box: its roots on the four sides
+        starts.clear();
+        for (int side = 0; side < 2; ++side)
+            for (const int along : {j, k})
+            {
+                const int across = 1 - along;
+                const T c = side == 0 ? p.lo[across] : p.hi[across];
+                exits.clear();
+                curved_roots<T, 2>(ctx, f, VecD<T, 1>{c}, along, p.lo[along], p.hi[along], false, false, ctx.line[2],
+                                   exits);
+                for (const T t : exits)
+                    starts.push_back(insert<T, 2>(VecD<T, 1>{c}, along, t));
+            }
+        for (const VecD<T, 2>& start : starts)
+        {
+            VecD<T, 2> g;
+            std::array<VecD<T, 2>, 2> h;
+            if (local(f, start, g, h) == T(0))
+                continue;
+            const T gn = std::sqrt(g[0] * g[0] + g[1] * g[1]);
+            // signed curvature div(grad f / |grad f|): the centre is at -n / kappa
+            const T kappa = (h[j][j] * g[k] * g[k] - 2 * h[j][k] * g[j] * g[k] + h[k][k] * g[j] * g[j]) / (gn * gn * gn);
+            if (!(std::abs(kappa) * size > T(1e-6)))
+                continue; // straight there: no fold near
+            const T radius = T(1) / std::abs(kappa);
+            VecD<T, 2> centre;
+            for (int d = 0; d < 2; ++d)
+                centre[d] = start[d] - g[d] / (gn * kappa);
+            for (const T side : {T(-1), T(1)})
+            {
+                VecD<T, 2> y = centre;
+                y[j] += side * radius;
+                if (y[j] < p.lo[j] - (fold_reach<T> + 1) * extent || y[j] > p.hi[j] + (fold_reach<T> + 1) * extent)
+                    continue;
+                bool converged = false;
+                for (int it = 0; it < 12 && !converged; ++it)
+                {
+                    const T scale = local(f, y, g, h);
+                    if (scale == T(0))
+                        break;
+                    // Newton on (f, d_k f) in (y_j, y_k)
+                    const T r1 = value<T, 2>(ctx, f, y) / scale, r2 = g[k];
+                    const T det = g[j] * h[k][k] - g[k] * h[k][j];
+                    if (!(std::abs(det) > T(0)))
+                        break;
+                    const T dj = (r1 * h[k][k] - g[k] * r2) / det, dk = (g[j] * r2 - h[k][j] * r1) / det;
+                    y[j] -= dj;
+                    y[k] -= dk;
+                    if (!(std::abs(y[j]) + std::abs(y[k]) < infinity<T>))
+                        break;
+                    converged = std::abs(dj) + std::abs(dk) <= T(1e-12) * size;
+                }
+                if (converged && y[j] >= p.lo[j] - fold_reach<T> * extent && y[j] <= p.hi[j] + fold_reach<T> * extent)
+                    folds.push_back(y[j]);
+            }
+        }
+    }
+    std::sort(folds.begin(), folds.end());
+    folds.erase(std::unique(folds.begin(), folds.end(), [&](T a, T b) { return b - a <= T(1e-10) * size; }),
+                folds.end());
+}
+
 /// Does a top-level point satisfy one of the terms left on its box? Values of
 /// the level sets come from their forms on the current line where they exist.
 template <std::floating_point T>
@@ -2494,10 +2675,11 @@ void crossing_points(Context<T>& ctx, const Problem<T, 1>& p, T L, T U, const Em
 }
 
 /// One free coordinate: Gauss-Legendre on the segments between bounds and
-/// roots; the derivative of the points along their coordinate is 1. Below the
-/// top of a 2D cell (Points), a curve part's crossing points instead.
+/// roots, anchored at the given folds of the level above (anchored_nodes); the
+/// derivative of the points along their coordinate is 1. Below the top of a 2D
+/// cell (Points), a curve part's crossing points instead.
 template <std::floating_point T, bool Points, typename Emit>
-void integrate_line(Context<T>& ctx, const Problem<T, 1>& p, const Emit& emit)
+void integrate_line(Context<T>& ctx, const Problem<T, 1>& p, const Emit& emit, const std::vector<T>* folds = nullptr)
 {
     T L = p.lo[0], U = p.hi[0];
     for (const Half<T, 1>& h : p.clips)
@@ -2558,12 +2740,15 @@ void integrate_line(Context<T>& ctx, const Problem<T, 1>& p, const Emit& emit)
         if (b - a <= segment_tol<T>)
             continue;
         tag.segment[0] = segment++;
-        segment_nodes(ctx, a, b,
-                      [&](int j, T t, T w)
-                      {
-                          tag.node[0] = j;
-                          emit(VecD<T, 1>{t}, w, tag, VecD<T, 1>{T(1)});
-                      });
+        const auto node = [&](int j, T t, T w)
+        {
+            tag.node[0] = j;
+            emit(VecD<T, 1>{t}, w, tag, VecD<T, 1>{T(1)});
+        };
+        if (folds != nullptr && ctx.vis_order == 0)
+            anchored_nodes(ctx, a, b, *folds, node, [&] { tag.segment[0] = segment++; });
+        else
+            segment_nodes(ctx, a, b, node);
     }
 }
 
@@ -2772,6 +2957,8 @@ void swap_rules(Context<T>& ctx)
 {
     std::swap(ctx.gauss_x, ctx.check_x);
     std::swap(ctx.gauss_w, ctx.check_w);
+    std::swap(ctx.fold_x, ctx.fold_check_x);
+    std::swap(ctx.fold_w, ctx.fold_check_w);
     ctx.q = static_cast<int>(ctx.gauss_x.size());
 }
 
@@ -3029,6 +3216,13 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                     surface_crossings<T>(ctx, p.surfaces[i], p.surfaces[j], k, p.lo[k], p.hi[k], base_box.lo[0],
                                          base_box.hi[0], corners);
     }
+
+    // the folds of the curved functions near a certified level-2 box, at which
+    // the segments of its base line are anchored (Options::anchor_folds)
+    std::vector<T> folds;
+    if constexpr (D == 2)
+        if (ctx.opt.anchor_folds > 0 && certified && ctx.vis_order == 0)
+            fold_anchors<T>(ctx, p, k, folds);
 
     // The base of the height lines between the given lower and upper bounds, on
     // the base polytope cut by the given clips: its functions are where the
@@ -3383,7 +3577,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             }
         };
         if constexpr (D == 2)
-            integrate_line<T, Top == 2>(ctx, base, line);
+            integrate_line<T, Top == 2>(ctx, base, line, folds.empty() ? nullptr : &folds);
         else
             integrate_box<T, D - 1, false, Top>(ctx, std::move(base), line, 0, false);
     };
@@ -3755,6 +3949,8 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     }
     if (vis_order == 0 && q < 1)
         throw std::invalid_argument("quadrays: at least one Gauss point per segment is needed");
+    if (opt.anchor_folds < 0 || opt.anchor_folds > 4)
+        throw std::invalid_argument("quadrays: anchor_folds is 0 (off) to 4");
 
     thread_local Context<T> ctx;
     const std::size_t n = phis.size();
@@ -3818,6 +4014,13 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     {
         gauss_legendre<T>(q, ctx.gauss_x, ctx.gauss_w);
         ctx.q = q;
+    }
+    if (vis_order == 0 && opt.anchor_folds > 0)
+    {
+        if (static_cast<int>(ctx.fold_x.size()) != opt.anchor_folds * q)
+            gauss_legendre<T>(opt.anchor_folds * q, ctx.fold_x, ctx.fold_w);
+        if (static_cast<int>(ctx.fold_check_x.size()) != opt.anchor_folds * (q + 1))
+            gauss_legendre<T>(opt.anchor_folds * (q + 1), ctx.fold_check_x, ctx.fold_check_w);
     }
     ctx.flat.assign(n, 0);
     for (std::size_t l = 0; l < n; ++l)

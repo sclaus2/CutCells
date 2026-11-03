@@ -143,6 +143,33 @@ def test_curved_pieces_converge_under_refinement(kind):
     assert last_unchecked > 0.1 * first_unchecked
 
 
+@pytest.mark.parametrize("kind", ["hex", "tet"])
+def test_anchored_folds_cut_the_cells_errors(kind):
+    """Prototype (QuadraysOptions.anchor_folds): where a face trace of the
+    sphere turns back along the height direction near a base segment (a
+    fold), the segment's Gauss points are taken in s, x = x_f -+ s^2,
+    anchored at the fold. Without the accuracy check, the cells' errors fall
+    far below those of the plain points, for a few more points with n = 1,
+    and complementary volumes still add up to the box."""
+    make = {"hex": cutcells.structured_hexahedron_mesh_view, "tet": cutcells.structured_tetrahedron_mesh_view}
+    phi = cutcells.analytic_sphere([0.1, -0.05, 0.03], 0.6, name="b")
+    result = cutcells.cut(make[kind](-1, -1, -1, 1, 1, 1, 17, 17, 17), phi)
+    reference = cutcells.QuadraysOptions()
+    reference.points_per_segment = 14
+    plain, anchored = cutcells.QuadraysOptions(), cutcells.QuadraysOptions()
+    plain.tolerance = anchored.tolerance = -1
+    anchored.anchor_folds = 1
+    for part in (result[phi == 0], result[phi < 0]):
+        exact = cell_totals(part.quadrature(order=6, options=reference))
+        assert cell_error(part, anchored, exact) < cell_error(part, plain, exact) / 20
+        points = len(part.quadrature(order=6, options=anchored).weights)
+        assert points < 1.5 * len(part.quadrature(order=6, options=plain).weights)
+    anchored.anchor_folds = 2
+    inside = result[phi < 0].quadrature(order=6, options=anchored)
+    outside = result[phi > 0].quadrature(order=6, options=anchored)
+    assert np.sum(inside.weights) + np.sum(outside.weights) == pytest.approx(8.0, rel=1e-13)
+
+
 def test_flat_pieces_get_no_extra_points():
     mesh = cutcells.structured_tetrahedron_mesh_view(-1, -1, -1, 1, 1, 1, 5, 5, 5)
     phi = plane_callables([1.0, 0.3, -0.2], 0.137)

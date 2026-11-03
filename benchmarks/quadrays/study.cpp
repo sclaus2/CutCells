@@ -24,7 +24,8 @@
 //                  [--analytic distance|quadratic] [--tape file] [--frame reference|orthogonal]
 //
 // Generators: quadrays (margin 0.25) or quadrays:<margin>[:<tolerance>]
-// (Options::tolerance, -1 for no accuracy check); with
+// (Options::tolerance, -1 for no accuracy check), quadrays-f<n>[:...] with
+// Options::anchor_folds = n; with
 // CUTCELLS_WITH_ALGOIM also algoim-auto, algoim-gl, gl-cellmask, alpha, split,
 // alpha-split and quadgen (hex only). Analytic level sets: quadrays and quadgen.
 //
@@ -216,6 +217,9 @@ bool is_quadrays(const std::string& gen) { return gen.rfind("quadrays", 0) == 0;
 Options quadrays_options(const std::string& gen, const StudyConfig& cfg)
 {
     Options opt;
+    // quadrays-f<n>...: Options::anchor_folds = n
+    if (gen.rfind("quadrays-f", 0) == 0 && gen.size() > 10 && gen[10] >= '0' && gen[10] <= '9')
+        opt.anchor_folds = gen[10] - '0';
     if (const std::size_t colon = gen.find(':'); colon != std::string::npos)
     {
         const std::size_t second = gen.find(':', colon + 1);

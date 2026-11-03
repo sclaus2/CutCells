@@ -55,6 +55,19 @@ struct Options
     /// that the error falls as h^(2q) and pieces that converge as expected
     /// are not bisected. < 0: no check. Flat pieces are not checked.
     double tolerance = 0;
+    /// Prototype. On a box with two free coordinates, where the zero set of a
+    /// curved function turns back along the height direction (a fold, where
+    /// d_k psi = 0) at or within four segment lengths beyond an end of a base
+    /// segment, its height function has a square-root branch point there, and
+    /// Gauss-Legendre points in x converge slowly. n > 0: such segments take
+    /// n q Gauss-Legendre points in s, x = x_f -+ s^2 anchored at the fold x_f,
+    /// which makes the integrand analytic; with folds beyond both ends, each
+    /// half takes its own. They integrate polynomials of degree n q - 1 in x
+    /// exactly (q points: 2 q - 1), so n = 2 keeps the degree. Folds of the
+    /// zero set of a 3D cell's level set itself (where its normal turns
+    /// perpendicular to the height direction beyond the box) are not anchored.
+    /// 0: off.
+    int anchor_folds = 0;
     /// Bisections allowed per level along a branch. Bernstein bounds certify
     /// after a few; Taylor models of an analytic level set, a distance function
     /// in particular, need boxes small against the radius of curvature, which
