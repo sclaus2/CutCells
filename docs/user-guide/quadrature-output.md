@@ -52,7 +52,11 @@ A piece of a part can lie exactly on a facet, an edge or a vertex of the mesh:
 a plane through grid faces, two grid planes meeting along a mesh edge, two
 lines crossing at a mesh vertex. Such a piece belongs to every cell sharing
 that entity. CutCells integrates it once, on the entity, and the cells keep to
-their interiors:
+their interiors. Another level set may cut the entity, as a ball cuts the grid
+faces of a plane through its centre in `(plane == 0) & (ball < 0)`: quadrays
+then integrates the piece on the entity as a cell of its own, with the other
+level sets restricted to it, with either backend. Visualisation meshes show
+it too.
 
 ```python
 result = cutcells.cut(mesh, plane)          # x = 0.25, on grid faces

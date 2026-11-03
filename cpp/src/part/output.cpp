@@ -766,6 +766,175 @@ int points_per_segment(int order, int dim, const quadrays::Options& options)
     return std::max(1, (order + std::max(dim, 0) + 1) / 2);
 }
 
+/// Points of a lattice of degree @p k on the reference cell of an entity
+/// (interval, triangle or quadrilateral), as many as its polynomials: flat,
+/// tdim each.
+template <std::floating_point T>
+std::vector<T> entity_lattice(cell::type type, int k)
+{
+    std::vector<T> x;
+    const T h = T(1) / T(k);
+    if (type == cell::type::interval)
+        for (int i = 0; i <= k; ++i)
+            x.push_back(T(i) * h);
+    else
+        for (int j = 0; j <= k; ++j)
+            for (int i = 0; i <= (type == cell::type::triangle ? k - j : k); ++i)
+            {
+                x.push_back(T(i) * h);
+                x.push_back(T(j) * h);
+            }
+    return x;
+}
+
+/// An entity a part holds a part of, as quadrays integrates it: the entity as
+/// a cell of its own, the level sets that cut all its sharing cells on it, and
+/// the terms on them. Reused from entity to entity.
+template <std::floating_point T, std::integral I>
+struct PartialEntity
+{
+    quadrays::ClippedBox<T> box;
+    std::vector<quadrays::BoxBernstein<T>> forms;
+    std::vector<quadrays::Source<T>> sources;
+    std::vector<SelectionTerm> terms;
+    std::vector<int> level_sets;
+    std::vector<T> vertices; ///< chart order, gdim per vertex
+    std::vector<T> values, coeffs;
+    CellSource<T, I> cs;
+};
+
+/// Fills @p pe for entity @p e of the part's dimension (MeshPart::partial_entities).
+/// An analytic level set is taken as it is; an interpolated one as its
+/// polynomial on a sharing cell restricted to the entity, in the Bernstein
+/// form of the entity's type.
+template <std::floating_point T, std::integral I>
+void partial_entity(const MeshPart<T, I>& part, std::int32_t e, PartialEntity<T, I>& pe)
+{
+    const CutResult<T, I>& r = *part.result;
+    const MeshView<T, I>& mesh = *r.mesh;
+    const EntityTable<I>& table = r.entities[static_cast<std::size_t>(part.dim)];
+    const cell::type type = table.types[static_cast<std::size_t>(e)];
+    if (!quadrays::supported_cell(type))
+        throw std::invalid_argument(quadrays_cells);
+
+    // the terms on the entity: their clauses on the level sets that cut it
+    std::uint64_t named = 0, cutting = 0;
+    for (const SelectionTerm& term : part.expr.terms)
+        if (term_on_entity(term, r, table, e, cutting) == TermEntity::part)
+            named |= cutting;
+    std::array<int, 64> local;
+    local.fill(-1);
+    pe.level_sets.clear();
+    for (std::uint64_t bits = named; bits != 0; bits &= bits - 1)
+    {
+        local[static_cast<std::size_t>(std::countr_zero(bits))] = static_cast<int>(pe.level_sets.size());
+        pe.level_sets.push_back(std::countr_zero(bits));
+    }
+    auto to_local = [&](std::uint64_t mask)
+    {
+        std::uint64_t m = 0;
+        for (std::uint64_t bits = mask; bits != 0; bits &= bits - 1)
+            m |= std::uint64_t(1) << local[static_cast<std::size_t>(std::countr_zero(bits))];
+        return m;
+    };
+    pe.terms.clear();
+    for (const SelectionTerm& term : part.expr.terms)
+        if (term_on_entity(term, r, table, e, cutting) == TermEntity::part)
+        {
+            SelectionTerm t;
+            t.negative_required = to_local(term.negative_required & cutting);
+            t.positive_required = to_local(term.positive_required & cutting);
+            pe.terms.push_back(t);
+        }
+
+    // the entity as a cell, and the level sets on it
+    pe.vertices.clear();
+    for (const I n : table.entity_nodes(e))
+        pe.vertices.insert(pe.vertices.end(), mesh.node(n), mesh.node(n) + mesh.gdim);
+    quadrays::make_clipped_box<T>(type, std::span<const T>(pe.vertices), mesh.gdim, pe.box);
+    const I sharing = table.entity_cells(e)[0];
+    const int tdim = cell::get_tdim(type);
+    if (pe.forms.size() < pe.level_sets.size())
+        pe.forms.resize(pe.level_sets.size());
+    pe.sources.clear();
+    for (std::size_t l = 0; l < pe.level_sets.size(); ++l)
+    {
+        const LevelSetFunction<T, I>& ls = *r.level_sets[static_cast<std::size_t>(pe.level_sets[l])];
+        if (ls.analytic)
+        {
+            pe.sources.push_back(quadrays::analytic_source<T>(*ls.analytic, pe.box));
+            continue;
+        }
+        if (!cell_source(mesh, ls, sharing, pe.cs))
+            throw std::invalid_argument(quadrays_cells);
+        const int degree = std::max(1, pe.cs.ls_cell.bernstein_order);
+        const std::vector<T> lattice = entity_lattice<T>(type, degree);
+        const quadrays::Mat3<T> inv = quadrays::inverse_jacobian(pe.cs.box);
+        pe.values.clear();
+        for (std::size_t p = 0; p < lattice.size() / static_cast<std::size_t>(tdim); ++p)
+        {
+            quadrays::Vec3<T> xi = {0, 0, 0};
+            for (std::size_t i = 0; i < static_cast<std::size_t>(tdim); ++i)
+                xi[i] = lattice[p * static_cast<std::size_t>(tdim) + i];
+            // the lattice point in the sharing cell's box coordinates
+            const quadrays::Vec3<T> y = quadrays::physical_point(pe.box, quadrays::box_point(pe.box, xi));
+            quadrays::Vec3<T> u = {0, 0, 0};
+            for (std::size_t i = 0; i < 3; ++i)
+                for (std::size_t j = 0; j < 3; ++j)
+                    u[i] += inv[i][j] * (y[j] - pe.cs.box.origin[j]);
+            pe.values.push_back(quadrays::evaluate(pe.cs.source, std::span<const T>(u)));
+        }
+        bernstein::lagrange_to_bernstein<T>(type, degree, std::span<const T>(lattice), std::span<const T>(pe.values),
+                                            pe.coeffs);
+        quadrays::cell_bernstein_on_box<T>(type, degree, std::span<const T>(pe.coeffs), pe.box, pe.forms[l]);
+        pe.sources.push_back(quadrays::bernstein_source(pe.forms[l]));
+    }
+}
+
+/// Appends to @p entities[part.dim] the rules of the entities @p part holds a
+/// part of (MeshPart::partial_entities), integrated by quadrays on each entity
+/// as a cell of its own (partial_entity). Points are in the entity's chart.
+template <std::floating_point T, std::integral I>
+void append_partial_entities(const MeshPart<T, I>& part, int order, const quadrays::Options& options,
+                             std::vector<EntityRules<T>>& entities)
+{
+    const CutResult<T, I>& r = *part.result;
+    if (part.dim < 1 || part.dim >= r.tdim() || part.partial_entities[static_cast<std::size_t>(part.dim)].empty())
+        return;
+    const std::size_t d = static_cast<std::size_t>(part.dim);
+    const EntityTable<I>& table = r.entities[d];
+    EntityRules<T>& rules = entities[d];
+    const int q = points_per_segment(order, part.dim, options);
+    PartialEntity<T, I> pe;
+    quadrays::CellPoints<T> points;
+    quadrays::Stats stats;
+    for (std::size_t k = 0; k < part.partial_entities[d].size(); ++k)
+    {
+        const std::int32_t e = part.partial_entities[d][k];
+        partial_entity(part, e, pe);
+        points.points.clear();
+        points.weights.clear();
+        quadrays::integrate(pe.box, std::span<const quadrays::Source<T>>(pe.sources),
+                            std::span<const SelectionTerm>(pe.terms), q, options, points, stats);
+        if (points.n_points() == 0)
+            continue;
+        rules.entity_types.push_back(table.types[static_cast<std::size_t>(e)]);
+        for (const I n : table.entity_nodes(e))
+            rules.entity_nodes.push_back(static_cast<std::int32_t>(n));
+        rules.node_offsets.push_back(static_cast<std::int32_t>(rules.entity_nodes.size()));
+        rules.zero.push_back(part.partial_entity_zero[d][k]);
+        for (int p = 0; p < points.n_points(); ++p)
+        {
+            const quadrays::Vec3<T> u = {points.points[3 * p], points.points[3 * p + 1], points.points[3 * p + 2]};
+            const quadrays::Vec3<T> xi = quadrays::reference_point(pe.box, u);
+            rules.points.insert(rules.points.end(), xi.begin(), xi.begin() + part.dim);
+            rules.weights.push_back(points.weights[static_cast<std::size_t>(p)]);
+        }
+        rules.offsets.push_back(static_cast<std::int32_t>(rules.weights.size()));
+        append_sharing_cells(*r.mesh, table, e, rules);
+    }
+}
+
 // ============================================================================
 // Cell rules and entity rules of a part
 // ============================================================================
@@ -786,6 +955,7 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
     rules._tdim = r.num_cells > 0 ? r.tdim() : 3;
     rules._offset.push_back(0);
     entities = whole_entities(part, degree);
+    append_partial_entities(part, order, options, entities);
     // a curve in 3D lying in a face or an edge of a cell is that entity's
     const bool curves = part.dim == 1 && rules._tdim == 3;
     const std::vector<Entry<I>> entries = part_entries(part, include_uncut_cells);
@@ -863,6 +1033,7 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
     rules._tdim = r.num_cells > 0 ? r.tdim() : 3;
     rules._offset.push_back(0);
     entities = whole_entities(part, degree);
+    append_partial_entities(part, order, quadrays::Options{}, entities);
     const std::vector<Entry<I>> entries = part_entries(part, include_uncut_cells);
     lut::CellMap<T> map;
     std::vector<I> scratch, nodes;
@@ -998,7 +1169,9 @@ std::vector<EntityRules<T>> entity_rules(const MeshPart<T, I>& part, int order, 
     if (!(part.dim == 0 && part.result->tdim() == 2))
     {
         check_quadrays(part);
-        return whole_entities(part, exact_degree(order));
+        std::vector<EntityRules<T>> entities = whole_entities(part, exact_degree(order));
+        append_partial_entities(part, order, options, entities);
+        return entities;
     }
     quadrature::QuadratureRules<T> cells;
     std::vector<EntityRules<T>> on_entities;
@@ -1012,7 +1185,9 @@ std::vector<EntityRules<T>> entity_rules(const MeshPart<T, I>& part, int order, 
     if (!(part.dim == 0 && part.result->tdim() == 2))
     {
         check_lut(part, options);
-        return whole_entities(part, exact_degree(order));
+        std::vector<EntityRules<T>> entities = whole_entities(part, exact_degree(order));
+        append_partial_entities(part, order, quadrays::Options{}, entities);
+        return entities;
     }
     quadrature::QuadratureRules<T> cells;
     std::vector<EntityRules<T>> on_entities;
@@ -1064,6 +1239,19 @@ quadrays::LeafMesh<T> visualization_mesh(const MeshPart<T, I>& part, int degree,
     }
     emit_entities(part, [&](cell::type type, std::span<const T> x, std::int32_t parent)
                   { quadrays::append_linear_cell<T>(type, x, mesh.gdim, parent, leaves); });
+    // the entities it holds a part of, as leaves on each entity
+    if (part.dim >= 1 && part.dim < r.tdim())
+    {
+        const EntityTable<I>& table = r.entities[static_cast<std::size_t>(part.dim)];
+        PartialEntity<T, I> pe;
+        for (const std::int32_t e : part.partial_entities[static_cast<std::size_t>(part.dim)])
+        {
+            partial_entity(part, e, pe);
+            quadrays::append_leaves(pe.box, std::span<const quadrays::Source<T>>(pe.sources),
+                                    std::span<const SelectionTerm>(pe.terms), degree, options,
+                                    static_cast<std::int32_t>(table.entity_cells(e)[0]), leaves, stats);
+        }
+    }
     return leaves;
 }
 
