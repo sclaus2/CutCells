@@ -63,10 +63,12 @@ struct Options
     /// n q Gauss-Legendre points in s, x = x_f -+ s^2 anchored at the fold x_f,
     /// which makes the integrand analytic; with folds beyond both ends, each
     /// half takes its own. They integrate polynomials of degree n q - 1 in x
-    /// exactly (q points: 2 q - 1), so n = 2 keeps the degree. Folds of the
-    /// zero set of a 3D cell's level set itself (where its normal turns
-    /// perpendicular to the height direction beyond the box) are not anchored.
-    /// 0: off.
+    /// exactly (q points: 2 q - 1), so n = 2 keeps the degree. Below a 3D box,
+    /// the zero set of its level set turns back along its height direction
+    /// where its normal turns perpendicular to it, beyond the box (its
+    /// silhouette): the height lines of the base boxes are anchored likewise
+    /// at the silhouette's coordinate on them, and their base segments where
+    /// it crosses the lines' bounds. 0: off.
     int anchor_folds = 0;
     /// Bisections allowed per level along a branch. Bernstein bounds certify
     /// after a few; Taylor models of an analytic level set, a distance function

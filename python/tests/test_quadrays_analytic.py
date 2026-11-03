@@ -170,6 +170,27 @@ def test_anchored_folds_cut_the_cells_errors(kind):
     assert np.sum(inside.weights) + np.sum(outside.weights) == pytest.approx(8.0, rel=1e-13)
 
 
+@pytest.mark.parametrize("kind", ["hex", "tet"])
+def test_anchored_folds_follow_the_silhouette(kind):
+    """Prototype (QuadraysOptions.anchor_folds): on coarse cells the sphere
+    turns perpendicular to a box's height direction just beyond the box (its
+    silhouette), where the height function has a square-root branch point
+    too. The height lines of the base boxes are anchored at it, and their
+    base segments where it crosses the lines' bounds: with n = 2 the cells'
+    surface errors fall far below those the accuracy check leaves."""
+    make = {"hex": cutcells.structured_hexahedron_mesh_view, "tet": cutcells.structured_tetrahedron_mesh_view}
+    phi = cutcells.analytic_sphere([0.1, -0.05, 0.03], 0.6, name="b")
+    part = cutcells.cut(make[kind](-1, -1, -1, 1, 1, 1, 9, 9, 9), phi)[phi == 0]
+    reference, anchored = cutcells.QuadraysOptions(), cutcells.QuadraysOptions()
+    reference.tolerance = anchored.tolerance = -1
+    reference.anchor_folds = anchored.anchor_folds = 2
+    reference.points_per_segment = 14
+    exact = cell_totals(part.quadrature(order=6, options=reference))
+    error = cell_error(part, anchored, exact)
+    assert error < 1e-10
+    assert error < cell_error(part, cutcells.QuadraysOptions(), exact) / 1000
+
+
 def test_flat_pieces_get_no_extra_points():
     mesh = cutcells.structured_tetrahedron_mesh_view(-1, -1, -1, 1, 1, 1, 5, 5, 5)
     phi = plane_callables([1.0, 0.3, -0.2], 0.137)

@@ -89,7 +89,7 @@ constexpr T accuracy_floor = scaled_tolerance<T>(1e-13);
 /// level_margin: the margin of a level with D free coordinates is at most margin_cap / sqrt(D).
 template <std::floating_point T>
 constexpr T margin_cap = T(0.9);
-/// A fold anchors the rule of a base segment that ends within this many segment
+/// A fold anchors the rule of a segment that ends within this many segment
 /// lengths of it (anchored_nodes, fold_anchors).
 template <std::floating_point T>
 constexpr T fold_reach = T(4);
@@ -151,6 +151,20 @@ struct Surface
     T t_lo = 0, t_hi = 0;
 };
 
+/// A curved function of the level above, of this level's coordinates and t,
+/// its coordinate k: its roots on the height lines above, t in [t_lo, t_hi],
+/// are the height function of the integrand along them. Where its zero set
+/// turns back along t (f = d_t f = 0; a surface's silhouette seen along t),
+/// beyond the box, that height function has a square-root branch point
+/// (Options::anchor_folds).
+template <typename T, int D>
+struct Height
+{
+    Func<T, D + 1> f;
+    int k = 0;
+    T t_lo = 0, t_hi = 0;
+};
+
 /// c . y <= d
 template <typename T, int D>
 struct Half
@@ -166,6 +180,10 @@ struct Problem
     std::vector<Func<T, D>> funcs;
     std::vector<Surface<T, D>> surfaces;
     std::vector<Half<T, D>> clips;
+    /// Below a certified 3D box: the curved functions whose roots its height
+    /// lines take, at whose folds the height lines here are anchored
+    /// (Options::anchor_folds).
+    std::vector<Height<T, D>> heights;
     /// Top level: the map from the level's coordinates to box coordinates (the
     /// identity, or a rotation of it).
     Func<T, D> frame;
@@ -442,6 +460,24 @@ Func<T, D - 1> difference(const Bound<T, D>& b1, const Bound<T, D>& b2)
     return r;
 }
 
+/// A function of the level above, whose coordinate kt is t, restricted to
+/// y_k = alpha + beta . y' of this level: along the same coordinate among its
+/// inner coordinates, which leaves t at @p rk.
+template <typename T, int D>
+Func<T, D> restrict_inner(const Func<T, D + 1>& f, int kt, int k, const Bound<T, D>& b, int& rk)
+{
+    // y_k among the inner coordinates insert(y, kt, t), and t after removing it
+    const int K = k < kt ? k : k + 1;
+    rk = k < kt ? kt - 1 : kt;
+    Bound<T, D + 1> inner;
+    inner.alpha = b.alpha;
+    inner.kind = b.kind;
+    for (int jb = 0; jb < D - 1; ++jb)
+        inner.beta[jb < rk ? jb : jb + 1] = b.beta[jb];
+    inner.beta[rk] = T(0);
+    return restrict_to<T, D + 1>(f, K, inner);
+}
+
 /// A surface function restricted to y_k = alpha + beta . y': its inner
 /// functions restricted along the same coordinate.
 template <typename T, int D>
@@ -451,18 +487,49 @@ Surface<T, D - 1> restrict_surface(const Surface<T, D>& s, int k, const Bound<T,
     r.origin = (s.origin << 4) | static_cast<std::uint32_t>(b.kind);
     r.t_lo = s.t_lo;
     r.t_hi = s.t_hi;
-    // y_k among the inner coordinates insert(y, s.k, t), and t after removing it
-    const int K = k < s.k ? k : k + 1;
-    r.k = k < s.k ? s.k - 1 : s.k;
-    Bound<T, D + 1> inner;
-    inner.alpha = b.alpha;
-    inner.kind = b.kind;
-    for (int jb = 0; jb < D - 1; ++jb)
-        inner.beta[jb < r.k ? jb : jb + 1] = b.beta[jb];
-    inner.beta[r.k] = T(0);
-    r.under = restrict_to<T, D + 1>(s.under, K, inner);
-    r.on = restrict_to<T, D + 1>(s.on, K, inner);
+    r.under = restrict_inner<T, D>(s.under, s.k, k, b, r.k);
+    r.on = restrict_inner<T, D>(s.on, s.k, k, b, r.k);
     return r;
+}
+
+/// A height function restricted to y_k = alpha + beta . y', likewise.
+template <typename T, int D>
+Height<T, D - 1> restrict_height(const Height<T, D>& h, int k, const Bound<T, D>& b)
+{
+    Height<T, D - 1> r;
+    r.t_lo = h.t_lo;
+    r.t_hi = h.t_hi;
+    r.f = restrict_inner<T, D>(h.f, h.k, k, b, r.k);
+    return r;
+}
+
+/// A function of the level above, whose coordinate kt is t, on the plane
+/// through the line y = insert(yb, k, tau) of this level and t: a function of
+/// (tau, t).
+template <typename T, int D>
+Func<T, 2> line_plane(const Func<T, D + 1>& f, const VecD<T, D - 1>& yb, int k, int kt)
+{
+    const int K = k < kt ? k : k + 1; // tau among the inner coordinates
+    // the inner coordinates at tau = 0 and t = 0
+    const VecD<T, D + 1> y0 = insert<T, D + 1>(insert<T, D>(yb, k, T(0)), kt, T(0));
+    Func<T, 2> g;
+    g.origin = f.origin;
+    g.linear = f.linear;
+    g.ls = f.ls;
+    if (f.linear)
+    {
+        g.a = {f.a[K], f.a[kt]};
+        g.c = f.c;
+        for (int j = 0; j < D + 1; ++j)
+            g.c += f.a[j] * y0[j];
+    }
+    else
+    {
+        g.b = to_u<T, D + 1>(f, y0);
+        for (int i = 0; i < 3; ++i)
+            g.A[i] = {f.A[i][K], f.A[i][kt]};
+    }
+    return g;
 }
 
 /// A surface function along the line y = insert(yb, k, tau), as a surface
@@ -475,32 +542,8 @@ Surface<T, 1> surface_on_line(const Surface<T, D>& s, const VecD<T, D - 1>& yb, 
     r.t_lo = s.t_lo;
     r.t_hi = s.t_hi;
     r.k = 1;
-    const int K = k < s.k ? k : k + 1; // tau among the inner coordinates
-    // the inner coordinates at tau = 0 and t = 0
-    const VecD<T, D + 1> y0 = insert<T, D + 1>(insert<T, D>(yb, k, T(0)), s.k, T(0));
-    auto project = [&](const Func<T, D + 1>& f)
-    {
-        Func<T, 2> g;
-        g.origin = f.origin;
-        g.linear = f.linear;
-        g.ls = f.ls;
-        if (f.linear)
-        {
-            g.a = {f.a[K], f.a[s.k]};
-            g.c = f.c;
-            for (int j = 0; j < D + 1; ++j)
-                g.c += f.a[j] * y0[j];
-        }
-        else
-        {
-            g.b = to_u<T, D + 1>(f, y0);
-            for (int i = 0; i < 3; ++i)
-                g.A[i] = {f.A[i][K], f.A[i][s.k]};
-        }
-        return g;
-    };
-    r.under = project(s.under);
-    r.on = project(s.on);
+    r.under = line_plane<T, D>(s.under, yb, k, s.k);
+    r.on = line_plane<T, D>(s.on, yb, k, s.k);
     return r;
 }
 
@@ -2155,19 +2198,30 @@ Problem<T, 2> rotate_diagonal(const Problem<T, 2>& p)
                 g.A[i] = transpose_times(f.A[i]);
         r.funcs.push_back(g);
     }
-    // surface functions: the two columns of y among the inner coordinates
+    // functions of the level above (surface functions, heights): the two
+    // columns of y among their inner coordinates, t being their coordinate k
+    const auto rotate_inner = [&transpose_times](Func<T, 3>& f, int k)
+    {
+        const int j0 = k == 0 ? 1 : 0, j1 = k == 2 ? 1 : 2;
+        for (int i = 0; i < 3; ++i)
+        {
+            const VecD<T, 2> c = transpose_times(VecD<T, 2>{f.A[i][j0], f.A[i][j1]});
+            f.A[i][j0] = c[0];
+            f.A[i][j1] = c[1];
+        }
+    };
     for (const Surface<T, 2>& s : p.surfaces)
     {
         Surface<T, 2> g = s;
-        const int j0 = s.k == 0 ? 1 : 0, j1 = s.k == 2 ? 1 : 2;
-        for (Func<T, 3>* f : {&g.under, &g.on})
-            for (int i = 0; i < 3; ++i)
-            {
-                const VecD<T, 2> c = transpose_times(VecD<T, 2>{f->A[i][j0], f->A[i][j1]});
-                f->A[i][j0] = c[0];
-                f->A[i][j1] = c[1];
-            }
+        rotate_inner(g.under, s.k);
+        rotate_inner(g.on, s.k);
         r.surfaces.push_back(g);
+    }
+    for (const Height<T, 2>& h : p.heights)
+    {
+        Height<T, 2> g = h;
+        rotate_inner(g.f, h.k);
+        r.heights.push_back(g);
     }
     return r;
 }
@@ -2225,21 +2279,32 @@ Problem<T, D> rotate_frame(const Problem<T, D>& p, const std::array<VecD<T, D>, 
     }
     if constexpr (D <= 2)
     {
-        // surface functions: the columns of y among the inner coordinates
+        // functions of the level above (surface functions, heights): the
+        // columns of y among their inner coordinates, t being their coordinate k
+        const auto rotate_inner = [&times](Func<T, D + 1>& f, int k)
+        {
+            for (int i = 0; i < 3; ++i)
+            {
+                VecD<T, D> c;
+                for (int j = 0; j < D; ++j)
+                    c[j] = f.A[i][j < k ? j : j + 1];
+                c = times(c);
+                for (int j = 0; j < D; ++j)
+                    f.A[i][j < k ? j : j + 1] = c[j];
+            }
+        };
         for (const Surface<T, D>& s : p.surfaces)
         {
             Surface<T, D> g = s;
-            for (Func<T, D + 1>* f : {&g.under, &g.on})
-                for (int i = 0; i < 3; ++i)
-                {
-                    VecD<T, D> c;
-                    for (int j = 0; j < D; ++j)
-                        c[j] = f->A[i][j < s.k ? j : j + 1];
-                    c = times(c);
-                    for (int j = 0; j < D; ++j)
-                        f->A[i][j < s.k ? j : j + 1] = c[j];
-                }
+            rotate_inner(g.under, s.k);
+            rotate_inner(g.on, s.k);
             r.surfaces.push_back(g);
+        }
+        for (const Height<T, D>& h : p.heights)
+        {
+            Height<T, D> g = h;
+            rotate_inner(g.f, h.k);
+            r.heights.push_back(g);
         }
     }
     return r;
@@ -2501,6 +2566,59 @@ void curved_roots(Context<T>& ctx, const Func<T, D>& f, const VecD<T, D - 1>& yb
         roots.push_back(bracketed_root(c, L, U, L, U, gl, gu));
 }
 
+/// The gradient and Hessian of f at y (forward differences of the gradient,
+/// step eps), divided by the gradient's largest component, so that level sets
+/// scaled by 1e+-200 give the same folds: that component, or 0 if singular.
+template <std::floating_point T>
+T fold_local(const Context<T>& ctx, const Func<T, 2>& f, const VecD<T, 2>& y, T eps, VecD<T, 2>& g,
+             std::array<VecD<T, 2>, 2>& h)
+{
+    func_gradient<T, 2>(ctx, f, y, g);
+    const T scale = std::max(std::abs(g[0]), std::abs(g[1]));
+    if (!(scale > T(0)) || !(scale < infinity<T>))
+        return T(0);
+    for (int d = 0; d < 2; ++d)
+    {
+        VecD<T, 2> yp = y, gp;
+        yp[d] += eps;
+        func_gradient<T, 2>(ctx, f, yp, gp);
+        for (int e = 0; e < 2; ++e)
+            h[d][e] = (gp[e] - g[e]) / (eps * scale);
+    }
+    h[0][1] = h[1][0] = T(0.5) * (h[0][1] + h[1][0]);
+    g[0] /= scale;
+    g[1] /= scale;
+    return scale;
+}
+
+/// Newton's method on (f, d_k f) in (y_j, y_k), j = 1 - k, from y: true if its
+/// steps fall below 1e-12 @p size within 12 iterations, y then the fold.
+template <std::floating_point T>
+bool fold_newton(const Context<T>& ctx, const Func<T, 2>& f, int k, T size, VecD<T, 2>& y)
+{
+    const int j = 1 - k;
+    VecD<T, 2> g;
+    std::array<VecD<T, 2>, 2> h;
+    for (int it = 0; it < 12; ++it)
+    {
+        const T scale = fold_local<T>(ctx, f, y, T(1e-5) * size, g, h);
+        if (scale == T(0))
+            return false;
+        const T r1 = value<T, 2>(ctx, f, y) / scale, r2 = g[k];
+        const T det = g[j] * h[k][k] - g[k] * h[k][j];
+        if (!(std::abs(det) > T(0)))
+            return false;
+        const T dj = (r1 * h[k][k] - g[k] * r2) / det, dk = (g[j] * r2 - h[k][j] * r1) / det;
+        y[j] -= dj;
+        y[k] -= dk;
+        if (!(std::abs(y[j]) + std::abs(y[k]) < infinity<T>))
+            return false;
+        if (std::abs(dj) + std::abs(dk) <= T(1e-12) * size)
+            return true;
+    }
+    return false;
+}
+
 /// The folds near a certified level-2 box with height direction k: points where
 /// the zero set of a curved function turns back along k (f = d_k f = 0). Its
 /// height function has a square-root branch point at the fold's coordinate on
@@ -2517,30 +2635,7 @@ void fold_anchors(Context<T>& ctx, const Problem<T, 2>& p, int k, std::vector<T>
     const T extent = p.hi[j] - p.lo[j], size = std::max(extent, p.hi[k] - p.lo[k]);
     if (!(size > T(0)))
         return;
-    const T eps = T(1e-5) * size;
-    // gradient and Hessian at y divided by the gradient's largest component, so
-    // that level sets scaled by 1e+-200 give the same folds; 0 if singular
-    const auto local = [&](const Func<T, 2>& f, const VecD<T, 2>& y, VecD<T, 2>& g, std::array<VecD<T, 2>, 2>& h)
-    {
-        func_gradient<T, 2>(ctx, f, y, g);
-        const T scale = std::max(std::abs(g[0]), std::abs(g[1]));
-        if (!(scale > T(0)) || !(scale < infinity<T>))
-            return T(0);
-        for (int d = 0; d < 2; ++d)
-        {
-            VecD<T, 2> yp = y, ym = y, gp, gm;
-            yp[d] += eps;
-            ym[d] -= eps;
-            func_gradient<T, 2>(ctx, f, yp, gp);
-            func_gradient<T, 2>(ctx, f, ym, gm);
-            for (int e = 0; e < 2; ++e)
-                h[d][e] = (gp[e] - gm[e]) / (2 * eps * scale);
-        }
-        h[0][1] = h[1][0] = T(0.5) * (h[0][1] + h[1][0]);
-        g[0] /= scale;
-        g[1] /= scale;
-        return scale;
-    };
+    const T reach = fold_reach<T> * extent;
     std::vector<T>& exits = ctx.nodes[2];
     std::vector<VecD<T, 2>> starts;
     for (const Func<T, 2>& f : p.funcs)
@@ -2564,7 +2659,7 @@ void fold_anchors(Context<T>& ctx, const Problem<T, 2>& p, int k, std::vector<T>
         {
             VecD<T, 2> g;
             std::array<VecD<T, 2>, 2> h;
-            if (local(f, start, g, h) == T(0))
+            if (fold_local<T>(ctx, f, start, T(1e-5) * size, g, h) == T(0))
                 continue;
             const T gn = std::sqrt(g[0] * g[0] + g[1] * g[1]);
             // signed curvature div(grad f / |grad f|): the centre is at -n / kappa
@@ -2579,27 +2674,9 @@ void fold_anchors(Context<T>& ctx, const Problem<T, 2>& p, int k, std::vector<T>
             {
                 VecD<T, 2> y = centre;
                 y[j] += side * radius;
-                if (y[j] < p.lo[j] - (fold_reach<T> + 1) * extent || y[j] > p.hi[j] + (fold_reach<T> + 1) * extent)
+                if (y[j] < p.lo[j] - reach - extent || y[j] > p.hi[j] + reach + extent)
                     continue;
-                bool converged = false;
-                for (int it = 0; it < 12 && !converged; ++it)
-                {
-                    const T scale = local(f, y, g, h);
-                    if (scale == T(0))
-                        break;
-                    // Newton on (f, d_k f) in (y_j, y_k)
-                    const T r1 = value<T, 2>(ctx, f, y) / scale, r2 = g[k];
-                    const T det = g[j] * h[k][k] - g[k] * h[k][j];
-                    if (!(std::abs(det) > T(0)))
-                        break;
-                    const T dj = (r1 * h[k][k] - g[k] * r2) / det, dk = (g[j] * r2 - h[k][j] * r1) / det;
-                    y[j] -= dj;
-                    y[k] -= dk;
-                    if (!(std::abs(y[j]) + std::abs(y[k]) < infinity<T>))
-                        break;
-                    converged = std::abs(dj) + std::abs(dk) <= T(1e-12) * size;
-                }
-                if (converged && y[j] >= p.lo[j] - fold_reach<T> * extent && y[j] <= p.hi[j] + fold_reach<T> * extent)
+                if (fold_newton<T>(ctx, f, k, size, y) && y[j] >= p.lo[j] - reach && y[j] <= p.hi[j] + reach)
                     folds.push_back(y[j]);
             }
         }
@@ -2607,6 +2684,52 @@ void fold_anchors(Context<T>& ctx, const Problem<T, 2>& p, int k, std::vector<T>
     std::sort(folds.begin(), folds.end());
     folds.erase(std::unique(folds.begin(), folds.end(), [&](T a, T b) { return b - a <= T(1e-10) * size; }),
                 folds.end());
+}
+
+/// The folds of the level above a level-2 box on its height line y =
+/// insert(yb, k, tau), tau in [L, U]: where the zero set of a height function
+/// (Problem::heights), in the plane through the line and the height direction
+/// above, turns back along that direction, beyond the box, where |d_t f| no
+/// longer has the margin (the silhouette of the level above, seen along it).
+/// The integrand along the line has a square-root branch point there; the
+/// coordinates tau of those near the line (fold_anchors on the plane) are
+/// appended.
+template <std::floating_point T>
+void height_folds(Context<T>& ctx, const std::vector<Height<T, 2>>& heights, const VecD<T, 1>& yb, int k, T L, T U,
+                  std::vector<T>& folds)
+{
+    Problem<T, 2> plane;
+    for (const Height<T, 2>& h : heights)
+    {
+        plane.lo = {L, h.t_lo};
+        plane.hi = {U, h.t_hi};
+        plane.funcs.assign(1, line_plane<T, 2>(h.f, yb, k, h.k));
+        fold_anchors<T>(ctx, plane, 1, folds);
+    }
+}
+
+/// The folds of the level above a level-2 box where its silhouette (see
+/// height_folds) crosses a bound of the height lines, y_k = alpha + beta x:
+/// there the branch point of the lines' integrand reaches their end, and the
+/// integrand of the base line has one too. The base coordinates of those near
+/// the base line [lo, hi] (fold_anchors on the plane through the bound and
+/// the height direction above) are appended.
+template <std::floating_point T>
+void bound_folds(Context<T>& ctx, const std::vector<Height<T, 2>>& heights, int k,
+                 const std::vector<Bound<T, 2>>& bounds, T lo, T hi, std::vector<T>& folds)
+{
+    Problem<T, 2> plane;
+    for (const Height<T, 2>& h : heights)
+        for (const Bound<T, 2>& b : bounds)
+        {
+            const Height<T, 1> r = restrict_height<T, 2>(h, k, b);
+            plane.lo[1 - r.k] = lo;
+            plane.hi[1 - r.k] = hi;
+            plane.lo[r.k] = r.t_lo;
+            plane.hi[r.k] = r.t_hi;
+            plane.funcs.assign(1, r.f);
+            fold_anchors<T>(ctx, plane, r.k, folds);
+        }
 }
 
 /// Does a top-level point satisfy one of the terms left on its box? Values of
@@ -3217,12 +3340,17 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                                          base_box.hi[0], corners);
     }
 
-    // the folds of the curved functions near a certified level-2 box, at which
-    // the segments of its base line are anchored (Options::anchor_folds)
+    // the folds of the curved functions near a certified level-2 box, and of
+    // the level above where they cross its bounds, at which the segments of its
+    // base line are anchored (Options::anchor_folds)
     std::vector<T> folds;
     if constexpr (D == 2)
         if (ctx.opt.anchor_folds > 0 && certified && ctx.vis_order == 0)
+        {
             fold_anchors<T>(ctx, p, k, folds);
+            bound_folds<T>(ctx, p.heights, k, lowers, base_box.lo[0], base_box.hi[0], folds);
+            bound_folds<T>(ctx, p.heights, k, uppers, base_box.lo[0], base_box.hi[0], folds);
+        }
 
     // The base of the height lines between the given lower and upper bounds, on
     // the base polytope cut by the given clips: its functions are where the
@@ -3286,6 +3414,21 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                 base.funcs.push_back(f);
             }
         }
+        // the height functions of the integrand along the lines, at whose folds
+        // the height lines of the base are anchored (Options::anchor_folds): the
+        // roots of the curved functions the lines take, not of passive ones
+        if constexpr (D == 3)
+        {
+            if (ctx.opt.anchor_folds > 0 && certified && ctx.vis_order == 0 && ctx.partner < 0)
+                for (std::size_t i = 0; i < p.funcs.size(); ++i)
+                {
+                    const Func<T, D>& f = p.funcs[i];
+                    if (f.linear || ctx.flat[static_cast<std::size_t>(f.ls)] || an.independent[i] || an.passive[i]
+                        || (an.surface >= 0 && f.ls != an.surface))
+                        continue;
+                    base.heights.push_back({f, k, p.lo[k], p.hi[k]});
+                }
+        }
         // Where two level sets cut a certified box, their roots on the height lines
         // cross on a ridge: the base splits there, where one level set vanishes on
         // the other's zero set. The surface runs along one with a single root per line.
@@ -3337,6 +3480,12 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                     return;
                 U = L;
             }
+            // the folds of the level above on the line, at which its segments
+            // are anchored (height_folds, which takes nodes as scratch)
+            std::vector<T> folds_above;
+            if constexpr (D == 2)
+                if (certified && !p.heights.empty() && U > L)
+                    height_folds<T>(ctx, p.heights, yb, k, L, U, folds_above);
             std::vector<T>& nodes = ctx.nodes[D];
             nodes.clear();
             if constexpr (D == 2 && Top == 3)
@@ -3555,25 +3704,27 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                 if (ctx.vis_order == 0 && b - a <= segment_tol<T>)
                     continue;
                 tag.segment[D - 1] = static_cast<int>(s);
-                segment_nodes(ctx, a, b,
-                              [&](int j, T t, T wt)
-                              {
-                                  tag.node[D - 1] = j;
-                                  const VecD<T, D> y = insert<T, D>(yb, k, t);
-                                  if constexpr (D == Top)
-                                  {
-                                      if (ctx.vis_order == 0)
-                                      {
-                                          // top level: keep the points of the selected part
-                                          if (an.decided == 0
-                                              && !holds<T>(ctx, an.terms, to_u<T, D>(p.frame, y), (t - L) / (U - L)))
-                                              return;
-                                          emit(y, w * wt * ctx.detj, tag, VecD<T, D>{});
-                                          return;
-                                      }
-                                  }
-                                  emit(y, w * wt, tag, VecD<T, D>{});
-                              });
+                const auto node = [&](int j, T t, T wt)
+                {
+                    tag.node[D - 1] = j;
+                    const VecD<T, D> y = insert<T, D>(yb, k, t);
+                    if constexpr (D == Top)
+                    {
+                        if (ctx.vis_order == 0)
+                        {
+                            // top level: keep the points of the selected part
+                            if (an.decided == 0 && !holds<T>(ctx, an.terms, to_u<T, D>(p.frame, y), (t - L) / (U - L)))
+                                return;
+                            emit(y, w * wt * ctx.detj, tag, VecD<T, D>{});
+                            return;
+                        }
+                    }
+                    emit(y, w * wt, tag, VecD<T, D>{});
+                };
+                if (folds_above.empty())
+                    segment_nodes(ctx, a, b, node);
+                else
+                    anchored_nodes(ctx, a, b, folds_above, node, [] {});
             }
         };
         if constexpr (D == 2)

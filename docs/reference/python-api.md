@@ -155,7 +155,7 @@ are the vertices.
 | --- | --- |
 | `margin` | Required `\|d_k psi\| / \|grad psi\|` on a box for a height direction, at most `0.9/sqrt(D)` on boxes with `D` free coordinates. |
 | `tolerance` | Relative accuracy of curved pieces: boxes are bisected while `q` and `q + 1` points per segment disagree by more. 0 (default): the rule's own rate, `(h kappa / 2)^(2q)` for cells of size `h` and curvature `kappa`; negative: no check. |
-| `anchor_folds` | Prototype. `n > 0`: base segments that end at or within four lengths of a fold of a curved zero set (where it turns back along the height direction) take `n q` Gauss points in `s`, `x = x_f -+ s^2`, anchored at the fold. `n = 2` keeps polynomials of degree `2q - 1` exact. 0 (default): off. |
+| `anchor_folds` | Prototype. `n > 0`: base segments that end at or within four lengths of a fold of a curved zero set (where it turns back along the height direction) take `n q` Gauss points in `s`, `x = x_f -+ s^2`, anchored at the fold. In 3D cells the same applies to the silhouette of the level set seen along the height direction: on the height lines of the base boxes, and on their base segments where it crosses the lines' bounds. `n = 2` keeps polynomials of degree `2q - 1` exact. 0 (default): off. |
 | `max_depth`, `max_bisections` | Bisection limits per level and per cell. |
 | `points_per_segment` | Gauss-Legendre points per segment; 0 chooses them from the order. |
 | `diagnose` | Record why each bisection happened (`QuadraysStats.causes`). |
