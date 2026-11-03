@@ -34,9 +34,27 @@ namespace cutcells::quadrays
 /// or, for analytic level sets, Taylor models; otherwise the box is bisected.
 struct Options
 {
-    /// Required |d_k psi| / |grad psi| on a box. It also controls the accuracy:
-    /// larger margins bisect more and integrate more accurately.
+    /// Required |d_k psi| / |grad psi| on a box. Larger margins bisect more.
+    /// A box needs a direction with this margin for every function on it, so
+    /// margins above 1/sqrt(D) on boxes with D free coordinates cannot be met
+    /// where the normal points between the axes: the engine caps the margin of
+    /// each level at 0.9/sqrt(D).
     double margin = 0.25;
+    /// Relative accuracy of curved pieces. Where a box with two free coordinates
+    /// (a 2D cell's box, or the base of a 3D cell's box) carries a curved zero
+    /// set, its piece is integrated with q and q + 1 points per segment; while
+    /// the two differ by more than this times its measure, the box is bisected,
+    /// and the q points are kept. The margin bounds the slope of the height
+    /// functions, not how close their branch points (where a zero set turns
+    /// along the height direction) come to a box: where a box face cuts a
+    /// sphere near its pole, say, the zero set on the face is a circle of any
+    /// radius, whose branch points can lie just beyond the base segments, and
+    /// the points then converge slowly in q and not under mesh refinement.
+    /// 0: the rule's own rate, (h kappa / 2)^(2 q) with h = |det J|^(1/tdim)
+    /// the cell's size and kappa the curvature of the zero sets in the box, so
+    /// that the error falls as h^(2q) and pieces that converge as expected
+    /// are not bisected. < 0: no check. Flat pieces are not checked.
+    double tolerance = 0;
     /// Bisections allowed per level along a branch. Bernstein bounds certify
     /// after a few; Taylor models of an analytic level set, a distance function
     /// in particular, need boxes small against the radius of curvature, which
@@ -198,6 +216,8 @@ void integrate(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part,
 
 /// @brief Nodes of the leaf cells of the same decomposition, appended to @p out.
 ///
+/// The decomposition is the certified one: the bisections of the accuracy
+/// checks (Options::tolerance), which need Gauss points, are not made.
 /// Every segment gets degree + 1 equispaced nodes, pulled 1e-5 of its length
 /// inside its ends, with their tags (a curve part's: those of its base lines;
 /// on 2D cells one node per crossing point, on intervals one per point of an

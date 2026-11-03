@@ -80,14 +80,16 @@ Conditions on the level sets it is made of select by their full names:
 level sets: ['ring.ball', 'ring.cyl'], insides: {'ring': 'ball < 0 and cyl > 0'}
 cut cells: 2832, ring height h = 1.322876
     part  dim         measure           exact      error
-    ring    3    1.2121527667    1.2121481286   4.64e-06
- surface    2   10.3898500497   10.3898411026   8.95e-06
-    zone    2    6.6495104215    6.6494983057   1.21e-05
-    hole    2    3.7403396281    3.7403427969   3.17e-06
+    ring    3    1.2121527682    1.2121481286   4.64e-06
+ surface    2   10.3898411782   10.3898411026   7.56e-08
+    zone    2    6.6495065809    6.6494983057   8.28e-06
+    hole    2    3.7403345973    3.7403427969   8.20e-06
     rims    1    5.6548530220    5.6548667765   1.38e-05
 ```
 
-The errors are those of the P3 cylinder; with `--degree 4` the volume error
+The errors are those of the P3 cylinder. Where it meets the ball, at the
+rims, shifts area between the zone and the hole, so that their errors nearly
+cancel on the whole surface. With `--degree 4` the volume error
 is 4.8e-7 and the rim error 1.7e-6, with `--degree 2` 9.6e-5 and 6.2e-4.
 
 ## Run the Demo

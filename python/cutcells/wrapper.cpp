@@ -3067,8 +3067,12 @@ NB_MODULE(_cutcellscpp, m)
       "Options of the quadrays engine.")
       .def(nb::init<>())
       .def_rw("margin", &cutcells::quadrays::Options::margin,
-              "Required |d_k psi| / |grad psi| on a box for a height direction; "
-              "also the accuracy control.")
+              "Required |d_k psi| / |grad psi| on a box for a height direction, at most "
+              "0.9/sqrt(D) on boxes with D free coordinates.")
+      .def_rw("tolerance", &cutcells::quadrays::Options::tolerance,
+              "Relative accuracy of curved pieces: boxes with two free coordinates are bisected "
+              "while q and q + 1 points per segment disagree by more. 0: the rule's own rate, "
+              "(h kappa / 2)^(2q) for cells of size h and curvature kappa; < 0: no check.")
       .def_rw("max_depth", &cutcells::quadrays::Options::max_depth,
               "Bisections allowed per level along a branch.")
       .def_rw("max_bisections", &cutcells::quadrays::Options::max_bisections,

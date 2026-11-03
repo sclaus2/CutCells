@@ -83,6 +83,12 @@ template <std::floating_point T>
 constexpr T segment_tol = scaled_tolerance<T>(1e-15);
 template <std::floating_point T>
 constexpr T zero_function_tol = scaled_tolerance<T>(1e-12);
+/// Accuracy checks: differences below this times the cell's measure are rounding.
+template <std::floating_point T>
+constexpr T accuracy_floor = scaled_tolerance<T>(1e-13);
+/// level_margin: the margin of a level with D free coordinates is at most margin_cap / sqrt(D).
+template <std::floating_point T>
+constexpr T margin_cap = T(0.9);
 /// Points of a curve part on a 2D cell: a root at an end of a line counts
 /// within this Newton distance |f| / |f'| (box units), and points closer than
 /// twice it are one.
@@ -218,9 +224,17 @@ struct Context
     std::array<int, 3> box_ids{};
     int bisections = 0; ///< bisections so far in this cell
 
-    // Gauss-Legendre rule on [0, 1]
+    // Gauss-Legendre rule on [0, 1], and the one with a point more for accuracy checks
     int q = 0;
-    std::vector<T> gauss_x, gauss_w;
+    std::vector<T> gauss_x, gauss_w, check_x, check_w;
+    CellPoints<T>* out = nullptr; ///< the points emitted so far, which accuracy checks roll back
+    std::vector<char> flat;       ///< per level set: affine on the cell
+    bool curved = false;          ///< the current top box has a curved function that may vanish
+    T measure_scale = 0;          ///< the cell's measure in the part's dimension (accuracy checks)
+    T cell_size = 0;              ///< |det J|^(1 / tdim) (accuracy checks)
+    T kappa = 0;                  ///< curvature at the centre of the current top box (accuracy checks)
+    T top_extent = 0;             ///< its extent along its height direction (accuracy checks)
+    int tdim = 0;
 
     // scratch, indexed by level (number of free coordinates)
     std::array<BoxBernstein<T>, 4> form, deriv, second, sub, line;
@@ -233,6 +247,17 @@ struct Context
     std::vector<char> top_line_set;
     std::vector<T> top_values;
 };
+
+/// The margin required on boxes with D free coordinates. Some axis has
+/// |n_k| >= 1/sqrt(D) for every unit normal n, but no axis more where n points
+/// between them, so larger margins bisect until the limits and leave boxes
+/// uncertified: they are capped below 1/sqrt(D), which the bounds' overestimate
+/// of |grad psi| leaves room for.
+template <std::floating_point T, int D>
+T level_margin(const Context<T>& ctx)
+{
+    return std::min(ctx.margin, margin_cap<T> / std::sqrt(T(D)));
+}
 
 template <std::floating_point T>
 bool is_analytic(const Context<T>& ctx, int ls)
@@ -1782,7 +1807,7 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
             }
         }
         an.certified
-            = (an.ratios.empty() && an.surface_ratios.empty()) || (an.best > T(0) && an.best >= ctx.margin);
+            = (an.ratios.empty() && an.surface_ratios.empty()) || (an.best > T(0) && an.best >= level_margin<T, D>(ctx));
     };
     choose_direction();
     // A curve part takes the roots of either of its level sets: the second
@@ -1831,19 +1856,19 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
         T score = T(1);
         for (const VecD<T, D>& r : an.surface_ratios)
             score = std::min(score, r[kk]);
-        if (!(score >= ctx.margin))
+        if (!(score >= level_margin<T, D>(ctx)))
             continue;
         std::vector<int> two;
-        for (std::size_t c = 0; c < an.ratios.size() && score >= ctx.margin; ++c)
+        for (std::size_t c = 0; c < an.ratios.size() && score >= level_margin<T, D>(ctx); ++c)
         {
-            if (margin_of(c, kk) >= ctx.margin)
+            if (margin_of(c, kk) >= level_margin<T, D>(ctx))
             {
                 score = std::min(score, margin_of(c, kk));
                 continue;
             }
             const Func<T, D>& f = an.funcs[static_cast<std::size_t>(an.curved[c])];
             int cv = 0;
-            if (!(second_margin<T, D>(ctx, f, p.lo, p.hi, kk, cv) >= ctx.margin))
+            if (!(second_margin<T, D>(ctx, f, p.lo, p.hi, kk, cv) >= level_margin<T, D>(ctx)))
             {
                 score = T(-1);
                 break;
@@ -1851,7 +1876,7 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
             score = std::min(score, two_root_score<T, D>(ctx, f, p.lo, p.hi, kk, cv));
             two.push_back(static_cast<int>(c));
         }
-        if (score >= ctx.margin && score > best2)
+        if (score >= level_margin<T, D>(ctx) && score > best2)
         {
             best2 = score;
             k2 = kk;
@@ -2018,9 +2043,9 @@ void diagnose_failure(Context<T>& ctx, const Problem<T, D>& p, const Analysis<T,
         T other = T(0);
         for (int j = 0; j < D; ++j)
             other = std::max(other, rmin[j]);
-        if (rmin[k] >= ctx.margin)
+        if (rmin[k] >= level_margin<T, D>(ctx))
             category = "margin holds near the zero set in the cell";
-        else if (other >= ctx.margin)
+        else if (other >= level_margin<T, D>(ctx))
             category = "another axis has the margin there";
         else
             category = "margin fails near the zero set in the cell";
@@ -2037,7 +2062,7 @@ void diagnose_failure(Context<T>& ctx, const Problem<T, D>& p, const Analysis<T,
         T top = T(0);
         for (int j = 0; j < D; ++j)
             top = std::max(top, ratios[i][j]);
-        if (top < ctx.margin)
+        if (top < level_margin<T, D>(ctx))
             axes = "one function fails on every axis: " + origin_name(p.funcs[an.curved[i]].origin);
     }
     if (axes.empty())
@@ -2269,7 +2294,7 @@ bool choose_frame(Context<T>& ctx, const Problem<T, D>& p, const Analysis<T, D>&
             dir = d;
         }
     }
-    if (!(best >= ctx.margin))
+    if (!(best >= level_margin<T, D>(ctx)))
         return false;
     // an orthonormal frame with dir as its first axis (columns of R)
     for (int j = 0; j < D; ++j)
@@ -2664,40 +2689,130 @@ bool interface_on_plane(Context<T>& ctx, const Problem<T, D>& p, int axis, T mid
     }
 }
 
+/// Physical curvature of the zero sets of the curved level sets the part
+/// names at box coordinates @p u: the largest |d n / dx| along the cell's
+/// axes, n the unit normal, from central differences; the largest over the
+/// level sets.
+template <std::floating_point T>
+T curvature(const Context<T>& ctx, const Vec3<T>& u)
+{
+    const auto normal = [&ctx](const Source<T>& phi, const Vec3<T>& v, Vec3<T>& n)
+    {
+        Vec3<T> g{};
+        gradient(phi, std::span<const T>(v), std::span<T>(g));
+        // level sets scaled by 1e+-200 must give the same normals: no squares
+        // before dividing by the largest component
+        T largest = max_abs(std::span<const T>(g));
+        if (!(largest > T(0)) || !(largest < infinity<T>))
+            return false;
+        n = {};
+        for (int i = 0; i < 3; ++i)
+            for (int m = 0; m < 3; ++m)
+                n[i] += ctx.inv[m][i] * (g[m] / largest);
+        const T norm = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (!(norm > T(0)))
+            return false;
+        for (T& c : n)
+            c /= norm;
+        return true;
+    };
+    const T eps = T(1e-4);
+    T kappa = 0;
+    for (std::size_t l = 0; l < ctx.phis.size(); ++l)
+    {
+        if (!((ctx.used >> l) & 1) || ctx.flat[l])
+            continue;
+        for (int j = 0; j < ctx.tdim; ++j)
+        {
+            Vec3<T> up = u, down = u, np, nm;
+            up[j] += eps;
+            down[j] -= eps;
+            if (!normal(ctx.phis[l], up, np) || !normal(ctx.phis[l], down, nm))
+                return infinity<T>; // a singular point: no check
+            T dn = 0, dx = 0;
+            for (int i = 0; i < 3; ++i)
+            {
+                dn += (np[i] - nm[i]) * (np[i] - nm[i]);
+                dx += ctx.jac[i][j] * ctx.jac[i][j];
+            }
+            kappa = std::max(kappa, std::sqrt(dn / dx) / (2 * eps));
+        }
+    }
+    return kappa;
+}
+
+/// Bisect a box along its longest side and integrate the halves.
+template <std::floating_point T, int D, bool Rotated, int Top, typename Emit>
+void bisect(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth, bool interface)
+{
+    ++ctx.bisections;
+    ++ctx.stats->bisections;
+    int axis = 0;
+    for (int j = 1; j < D; ++j)
+        if (p.hi[j] - p.lo[j] > p.hi[axis] - p.lo[axis])
+            axis = j;
+    // A curve in the mid-plane of a box (its partner's zero set, say a
+    // plane through a cell's centre, or two balls symmetric about it), or
+    // whose base lies on the mid-line of a base, would lie on the face the
+    // halves share, where neither finds it: curve parts split off-centre.
+    T mid = ctx.partner >= 0 ? p.lo[axis] + T(0.53) * (p.hi[axis] - p.lo[axis]) : T(0.5) * (p.lo[axis] + p.hi[axis]);
+    if constexpr (D == Top)
+        if (interface && interface_on_plane<T, D>(ctx, p, axis, mid))
+            mid = p.lo[axis] + T(0.625) * (p.hi[axis] - p.lo[axis]);
+    Problem<T, D> first = p, second = std::move(p);
+    first.hi[axis] = mid;
+    second.lo[axis] = mid;
+    integrate_box<T, D, Rotated, Top>(ctx, std::move(first), emit, depth + 1, interface);
+    integrate_box<T, D, Rotated, Top>(ctx, std::move(second), emit, depth + 1, interface);
+}
+
+/// Swap the Gauss-Legendre rule with the one of the accuracy checks.
+template <std::floating_point T>
+void swap_rules(Context<T>& ctx)
+{
+    std::swap(ctx.gauss_x, ctx.check_x);
+    std::swap(ctx.gauss_w, ctx.check_w);
+    ctx.q = static_cast<int>(ctx.gauss_x.size());
+}
+
 /// The dimension reduction of a tightened and analysed box: bisect if it is not
-/// certified, otherwise integrate along height lines over the base level.
+/// certified, otherwise integrate along height lines over the base level. With
+/// @p check, a certified box with two free coordinates whose piece is curved
+/// is integrated with q and q + 1 points, and bisected while they disagree
+/// (Options::tolerance).
 template <std::floating_point T, int D, bool Rotated, int Top, typename Emit>
 void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Emit& emit, int depth,
-            bool interface)
+            bool interface, bool check = true)
 {
     int k = an.k;
     const bool certified = an.certified;
+    if constexpr (D == Top)
+    {
+        // the height functions below are curved where a curved function may vanish
+        ctx.curved = !p.surfaces.empty();
+        const Func<T, D>* curved = nullptr;
+        for (const Func<T, D>& f : p.funcs)
+            if (!f.linear && !ctx.flat[static_cast<std::size_t>(f.ls)])
+                curved = &f;
+        ctx.curved = ctx.curved || curved != nullptr;
+        // what the accuracy checks below take from the box, the same for all parts
+        ctx.top_extent = p.hi[k] - p.lo[k];
+        ctx.kappa = 0;
+        if (curved != nullptr && ctx.out != nullptr && ctx.opt.tolerance == 0)
+        {
+            VecD<T, D> centre;
+            for (int j = 0; j < D; ++j)
+                centre[j] = T(0.5) * (p.lo[j] + p.hi[j]);
+            ctx.kappa = curvature(ctx, to_u<T, D>(*curved, centre));
+        }
+    }
     if (!certified && ctx.opt.diagnose)
         diagnose_failure<T, D>(ctx, p, an, depth);
     if (!certified)
     {
         if (depth < ctx.opt.max_depth && ctx.bisections < ctx.opt.max_bisections)
         {
-            ++ctx.bisections;
-            ++ctx.stats->bisections;
-            int axis = 0;
-            for (int j = 1; j < D; ++j)
-                if (p.hi[j] - p.lo[j] > p.hi[axis] - p.lo[axis])
-                    axis = j;
-            // A curve in the mid-plane of a box (its partner's zero set, say a
-            // plane through a cell's centre, or two balls symmetric about it), or
-            // whose base lies on the mid-line of a base, would lie on the face the
-            // halves share, where neither finds it: curve parts split off-centre.
-            T mid = ctx.partner >= 0 ? p.lo[axis] + T(0.53) * (p.hi[axis] - p.lo[axis])
-                                     : T(0.5) * (p.lo[axis] + p.hi[axis]);
-            if constexpr (D == Top)
-                if (interface && interface_on_plane<T, D>(ctx, p, axis, mid))
-                    mid = p.lo[axis] + T(0.625) * (p.hi[axis] - p.lo[axis]);
-            Problem<T, D> first = p, second = std::move(p);
-            first.hi[axis] = mid;
-            second.lo[axis] = mid;
-            integrate_box<T, D, Rotated, Top>(ctx, std::move(first), emit, depth + 1, interface);
-            integrate_box<T, D, Rotated, Top>(ctx, std::move(second), emit, depth + 1, interface);
+            bisect<T, D, Rotated, Top>(ctx, std::move(p), emit, depth, interface);
             return;
         }
         ++ctx.stats->uncertified;
@@ -2706,6 +2821,67 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
         if (D == Top && ctx.partner >= 0)
             ++ctx.stats->curve_lost;
         k = uncertified_direction<T, D>(ctx, p, an, k);
+    }
+    if constexpr (D == 2)
+    {
+        // a 2D cell's points where two curves cross have weight 1 each
+        if (check && certified && ctx.curved && ctx.out != nullptr && !(Top == 2 && ctx.partner >= 0))
+        {
+            CellPoints<T>& out = *ctx.out;
+            const auto measure = [&out](int from, int to)
+            {
+                T sum = 0;
+                for (int i = from; i < to; ++i)
+                    sum += out.weights[static_cast<std::size_t>(i)];
+                return sum;
+            };
+            const auto truncate = [&out](int n)
+            {
+                out.points.resize(3 * static_cast<std::size_t>(n));
+                out.weights.resize(static_cast<std::size_t>(n));
+            };
+            const int start = out.n_points();
+            reduce<T, D, Rotated, Top>(ctx, p, an, emit, depth, interface, false);
+            const int mid = out.n_points();
+            // the second run counts nothing
+            const Stats stats = *ctx.stats;
+            const int bisections = ctx.bisections;
+            swap_rules(ctx);
+            reduce<T, D, Rotated, Top>(ctx, p, an, emit, depth, interface, false);
+            swap_rules(ctx);
+            *ctx.stats = stats;
+            ctx.bisections = bisections;
+            const T a = measure(start, mid), b = measure(mid, out.n_points());
+            truncate(mid);
+            if (mid == start)
+                return;
+            T rel = static_cast<T>(ctx.opt.tolerance);
+            if (rel == T(0))
+            {
+                // the rule's own rate: q Gauss-Legendre points on a segment of
+                // length h err by about (h / (4 r))^(2q) where the integrand is
+                // analytic within r of it; r = 1 / (2 kappa) leaves room for the
+                // branch points of the height functions, which come closer
+                // than the radius of curvature
+                rel = std::pow(ctx.cell_size * ctx.kappa / T(2), T(2 * ctx.q));
+            }
+            // Relative to the piece's measure on interfaces and curves; a volume
+            // part's to the whole box's, as the difference: both sides of a
+            // level set then bisect alike and still add up to the box exactly.
+            T scale = std::abs(b);
+            if (!interface)
+            {
+                scale = ctx.measure_scale * (Top == 3 ? ctx.top_extent : T(1));
+                for (int j = 0; j < D; ++j)
+                    scale *= p.hi[j] - p.lo[j];
+            }
+            const T tol = rel * scale + accuracy_floor<T> * ctx.measure_scale;
+            if (!(std::abs(a - b) > tol) || depth >= ctx.opt.max_depth || ctx.bisections >= ctx.opt.max_bisections)
+                return;
+            truncate(start);
+            bisect<T, D, Rotated, Top>(ctx, std::move(p), emit, depth, interface);
+            return;
+        }
     }
 
     // bounds of the height lines: box faces and clip planes
@@ -3389,6 +3565,36 @@ void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth
     reduce<T, D, Rotated, Top>(ctx, std::move(p), an, emit, depth, interface);
 }
 
+/// Whether a Bernstein form is affine: its coefficients are then its values at
+/// the Greville points, c_ijk = c_000 + i/p_0 d_0 + j/p_1 d_1 + k/p_2 d_2.
+template <std::floating_point T>
+bool affine(const BoxBernstein<T>& f)
+{
+    const std::array<int, 3> p = f.degree;
+    const std::array<int, 3> stride = {1, p[0] + 1, (p[0] + 1) * (p[1] + 1)};
+    const T c0 = f.coeffs[0];
+    std::array<T, 3> d{};
+    for (int j = 0; j < 3; ++j)
+        d[j] = p[j] > 0 ? f.coeffs[static_cast<std::size_t>(p[j] * stride[j])] - c0 : T(0);
+    const T tol = compare_tol<T> * max_abs(std::span<const T>(f.coeffs));
+    for (int k = 0; k <= p[2]; ++k)
+        for (int j = 0; j <= p[1]; ++j)
+            for (int i = 0; i <= p[0]; ++i)
+            {
+                T value = c0;
+                if (p[0] > 0)
+                    value += d[0] * T(i) / T(p[0]);
+                if (p[1] > 0)
+                    value += d[1] * T(j) / T(p[1]);
+                if (p[2] > 0)
+                    value += d[2] * T(k) / T(p[2]);
+                if (std::abs(f.coeffs[static_cast<std::size_t>(i * stride[0] + j * stride[1] + k * stride[2])] - value)
+                    > tol)
+                    return false;
+            }
+    return true;
+}
+
 /// The top level: the unit box with the cell's clips and one function per
 /// level set the terms name.
 template <std::floating_point T, int Top>
@@ -3613,6 +3819,22 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
         gauss_legendre<T>(q, ctx.gauss_x, ctx.gauss_w);
         ctx.q = q;
     }
+    ctx.flat.assign(n, 0);
+    for (std::size_t l = 0; l < n; ++l)
+        ctx.flat[l] = ((ctx.used >> l) & 1) && !ctx.phis[l].is_analytic() && affine(*ctx.phis[l].bernstein);
+    ctx.out = nullptr;
+    if (vis_order == 0 && opt.tolerance >= 0 && cell.tdim >= 2)
+    {
+        if (static_cast<int>(ctx.check_x.size()) != q + 1)
+            gauss_legendre<T>(q + 1, ctx.check_x, ctx.check_w);
+        ctx.out = &out;
+        // h^m for a part of dimension m
+        const int m = cell.tdim - std::popcount(zero);
+        ctx.measure_scale = std::pow(ctx.detj, T(m) / T(cell.tdim));
+        ctx.cell_size = std::pow(ctx.detj, T(1) / T(cell.tdim));
+        ctx.inv = inverse_jacobian(cell);
+    }
+    ctx.tdim = cell.tdim;
     const int start = out.n_points();
     if (cell.tdim == 3)
         run_top<T, 3>(ctx, cell, out, interface);

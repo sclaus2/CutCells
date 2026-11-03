@@ -72,10 +72,10 @@ view above.
 
 ```text
 hexahedra: 4096, cut by g: 1248
-volume fraction of g < 0:  0.500000000003  (exact 1/2, error 2.9e-12)
-area of g = 0, quadrays:   3.09164427 L^2
+volume fraction of g < 0:  0.500000000000  (exact 1/2, error 8.7e-15)
+area of g = 0, quadrays:   3.09164489 L^2
 area of g = 0, lut:        3.09422760 L^2
-volume fraction of sheet:  0.25832662
+volume fraction of sheet:  0.25832661
 ```
 
 The volume fraction is exact up to round-off, as the interpolant keeps the

@@ -170,9 +170,9 @@ background cells: 1152, cut cells: 97
   phi > 0: 780 whole cells + 97 cut cells
   phi = 0: 97 cut cells, dimension 1
     quantity            computed               exact      error
-        area    1.13097538464129    1.13097335529233   2.03e-06
-   perimeter    3.76991657628360    3.76991118430775   5.39e-06
- int |x-c|^2    0.20357593522157    0.20357520395262   7.31e-07
+        area    1.13097538384508    1.13097335529233   2.03e-06
+   perimeter    3.76991659591328    3.76991118430775   5.41e-06
+ int |x-c|^2    0.20357593484227    0.20357520395262   7.31e-07
 ```
 
 The errors are those of the P2 interpolant of the circle; the next chapter

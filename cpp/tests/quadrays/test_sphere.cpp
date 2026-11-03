@@ -12,7 +12,8 @@
 // default), those it gave when it came. It bisects 19 times less and keeps 5
 // times fewer points, so that at the same q its errors are larger (caps of
 // 1e-3 h^3 in a single leaf: 0.4 % at q = 3), at the same number of points not.
-// Exits non-zero on failure.
+// These numbers are without the accuracy checks (Options::tolerance < 0); with
+// them, the errors must not be larger. Exits non-zero on failure.
 
 #include <cutcells/quadrays/rules.h>
 #include <cutcells/selection_expr.h>
@@ -71,8 +72,12 @@ int main()
 
     int failures = 0;
     std::vector<double> coeffs;
+    Options unchecked;
+    unchecked.tolerance = -1;
     for (const Expected& e : expected)
+    for (const Options& options : {unchecked, Options{}})
     {
+        const bool checked = options.tolerance >= 0;
         SelectionExpr expr = parse_selection_expr(e.part);
         compile_selection_expr(expr, {"phi"});
         const SelectionTerm& term = expr.terms.front();
@@ -102,7 +107,7 @@ int main()
                         make_clipped_box<double>(cell.type, cell.vertices, 3, box, e.frame);
                         cell_bernstein_on_box<double>(cell.type, 2, coeffs, box, form);
                         quadrature::QuadratureRules<double> rules;
-                        append_rules<double>(box, form, part_of(term), e.q, Options{}, 0, rules, stats);
+                        append_rules<double>(box, form, part_of(term), e.q, options, 0, rules, stats);
                         double value = 0;
                         for (double w : rules._weights)
                             value += w;
@@ -113,10 +118,12 @@ int main()
                     }
                 }
         const double l1 = sum_abs / (surface ? sphere : ball);
-        const bool ok = l1 <= 1.25 * e.l1 && worst <= 1.25 * e.worst && stats.bisections <= 1.25 * e.bisections;
-        std::printf("%s %-10s q = %d %-8s L1 %.1e (expected %.1e), worst %.1e (%.1e), bisections %d (%ld) %s\n",
-                    e.mesh, e.frame == reference ? "reference" : "orthogonal", e.q, e.part, l1, e.l1, worst, e.worst,
-                    stats.bisections, e.bisections, ok ? "" : "FAILED");
+        const bool ok = checked ? l1 <= 1.25 * e.l1 && worst <= 1.25 * e.worst
+                                : l1 <= 1.25 * e.l1 && worst <= 1.25 * e.worst && stats.bisections <= 1.25 * e.bisections;
+        std::printf("%s %-10s q = %d %-8s %-9s L1 %.1e (expected %.1e), worst %.1e (%.1e), bisections %d (%ld) %s\n",
+                    e.mesh, e.frame == reference ? "reference" : "orthogonal", e.q, e.part,
+                    checked ? "checked" : "unchecked", l1, e.l1, worst, e.worst, stats.bisections, e.bisections,
+                    ok ? "" : "FAILED");
         failures += !ok;
     }
     return failures == 0 ? 0 : 1;

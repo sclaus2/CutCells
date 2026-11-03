@@ -153,7 +153,8 @@ are the vertices.
 
 | Attribute | Meaning |
 | --- | --- |
-| `margin` | Required `\|d_k psi\| / \|grad psi\|` on a box for a height direction; also the accuracy control. |
+| `margin` | Required `\|d_k psi\| / \|grad psi\|` on a box for a height direction, at most `0.9/sqrt(D)` on boxes with `D` free coordinates. |
+| `tolerance` | Relative accuracy of curved pieces: boxes are bisected while `q` and `q + 1` points per segment disagree by more. 0 (default): the rule's own rate, `(h kappa / 2)^(2q)` for cells of size `h` and curvature `kappa`; negative: no check. |
 | `max_depth`, `max_bisections` | Bisection limits per level and per cell. |
 | `points_per_segment` | Gauss-Legendre points per segment; 0 chooses them from the order. |
 | `diagnose` | Record why each bisection happened (`QuadraysStats.causes`). |

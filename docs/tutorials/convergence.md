@@ -65,21 +65,22 @@ which the third is ignored.
 ```text
 area error (rate)
         h                  P1 + lut             P3 + quadrays          exact + quadrays
-   0.2500         3.271e-02                 1.721e-05                 5.087e-08
-   0.1250         8.127e-03 ( 2.01)         9.477e-07 ( 4.18)         3.029e-10 ( 7.39)
-   0.0625         2.085e-03 ( 1.96)         2.737e-08 ( 5.11)         2.314e-12 ( 7.03)
-   0.0312         5.136e-04 ( 2.02)         1.330e-09 ( 4.36)         6.439e-15 ( 8.49)
+   0.2500         3.271e-02                 1.729e-05                 3.244e-08
+   0.1250         8.127e-03 ( 2.01)         9.483e-07 ( 4.19)         1.466e-11 (11.11)
+   0.0625         2.085e-03 ( 1.96)         2.738e-08 ( 5.11)         3.197e-14 ( 8.84)
+   0.0312         5.136e-04 ( 2.02)         1.330e-09 ( 4.36)         2.442e-15 ( 3.71)
 
 perimeter error (rate)
         h                  P1 + lut             P3 + quadrays          exact + quadrays
-   0.2500         3.170e-02                 3.004e-05                 1.612e-06
-   0.1250         7.739e-03 ( 2.03)         1.570e-06 ( 4.26)         1.026e-08 ( 7.30)
-   0.0625         1.921e-03 ( 2.01)         4.526e-08 ( 5.12)         8.548e-11 ( 6.91)
-   0.0312         4.796e-04 ( 2.00)         2.210e-09 ( 4.36)         1.696e-13 ( 8.98)
+   0.2500         3.170e-02                 2.659e-05                 1.827e-07
+   0.1250         7.739e-03 ( 2.03)         1.548e-06 ( 4.10)         3.887e-10 ( 8.88)
+   0.0625         1.921e-03 ( 2.01)         4.509e-08 ( 5.10)         8.047e-13 ( 8.92)
+   0.0312         4.796e-04 ( 2.00)         2.209e-09 ( 4.35)         1.510e-14 ( 5.74)
 ```
 
 The straight pieces converge with rate 2, the interpolated level set with
-rate 4, and exact geometry reaches round-off on the third mesh.
+rate 4, and exact geometry with rate $2q = 8$ until it reaches round-off on the
+third mesh.
 
 :::{admonition} Reading the rates
 :class: practice
@@ -96,16 +97,37 @@ change these errors: they belong to the interpolant, not to the quadrature.
 :::{admonition} Curved pieces in 3D
 :class: practice
 
-On tetrahedra and hexahedra, quadrays chooses its Gauss-Legendre points per
-segment from `order`, which is exact on flat pieces. On curved pieces of
-coarse meshes that can leave a quadrature error that does not shrink with
-$h$ at first. Set the points per segment for accuracy studies:
+quadrays bisects a box until the zero set's normal has a margin along one axis;
+that sizes its leaves by the geometry, not by $h$, and nested meshes bring the
+same leaves back. The margin bounds the slope of the height functions, not how
+close their turning points come: where a cell face cuts a sphere near its
+pole, the zero set on the face is a circle of any radius, whose turning point
+can lie just beyond a box, and the order's Gauss-Legendre points converge
+slowly there, on every mesh. So quadrays checks each curved box against one
+more point per segment and bisects it while the two differ by more than the
+order's own rate allows at the cell's size, $(h\kappa/2)^{2q}$ for curvature
+$\kappa$; pieces that converge as they should get no extra points, flat
+pieces are not checked.
 
-```python
-options = cutcells.QuadraysOptions()
-options.points_per_segment = 12
-rules = part.quadrature(order=6, options=options)
+For the sphere of radius 0.6 about $(0.1, -0.05, 0.03)$ in $[-1, 1]^3$ at
+`order=6`, the error of the area summed over the cells:
+
+```text
+                     n = 5      n = 9     n = 17     n = 33
+hexahedra
+  without the check  3.0e-06    3.1e-06    5.1e-06    4.0e-07
+  with the check     4.5e-06    2.5e-07    1.3e-08    5.1e-11
+tetrahedra
+  without the check  3.1e-06    1.8e-06    2.3e-06    1.5e-07
+  with the check     3.1e-06    5.2e-07    1.7e-08    9.0e-11
 ```
+
+The total over the mesh hides most of this: cells that share a face near a
+pole err by opposite amounts. At $n = 33$ the check costs 1.9 times the points
+on the surface of hexahedra (1.2 on tetrahedra) and a quarter more in the
+volume (8 % on tetrahedra). `QuadraysOptions.tolerance`
+sets a relative accuracy instead (negative: no check), and
+`points_per_segment` still fixes the points for studies.
 :::
 
 ## Run the Demo
