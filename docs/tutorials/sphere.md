@@ -7,7 +7,7 @@ once as an interpolated level set, with curved Lagrange cells as output.
 ```{raw} html
 <figure class="tutorial-figure">
   <img class="tutorial-image" src="../_static/tutorials/sphere-scene.png" alt="PyVista view of the curved sphere and the clipped ball">
-  <figcaption>Left: the sphere ball == 0, drawn from the curved pieces of the cut cells. Right: the ball ball &lt; 0 in mode="full" behind a plane, whole cells in green and the curved pieces of the cut cells in orange.</figcaption>
+  <figcaption>Left: the sphere ball == 0, drawn from the curved pieces of the cut cells. Right: the ball cut open by the plane y = c<sub>y</sub>, a second level set; in the section, background cells inside the ball are green and cells cut by the sphere orange.</figcaption>
 </figure>
 ```
 
@@ -82,13 +82,28 @@ In PyVista, `extract_surface(nonlinear_subdivision=...)` draws the Lagrange
 cells curved:
 
 ```python
-sphere_surface = cutcells.to_pyvista(surface.visualization_mesh(mode="cut_only", degree=3))
-plotter.add_mesh(sphere_surface.extract_surface(nonlinear_subdivision=3, algorithm="dataset_surface"),
-                 color="#f59e42", smooth_shading=True)
+def curved(part, subdivision=2):
+    grid = cutcells.to_pyvista(part.visualization_mesh(mode="cut_only", degree=3))
+    return grid.extract_surface(nonlinear_subdivision=subdivision, algorithm="dataset_surface")
 
-ball = cutcells.to_pyvista(inside.visualization_mesh(mode="full", degree=3))
-ball.cell_data["cut"] = np.isin(ball.cell_data["parent"], result.cut_cells).astype(int)
+plotter.add_mesh(curved(result[ball == 0]), color="#f59e42", smooth_shading=True)
 ```
+
+To look inside the ball, cut it open with a plane given as a second level
+set, and draw the sphere behind the plane and the section in it. Each piece
+knows its background cell, which colours the section:
+
+```python
+plane = cutcells.create_level_set(mesh, lambda X: X[1] - CENTER[1], degree=1, name="plane")
+opened = cutcells.cut(mesh, [ball, plane])
+shell = curved(opened[(ball == 0) & (plane < 0)])
+section = curved(opened[(plane == 0) & (ball < 0)])
+section.cell_data["cut"] = np.isin(section.cell_data["parent"], result.cut_cells).astype(int)
+```
+
+The curved cells are drawn one per piece of the quadrays decomposition, and
+neighbouring pieces do not share nodes: they meet up to hairline gaps, about
+1e-3 wide on this mesh, which can show as specks in a close view.
 
 ## Results
 

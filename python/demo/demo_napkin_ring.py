@@ -36,6 +36,7 @@ import cutcells
 
 BALL_RADIUS = 0.8
 HOLE_RADIUS = 0.45
+SECTION_Y = 0.02  # the plane that cuts the ring open in the view
 
 
 def cylinder(X: np.ndarray) -> np.ndarray:
@@ -53,6 +54,7 @@ def build(n: int = 13, degree: int = 3, order: int = 4) -> dict:
     surface = result[ring == 0]
     return {
         "mesh": mesh,
+        "level_set": ring,
         "result": result,
         "ring": result[ring < 0],
         "surface": surface,
@@ -106,11 +108,16 @@ def plot(state: dict, screenshot: Path | None = None) -> None:
     plotter.add_mesh(surface(state["rims"], subdivision=4).tube(radius=0.01), color="#be185d")
     plotter.add_text("ring == 0: .on(\"ball\") and .on(\"cyl\")", font_size=11, color="#334155")
     plotter.subplot(0, 1)
-    solid = cutcells.to_pyvista(state["ring"].visualization_mesh(mode="full", degree=3))
-    solid.cell_data["cut"] = np.isin(solid.cell_data["parent"], state["result"].cut_cells).astype(int)
-    half = solid.extract_cells(solid.cell_centers().points[:, 1] > 0.0)
-    plotter.add_mesh(half.extract_surface(nonlinear_subdivision=2, algorithm="dataset_surface"),
-                     scalars="cut", cmap=["#68b984", "#f59e42"], show_scalar_bar=False)
+    # Cut the ring open with the plane y = y0, a second level set: its surface
+    # behind the plane and the section in it, coloured by whether the
+    # background cell is cut by the ring.
+    ring = state["level_set"]
+    plane = cutcells.create_level_set(state["mesh"], lambda X: X[1] - SECTION_Y, degree=1, name="plane")
+    opened = cutcells.cut(state["mesh"], [ring, plane])
+    section = surface(opened[(plane == 0) & (ring < 0)], subdivision=2)
+    section.cell_data["cut"] = np.isin(section.cell_data["parent"], state["result"].cut_cells).astype(int)
+    plotter.add_mesh(surface(opened[(ring == 0) & (plane > 0)]), color="#f59e42", smooth_shading=True)
+    plotter.add_mesh(section, scalars="cut", cmap=["#68b984", "#f59e42"], show_scalar_bar=False, lighting=False)
     plotter.add_text("ring < 0, cut open", font_size=11, color="#334155")
     plotter.link_views()
     plotter.camera_position = [(1.6, -3.4, 2.4), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)]

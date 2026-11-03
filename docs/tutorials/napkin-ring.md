@@ -70,7 +70,7 @@ Conditions on the level sets it is made of select by their full names:
 ```{raw} html
 <figure class="tutorial-figure">
   <img class="tutorial-image" src="../_static/tutorials/napkin-ring-scene.png" alt="PyVista view of the napkin ring faces and the solid ring">
-  <figcaption>Left: the faces of ring == 0 and the rims. Right: ring &lt; 0 cut open at y = 0, whole cells in green and the curved pieces of the cut cells in orange.</figcaption>
+  <figcaption>Left: the faces of ring == 0 and the rims. Right: ring &lt; 0 cut open by a plane, a third level set; in the section, background cells inside the ring are green and cells cut by its surface orange.</figcaption>
 </figure>
 ```
 

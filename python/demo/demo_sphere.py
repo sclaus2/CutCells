@@ -14,7 +14,7 @@ For both the demo integrates the volume and the surface area,
     |B| = 4/3 pi R^3,   |S| = 4 pi R^2,
 
 and shows the curved pieces of the cut cells with PyVista: the sphere, and
-the inside pieces of the cut cells behind a clipping plane.
+the ball cut open by a plane, given as a second level set.
 
 Run it with ``python demo_sphere.py``; ``--no-plot`` skips the PyVista window.
 """
@@ -69,34 +69,42 @@ def write(state: dict, output_dir: Path) -> None:
     print(f"wrote ball.vtu and sphere.vtu (Lagrange cells of degree 3) to {output_dir}")
 
 
+def curved(part, subdivision: int = 2):
+    """The curved pieces of a part as triangles, for PyVista."""
+    grid = cutcells.to_pyvista(part.visualization_mesh(mode="cut_only", degree=3))
+    return grid.extract_surface(nonlinear_subdivision=subdivision, algorithm="dataset_surface")
+
+
 def plot(state: dict, screenshot: Path | None = None) -> None:
     import pyvista as pv
 
-    parts = state["exact"]
-    background = cutcells.to_pyvista(state["mesh"])
-    sphere_surface = cutcells.to_pyvista(parts["surface"].visualization_mesh(mode="cut_only", degree=3))
-    ball = cutcells.to_pyvista(parts["inside"].visualization_mesh(mode="full", degree=3))
+    mesh, parts = state["mesh"], state["exact"]
+    ball = parts["ball"]
+    background = cutcells.to_pyvista(mesh)
 
-    # Left: the curved sphere. Right: the ball behind the plane y = c_y, whole
-    # cells in green and the curved pieces of the cut cells in orange.
+    # Cut the ball open with the plane y = c_y, a second level set: the sphere
+    # behind the plane and the disk in it, coloured by whether its background
+    # cell is cut by the sphere.
+    plane = cutcells.create_level_set(mesh, lambda X: X[1] - CENTER[1], degree=1, name="plane")
+    opened = cutcells.cut(mesh, [ball, plane])
+    shell = curved(opened[(ball == 0) & (plane < 0)])
+    disk = curved(opened[(plane == 0) & (ball < 0)])
+    disk.cell_data["cut"] = np.isin(disk.cell_data["parent"], parts["result"].cut_cells).astype(int)
+
     plotter = pv.Plotter(shape=(1, 2), off_screen=screenshot is not None, window_size=(1400, 700))
     plotter.subplot(0, 0)
     plotter.add_mesh(background.outline(), color="#334155")
-    plotter.add_mesh(sphere_surface.extract_surface(nonlinear_subdivision=3, algorithm="dataset_surface"),
-                     color="#f59e42", smooth_shading=True)
+    plotter.add_mesh(curved(parts["surface"]), color="#f59e42", smooth_shading=True)
     plotter.add_text("ball == 0", font_size=11, color="#334155")
-    plotter.subplot(0, 1)
-    plotter.add_mesh(background.outline(), color="#334155")
-    ball.cell_data["cut"] = np.isin(ball.cell_data["parent"], parts["result"].cut_cells).astype(int)
-    half = ball.extract_cells(ball.cell_centers().points[:, 1] < CENTER[1])
-    plotter.add_mesh(half.extract_surface(nonlinear_subdivision=2, algorithm="dataset_surface"),
-                     scalars="cut", cmap=["#68b984", "#f59e42"], show_scalar_bar=False)
-    plotter.add_mesh(half.extract_surface(algorithm="dataset_surface").extract_all_edges(),
-                     color="#334155", line_width=0.5)
-    plotter.add_text("ball < 0, mode=\"full\"", font_size=11, color="#334155")
-    plotter.link_views()
     plotter.camera_position = "iso"
     plotter.camera.Azimuth(-20)
+    plotter.subplot(0, 1)
+    plotter.add_mesh(background.outline(), color="#334155")
+    plotter.add_mesh(shell, color="#f59e42", smooth_shading=True)
+    plotter.add_mesh(disk, scalars="cut", cmap=["#68b984", "#f59e42"], show_scalar_bar=False, lighting=False)
+    plotter.add_text("ball < 0, cut open at y = c_y", font_size=11, color="#334155")
+    plotter.camera_position = "iso"
+    plotter.camera.Azimuth(25)
     if screenshot is not None:
         plotter.screenshot(str(screenshot))
         plotter.close()
