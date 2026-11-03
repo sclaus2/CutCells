@@ -7,6 +7,9 @@
 //  - Taylor models and their adapter enclose sampled values and derivatives,
 //    for square roots (the term algoim's sqrt leaves out), exp, log, sin, cos,
 //    division and the branch helpers;
+//  - an operation that cannot bound its result gives a lost model, without an
+//    exception, and every later operation keeps it, branch helpers included;
+//    a branch that min certainly does not take loses nothing;
 //  - planes are integrated exactly, per cell to 1e-13;
 //  - the signed-distance sphere |x - c| - r reproduces the polynomial sphere's
 //    errors (test_sphere.cpp) on hexahedra and tetrahedra, and the quadratic
@@ -78,6 +81,20 @@ struct Branches
         using std::max;
         using std::min;
         return abs(x[0]) + max(x[1], 0.5 * x[2]) - min(x[2], x[0] * x[1]) - 0.4;
+    }
+};
+
+/// The union of two balls: around the small ball's centre, where its distance
+/// has no derivative bounds, the large ball's distance is certainly smaller.
+struct TwoSpheres
+{
+    SphereDistance large, small;
+
+    template <typename V>
+    V operator()(const std::array<V, 3>& x) const
+    {
+        using std::min;
+        return min(large(x), small(x));
     }
 };
 
@@ -180,6 +197,48 @@ void test_enclosures(const AnalyticLevelSet& phi, const std::string& name, const
             worst = std::max(worst, outside(g[i], b[2 + 2 * i], b[3 + 2 * i]));
     }
     check(worst <= 1e-12, name + ": box bounds miss samples by " + std::to_string(worst));
+}
+
+/// Operations that cannot bound their results give lost models, and every
+/// operation on a lost model gives one, with either operand lost.
+void test_lost_models()
+{
+    using TM = Taylor<double, 2>;
+    TM y; // y_0 on [-1, 1]
+    y.beta[0] = 1;
+    const TM one(1.0);
+    check(!bounded(one / y), "lost: division by a range containing 0");
+    check(!bounded(sqrt(y - 2.0)), "lost: sqrt of a negative range");
+    check(!bounded(log(y + 1.0)), "lost: log of a range reaching 0");
+    check(bounded(one / (y + 2.0)) && bounded(sqrt(y + 1.0)) && bounded(log(y + 2.0)),
+          "kept: ranges clear of 0, and sqrt of one reaching 0");
+
+    // arithmetic, functions, and branch helpers with either operand lost
+    const TM lost = one / y, x = y + 3.0;
+    const TM results[] = {lost + x, x - lost, lost * x, x * lost, lost / x, x / lost, lost * 0.0, -lost,
+                          sqrt(lost), log(lost), exp(lost), sin(lost), cos(lost), abs(lost), integer_power(lost, 2),
+                          min(x, lost), min(lost, x), max(x, lost), max(lost, x), hull(x, lost), hull(lost, x)};
+    int kept = 0;
+    for (const TM& r : results)
+        kept += bounded(r);
+    check(kept == 0, "lost: " + std::to_string(kept) + " operations on a lost model gave a bounded one");
+
+    // |y_0| = sqrt(y_0^2) around 0: the value has a bound, its derivative none
+    Dual<TM, 2> u;
+    u.v = y;
+    u.d[0] = one;
+    const Dual<TM, 2> r = sqrt(u * u);
+    check(bounded(r.v) && !bounded(r.d[0]) && !bounded(r), "lost: the derivative of |y_0| at 0, not its value");
+
+    // second derivatives of a distance: none around its centre
+    const SphereDistance distance = {centre, radius};
+    const AnalyticLevelSet phi = analytic_level_set(distance);
+    const double axes[9] = {0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1};
+    const double away[3] = {centre[0] + 0.5, centre[1], centre[2]};
+    double bounds[18];
+    check(phi.hessian_bounds(away, axes, 3, bounds, phi.context) == 1, "second derivatives away from the centre");
+    check(phi.hessian_bounds(centre.data(), axes, 3, bounds, phi.context) == 0,
+          "no second derivatives around the centre");
 }
 
 /// Values and gradients of the adapter against the functor and central differences.
@@ -428,8 +487,10 @@ int main()
     const SphereQuadratic quadratic = {centre, radius};
     const Wavy wavy;
     const Branches branches;
+    const TwoSpheres two_spheres = {{{0.0, 0.0, 0.0}, 1.0}, {{0.5, 0.0, 0.0}, 0.1}};
     const AnalyticLevelSet phi_distance = analytic_level_set(distance), phi_quadratic = analytic_level_set(quadratic),
-                           phi_wavy = analytic_level_set(wavy), phi_branches = analytic_level_set(branches);
+                           phi_wavy = analytic_level_set(wavy), phi_branches = analytic_level_set(branches),
+                           phi_two_spheres = analytic_level_set(two_spheres);
 
     // enclosures
     test_point_values(distance, phi_distance, "distance");
@@ -441,6 +502,8 @@ int main()
     test_enclosures(phi_wavy, "wavy", {0.2, -0.1, 0.3}, 0.2, 1);
     test_enclosures(phi_branches, "branches", {0.02, 0.1, 0.05}, 0.1, 1);
     test_enclosures(phi_branches, "branches, kinks inside", {0.0, 0.0, 0.0}, 0.2, 1);
+    test_enclosures(phi_two_spheres, "two balls around the small one's centre", {0.5, 0.0, 0.0}, 0.05, 1);
+    test_lost_models();
 
     test_plane_exactness();
     test_cell_sign();

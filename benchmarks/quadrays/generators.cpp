@@ -414,14 +414,8 @@ struct FunctorInBox
             return sign * (*f)(physical<double>(u));
         else
         {
-            try
-            {
-                return from_taylor((*f)(physical<TM>(u)) * sign);
-            }
-            catch (const std::domain_error&)
-            {
-                return no_sign();
-            }
+            const TM v = (*f)(physical<TM>(u)) * sign;
+            return bounded(v) ? from_taylor(v) : no_sign();
         }
     }
 
@@ -446,17 +440,10 @@ struct FunctorInBox
         }
         else
         {
-            try
-            {
-                const Dual<TM, 3> r = (*f)(x);
-                for (int k = 0; k < 3; ++k)
-                    g(k) = from_taylor(r.d[k] * sign);
-            }
-            catch (const std::domain_error&)
-            {
-                for (int k = 0; k < 3; ++k)
-                    g(k) = no_sign();
-            }
+            const Dual<TM, 3> r = (*f)(x);
+            const bool holds = bounded(r);
+            for (int k = 0; k < 3; ++k)
+                g(k) = holds ? from_taylor(r.d[k] * sign) : no_sign();
         }
         return g;
     }
