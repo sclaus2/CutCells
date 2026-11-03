@@ -77,8 +77,8 @@ The parts of a result integrate and visualise with a backend:
   one: with exact level sets (analytic, or polynomials of the level set's
   degree) each cell's error is rounding, and with Pk interpolants the
   quadrature error stays far below the interpolation error, which falls as
-  $h^{k+1}$. Cells where two zero sets meet take several times the points of
-  cells with one; `compress_rules` (see
+  $h^{k+1}$. Cells where two zero sets meet still take more points than cells
+  with one; `compress_rules` (see
   [Quadrature and output](quadrature-output.md)) reduces them to the moments
   of a polynomial space.
 - **`"lut"`** (also `"straight"`): the lookup tables. A cut cell is subdivided

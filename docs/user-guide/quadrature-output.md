@@ -32,10 +32,18 @@ quadrays chooses its Gauss-Legendre points per segment from the order; setting
 Where a curved zero set turns back along the height direction just beyond a
 segment (a fold), the height function has a square-root branch point there;
 such segments take twice the points, in a variable anchored at the fold in
-which the integrand is smooth (`QuadraysOptions.anchor_folds`). On curved
-pieces quadrays also checks each box against one more point per segment and
-bisects where they disagree by more than the order's rate allows at the cell's
-size, so that the error falls with $h$ (`QuadraysOptions.tolerance`).
+which the integrand is smooth (`QuadraysOptions.anchor_folds`). Where no
+height direction keeps one root per line for every zero curve of a box (a
+curve that turns through both axes, or the curves of two level sets that need
+different axes where they meet), quadrays does not bisect the box: it finds
+the folds and the points where two zero curves cross, splits the base there,
+and takes every root on the height lines (`QuadraysOptions.fold_splits`), as
+Saye's 2022 algorithm does; near singular points, where two branches of a zero
+set cross or two level sets touch, it bisects. On curved pieces quadrays also
+checks each box against one more point per segment and bisects where they
+disagree by more than the order's rate allows at the cell's size, so that the
+error falls with $h$ (`QuadraysOptions.tolerance`); boxes split at folds must
+agree to $10^{-12}$.
 
 Modes:
 

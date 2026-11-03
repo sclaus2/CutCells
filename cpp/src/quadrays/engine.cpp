@@ -89,6 +89,10 @@ constexpr T accuracy_floor = scaled_tolerance<T>(1e-13);
 /// level_margin: the margin of a level with D free coordinates is at most margin_cap / sqrt(D).
 template <std::floating_point T>
 constexpr T margin_cap = T(0.9);
+/// Accuracy checks of boxes split at folds and crossings (Options::fold_splits):
+/// the largest relative difference between q and q + 1 points they keep.
+template <std::floating_point T>
+constexpr T split_tolerance = scaled_tolerance<T>(1e-12);
 /// A fold anchors the rule of a segment that ends within this many segment
 /// lengths of it (anchored_nodes, fold_anchors).
 template <std::floating_point T>
@@ -245,6 +249,7 @@ struct Context
     Mat3<T> jac = {};  ///< the map itself (curve weights)
     std::array<int, 3> box_ids{};
     int bisections = 0; ///< bisections so far in this cell
+    int splits_blocked = 0; ///< > 0: inside a box whose fold-split search did not settle
 
     // Gauss-Legendre rule on [0, 1], and the one with a point more for accuracy checks
     int q = 0;
@@ -3112,6 +3117,250 @@ void bisect(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth, bool 
     integrate_box<T, D, Rotated, Top>(ctx, std::move(second), emit, depth + 1, interface);
 }
 
+/// Fold splits (Options::fold_splits) of a level-2 box with height direction
+/// k: the points where the zero curve of a curved function or surface function
+/// turns along k (a fold, f = d_k f = 0) and where two zero curves cross
+/// (f = g = 0). Sub-boxes where bounds show that one of the pair has one sign
+/// are dropped; at the depth limit Newton's method runs from the sub-box's
+/// centre. On the base segments between them, the roots of the functions on
+/// the height lines neither merge nor cross, so that the integrand is smooth.
+/// Folds of passive functions (top level of an interface part: only evaluated
+/// at the interface's roots) are not needed. @p folds and @p crossings receive
+/// the points; false if the search does not settle (its box budget, too many
+/// points, or a sub-box at the depth limit where Newton's method does not
+/// converge: a singular point, or nearly tangent curves), and the box is
+/// bisected instead.
+template <std::floating_point T>
+bool fold_split_points(Context<T>& ctx, const Problem<T, 2>& p, int k, bool top, int surface,
+                       std::vector<VecD<T, 2>>& folds, std::vector<VecD<T, 2>>& crossings)
+{
+    constexpr int max_depth = 9, max_boxes = 400, max_points = 24;
+    folds.clear();
+    crossings.clear();
+    struct Member
+    {
+        int func = -1, surf = -1, ls = 0;
+        bool passive = false;
+    };
+    std::vector<Member> members;
+    for (int i = 0; i < static_cast<int>(p.funcs.size()); ++i)
+    {
+        const Func<T, 2>& f = p.funcs[static_cast<std::size_t>(i)];
+        if (f.linear || ctx.flat[static_cast<std::size_t>(f.ls)])
+            continue;
+        members.push_back({i, -1, f.ls, top && surface >= 0 && f.ls != surface});
+    }
+    for (int i = 0; i < static_cast<int>(p.surfaces.size()); ++i)
+        members.push_back({-1, i, p.surfaces[static_cast<std::size_t>(i)].on.ls, false});
+
+    const auto value_of = [&](const Member& m, const VecD<T, 2>& y)
+    {
+        return m.func >= 0 ? value<T, 2>(ctx, p.funcs[static_cast<std::size_t>(m.func)], y)
+                           : surface_value<T, 2>(ctx, p.surfaces[static_cast<std::size_t>(m.surf)], y);
+    };
+    const auto gradient_of = [&](const Member& m, const VecD<T, 2>& y, VecD<T, 2>& g)
+    {
+        if (m.func >= 0)
+            func_gradient<T, 2>(ctx, p.funcs[static_cast<std::size_t>(m.func)], y, g);
+        else
+            surface_gradient<T, 2>(ctx, p.surfaces[static_cast<std::size_t>(m.surf)], y, g);
+    };
+    // bounds on a sub-box: may it vanish, and the sign of its derivative along k (0: unknown)
+    thread_local BoxBernstein<T> form, deriv;
+    thread_local std::vector<T> work;
+    // and whether its gradient may vanish there (both derivatives' bounds hold 0)
+    const auto bounds_of = [&](const Member& m, const VecD<T, 2>& lo, const VecD<T, 2>& hi, int& dk,
+                               bool* singular = nullptr)
+    {
+        dk = 0;
+        if (singular != nullptr)
+            *singular = true;
+        if (m.func >= 0)
+        {
+            const Ranges<T, 2> r
+                = curved_ranges<T, 2>(ctx, p.funcs[static_cast<std::size_t>(m.func)], lo, hi, form, deriv, work);
+            if (!r.valid)
+                return true;
+            if (r.has_derivatives)
+            {
+                dk = r.dmin[k] > T(0) ? 1 : (r.dmax[k] < T(0) ? -1 : 0);
+                if (singular != nullptr)
+                    *singular = !(r.dmin[0] > T(0) || r.dmax[0] < T(0) || r.dmin[1] > T(0) || r.dmax[1] < T(0));
+            }
+            return r.sign == 0;
+        }
+        VecD<T, 2> dmin{}, dmax{};
+        T centre = T(0);
+        const SurfaceCase c
+            = surface_bounds<T, 2>(ctx, p.surfaces[static_cast<std::size_t>(m.surf)], lo, hi, dmin, dmax, centre);
+        if (c == SurfaceCase::none)
+            return false;
+        if (c == SurfaceCase::unbounded)
+            return true;
+        dk = dmin[k] > T(0) ? 1 : (dmax[k] < T(0) ? -1 : 0);
+        if (singular != nullptr)
+            *singular = !(dmin[0] > T(0) || dmax[0] < T(0) || dmin[1] > T(0) || dmax[1] < T(0));
+        T reach = T(0);
+        for (int j = 0; j < 2; ++j)
+            reach += std::max(std::abs(dmin[j]), std::abs(dmax[j])) * T(0.5) * (hi[j] - lo[j]);
+        return !(std::abs(centre) > reach);
+    };
+    const T size = std::max(p.hi[0] - p.lo[0], p.hi[1] - p.lo[1]);
+    // Newton's method on (F0, F1) from y, F and its Jacobian given by eval
+    const auto newton = [&](auto&& eval, VecD<T, 2>& y)
+    {
+        for (int it = 0; it < 20; ++it)
+        {
+            VecD<T, 2> f;
+            std::array<VecD<T, 2>, 2> j;
+            if (!eval(y, f, j))
+                return false;
+            // each row by its largest entry: level sets scaled by 1e+-200 take the same steps
+            for (int r = 0; r < 2; ++r)
+            {
+                const T largest = std::max(std::abs(j[r][0]), std::abs(j[r][1]));
+                if (!(largest > T(0)) || !(largest < infinity<T>))
+                    return false;
+                f[r] /= largest;
+                j[r][0] /= largest;
+                j[r][1] /= largest;
+            }
+            const T det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+            if (!(std::abs(det) > T(0)))
+                return false;
+            const T d0 = (f[0] * j[1][1] - f[1] * j[0][1]) / det, d1 = (j[0][0] * f[1] - j[1][0] * f[0]) / det;
+            y[0] -= d0;
+            y[1] -= d1;
+            if (!(std::abs(y[0] - p.lo[0]) + std::abs(y[1] - p.lo[1]) < T(4) * size))
+                return false;
+            if (std::abs(d0) + std::abs(d1) <= T(1e-12) * size)
+                return true;
+        }
+        return false;
+    };
+    const auto inside = [&](const VecD<T, 2>& y, const VecD<T, 2>& lo, const VecD<T, 2>& hi)
+    {
+        const T tol = T(1e-9) * size;
+        return y[0] >= lo[0] - tol && y[0] <= hi[0] + tol && y[1] >= lo[1] - tol && y[1] <= hi[1] + tol;
+    };
+    const auto add = [&](std::vector<VecD<T, 2>>& list, const VecD<T, 2>& y)
+    {
+        for (const VecD<T, 2>& z : list)
+            if (std::abs(z[0] - y[0]) + std::abs(z[1] - y[1]) <= T(1e-9) * size)
+                return;
+        list.push_back(y);
+    };
+    // subdivide [lo, hi] while keep(lo, hi) holds; at the depth limit, solve from the centre
+    struct Cell
+    {
+        VecD<T, 2> lo, hi;
+        int depth;
+    };
+    std::vector<Cell> stack;
+    int boxes = 0;
+    bool unresolved = false;
+    const auto search = [&](auto&& keep, auto&& solve)
+    {
+        stack.assign(1, Cell{p.lo, p.hi, 0});
+        boxes = 0;
+        while (!stack.empty())
+        {
+            const Cell c = stack.back();
+            stack.pop_back();
+            if (++boxes > max_boxes || unresolved)
+                return false;
+            if (!keep(c.lo, c.hi))
+                continue;
+            if (c.depth == max_depth)
+            {
+                solve(c.lo, c.hi);
+                continue;
+            }
+            const T m0 = T(0.5) * (c.lo[0] + c.hi[0]), m1 = T(0.5) * (c.lo[1] + c.hi[1]);
+            stack.push_back({{c.lo[0], c.lo[1]}, {m0, m1}, c.depth + 1});
+            stack.push_back({{m0, c.lo[1]}, {c.hi[0], m1}, c.depth + 1});
+            stack.push_back({{c.lo[0], m1}, {m0, c.hi[1]}, c.depth + 1});
+            stack.push_back({{m0, m1}, {c.hi[0], c.hi[1]}, c.depth + 1});
+        }
+        return true;
+    };
+
+    // folds: f = d_k f = 0
+    for (const Member& m : members)
+    {
+        if (m.passive)
+            continue;
+        const auto keep = [&](const VecD<T, 2>& lo, const VecD<T, 2>& hi)
+        {
+            int dk = 0;
+            return bounds_of(m, lo, hi, dk) && dk == 0;
+        };
+        const auto solve = [&](const VecD<T, 2>& lo, const VecD<T, 2>& hi)
+        {
+            // (f, d_k f) with the Hessian row from differences of the gradient
+            const T eps = T(1e-6) * size;
+            const auto eval = [&](const VecD<T, 2>& y, VecD<T, 2>& f, std::array<VecD<T, 2>, 2>& j)
+            {
+                VecD<T, 2> g;
+                gradient_of(m, y, g);
+                f = {value_of(m, y), g[k]};
+                j[0] = g;
+                for (int d = 0; d < 2; ++d)
+                {
+                    VecD<T, 2> yp = y, gp;
+                    yp[d] += eps;
+                    gradient_of(m, yp, gp);
+                    j[1][d] = (gp[k] - g[k]) / eps;
+                }
+                return std::isfinite(f[0]) && std::isfinite(f[1]);
+            };
+            // a sub-box at the depth limit where the gradient may vanish may
+            // hold a singular point (two branches of the zero set crossing)
+            int dk = 0;
+            bool singular = true;
+            bounds_of(m, lo, hi, dk, &singular);
+            VecD<T, 2> y = {T(0.5) * (lo[0] + hi[0]), T(0.5) * (lo[1] + hi[1])};
+            if (singular || !newton(eval, y))
+                unresolved = true; // bisect instead
+            else if (inside(y, p.lo, p.hi))
+                add(folds, y);
+        };
+        if (!search(keep, solve))
+            return false;
+    }
+    // crossings: f = g = 0, for two functions of different level sets or a surface function
+    for (std::size_t a = 0; a < members.size(); ++a)
+        for (std::size_t b = a + 1; b < members.size(); ++b)
+        {
+            const Member &ma = members[a], &mb = members[b];
+            if (ma.func >= 0 && mb.func >= 0 && ma.ls == mb.ls)
+                continue;
+            const auto keep = [&](const VecD<T, 2>& lo, const VecD<T, 2>& hi)
+            {
+                int dk = 0;
+                return bounds_of(ma, lo, hi, dk) && bounds_of(mb, lo, hi, dk);
+            };
+            const auto solve = [&](const VecD<T, 2>& lo, const VecD<T, 2>& hi)
+            {
+                const auto eval = [&](const VecD<T, 2>& y, VecD<T, 2>& f, std::array<VecD<T, 2>, 2>& j)
+                {
+                    f = {value_of(ma, y), value_of(mb, y)};
+                    gradient_of(ma, y, j[0]);
+                    gradient_of(mb, y, j[1]);
+                    return std::isfinite(f[0]) && std::isfinite(f[1]);
+                };
+                VecD<T, 2> y = {T(0.5) * (lo[0] + hi[0]), T(0.5) * (lo[1] + hi[1])};
+                if (!newton(eval, y))
+                    unresolved = true; // nearly tangent curves, say: bisect instead
+                else if (inside(y, p.lo, p.hi))
+                    add(crossings, y);
+            };
+            if (!search(keep, solve))
+                return false;
+        }
+    return !unresolved && static_cast<int>(folds.size() + crossings.size()) <= max_points;
+}
+
 /// Swap the Gauss-Legendre rule with the one of the accuracy checks.
 template <std::floating_point T>
 void swap_rules(Context<T>& ctx)
@@ -3158,11 +3407,40 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
     }
     if (!certified && ctx.opt.diagnose)
         diagnose_failure<T, D>(ctx, p, an, depth);
-    if (!certified)
+    // whether the accuracy check below runs on this box (a 2D cell's points
+    // where two curves cross have weight 1 each)
+    const bool checked = D == 2 && check && ctx.curved && ctx.out != nullptr && !(Top == 2 && ctx.partner >= 0);
+    // Options::fold_splits: a level-2 box that no axis certifies splits its
+    // base at the folds and crossings along the axis with the best sampled
+    // margins instead of bisecting
+    bool split = false, block = false;
+    std::vector<VecD<T, 2>> split_folds, split_crossings;
+    if constexpr (D == 2)
+    {
+        if (!certified && ctx.opt.fold_splits && ctx.opt.anchor_folds > 0 && ctx.vis_order == 0
+            && ctx.splits_blocked == 0)
+        {
+            const int ks = uncertified_direction<T, D>(ctx, p, an, k);
+            split = fold_split_points<T>(ctx, p, ks, D == Top, an.surface, split_folds, split_crossings);
+            if (split)
+            {
+                k = ks;
+                ctx.stats->fold_splits += !checked;
+            }
+            else
+                block = true;
+        }
+    }
+    if (!certified && !split)
     {
         if (depth < ctx.opt.max_depth && ctx.bisections < ctx.opt.max_bisections)
         {
+            // where the search does not settle (a singular point, nearly
+            // tangent curves), the boxes within are bisected as before: the
+            // lines of a split box would pass arbitrarily close to it
+            ctx.splits_blocked += block;
             bisect<T, D, Rotated, Top>(ctx, std::move(p), emit, depth, interface);
+            ctx.splits_blocked -= block;
             return;
         }
         ++ctx.stats->uncertified;
@@ -3174,8 +3452,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
     }
     if constexpr (D == 2)
     {
-        // a 2D cell's points where two curves cross have weight 1 each
-        if (check && certified && ctx.curved && ctx.out != nullptr && !(Top == 2 && ctx.partner >= 0))
+        if (checked && (certified || split))
         {
             CellPoints<T>& out = *ctx.out;
             const auto measure = [&out](int from, int to)
@@ -3215,6 +3492,12 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                 // than the radius of curvature
                 rel = std::pow(ctx.cell_size * ctx.kappa / T(2), T(2 * ctx.q));
             }
+            // A box split at its folds and crossings is not bisected for
+            // certification, so it is larger than a certified one and its q
+            // points need not reach that accuracy: it must agree with q + 1 to
+            // split_tolerance, or be bisected.
+            if (split && ctx.opt.tolerance == 0)
+                rel = std::min(rel, split_tolerance<T>);
             // Relative to the piece's measure on interfaces and curves; a volume
             // part's to the whole box's, as the difference: both sides of a
             // level set then bisect alike and still add up to the box exactly.
@@ -3373,6 +3656,9 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
     std::vector<T> corners;
     if constexpr (D == 2)
     {
+        for (const std::vector<VecD<T, 2>>* points : {&split_folds, &split_crossings})
+            for (const VecD<T, 2>& y : *points)
+                corners.push_back(y[1 - k]);
         if (certified)
             for (std::size_t i = 0; i < p.surfaces.size(); ++i)
                 for (std::size_t j = i + 1; j < p.surfaces.size(); ++j)
@@ -3385,8 +3671,10 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
     // base line are anchored (Options::anchor_folds)
     std::vector<T> folds;
     if constexpr (D == 2)
-        if (ctx.opt.anchor_folds > 0 && certified && ctx.vis_order == 0)
+        if (ctx.opt.anchor_folds > 0 && (certified || split) && ctx.vis_order == 0)
         {
+            for (const VecD<T, 2>& y : split_folds)
+                folds.push_back(y[1 - k]);
             fold_anchors<T>(ctx, p, k, folds);
             bound_folds<T>(ctx, p.heights, k, lowers, base_box.lo[0], base_box.hi[0], folds);
             bound_folds<T>(ctx, p.heights, k, uppers, base_box.lo[0], base_box.hi[0], folds);
@@ -3524,7 +3812,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             // are anchored (height_folds, which takes nodes as scratch)
             std::vector<T> folds_above;
             if constexpr (D == 2)
-                if (certified && !p.heights.empty() && U > L)
+                if ((certified || split) && !p.heights.empty() && U > L)
                     height_folds<T>(ctx, p.heights, yb, k, L, U, folds_above);
             std::vector<T>& nodes = ctx.nodes[D];
             nodes.clear();
@@ -3779,6 +4067,39 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
     // level sets meet, or in a rotated frame (whose box faces are clips), that
     // keeps the levels below tractable; with one level set the joint base
     // bisects more and is a little more accurate.
+    if constexpr (D == 2 && Top == 2)
+    {
+        if (split && ctx.partner >= 0)
+        {
+            // a 2D cell's curve part on a split box: the crossings of its two
+            // level sets, in the region and the part, with weight 1 (merged
+            // with those of neighbouring boxes once the cell is done)
+            NodeTag tag;
+            tag.box[0] = ctx.box_ids[0]++;
+            int index = 0;
+            for (const VecD<T, 2>& y : split_crossings)
+            {
+                std::array<bool, 2> on = {false, false};
+                for (const Func<T, 2>& f : p.funcs)
+                {
+                    if (f.linear || (f.ls != ctx.surface && f.ls != ctx.partner))
+                        continue;
+                    VecD<T, 2> g;
+                    func_gradient<T, 2>(ctx, f, y, g);
+                    if (std::abs(value<T, 2>(ctx, f, y)) <= point_tol<T> * (std::abs(g[0]) + std::abs(g[1])))
+                        on[f.ls == ctx.partner ? 1 : 0] = true;
+                }
+                bool in = on[0] && on[1];
+                for (const Half<T, 2>& h : p.clips)
+                    in = in && h.c[0] * y[0] + h.c[1] * y[1] <= h.d + point_tol<T>;
+                if (!in || (an.decided == 0 && !holds<T>(ctx, an.terms, to_u<T, 2>(p.frame, y), T(0))))
+                    continue;
+                tag.segment[0] = index++;
+                emit(y, T(1), tag, VecD<T, 2>{});
+            }
+            return;
+        }
+    }
     bool several = !p.surfaces.empty();
     for (std::size_t i = 1; i < p.funcs.size() && !several; ++i)
         several = !p.funcs[i].linear && !p.funcs[0].linear && p.funcs[i].ls != p.funcs[0].ls;
@@ -4201,6 +4522,7 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     ctx.jac = cell.jacobian;
     ctx.box_ids = {0, 0, 0};
     ctx.bisections = 0;
+    ctx.splits_blocked = 0;
     if (vis_order == 0 && ctx.q != q)
     {
         gauss_legendre<T>(q, ctx.gauss_x, ctx.gauss_w);

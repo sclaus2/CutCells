@@ -3079,6 +3079,11 @@ NB_MODULE(_cutcellscpp, m)
               "x = x_f -+ s^2, anchored at the fold; in 3D cells also the segments near the "
               "silhouette of the level set seen along the height direction. 2 (default) keeps "
               "polynomials of degree 2q - 1 exact; 0: off.")
+      .def_rw("fold_splits", &cutcells::quadrays::Options::fold_splits,
+              "A box with two free coordinates that no axis certifies is split at the folds "
+              "(where a zero curve turns along the height direction) and crossings of its zero "
+              "curves instead of bisected; its height lines take all roots. True (default). With "
+              "tolerance 0, such boxes are bisected unless q and q + 1 points agree to 1e-12.")
       .def_rw("max_depth", &cutcells::quadrays::Options::max_depth,
               "Bisections allowed per level along a branch.")
       .def_rw("max_bisections", &cutcells::quadrays::Options::max_bisections,
@@ -3135,6 +3140,8 @@ NB_MODULE(_cutcellscpp, m)
       .def_ro("incomplete_leaves", &cutcells::quadrays::Stats::incomplete_leaves)
       .def_ro("two_roots", &cutcells::quadrays::Stats::two_roots)
       .def_ro("surfaces", &cutcells::quadrays::Stats::surfaces)
+      .def_ro("fold_splits", &cutcells::quadrays::Stats::fold_splits,
+              "Boxes split at folds and crossings instead of bisected.")
       .def_ro("curve_lost", &cutcells::quadrays::Stats::curve_lost,
               "Top boxes of a curve part integrated uncertified, where the curve, if any, is missing.")
       .def_ro("causes", &cutcells::quadrays::Stats::causes);

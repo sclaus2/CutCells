@@ -31,7 +31,9 @@ namespace cutcells::quadrays
 /// surface function, which vanishes where their roots cross). A height
 /// direction k is accepted only if every curved function satisfies
 /// |d_k psi| >= margin |grad psi| on the level's box, from Bernstein bounds
-/// or, for analytic level sets, Taylor models; otherwise the box is bisected.
+/// or, for analytic level sets, Taylor models; otherwise a box with two free
+/// coordinates is split at the folds and crossings of its zero curves
+/// (fold_splits), and other boxes are bisected.
 struct Options
 {
     /// Required |d_k psi| / |grad psi| on a box. Larger margins bisect more.
@@ -123,6 +125,19 @@ struct Options
     int two_roots_depth = 0;
     /// Record why each bisection happened in Stats::causes.
     bool diagnose = false;
+    /// A box with two free coordinates that no axis certifies is not
+    /// bisected: along the axis with the best sampled margins, the points where
+    /// a zero curve turns along it (a fold, f = d_k f = 0) and where two zero
+    /// curves cross (f = g = 0) are found by subdivision with bounds and
+    /// Newton's method, the base line splits at them, the height lines take
+    /// all roots, and segments anchor at the folds (as in Saye 2022, which
+    /// removes these points from the base). Needs anchor_folds > 0, whose rule
+    /// takes the square-root branch of the height functions at a fold at the
+    /// end of a segment. Such boxes are larger than certified ones: with
+    /// tolerance 0, their check asks q and q + 1 points to agree to 1e-12 and
+    /// bisects otherwise. Where the search does not settle (a singular point,
+    /// nearly tangent curves), the box and the boxes within are bisected.
+    bool fold_splits = true;
     /// The front end (part::quadrature_rules): Gauss-Legendre points per
     /// segment of each height line. 0: enough for its order, ceil((order + m)
     /// / 2) for a part of dimension m, so that flat pieces integrate
@@ -140,6 +155,7 @@ struct Stats
     int incomplete_leaves = 0; ///< leaves of the part dropped because their nodes did not line up
     int two_roots = 0;         ///< boxes certified with two roots per height line
     int surfaces = 0;          ///< surface functions made where two level sets cut a box
+    int fold_splits = 0;       ///< boxes split at folds and crossings (Options::fold_splits)
     /// top boxes of a curve part integrated uncertified (depth or bisection
     /// limit): no surface function finds the curve there, so its piece, if
     /// any, is missing
