@@ -163,6 +163,7 @@ struct Height
     Func<T, D + 1> f;
     int k = 0;
     T t_lo = 0, t_hi = 0;
+    bool two = false; ///< two roots per height line, else monotone along t on the box
 };
 
 /// c . y <= d
@@ -226,6 +227,16 @@ struct Requirement
 // Context: the cell, the options and scratch buffers per level
 // ============================================================================
 
+/// A fold the first pass of an accuracy check found near a height line of a
+/// level-2 box (Options::anchor_folds): the index of its height function
+/// (Problem::heights) and the point (tau, t) in the plane through the line.
+template <typename T>
+struct ColumnFold
+{
+    int height = 0;
+    VecD<T, 2> y{};
+};
+
 template <std::floating_point T>
 struct Context
 {
@@ -271,6 +282,20 @@ struct Context
     std::vector<BoxBernstein<T>> top_lines;
     std::vector<char> top_line_set;
     std::vector<T> top_values;
+
+    // The folds of an accuracy-checked level-2 box (Options::anchor_folds): its
+    // own (fold_anchors, bound_folds) and those of its height lines
+    // (height_folds), found on the first pass, which the second takes on.
+    int fold_pass = 0; ///< 0: search; 1: search and record; 2: take the records on
+    std::vector<T> box_folds;
+    std::vector<T> column_y;       ///< base coordinate of each recorded height line
+    std::vector<int> column_start; ///< its folds: column_fold[column_start[i], column_start[i + 1])
+    std::vector<ColumnFold<T>> column_fold;
+    std::vector<int> column_order; ///< the recorded lines by base coordinate
+    // scratch of the fold search
+    Problem<T, 2> fold_plane;
+    std::vector<VecD<T, 2>> fold_starts, fold_found;
+    std::array<std::vector<T>, 4> line_folds; ///< by level: the folds above a height line
 };
 
 /// The margin required on boxes with D free coordinates. Some axis has
@@ -500,6 +525,7 @@ Height<T, D - 1> restrict_height(const Height<T, D>& h, int k, const Bound<T, D>
     Height<T, D - 1> r;
     r.t_lo = h.t_lo;
     r.t_hi = h.t_hi;
+    r.two = h.two;
     r.f = restrict_inner<T, D>(h.f, h.k, k, b, r.k);
     return r;
 }
@@ -2654,6 +2680,15 @@ bool fold_newton(const Context<T>& ctx, const Func<T, 2>& f, int k, T size, VecD
     return false;
 }
 
+/// Sort folds and merge those closer than 1e-10 @p size.
+template <std::floating_point T>
+void unique_folds(std::vector<T>& folds, T size)
+{
+    std::sort(folds.begin(), folds.end());
+    folds.erase(std::unique(folds.begin(), folds.end(), [&](T a, T b) { return b - a <= T(1e-10) * size; }),
+                folds.end());
+}
+
 /// The folds near a certified level-2 box with height direction k: points where
 /// the zero set of a curved function turns back along k (f = d_k f = 0). Its
 /// height function has a square-root branch point at the fold's coordinate on
@@ -2662,9 +2697,12 @@ bool fold_newton(const Context<T>& ctx, const Func<T, 2>& f, int k, T size, VecD
 /// method on (f, d_k f) starts at the points of the osculating circle there
 /// whose tangent runs along k. The base coordinates of the folds within
 /// fold_reach times the box's extent of it along the base line are appended
-/// (Options::anchor_folds).
+/// (Options::anchor_folds). With @p monotone, the functions are monotone along
+/// k on the box, so that the ends of a side along k bracket its one root; @p
+/// found, if given, receives every fold Newton's method reaches, near or not.
 template <std::floating_point T>
-void fold_anchors(Context<T>& ctx, const Problem<T, 2>& p, int k, std::vector<T>& folds)
+void fold_anchors(Context<T>& ctx, const Problem<T, 2>& p, int k, std::vector<T>& folds, bool monotone = false,
+                  std::vector<VecD<T, 2>>* found = nullptr)
 {
     const int j = 1 - k;
     const T extent = p.hi[j] - p.lo[j], size = std::max(extent, p.hi[k] - p.lo[k]);
@@ -2672,7 +2710,7 @@ void fold_anchors(Context<T>& ctx, const Problem<T, 2>& p, int k, std::vector<T>
         return;
     const T reach = fold_reach<T> * extent;
     std::vector<T>& exits = ctx.nodes[2];
-    std::vector<VecD<T, 2>> starts;
+    std::vector<VecD<T, 2>>& starts = ctx.fold_starts;
     for (const Func<T, 2>& f : p.funcs)
     {
         if (f.linear || ctx.flat[static_cast<std::size_t>(f.ls)])
@@ -2685,8 +2723,8 @@ void fold_anchors(Context<T>& ctx, const Problem<T, 2>& p, int k, std::vector<T>
                 const int across = 1 - along;
                 const T c = side == 0 ? p.lo[across] : p.hi[across];
                 exits.clear();
-                curved_roots<T, 2>(ctx, f, VecD<T, 1>{c}, along, p.lo[along], p.hi[along], false, false, ctx.line[2],
-                                   exits);
+                curved_roots<T, 2>(ctx, f, VecD<T, 1>{c}, along, p.lo[along], p.hi[along], monotone && along == k,
+                                   false, ctx.line[2], exits);
                 for (const T t : exits)
                     starts.push_back(insert<T, 2>(VecD<T, 1>{c}, along, t));
             }
@@ -2711,14 +2749,16 @@ void fold_anchors(Context<T>& ctx, const Problem<T, 2>& p, int k, std::vector<T>
                 y[j] += side * radius;
                 if (y[j] < p.lo[j] - reach - extent || y[j] > p.hi[j] + reach + extent)
                     continue;
-                if (fold_newton<T>(ctx, f, k, size, y) && y[j] >= p.lo[j] - reach && y[j] <= p.hi[j] + reach)
+                if (!fold_newton<T>(ctx, f, k, size, y))
+                    continue;
+                if (found != nullptr)
+                    found->push_back(y);
+                if (y[j] >= p.lo[j] - reach && y[j] <= p.hi[j] + reach)
                     folds.push_back(y[j]);
             }
         }
     }
-    std::sort(folds.begin(), folds.end());
-    folds.erase(std::unique(folds.begin(), folds.end(), [&](T a, T b) { return b - a <= T(1e-10) * size; }),
-                folds.end());
+    unique_folds(folds, size);
 }
 
 /// The folds of the level above a level-2 box on its height line y =
@@ -2728,19 +2768,64 @@ void fold_anchors(Context<T>& ctx, const Problem<T, 2>& p, int k, std::vector<T>
 /// longer has the margin (the silhouette of the level above, seen along it).
 /// The integrand along the line has a square-root branch point there; the
 /// coordinates tau of those near the line (fold_anchors on the plane) are
-/// appended.
+/// appended. The plane lies in the certified box above, where a function with
+/// one root per height line is monotone along t. On the first pass of an
+/// accuracy check the folds are recorded (Context::fold_pass).
 template <std::floating_point T>
 void height_folds(Context<T>& ctx, const std::vector<Height<T, 2>>& heights, const VecD<T, 1>& yb, int k, T L, T U,
                   std::vector<T>& folds)
 {
-    Problem<T, 2> plane;
-    for (const Height<T, 2>& h : heights)
+    Problem<T, 2>& plane = ctx.fold_plane;
+    plane.funcs.resize(1);
+    const bool record = ctx.fold_pass == 1;
+    for (std::size_t i = 0; i < heights.size(); ++i)
     {
+        const Height<T, 2>& h = heights[i];
         plane.lo = {L, h.t_lo};
         plane.hi = {U, h.t_hi};
-        plane.funcs.assign(1, line_plane<T, 2>(h.f, yb, k, h.k));
-        fold_anchors<T>(ctx, plane, 1, folds);
+        plane.funcs[0] = line_plane<T, 2>(h.f, yb, k, h.k);
+        ctx.fold_found.clear();
+        fold_anchors<T>(ctx, plane, 1, folds, !h.two, record ? &ctx.fold_found : nullptr);
+        for (const VecD<T, 2>& y : ctx.fold_found)
+            ctx.column_fold.push_back({static_cast<int>(i), y});
     }
+    if (record)
+    {
+        ctx.column_y.push_back(yb[0]);
+        ctx.column_start.push_back(static_cast<int>(ctx.column_fold.size()));
+    }
+}
+
+/// height_folds on the second pass of an accuracy check: Newton's method from
+/// the folds the first pass found on the nearest height lines on either side,
+/// whose rule had other points, instead of the search. A fold no line of the
+/// first pass came near is missed, which leaves the second rule less accurate
+/// and so the check stricter, never laxer.
+template <std::floating_point T>
+void continued_height_folds(Context<T>& ctx, const std::vector<Height<T, 2>>& heights, const VecD<T, 1>& yb, int k,
+                            T L, T U, std::vector<T>& folds)
+{
+    const std::vector<int>& order = ctx.column_order;
+    const auto above = std::lower_bound(order.begin(), order.end(), yb[0],
+                                        [&](int c, T y) { return ctx.column_y[static_cast<std::size_t>(c)] < y; });
+    const T extent = U - L, reach = fold_reach<T> * extent;
+    T size = extent;
+    for (const Height<T, 2>& h : heights)
+        size = std::max(size, h.t_hi - h.t_lo);
+    for (auto it = above == order.begin() ? above : above - 1; it != order.end() && it <= above; ++it)
+    {
+        const std::size_t c = static_cast<std::size_t>(*it);
+        for (int m = ctx.column_start[c]; m < ctx.column_start[c + 1]; ++m)
+        {
+            const ColumnFold<T>& fold = ctx.column_fold[static_cast<std::size_t>(m)];
+            const Height<T, 2>& h = heights[static_cast<std::size_t>(fold.height)];
+            VecD<T, 2> y = fold.y;
+            if (fold_newton<T>(ctx, line_plane<T, 2>(h.f, yb, k, h.k), 1, std::max(extent, h.t_hi - h.t_lo), y)
+                && y[0] >= L - reach && y[0] <= U + reach)
+                folds.push_back(y[0]);
+        }
+    }
+    unique_folds(folds, size);
 }
 
 /// The folds of the level above a level-2 box where its silhouette (see
@@ -2753,7 +2838,8 @@ template <std::floating_point T>
 void bound_folds(Context<T>& ctx, const std::vector<Height<T, 2>>& heights, int k,
                  const std::vector<Bound<T, 2>>& bounds, T lo, T hi, std::vector<T>& folds)
 {
-    Problem<T, 2> plane;
+    Problem<T, 2>& plane = ctx.fold_plane;
+    plane.funcs.resize(1);
     for (const Height<T, 2>& h : heights)
         for (const Bound<T, 2>& b : bounds)
         {
@@ -2762,7 +2848,7 @@ void bound_folds(Context<T>& ctx, const std::vector<Height<T, 2>>& heights, int 
             plane.hi[1 - r.k] = hi;
             plane.lo[r.k] = r.t_lo;
             plane.hi[r.k] = r.t_hi;
-            plane.funcs.assign(1, r.f);
+            plane.funcs[0] = r.f;
             fold_anchors<T>(ctx, plane, r.k, folds);
         }
 }
@@ -3188,14 +3274,35 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                 out.weights.resize(static_cast<std::size_t>(n));
             };
             const int start = out.n_points();
+            // the second run takes on the folds the first finds
+            const bool anchored = ctx.opt.anchor_folds > 0;
+            if (anchored)
+            {
+                ctx.fold_pass = 1;
+                ctx.box_folds.clear();
+                ctx.column_y.clear();
+                ctx.column_start.assign(1, 0);
+                ctx.column_fold.clear();
+            }
             reduce<T, D, Rotated, Top>(ctx, p, an, emit, depth, interface, false);
             const int mid = out.n_points();
+            if (anchored)
+            {
+                ctx.column_order.resize(ctx.column_y.size());
+                for (std::size_t i = 0; i < ctx.column_order.size(); ++i)
+                    ctx.column_order[i] = static_cast<int>(i);
+                std::sort(ctx.column_order.begin(), ctx.column_order.end(),
+                          [&](int a, int b)
+                          { return ctx.column_y[static_cast<std::size_t>(a)] < ctx.column_y[static_cast<std::size_t>(b)]; });
+                ctx.fold_pass = 2;
+            }
             // the second run counts nothing
             const Stats stats = *ctx.stats;
             const int bisections = ctx.bisections;
             swap_rules(ctx);
             reduce<T, D, Rotated, Top>(ctx, p, an, emit, depth, interface, false);
             swap_rules(ctx);
+            ctx.fold_pass = 0;
             *ctx.stats = stats;
             ctx.bisections = bisections;
             const T a = measure(start, mid), b = measure(mid, out.n_points());
@@ -3384,9 +3491,16 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
     if constexpr (D == 2)
         if (ctx.opt.anchor_folds > 0 && certified && ctx.vis_order == 0)
         {
-            fold_anchors<T>(ctx, p, k, folds);
-            bound_folds<T>(ctx, p.heights, k, lowers, base_box.lo[0], base_box.hi[0], folds);
-            bound_folds<T>(ctx, p.heights, k, uppers, base_box.lo[0], base_box.hi[0], folds);
+            if (ctx.fold_pass == 2)
+                folds = ctx.box_folds;
+            else
+            {
+                fold_anchors<T>(ctx, p, k, folds);
+                bound_folds<T>(ctx, p.heights, k, lowers, base_box.lo[0], base_box.hi[0], folds);
+                bound_folds<T>(ctx, p.heights, k, uppers, base_box.lo[0], base_box.hi[0], folds);
+                if (ctx.fold_pass == 1)
+                    ctx.box_folds = folds;
+            }
         }
 
     // The base of the height lines between the given lower and upper bounds, on
@@ -3463,7 +3577,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                     if (f.linear || ctx.flat[static_cast<std::size_t>(f.ls)] || an.independent[i] || an.passive[i]
                         || (an.surface >= 0 && f.ls != an.surface))
                         continue;
-                    base.heights.push_back({f, k, p.lo[k], p.hi[k]});
+                    base.heights.push_back({f, k, p.lo[k], p.hi[k], an.two_roots[i] != 0});
                 }
         }
         // Where two level sets cut a certified box, their roots on the height lines
@@ -3519,10 +3633,16 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             }
             // the folds of the level above on the line, at which its segments
             // are anchored (height_folds, which takes nodes as scratch)
-            std::vector<T> folds_above;
+            std::vector<T>& folds_above = ctx.line_folds[D];
+            folds_above.clear();
             if constexpr (D == 2)
                 if (certified && !p.heights.empty() && U > L)
-                    height_folds<T>(ctx, p.heights, yb, k, L, U, folds_above);
+                {
+                    if (ctx.fold_pass == 2)
+                        continued_height_folds<T>(ctx, p.heights, yb, k, L, U, folds_above);
+                    else
+                        height_folds<T>(ctx, p.heights, yb, k, L, U, folds_above);
+                }
             std::vector<T>& nodes = ctx.nodes[D];
             nodes.clear();
             if constexpr (D == 2 && Top == 3)
