@@ -96,9 +96,10 @@ bool affine_hessian(const Source<T>& phi, std::span<const T> origin, std::span<c
 
 /// @brief The Bernstein form of degree 1 on the cell's box of an analytic
 /// level set that is linear there, from its values at the box's corners: one
-/// whose hessian_bounds vanish on the box (a plane, say).
-/// @return false if the level set has no hessian_bounds or may be curved on
-///         the box; @p form is then unchanged
+/// whose hessian_bounds vanish on the box (a plane, say), or without
+/// hessian_bounds, whose gradient bounds over the box are points.
+/// @return false if the level set may be curved on the box; @p form is then
+///         unchanged
 template <std::floating_point T>
 bool linear_form(const Source<T>& phi, BoxBernstein<T>& form);
 

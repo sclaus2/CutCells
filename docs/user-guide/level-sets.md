@@ -95,6 +95,10 @@ Other sources:
   expressions and tapes (ShapeForest is optional).
 
 Each takes `name=`; `cut` calls an analytic level set without one `phi`.
+quadrays integrates an analytic level set that is linear on a cell as one of
+degree 1 there: one whose second-derivative bounds vanish on the cell or,
+without them, whose gradient bounds over it are points (the exact gradient of
+a plane, say).
 
 ## Multiple level sets
 

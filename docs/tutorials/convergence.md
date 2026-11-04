@@ -138,8 +138,9 @@ The total over the mesh hides most of this: cells that share a face near a
 pole err by opposite amounts. Anchored, the error stays near $10^{-11}$, where
 the check alone starts from $10^{-6}$, until the check takes over on the
 finest mesh. On the cut cells of the meshes up to $n = 33$ the default takes
-1.3 to 2.7 times the points of plain points and 3 to 6 times their time, about
-half of it for the check, and 1.1 to 3.6 times the time of the check alone.
+1.3 to 2.7 times the points of plain points and 2.3 to 5.7 times their time,
+under half of it for the check, and 0.9 to 2.5 times the time of the check
+alone.
 `QuadraysOptions.anchor_folds = 0` gives plain points, `tolerance` sets a
 relative accuracy instead of the order's rate (negative: no check), and
 `points_per_segment` still fixes the points for studies.

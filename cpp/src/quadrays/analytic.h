@@ -6,7 +6,6 @@
 #pragma once
 
 #include <array>
-#include <stdexcept>
 
 #include "taylor.h"
 
@@ -96,28 +95,21 @@ int functor_taylor_models(const F& f, const double* centre, const double* axes, 
             out[1 + j] = t.beta[j];
         out[M + 1] = t.eps;
     };
-    try
+    const Dual<TM, M> r = f(x);
+    if (bounded(r))
     {
-        const Dual<TM, M> r = f(x);
         store(r.v, 0);
         for (int j = 0; j < M; ++j)
             store(r.d[j], 1 + j);
         return 1;
     }
-    catch (const std::domain_error&)
-    {
-    }
     // the derivatives have no bound: the value alone
-    try
-    {
-        const std::array<TM, 3> xv = {x[0].v, x[1].v, x[2].v};
-        store(f(xv), 0);
-        return 2;
-    }
-    catch (const std::domain_error&)
-    {
+    const std::array<TM, 3> xv = {x[0].v, x[1].v, x[2].v};
+    const TM v = f(xv);
+    if (!bounded(v))
         return 0;
-    }
+    store(v, 0);
+    return 2;
 }
 
 /// Bounds of the second derivatives of a functor along the axes of a
@@ -138,23 +130,18 @@ int functor_hessian_bounds(const F& f, const double* centre, const double* axes,
             x[i].d[j].v = TM(axes[i * M + j]);
         }
     }
-    try
-    {
-        const Dual<D1, M> r = f(x);
-        for (int i = 0; i < M; ++i)
-            for (int j = 0; j < M; ++j)
-            {
-                const TM& h = r.d[i].d[j];
-                const double dev = deviation(h);
-                bounds[2 * (i * M + j)] = h.alpha - dev;
-                bounds[2 * (i * M + j) + 1] = h.alpha + dev;
-            }
-        return 1;
-    }
-    catch (const std::domain_error&)
-    {
+    const Dual<D1, M> r = f(x);
+    if (!bounded(r))
         return 0;
-    }
+    for (int i = 0; i < M; ++i)
+        for (int j = 0; j < M; ++j)
+        {
+            const TM& h = r.d[i].d[j];
+            const double dev = deviation(h);
+            bounds[2 * (i * M + j)] = h.alpha - dev;
+            bounds[2 * (i * M + j) + 1] = h.alpha + dev;
+        }
+    return 1;
 }
 
 /// Bounds of a functor and of its gradient over a box, in the layout of
@@ -176,28 +163,21 @@ int functor_box_bounds(const F& f, const double* lo, const double* hi, double* b
         out[0] = t.alpha - dev;
         out[1] = t.alpha + dev;
     };
-    try
+    const Dual<TM, 3> r = f(x);
+    if (bounded(r))
     {
-        const Dual<TM, 3> r = f(x);
         range(r.v, b);
         for (int i = 0; i < 3; ++i)
             range(r.d[i], b + 2 + 2 * i);
         return 1;
     }
-    catch (const std::domain_error&)
-    {
-    }
     // the gradient has no bound: the value alone
-    try
-    {
-        const std::array<TM, 3> xv = {x[0].v, x[1].v, x[2].v};
-        range(f(xv), b);
-        return 2;
-    }
-    catch (const std::domain_error&)
-    {
+    const std::array<TM, 3> xv = {x[0].v, x[1].v, x[2].v};
+    const TM v = f(xv);
+    if (!bounded(v))
         return 0;
-    }
+    range(v, b);
+    return 2;
 }
 
 /// @brief The interface of an algoim-style functor

@@ -253,6 +253,35 @@ def test_plane_from_callables_is_exact(kind, n):
     assert np.sum(area.weights) == pytest.approx(4.0 * math.sqrt(1.13), rel=1e-13)
 
 
+@pytest.mark.parametrize("kind", ["hex", "tet"])
+def test_planes_from_callables_are_linear(kind):
+    """Callables without second-derivative bounds whose gradient bounds are
+    points, a plane's, are integrated as a level set of degree 1: quadrays
+    evaluates no gradient of them, and their rules are the P1 plane's."""
+    a, b = np.array([1.0, 0.3, -0.2]), 0.137
+    gradients = []
+
+    def gradient(x):
+        gradients.append(x)
+        return a
+
+    def box_bounds(lo, hi):
+        low = float(np.sum(np.minimum(a * lo, a * hi)) - b)
+        high = float(np.sum(np.maximum(a * lo, a * hi)) - b)
+        return [low, high, a[0], a[0], a[1], a[1], a[2], a[2]]
+
+    mesh = box_mesh(kind, 5)
+    analytic = cutcells.cut(mesh, cutcells.AnalyticLevelSet(lambda x: float(a @ x - b), gradient, box_bounds))
+    p1 = cutcells.cut(mesh, cutcells.create_level_set(mesh, lambda x: a @ x - b, degree=1, name="phi"))
+    for part in ("phi = 0", "phi < 0"):
+        gradients.clear()
+        rules = analytic[part].quadrature(order=4, mode="cut_only")
+        assert not gradients
+        reference = p1[part].quadrature(order=4, mode="cut_only")
+        assert len(rules.weights) == len(reference.weights)
+        assert np.sum(rules.weights) == pytest.approx(np.sum(reference.weights), rel=1e-13)
+
+
 def test_callables_match_the_compiled_sphere():
     """The callables bound the sphere over boxes, the compiled sphere by Taylor
     models over sub-boxes, which certify larger boxes: the rules differ, their

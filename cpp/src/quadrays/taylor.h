@@ -10,7 +10,6 @@
 #include <cmath>
 #include <concepts>
 #include <limits>
-#include <stdexcept>
 #include <type_traits>
 
 /// Scalar types for evaluating a templated level-set functor
@@ -34,8 +33,11 @@ namespace cutcells::quadrays
 /// The arithmetic is Saye's (2015) and algoim's Interval<N>, with the variables
 /// scaled to [-1, 1], so the half-widths need no storage, and with the full
 /// remainder for sqrt and log. An operation that cannot bound its result (sqrt
-/// or log of a range reaching 0, division by a range containing 0) throws
-/// std::domain_error.
+/// or log of a range reaching 0, division by a range containing 0) returns a
+/// lost model, of NaN entries, and so does every operation on one: bounded()
+/// tells whether a result holds. algoim throws instead, but bounds are lost
+/// often (around the centre of a distance function, say), and an exception
+/// costs far more than the bound.
 template <std::floating_point T, int N>
 struct Taylor
 {
@@ -56,6 +58,28 @@ T deviation(const Taylor<T, N>& a)
     for (int k = 0; k < N; ++k)
         b += std::abs(a.beta[k]);
     return b;
+}
+
+/// The result of an operation that cannot bound it.
+template <std::floating_point T, int N>
+Taylor<T, N> lost_model()
+{
+    constexpr T nan = std::numeric_limits<T>::quiet_NaN();
+    Taylor<T, N> r(nan);
+    r.beta.fill(nan);
+    r.eps = nan;
+    return r;
+}
+
+/// True if the model bounds its function: no operation on the way lost the
+/// bound (lost_model) and nothing overflowed.
+template <std::floating_point T, int N>
+bool bounded(const Taylor<T, N>& a)
+{
+    bool finite = std::isfinite(a.alpha) && std::isfinite(a.eps);
+    for (int k = 0; k < N; ++k)
+        finite = finite && std::isfinite(a.beta[k]);
+    return finite;
 }
 
 /// +1 or -1 if the model has that sign everywhere, 0 otherwise. A tolerance of
@@ -125,7 +149,7 @@ Taylor<T, N> operator/(const Taylor<T, N>& a, const Taylor<T, N>& b)
     const T inv = T(1) / b.alpha;
     const T tau = deviation(b) * std::abs(inv);
     if (!(tau < T(1)))
-        throw std::domain_error("Taylor: division by a range that may contain 0");
+        return lost_model<T, N>(); // the range may contain 0
     const T rho = tau * tau / ((T(1) - tau) * (T(1) - tau) * (T(1) - tau));
     const T b_num = deviation(a);
     Taylor<T, N> r;
@@ -198,7 +222,7 @@ Taylor<T, N> sqrt(const Taylor<T, N>& a)
     if (!(b < a.alpha))
     {
         if (!(a.alpha + b >= T(0)))
-            throw std::domain_error("Taylor: sqrt of a negative range");
+            return lost_model<T, N>(); // a negative range
         return constant_range<T, N>(T(0), std::sqrt(a.alpha + b));
     }
     const T s = std::sqrt(a.alpha);
@@ -218,7 +242,7 @@ Taylor<T, N> log(const Taylor<T, N>& a)
 {
     const T b = deviation(a);
     if (!(b < a.alpha))
-        throw std::domain_error("Taylor: log of a range reaching 0");
+        return lost_model<T, N>(); // the range reaches 0
     const T inv = T(1) / a.alpha;
     const T C = T(1) / ((a.alpha - b) * (a.alpha - b));
     Taylor<T, N> r;
@@ -270,7 +294,8 @@ Taylor<T, N> cos(const Taylor<T, N>& a)
 }
 
 /// Branch helpers: the branch that holds everywhere, or a constant model
-/// enclosing both.
+/// enclosing both. A lost operand gives a lost result, which std::min and
+/// std::max on its NaN entries would not.
 template <std::floating_point T, int N>
 bool certainly_less(const Taylor<T, N>& a, const Taylor<T, N>& b)
 {
@@ -280,6 +305,8 @@ bool certainly_less(const Taylor<T, N>& a, const Taylor<T, N>& b)
 template <std::floating_point T, int N>
 Taylor<T, N> hull(const Taylor<T, N>& a, const Taylor<T, N>& b)
 {
+    if (!bounded(a) || !bounded(b))
+        return lost_model<T, N>();
     const T da = deviation(a), db = deviation(b);
     return constant_range<T, N>(std::min(a.alpha - da, b.alpha - db), std::max(a.alpha + da, b.alpha + db));
 }
@@ -287,6 +314,8 @@ Taylor<T, N> hull(const Taylor<T, N>& a, const Taylor<T, N>& b)
 template <std::floating_point T, int N>
 Taylor<T, N> abs(const Taylor<T, N>& a)
 {
+    if (!bounded(a))
+        return lost_model<T, N>();
     const int s = certain_sign(a);
     if (s > 0)
         return a;
@@ -299,6 +328,8 @@ Taylor<T, N> abs(const Taylor<T, N>& a)
 template <std::floating_point T, int N>
 Taylor<T, N> min(const Taylor<T, N>& a, const Taylor<T, N>& b)
 {
+    if (!bounded(a) || !bounded(b))
+        return lost_model<T, N>();
     if (certainly_less(a, b))
         return a;
     if (certainly_less(b, a))
@@ -310,6 +341,8 @@ Taylor<T, N> min(const Taylor<T, N>& a, const Taylor<T, N>& b)
 template <std::floating_point T, int N>
 Taylor<T, N> max(const Taylor<T, N>& a, const Taylor<T, N>& b)
 {
+    if (!bounded(a) || !bounded(b))
+        return lost_model<T, N>();
     if (certainly_less(a, b))
         return b;
     if (certainly_less(b, a))
@@ -335,11 +368,16 @@ struct Dual
     explicit Dual(double c) : v(c) {}
 };
 
-/// Sign certainty and enclosures of plain numbers, for Dual<double, N>.
+/// Sign certainty, enclosures and bounds of plain numbers, for Dual<double, N>.
 template <std::floating_point T>
 int certain_sign(T v)
 {
     return (v > T(0)) - (v < T(0));
+}
+template <std::floating_point T>
+bool bounded(T v)
+{
+    return std::isfinite(v);
 }
 template <std::floating_point T>
 bool certainly_less(T a, T b)
@@ -365,6 +403,16 @@ template <typename V, int N>
 bool certainly_less(const Dual<V, N>& a, const Dual<V, N>& b)
 {
     return certainly_less(a.v, b.v);
+}
+
+/// True if the value and every derivative are bounded.
+template <typename V, int N>
+bool bounded(const Dual<V, N>& a)
+{
+    bool all = bounded(a.v);
+    for (int k = 0; k < N; ++k)
+        all = all && bounded(a.d[k]);
+    return all;
 }
 
 template <typename V, int N>
