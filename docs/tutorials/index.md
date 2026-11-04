@@ -16,19 +16,19 @@ pip install cutcells pyvista matplotlib
 python python/demo/demo_disk.py
 ```
 
+## One Level Set
+
 ```{toctree}
 :maxdepth: 1
-:caption: Tutorial Book
 
 disk
 convergence
 sphere
-sphere-plane
-napkin-ring
-gyroid
+flower
+ellipsoid
+torus
+mesh-aligned
 ```
-
-## Suggested Session Flow
 
 1. Start with [Disk in a square](disk.md) for the whole workflow in 2D: a
    level set, the three parts it makes, areas, lengths and an integral of a
@@ -37,9 +37,30 @@ gyroid
    pieces of an interpolated level set, and exact geometry under refinement.
 3. Move to 3D with [Ball in a tetrahedral mesh](sphere.md): exact and
    interpolated level sets, curved Lagrange output.
-4. Use [Ball and plane](sphere-plane.md) to select volumes, surfaces and
-   curves with conditions on two level sets.
-5. Use [Napkin ring](napkin-ring.md) for a level set made of level sets, with
-   sharp edges and the faces of its surface.
-6. Finish with [Gyroid](gyroid.md): a triply periodic minimal surface on
-   hexahedra, and a sheet selected between two level sets.
+4. [Flower](flower.md) shows a non-convex curve on quadrilaterals, and what each
+   degree of the level set gains.
+5. [Ellipsoid](ellipsoid.md) integrates functions: physical points, moments,
+   normals and the divergence theorem.
+6. [Torus](torus.md) uses hexahedra and an analytic level set written in Python.
+7. [Plane on mesh facets](mesh-aligned.md) covers surfaces that lie on the mesh,
+   integrated once, and the cells that take them.
+
+## Several Level Sets
+
+Several level sets per cell are under active development: expect their rules
+and costs to change more than those of a single level set.
+
+```{toctree}
+:maxdepth: 1
+
+sphere-plane
+napkin-ring
+gyroid
+```
+
+1. [Ball and plane](sphere-plane.md) selects volumes, surfaces and curves with
+   conditions on two level sets.
+2. [Napkin ring](napkin-ring.md) gives a shape with sharp edges as a level set
+   made of level sets.
+3. [Gyroid](gyroid.md) cuts a triply periodic minimal surface on hexahedra, and
+   selects a sheet between two level sets.

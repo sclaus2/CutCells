@@ -164,7 +164,7 @@ grid = cutcells.to_pyvista(surface.visualization_mesh(mode="cut_only", degree=3)
 
 ## Tutorials
 
-The [tutorial book](https://sclaus2.github.io/CutCells/tutorials/index.html) works through six demos in
+The [tutorial book](https://sclaus2.github.io/CutCells/tutorials/index.html) works through ten demos in
 `python/demo/`, from a first cut to sharp-edged shapes:
 
 | Tutorial | Shows |
@@ -172,6 +172,10 @@ The [tutorial book](https://sclaus2.github.io/CutCells/tutorials/index.html) wor
 | [Disk](https://sclaus2.github.io/CutCells/tutorials/disk.html) | the workflow: mesh, level set, cut, selections, quadrature |
 | [Convergence](https://sclaus2.github.io/CutCells/tutorials/convergence.html) | straight pieces, Pk level sets and exact geometry against the mesh size |
 | [Ball](https://sclaus2.github.io/CutCells/tutorials/sphere.html) | 3D, analytic and interpolated level sets, curved VTU output |
+| [Flower](https://sclaus2.github.io/CutCells/tutorials/flower.html) | a non-convex curve on quadrilaterals, and what each degree gains |
+| [Ellipsoid](https://sclaus2.github.io/CutCells/tutorials/ellipsoid.html) | integrating functions: moments, normals, the divergence theorem |
+| [Torus](https://sclaus2.github.io/CutCells/tutorials/torus.html) | hexahedra, and an analytic level set written in Python |
+| [Plane on mesh facets](https://sclaus2.github.io/CutCells/tutorials/mesh-aligned.html) | surfaces on the mesh, integrated once, and the cells that take them |
 | [Ball and plane](https://sclaus2.github.io/CutCells/tutorials/sphere-plane.html) | two level sets and selections of every dimension |
 | [Napkin ring](https://sclaus2.github.io/CutCells/tutorials/napkin-ring.html) | a level set made of level sets and its faces |
 | [Gyroid](https://sclaus2.github.io/CutCells/tutorials/gyroid.html) | hexahedra and a sheet between two level sets |
@@ -329,7 +333,7 @@ need NumPy, and PyVista or matplotlib for their views.
 
 The documentation is online at <https://sclaus2.github.io/CutCells/>. It
 covers installation, a Python quickstart, mesh views, level sets, selection
-expressions, quadrature and output, a tutorial book of six demos, and a
+expressions, quadrature and output, a tutorial book of ten demos, and a
 compact API overview. Its source is in `docs/`.
 
 Build it locally with:

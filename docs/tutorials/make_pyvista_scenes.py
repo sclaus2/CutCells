@@ -34,10 +34,14 @@ sys.path.insert(0, str(ROOT / "python" / "demo"))
 
 import demo_convergence  # noqa: E402
 import demo_disk  # noqa: E402
+import demo_ellipsoid  # noqa: E402
+import demo_flower  # noqa: E402
 import demo_gyroid  # noqa: E402
+import demo_mesh_aligned  # noqa: E402
 import demo_napkin_ring  # noqa: E402
 import demo_sphere  # noqa: E402
 import demo_sphere_plane  # noqa: E402
+import demo_torus  # noqa: E402
 
 pv.OFF_SCREEN = True
 
@@ -283,10 +287,36 @@ def gyroid_scenes() -> None:
     _write_interactive_view(OUTPUT_DIR / "gyroid-view.html", "Gyroid sheet", data)
 
 
+def flower_scenes() -> None:
+    demo_flower.plot(demo_flower.build(), OUTPUT_DIR / "flower-scene.png")
+
+
+def ellipsoid_scenes() -> None:
+    state = demo_ellipsoid.build()
+    demo_ellipsoid.plot(state, OUTPUT_DIR / "ellipsoid-scene.png")
+    data = _view_data([(_surface(state["surface"]), ORANGE)])
+    _write_interactive_view(OUTPUT_DIR / "ellipsoid-view.html", "Ellipsoid", data)
+
+
+def torus_scenes() -> None:
+    state = demo_torus.build()
+    demo_torus.plot(state, OUTPUT_DIR / "torus-scene.png")
+    data = _view_data([(_surface(state["parts"]["P3"]["surface"]), ORANGE)])
+    _write_interactive_view(OUTPUT_DIR / "torus-view.html", "Torus", data)
+
+
+def mesh_aligned_scenes() -> None:
+    demo_mesh_aligned.plot(demo_mesh_aligned.build(), OUTPUT_DIR / "mesh-aligned-scene.png")
+
+
 SCENES = {
     "disk": disk_scenes,
     "convergence": convergence_scenes,
     "sphere": sphere_scenes,
+    "flower": flower_scenes,
+    "ellipsoid": ellipsoid_scenes,
+    "torus": torus_scenes,
+    "mesh-aligned": mesh_aligned_scenes,
     "sphere-plane": sphere_plane_scenes,
     "napkin-ring": napkin_ring_scenes,
     "gyroid": gyroid_scenes,
