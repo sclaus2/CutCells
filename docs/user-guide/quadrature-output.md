@@ -40,12 +40,16 @@ the folds and the points where two zero curves cross, splits the base there,
 and takes every root on the height lines (`QuadraysOptions.fold_splits`), as
 Saye's 2022 algorithm does; near singular points, where two branches of a zero
 set cross or two level sets touch, it bisects. The same holds one level up: a
-cell with one Bernstein level set and no clip planes (a hexahedron) is not
-bisected where the level set, along an axis, is monotone or has a monotone
-derivative. Its lines take all roots, and the base splits at the silhouette, the
-curve where the zero set turns along that axis
-(`QuadraysOptions.silhouette_splits`), which keeps a ball in a cell to a few
-thousand points. Other cells still bisect in 3D. On curved pieces quadrays also
+cell with Bernstein level sets and no clip planes (a hexahedron) is not bisected
+where each level set, along an axis, is monotone or has a monotone derivative.
+Its lines take all roots, and the base splits at the silhouettes, the curves
+where a zero set turns along that axis, and at the folds of the curves where two
+zero sets meet (`QuadraysOptions.silhouette_splits`). A point splits the base only
+if it may bound the part, and two curves that cross at different heights along
+the lines do not split it. This keeps a ball in a cell to a few thousand points,
+and two balls, or a ball and a plane, to some 10,000 to 25,000 in the worst cell
+at order 8 on a mesh that resolves them. Other cells still bisect in 3D. On curved
+pieces quadrays also
 checks each box against one more point per segment and bisects where they
 disagree by more than the order's rate allows at the cell's size, so that the
 error falls with $h$ (`QuadraysOptions.tolerance`); boxes split at folds must

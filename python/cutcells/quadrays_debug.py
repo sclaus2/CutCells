@@ -25,8 +25,8 @@ from pathlib import Path
 import numpy as np
 
 # BoxFate in cpp/src/quadrays/engine.h
-FATES = ("certified", "split", "bisected", "refined", "rotated", "uncertified")
-_CERTIFIED, _SPLIT, _BISECTED, _REFINED, _ROTATED, _UNCERTIFIED = range(6)
+FATES = ("certified", "split", "bisected", "refined", "rotated", "uncertified", "abandoned")
+_CERTIFIED, _SPLIT, _BISECTED, _REFINED, _ROTATED, _UNCERTIFIED, _ABANDONED = range(7)
 
 _INK, _MUTED, _GRID, _SURFACE = "#0b0b0b", "#52514e", "#e7e6e2", "#fcfcfb"
 _AXIS_ALIGNED, _IN_ROTATED_FRAME = "#2a78d6", "#eb6834"
@@ -63,7 +63,7 @@ def top_leaves(report):
         p = b["parent"][i]
         in_rotated[i] = p >= 0 and (in_rotated[p] or b["fate"][p] == _ROTATED)
     keep = (b["level"] == report["tdim"]) & ~in_rotated
-    keep &= (b["fate"] != _BISECTED) & (b["fate"] != _REFINED)
+    keep &= (b["fate"] != _BISECTED) & (b["fate"] != _REFINED) & (b["fate"] != _ABANDONED)
     return np.flatnonzero(keep)
 
 

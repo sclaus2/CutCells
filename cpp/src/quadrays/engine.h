@@ -158,14 +158,15 @@ struct Options
     /// bisects otherwise. Where the search does not settle (a singular point,
     /// nearly tangent curves), the box and the boxes within are bisected.
     bool fold_splits = true;
-    /// A 3D box that no axis certifies is not bisected where, along an axis, its
-    /// level set is monotone or has a monotone derivative: its lines take all
-    /// roots, at most two per line, and the base splits at the silhouette, where
-    /// the zero set turns along the axis (f = d_k f = 0; Beck and Kummer 2023,
-    /// Section 5.4, read d_k f as a second level set the same way). Segments
-    /// anchor there (anchor_folds) and level-2 boxes split at the silhouette's
-    /// folds (fold_splits); needs both. For now: one Bernstein level set in the
-    /// box, and no clip planes; other boxes bisect.
+    /// A 3D box that no axis certifies is not bisected where, along an axis, each
+    /// of its level sets is monotone or has a monotone derivative: its lines take
+    /// all roots, at most two of each per line, and the base splits at the
+    /// silhouettes, where a zero set turns along the axis (f = d_k f = 0; Beck and
+    /// Kummer 2023, Section 5.4, read d_k f as a second level set the same way), and
+    /// at the curves where two zero sets meet. Segments anchor there (anchor_folds)
+    /// and level-2 boxes split at these curves' folds and crossings (fold_splits);
+    /// needs both. If the base does not settle, the box is bisected after all. For
+    /// now: Bernstein level sets and no clip planes; other boxes bisect.
     bool silhouette_splits = true;
     /// The front end (part::quadrature_rules): Gauss-Legendre points per
     /// segment of each height line. 0: enough for its order, ceil((order + m)
@@ -209,7 +210,8 @@ enum class BoxFate : std::uint8_t
     bisected = 2,    ///< no direction holds on all of it: bisected
     refined = 3,     ///< certified or split, but its accuracy check failed: bisected
     rotated = 4,     ///< no axis holds: its one child is the box in a rotated frame
-    uncertified = 5  ///< no direction holds and a limit is reached: roots isolated in full
+    uncertified = 5, ///< no direction holds and a limit is reached: roots isolated in full
+    abandoned = 6    ///< tried without a margin, its base did not settle: its points were dropped
 };
 
 /// The boxes of the engine's recursion in a cell, in the order it visits them,
