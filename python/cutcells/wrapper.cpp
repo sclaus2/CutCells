@@ -3088,8 +3088,8 @@ NB_MODULE(_cutcellscpp, m)
               "A 3D box that no axis certifies is not bisected where each of its level sets, along an "
               "axis, is monotone or has a monotone derivative: its lines take all roots and the base "
               "splits at the silhouettes, where a zero set turns along that axis, and where two zero "
-              "sets meet. True (default); needs fold_splits and anchor_folds. For now Bernstein level "
-              "sets and no clip planes.")
+              "sets meet. True (default); needs fold_splits and anchor_folds. Analytic level sets need "
+              "second-derivative bounds.")
       .def_rw("max_depth", &cutcells::quadrays::Options::max_depth,
               "Bisections allowed per level along a branch.")
       .def_rw("max_bisections", &cutcells::quadrays::Options::max_bisections,
@@ -3120,9 +3120,13 @@ NB_MODULE(_cutcellscpp, m)
       .def_rw("diagnose", &cutcells::quadrays::Options::diagnose,
               "Record why each bisection happened in QuadraysStats.causes.")
       .def_rw("debug_dir", &cutcells::quadrays::Options::debug_dir,
-              "Not empty: part.quadrature writes each cell that reaches a limit or exceeds "
-              "debug_points to this directory, at most 16 per call, as a JSON file with its level "
-              "sets, boxes and points; python -m cutcells.quadrays_debug plots them.")
+              "Not empty: part.quadrature writes each cell that reaches a limit, debug_points or "
+              "debug_seconds to this directory, at most debug_reports per call, as a JSON file with its "
+              "level sets, boxes and points; python -m cutcells.quadrays_debug plots them.")
+      .def_rw("debug_seconds", &cutcells::quadrays::Options::debug_seconds,
+              "A cut cell that takes at least this many seconds is also written to debug_dir.")
+      .def_rw("debug_reports", &cutcells::quadrays::Options::debug_reports,
+              "The most cells of a quadrature call written to debug_dir.")
       .def_rw("debug_points", &cutcells::quadrays::Options::debug_points,
               "Points from which a cell is written to debug_dir.")
       .def_rw("points_per_segment", &cutcells::quadrays::Options::points_per_segment,

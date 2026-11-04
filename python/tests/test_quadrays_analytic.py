@@ -281,7 +281,12 @@ def test_planes_from_callables_are_linear(kind):
         rules = analytic[part].quadrature(order=4, mode="cut_only")
         assert not gradients
         reference = p1[part].quadrature(order=4, mode="cut_only")
-        assert len(rules.weights) == len(reference.weights)
+        # a corner of a cell within rounding of the plane may leave a sliver in one of them
+
+        def weighty(weights):
+            return np.count_nonzero(np.asarray(weights) > 1e-14 * np.max(weights))
+
+        assert weighty(rules.weights) == weighty(reference.weights)
         assert np.sum(rules.weights) == pytest.approx(np.sum(reference.weights), rel=1e-13)
 
 

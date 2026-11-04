@@ -277,11 +277,15 @@ struct Context
     /// Options::silhouette_splits: the derivatives of the cell's level sets along
     /// the axes of its box, level sets that no term names, whose forms these are.
     std::deque<BoxBernstein<T>> derived_forms;
+    std::deque<DirectionalDerivative> derived_directions; ///< of analytic level sets
+    std::deque<AnalyticLevelSet> derived_analytic;
     std::vector<int> derived; ///< index in phis of d_a phi_l at 3 l + a, or -1
     std::vector<BoxBernstein<T>> linear_forms; ///< of analytic level sets linear on the cell
     std::vector<T> scales;       ///< size of each (reference_magnitude)
     mutable std::vector<PlaneForm<T>> plane_forms; ///< by level set (line_form)
     bool any_analytic = false;   ///< some level set is analytic
+    bool silhouettes = false;    ///< Options::silhouette_splits applies to this run
+    int abandoned = 0;           ///< top boxes tried without a margin whose base did not settle, so far
     bool measure_only = false;   ///< the second run of an accuracy check: only the measure counts
     std::vector<Requirement> terms;
     std::uint64_t used = 0; ///< level sets some term constrains
@@ -318,6 +322,7 @@ struct Context
     T kappa = 0;                  ///< curvature at the centre of the current top box (accuracy checks)
     T top_extent = 0;             ///< its extent along its height direction (accuracy checks)
     bool top_unmargined = false;  ///< the current top box has no margin along it (Options::silhouette_splits)
+    const std::vector<Half<T, 3>>* top_clips = nullptr; ///< its clip planes, in box coordinates; null in a rotated frame
     int level2_bisections = 0;    ///< bisections below it so far
     bool unmargined_failed = false; ///< its base does not settle: its points are dropped, and it is bisected
     int tdim = 0;
@@ -1458,6 +1463,10 @@ bool may_bound_part(Context<T>& ctx, const Vec3<T>& u, T margin)
 {
     const auto value_at = [&](int l) { return evaluate(ctx.phis[static_cast<std::size_t>(l)], std::span<const T>(u)); };
     const auto reach = [&](int l) { return margin * ctx.scales[static_cast<std::size_t>(l)]; };
+    if (ctx.tdim == 3 && ctx.top_clips != nullptr)
+        for (const Half<T, 3>& h : *ctx.top_clips)
+            if (h.c[0] * u[0] + h.c[1] * u[1] + h.c[2] * u[2] > h.d + margin)
+                return false;
     if (ctx.surface >= 0 && std::abs(value_at(ctx.surface)) > reach(ctx.surface))
         return false;
     for (const Requirement& r : ctx.terms)
@@ -2069,7 +2078,7 @@ T two_root_score(Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& lo, con
 /// (Options::silhouette_splits): an axis along which each of its curved functions
 /// is monotone (margin_of positive: constant, or passive, counts) or has a monotone
 /// derivative, so that its lines take at most two roots of each. Among them the
-/// largest score, on a 9^3 grid: near each function's zero set the mean |d_k f| /
+/// largest score, on a 7^3 grid: near each function's zero set the mean |d_k f| /
 /// |grad f| as in Saye's score, near a pair's meeting curve the mean length of its
 /// tangent T = grad f x grad g seen along k, relative to |T|, for lines that cross the
 /// curve rather than run along it; less a little per function that needs a
@@ -2079,21 +2088,56 @@ template <std::floating_point T, typename Margin>
 bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysis<T, 3>& an, Margin&& margin_of,
                           int& k, std::vector<char>& two)
 {
-    if (ctx.derived.empty() || an.curved.empty() || !p.clips.empty())
+    // A failed attempt is thrown away, so a cell gets few. Volumes gain most from what
+    // succeeds lower down; on interfaces a bisected box costs little anyway.
+    if (!ctx.silhouettes || an.curved.empty() || ctx.abandoned >= (ctx.surface >= 0 ? 1 : 4))
         return false;
     for (const int c : an.curved)
     {
         const Func<T, 3>& f = an.funcs[static_cast<std::size_t>(c)];
-        if (is_analytic(ctx, f.ls))
-            return false;
         // the derived level sets are along the axes of the cell's box
         for (int i = 0; i < 3; ++i)
             for (int j = 0; j < 3; ++j)
                 if (f.A[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] != (i == j ? T(1) : T(0)))
                     return false;
     }
-    constexpr int G = 9, total = G * G * G;
     const std::size_t n = an.curved.size();
+    // which axes qualify: this needs bounds only
+    std::array<std::vector<char>, 3> candidates;
+    std::array<int, 3> needed{};
+    std::array<int, 3> axes{};
+    int n_axes = 0;
+    for (int kk = 0; kk < 3; ++kk)
+    {
+        std::vector<char>& candidate = candidates[static_cast<std::size_t>(kk)];
+        candidate.assign(an.funcs.size(), 0);
+        bool qualifies = true;
+        for (std::size_t c = 0; c < n && qualifies; ++c)
+        {
+            if (margin_of(c, kk) > T(0))
+                continue;
+            const std::size_t i = static_cast<std::size_t>(an.curved[c]);
+            const Func<T, 3>& f = an.funcs[i];
+            int curvature = 0;
+            if (ctx.flat[static_cast<std::size_t>(f.ls)] || ctx.derived[static_cast<std::size_t>(3 * f.ls + kk)] < 0
+                || !(second_margin<T, 3>(ctx, f, p.lo, p.hi, kk, curvature) > T(0)))
+                qualifies = false;
+            candidate[i] = 1;
+            ++needed[static_cast<std::size_t>(kk)];
+        }
+        if (qualifies)
+            axes[static_cast<std::size_t>(n_axes++)] = kk;
+    }
+    if (n_axes == 0)
+        return false;
+    if (n_axes == 1)
+    {
+        k = axes[0];
+        two = candidates[static_cast<std::size_t>(k)];
+        return true;
+    }
+    // Several: the largest score on a grid
+    constexpr int G = 7, total = G * G * G;
     const auto grid_point = [&p](int m)
     {
         VecD<T, 3> y;
@@ -2114,15 +2158,20 @@ bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysi
     { return std::abs(values[c * total + static_cast<std::size_t>(m)]) <= T(0.2) * largest[c]; };
     std::vector<VecD<T, 3>> mean(n, VecD<T, 3>{});
     std::vector<int> count(n, 0);
-    VecD<T, 3> worst;
-    worst.fill(T(1));
     std::vector<VecD<T, 3>> grads(n);
+    std::vector<int> close;
+    close.reserve(n);
     VecD<T, 3> pair_sum{};
     int pair_count = 0;
     for (int m = 0; m < total; ++m)
     {
         const VecD<T, 3> y = grid_point(m);
-        std::vector<int> close;
+        bool in_region = true;
+        for (const Half<T, 3>& h : p.clips)
+            in_region = in_region && h.c[0] * y[0] + h.c[1] * y[1] + h.c[2] * y[2] <= h.d;
+        if (!in_region)
+            continue;
+        close.clear();
         for (std::size_t c = 0; c < n; ++c)
             if (near_zero(c, m))
             {
@@ -2155,39 +2204,22 @@ bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysi
     }
     T best = -infinity<T>;
     bool found = false;
-    std::vector<char> candidate(an.funcs.size(), 0);
-    for (int kk = 0; kk < 3; ++kk)
+    for (int a = 0; a < n_axes; ++a)
     {
-        std::fill(candidate.begin(), candidate.end(), char(0));
+        const int kk = axes[static_cast<std::size_t>(a)];
         const std::size_t K = static_cast<std::size_t>(kk);
-        bool qualifies = true;
         T score = T(1);
-        int silhouettes = 0;
-        for (std::size_t c = 0; c < n && qualifies; ++c)
-        {
-            const std::size_t i = static_cast<std::size_t>(an.curved[c]);
-            const Func<T, 3>& f = an.funcs[i];
+        for (std::size_t c = 0; c < n; ++c)
             if (count[c] > 0)
                 score = std::min(score, mean[c][K] / T(count[c]));
-            if (margin_of(c, kk) > T(0))
-                continue;
-            int curvature = 0;
-            if (ctx.flat[static_cast<std::size_t>(f.ls)] || ctx.derived[static_cast<std::size_t>(3 * f.ls + kk)] < 0
-                || !(second_margin<T, 3>(ctx, f, p.lo, p.hi, kk, curvature) > T(0)))
-                qualifies = false;
-            candidate[i] = 1;
-            ++silhouettes;
-        }
-        if (!qualifies)
-            continue;
         if (pair_count > 0)
             score *= pair_sum[K] / T(pair_count);
-        score -= T(0.1) * T(silhouettes);
+        score -= T(0.1) * T(needed[K]);
         if (score > best)
         {
             best = score;
             k = kk;
-            two = candidate;
+            two = candidates[K];
             found = true;
         }
     }
@@ -3835,11 +3867,13 @@ template <std::floating_point T, int D, bool Rotated, int Top, typename Emit>
 void bisect(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth, bool interface)
 {
     if constexpr (D == 2 && Top == 3)
+    {
         if (ctx.top_unmargined && ++ctx.level2_bisections > unmargined_bisections)
         {
             ctx.unmargined_failed = true;
             return;
         }
+    }
     ++ctx.bisections;
     ++ctx.stats->bisections;
     int axis = 0;
@@ -3881,6 +3915,11 @@ void contact_points(Context<T>& ctx, const Func<T, 3>& f, const Func<T, 3>& g, c
     const std::array<const Func<T, 3>*, 3> functions = {&f, &g, &slope};
     const auto may_vanish_on = [&](const Func<T, 3>& h, const VecD<T, 3>& a, const VecD<T, 3>& b)
     {
+        if (is_analytic(ctx, h.ls))
+        {
+            const Ranges<T, 3> r = curved_ranges<T, 3>(ctx, h, a, b, ctx.inner_form[3], ctx.inner_deriv[3], ctx.inner_work[3]);
+            return !r.valid || r.sign == 0;
+        }
         bernstein_form<T, 3>(ctx, h, a, b, form, work);
         return may_vanish(std::span<const T>(form.coeffs));
     };
@@ -3987,11 +4026,22 @@ int crossing_direction(Context<T>& ctx, const Problem<T, 2>& p, int k)
             return VecD<T, 2>{p.lo[0] + (p.hi[0] - p.lo[0]) * (T(i) + T(0.5)) / T(G),
                               p.lo[1] + (p.hi[1] - p.lo[1]) * (T(j) + T(0.5)) / T(G)};
         };
+        const auto in_region = [&p](const VecD<T, 2>& y)
+        {
+            for (const Half<T, 2>& h : p.clips)
+                if (h.c[0] * y[0] + h.c[1] * y[1] > h.d)
+                    return false;
+            return true;
+        };
         for (int i = 0; i < G; ++i)
             for (int j = 0; j < G; ++j)
             {
-                const T v = value_at(point(i, j));
+                const VecD<T, 2> y = point(i, j);
+                const bool in = in_region(y);
+                const T v = in ? value_at(y) : infinity<T>;
                 values[static_cast<std::size_t>(i * G + j)] = v;
+                if (!in)
+                    continue;
                 largest = std::max(largest, std::abs(v));
                 pos = pos || v > T(0);
                 neg = neg || v < T(0);
@@ -4182,6 +4232,10 @@ bool fold_split_points(Context<T>& ctx, const Problem<T, 2>& p, int k, bool top,
     const auto inside = [&](const VecD<T, 2>& y, const VecD<T, 2>& lo, const VecD<T, 2>& hi)
     {
         const T tol = T(1e-9) * size;
+        if (lenient)
+            for (const Half<T, 2>& h : p.clips)
+                if (h.c[0] * y[0] + h.c[1] * y[1] > h.d + tol)
+                    return false;
         return y[0] >= lo[0] - tol && y[0] <= hi[0] + tol && y[1] >= lo[1] - tol && y[1] <= hi[1] + tol;
     };
     const auto add = [&](std::vector<VecD<T, 2>>& list, const VecD<T, 2>& y)
@@ -4622,6 +4676,8 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
         // what the accuracy checks below take from the box, the same for all parts
         ctx.top_extent = p.hi[k] - p.lo[k];
         ctx.top_unmargined = an.unmargined;
+        if constexpr (D == 3)
+            ctx.top_clips = Rotated ? nullptr : &p.clips;
         ctx.kappa = 0;
         if (curved != nullptr && ctx.out != nullptr && ctx.opt.tolerance == 0)
         {
@@ -5398,9 +5454,10 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                 tag.segment[D - 1] = static_cast<int>(s);
                 // the roots of Bernstein forms on this line are all found: no level set
                 // changes sign within a segment, its middle decides for all its points
+                // (but for a sliver of rounding, whose points are tested one by one)
                 bool whole = false;
                 if constexpr (D == Top)
-                    if (ctx.vis_order == 0 && !ctx.any_analytic)
+                    if (ctx.vis_order == 0 && !ctx.any_analytic && b - a > T(1e-12) * (U - L))
                     {
                         const T middle = T(0.5) * (a + b);
                         const VecD<T, D> y = insert<T, D>(yb, k, middle);
@@ -5582,6 +5639,7 @@ void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth
                 return;
             }
             trace_fate(ctx, BoxFate::abandoned);
+            ++ctx.abandoned;
             ctx.bisections = bisections;
             ctx.emitted->points.resize(3 * static_cast<std::size_t>(start));
             ctx.emitted->weights.resize(static_cast<std::size_t>(start));
@@ -5926,9 +5984,6 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     ctx.phis.assign(phis.begin(), phis.end());
     for (PlaneForm<T>& plane : ctx.plane_forms)
         plane.axis = -1;
-    ctx.any_analytic = false;
-    for (const Source<T>& phi : ctx.phis)
-        ctx.any_analytic = ctx.any_analytic || phi.is_analytic();
     ctx.measure_only = false;
     // An analytic level set that is linear on the cell (a plane) is read as its
     // form of degree 1, as a level set of degree 1 is: its zero set then needs
@@ -5989,11 +6044,36 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     ctx.tdim = cell.tdim;
     ctx.derived.assign(3 * n, -1);
     ctx.derived_forms.clear();
-    if (opt.silhouette_splits && opt.fold_splits && opt.anchor_folds > 0 && vis_order == 0 && cell.tdim == 3)
+    ctx.derived_directions.clear();
+    ctx.derived_analytic.clear();
+    ctx.silhouettes = opt.silhouette_splits && opt.fold_splits && opt.anchor_folds > 0 && vis_order == 0 && cell.tdim == 3;
+    ctx.abandoned = 0;
+    if (ctx.silhouettes)
         for (std::size_t l = 0; l < n; ++l)
         {
-            if (!((ctx.used >> l) & 1) || ctx.phis[l].is_analytic() || ctx.flat[l])
+            if (!((ctx.used >> l) & 1) || ctx.flat[l])
                 continue;
+            if (ctx.phis[l].is_analytic())
+            {
+                if (ctx.phis[l].analytic->hessian_bounds == nullptr)
+                    continue;
+                for (int a = 0; a < 3; ++a)
+                {
+                    DirectionalDerivative& d = ctx.derived_directions.emplace_back();
+                    d.phi = ctx.phis[l].analytic;
+                    for (int i = 0; i < 3; ++i)
+                        d.direction[i] = static_cast<double>(ctx.phis[l].jacobian[static_cast<std::size_t>(i)]
+                                                                                  [static_cast<std::size_t>(a)]);
+                    ctx.derived_analytic.push_back(directional_derivative(d));
+                    Source<T> source = ctx.phis[l];
+                    source.analytic = &ctx.derived_analytic.back();
+                    ctx.derived[3 * l + static_cast<std::size_t>(a)] = static_cast<int>(ctx.phis.size());
+                    ctx.phis.push_back(source);
+                    ctx.scales.push_back(reference_magnitude(ctx.phis.back()));
+                    ctx.flat.push_back(0);
+                }
+                continue;
+            }
             for (int a = 0; a < 3; ++a)
             {
                 if (ctx.phis[l].bernstein->degree[static_cast<std::size_t>(a)] < 2)
@@ -6005,12 +6085,17 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
                 ctx.flat.push_back(0);
             }
         }
+    // after an analytic level set linear on the cell became its form of degree 1
+    ctx.any_analytic = false;
+    for (const Source<T>& phi : ctx.phis)
+        ctx.any_analytic = ctx.any_analytic || phi.is_analytic();
     const int start = out.n_points();
     ctx.emitted = &out;
     ctx.first_point = start;
     ctx.points_allowed = vis_order == 0 ? point_limit(opt, q, cell.tdim) : std::numeric_limits<int>::max();
     ctx.over_limit = false;
     ctx.top_unmargined = false;
+    ctx.top_clips = nullptr;
     ctx.unmargined_failed = false;
     ctx.trace = trace;
     ctx.trace_box = -1;

@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -900,8 +901,6 @@ void partial_entity(const MeshPart<T, I>& part, std::int32_t e, PartialEntity<T,
 // Cells that reach a limit of the engine
 // ============================================================================
 
-/// The most cells of a quadrature call written to Options::debug_dir.
-constexpr int max_debug_reports = 16;
 
 /// The cells of a quadrature call that reached a limit of the engine
 /// (Options::max_points, Options::max_bisections) and took many points.
@@ -987,7 +986,7 @@ template <std::floating_point T, std::integral I>
 void write_debug_report(const MeshPart<T, I>& part, I cell_id, cell::type type, const CellTerms& ct,
                         const CellSources<T, I>& cs, int order, int q, const quadrays::Options& options,
                         const quadrays::BoxTrace<T>& trace, const quadrays::CellPoints<T>& points,
-                        const quadrays::Stats& stats)
+                        const quadrays::Stats& stats, double seconds)
 {
     static std::atomic<int> count{0};
     const CutResult<T, I>& r = *part.result;
@@ -1002,6 +1001,7 @@ void write_debug_report(const MeshPart<T, I>& part, I cell_id, cell::type type, 
     label.dim = part.dim;
     label.order = order;
     label.q = q;
+    label.seconds = seconds;
     std::filesystem::create_directories(options.debug_dir);
     const std::string path = (std::filesystem::path(options.debug_dir)
                               / ("cell" + std::to_string(label.cell) + "_dim" + std::to_string(part.dim) + "_order"
@@ -1109,6 +1109,7 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
         quadrays::Stats stats;
         if (debugging)
             trace = quadrays::BoxTrace<T>{};
+        const auto started = std::chrono::steady_clock::now();
         for (; i < entries.size() && entries[i].cell == c; ++i)
         {
             if (!entries[i].whole)
@@ -1131,13 +1132,14 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
         if (cut)
         {
             count_limits(limited, static_cast<std::int64_t>(c), stats);
+            const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
             if (debugging && !ct.terms.empty()
-                && (points.n_points() >= options.debug_points || stats.points_limited > 0
-                    || stats.bisections_limited > 0))
+                && (points.n_points() >= options.debug_points || seconds >= options.debug_seconds
+                    || stats.points_limited > 0 || stats.bisections_limited > 0))
             {
-                if (limited.reports < max_debug_reports)
+                if (limited.reports < options.debug_reports)
                 {
-                    write_debug_report<T, I>(part, c, type, ct, cs, order, q, options, trace, points, stats);
+                    write_debug_report<T, I>(part, c, type, ct, cs, order, q, options, trace, points, stats, seconds);
                     ++limited.reports;
                 }
                 else

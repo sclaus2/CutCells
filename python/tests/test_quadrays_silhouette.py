@@ -318,6 +318,66 @@ def test_events_on_the_borders_of_cells(gap):
         assert worst <= 2000
 
 
+@pytest.mark.parametrize("n", [3, 5, 9])
+def test_lens_on_tetrahedra(n):
+    """A tetrahedron is a box clipped by a plane, which bounds the lines like a face."""
+    radius, distance = 0.6, 0.5
+    axis = np.array([1.0, 2.0, 2.0]) / 3
+    first = np.array([-0.21, 0.07, 0.04])
+    mesh = cc.box_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, n + 1, n + 1, n + 1, cell_type="tetrahedron")
+    a = cc.create_level_set(mesh, sphere(first, radius), degree=2, name="a")
+    b = cc.create_level_set(mesh, sphere(first + distance * axis, radius), degree=2, name="b")
+    result = cc.cut(mesh, [a, b])
+    total, smallest, worst = measures(result, "a < 0 and b < 0")
+    assert abs(total - math.pi * (4 * radius + distance) * (2 * radius - distance) ** 2 / 12) < 1e-12
+    assert smallest > 0
+    assert worst <= {3: 40000, 5: 30000, 9: 15000}[n]
+    total, smallest, worst = measures(result, "a = 0 and b < 0")
+    assert abs(total - 2 * math.pi * radius * (radius - distance / 2)) < 1e-12
+    assert smallest > 0
+    assert worst <= 2000
+
+
+@pytest.mark.parametrize("signed_distance, limits", [(False, {3: 30000, 5: 25000, 9: 15000}),
+                                                     (True, {3: 70000, 5: 30000, 9: 20000})])
+@pytest.mark.parametrize("n", [3, 5, 9])
+def test_analytic_lens(n, signed_distance, limits):
+    """Analytic level sets split at silhouettes too, their derivatives read through
+    their second-derivative bounds: |x - c|^2 - r^2 and the distance |x - c| - r."""
+    radius, distance = 0.6, 0.5
+    axis = np.array([1.0, 2.0, 2.0]) / 3
+    first = np.array([-0.21, 0.07, 0.04])
+    a = cc.analytic_sphere(list(first), radius, signed_distance=signed_distance, name="a")
+    b = cc.analytic_sphere(list(first + distance * axis), radius, signed_distance=signed_distance, name="b")
+    result = cc.cut(box_mesh(n), [a, b])
+    total, smallest, worst = measures(result, "a < 0 and b < 0")
+    assert abs(total - math.pi * (4 * radius + distance) * (2 * radius - distance) ** 2 / 12) < 1e-12
+    assert smallest > 0
+    assert worst <= limits[n]
+    total, smallest, worst = measures(result, "a = 0 and b < 0")
+    assert abs(total - 2 * math.pi * radius * (radius - distance / 2)) < 1e-12
+    assert smallest > 0
+    assert worst <= 3000
+
+
+def test_slow_cells_are_written_for_plotting(tmp_path):
+    """debug_seconds writes a cell for its time, whatever its points."""
+    debug = pytest.importorskip("cutcells.quadrays_debug")
+    mesh = box_mesh(3)
+    phi = cc.create_level_set(mesh, sphere((-0.21, 0.07, 0.04), 0.5), degree=2, name="phi")
+    options = cc.QuadraysOptions()
+    options.debug_dir = str(tmp_path)
+    options.debug_points = 10**9
+    options.debug_seconds = 0.0
+    options.debug_reports = 2
+    cc.cut(mesh, phi)["phi < 0"].quadrature(order=8, mode="cut_only", options=options)
+    files = sorted(tmp_path.glob("*.json"))
+    assert len(files) == 2
+    report = debug.read_report(str(files[0]))
+    assert report["seconds"] > 0
+    assert "ms" in debug.summary(report)
+
+
 def test_splits_can_be_turned_off(ball_in_cell):
     options = cc.QuadraysOptions()
     assert options.silhouette_splits

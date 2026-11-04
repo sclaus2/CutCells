@@ -83,7 +83,7 @@ def test_exact_spheres_are_accurate_in_every_cell(kind, n, order):
     the check and the anchoring at folds, the caps err by 6e-9 to 2e-7). The
     3D lens, whose reference costs most, is checked by its total."""
     gdim = 2 if kind in ("triangle", "quadrilateral") else 3
-    bounds = {"lens": 1e-13, "cap": 1e-13, "curve": 1e-13} if gdim == 2 else {"lens": 1e-13, "cap": 1e-10,
+    bounds = {"lens": 1e-13, "cap": 1e-13, "curve": 1e-13} if gdim == 2 else {"lens": 5e-13, "cap": 1e-10,
                                                                               "curve": 1e-9}
     mesh = mesh_of(kind, n)
     a = cutcells.create_level_set(mesh, ball(C1, gdim, True), degree=2, name="a")

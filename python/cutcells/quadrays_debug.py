@@ -71,7 +71,8 @@ def summary(report):
     """What the engine did in the cell, as text."""
     b = report["boxes"]
     lines = [f"cell {report['cell']}, {report['cell_type']}: {report['selection']}"]
-    lines.append(f"order {report['order']}, q = {report['q']}: {report['n_points']:,} points")
+    lines.append(f"order {report['order']}, q = {report['q']}: {report['n_points']:,} points, "
+                 f"{1e3 * report.get('seconds', 0):.1f} ms")
     s = report["stats"]
     lines.append(f"{s['bisections']} bisections, {s['rotations']} rotations, {s['fold_splits']} fold splits, "
                  f"{s['uncertified']} uncertified")
@@ -232,9 +233,13 @@ def plot_report(report, path=None, at=None):
         depths.bar(levels, turned, width=0.8, bottom=plain, color=_IN_ROTATED_FRAME)
         depths.grid(axis="y", color=_GRID, lw=0.6)
         depths.set_axisbelow(True)
-        depths.legend(handles=[Patch(color=_AXIS_ALIGNED, label="axis-aligned boxes"),
-                               Patch(color=_IN_ROTATED_FRAME, label="boxes in rotated frames")],
-                      frameon=False, fontsize=8, labelcolor=_MUTED)
+        depths.set_xticks(levels)
+        depths.set_xlim(levels[0] - 0.8, max(levels[-1], levels[0] + 3) + 0.8)
+        depths.margins(y=0.05)
+        if rotated.any():
+            depths.legend(handles=[Patch(color=_AXIS_ALIGNED, label="axis-aligned boxes"),
+                                   Patch(color=_IN_ROTATED_FRAME, label="boxes in rotated frames")],
+                          frameon=False, fontsize=8, labelcolor=_MUTED)
     _style(depths, "Points by the depth of their top box", ("bisections", "points"))
 
     text.axis("off")

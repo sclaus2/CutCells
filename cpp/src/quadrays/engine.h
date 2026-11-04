@@ -137,14 +137,18 @@ struct Options
     /// Record why each bisection happened in Stats::causes.
     bool diagnose = false;
     /// The front end (part::quadrature_rules), for studying cells that take
-    /// many points. Not empty: each cell that reaches a limit or exceeds
-    /// debug_points is written to this directory as a JSON file (its level sets
-    /// on a grid, its boxes and points; write_cell_report), at most 16 per call,
-    /// which `python -m cutcells.quadrays_debug` plots. Empty: nothing is
+    /// many points or much time. Not empty: each cell that reaches a limit, debug_points
+    /// or debug_seconds is written to this directory as a JSON file (its level sets
+    /// on a grid, its boxes and points; write_cell_report), at most debug_reports per
+    /// call, which `python -m cutcells.quadrays_debug` plots. Empty: nothing is
     /// recorded, at the cost of one test per box.
     std::string debug_dir;
     /// Points from which a cell is written to debug_dir.
     int debug_points = 10000;
+    /// A cut cell is also written if integrating it takes at least this many seconds.
+    double debug_seconds = 0.1;
+    /// The most cells of a quadrature call written to debug_dir.
+    int debug_reports = 16;
     /// A box with two free coordinates that no axis certifies is not
     /// bisected: along the axis with the best sampled margins, the points where
     /// a zero curve turns along it (a fold, f = d_k f = 0) and where two zero
@@ -165,8 +169,8 @@ struct Options
     /// Kummer 2023, Section 5.4, read d_k f as a second level set the same way), and
     /// at the curves where two zero sets meet. Segments anchor there (anchor_folds)
     /// and level-2 boxes split at these curves' folds and crossings (fold_splits);
-    /// needs both. If the base does not settle, the box is bisected after all. For
-    /// now: Bernstein level sets and no clip planes; other boxes bisect.
+    /// needs both. If the base does not settle, the box is bisected after all, and a
+    /// cell makes few such attempts. Analytic level sets need hessian_bounds.
     bool silhouette_splits = true;
     /// The front end (part::quadrature_rules): Gauss-Legendre points per
     /// segment of each height line. 0: enough for its order, ceil((order + m)

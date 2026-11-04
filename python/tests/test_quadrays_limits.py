@@ -94,6 +94,7 @@ def test_debug_report_regions_partition_the_points(tmp_path):
     options = cc.QuadraysOptions()
     options.debug_dir = str(tmp_path)
     options.max_points = -1
+    options.silhouette_splits = False  # with them this cell needs no rotated frame
     result[(a < 0) & (b < 0)].quadrature(order=8, options=options)
     report = debug.read_report(glob.glob(str(tmp_path / "*.json"))[0])
     boxes, leaves = report["boxes"], debug.top_leaves(report)

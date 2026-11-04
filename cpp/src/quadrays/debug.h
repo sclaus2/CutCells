@@ -31,6 +31,7 @@ struct CellLabel
     int dim = 0;                         ///< the part's dimension
     int order = 0;                       ///< the order asked for
     int q = 0;                           ///< points per segment
+    double seconds = 0;                  ///< how long the cell took
 };
 
 /// @brief Writes what the engine did in a cell to a JSON file, for studying

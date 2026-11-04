@@ -40,8 +40,8 @@ the folds and the points where two zero curves cross, splits the base there,
 and takes every root on the height lines (`QuadraysOptions.fold_splits`), as
 Saye's 2022 algorithm does; near singular points, where two branches of a zero
 set cross or two level sets touch, it bisects. The same holds one level up: a
-cell with Bernstein level sets and no clip planes (a hexahedron) is not bisected
-where each level set, along an axis, is monotone or has a monotone derivative.
+cell is not bisected where each level set, along an axis, is monotone or has a
+monotone derivative (an analytic level set needs second-derivative bounds for this).
 Its lines take all roots, and the base splits at the silhouettes, the curves
 where a zero set turns along that axis, and at the folds of the curves where two
 zero sets meet (`QuadraysOptions.silhouette_splits`). A point splits the base only
@@ -156,9 +156,10 @@ A cell over `QuadraysOptions.max_points` (by default $1000\,q^{\text{tdim}}$ for
 $q$ points per segment, at most 300000) is integrated again with fewer
 bisections, which costs accuracy; a cell that uses all of `max_bisections`
 integrates its remaining boxes without a certified height direction. To see why
-a cell needed so many, set `debug_dir`: each cell that reaches a limit or exceeds
-`debug_points` is written there as a JSON file with its level sets on a grid, the
-boxes of the recursion and the points, at most 16 per call.
+a cell needed so many, or so long, set `debug_dir`: each cell that reaches a limit,
+`debug_points` or `debug_seconds` is written there as a JSON file with its level sets
+on a grid, the boxes of the recursion, the points and its time, at most
+`debug_reports` per call.
 
 ```python
 options = cutcells.QuadraysOptions()

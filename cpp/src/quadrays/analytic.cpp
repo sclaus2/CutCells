@@ -5,6 +5,8 @@
 
 #include "analytic.h"
 
+#include <limits>
+
 #include <algorithm>
 #include <cmath>
 
@@ -66,6 +68,84 @@ int parallelepiped_hessian(const AnalyticLevelSet& phi, const double* centre, co
     if (phi.hessian_bounds == nullptr)
         return 0;
     return phi.hessian_bounds(centre, axes, m, bounds, phi.context);
+}
+
+namespace
+{
+double derivative_value(const double* x, void* context)
+{
+    const DirectionalDerivative& d = *static_cast<const DirectionalDerivative*>(context);
+    double g[3];
+    d.phi->gradient(x, g, d.phi->context);
+    return g[0] * d.direction[0] + g[1] * d.direction[1] + g[2] * d.direction[2];
+}
+
+double derivative_gradient(const double* x, double* grad, void* context)
+{
+    const DirectionalDerivative& d = *static_cast<const DirectionalDerivative*>(context);
+    // the Hessian at x: its bounds over a box too small to widen them
+    const double h = 1e-4;
+    const double axes[9] = {h, 0, 0, 0, h, 0, 0, 0, h};
+    double bounds[18];
+    grad[0] = grad[1] = grad[2] = std::numeric_limits<double>::quiet_NaN();
+    if (d.phi->hessian_bounds(x, axes, 3, bounds, d.phi->context) != 0)
+        for (int i = 0; i < 3; ++i)
+        {
+            double sum = 0;
+            for (int j = 0; j < 3; ++j)
+                sum += 0.5 * (bounds[2 * (i * 3 + j)] + bounds[2 * (i * 3 + j) + 1]) / (h * h) * d.direction[j];
+            grad[i] = sum;
+        }
+    return derivative_value(x, context);
+}
+
+int derivative_box_bounds(const double* lo, const double* hi, double* b, void* context)
+{
+    const DirectionalDerivative& d = *static_cast<const DirectionalDerivative*>(context);
+    double parent[8];
+    if (d.phi->box_bounds(lo, hi, parent, d.phi->context) != 1)
+        return 0;
+    b[0] = b[1] = 0;
+    for (int i = 0; i < 3; ++i)
+    {
+        const double a0 = parent[2 + 2 * i] * d.direction[i], a1 = parent[3 + 2 * i] * d.direction[i];
+        b[0] += std::min(a0, a1);
+        b[1] += std::max(a0, a1);
+    }
+    double centre[3], half[3], axes[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, bounds[18];
+    for (int i = 0; i < 3; ++i)
+    {
+        centre[i] = 0.5 * (lo[i] + hi[i]);
+        half[i] = std::max(0.5 * (hi[i] - lo[i]), 1e-8 * (1 + std::abs(centre[i])));
+        axes[i * 3 + i] = half[i];
+    }
+    if (d.phi->hessian_bounds(centre, axes, 3, bounds, d.phi->context) == 0)
+        return 2;
+    for (int i = 0; i < 3; ++i)
+    {
+        double low = 0, high = 0;
+        for (int j = 0; j < 3; ++j)
+        {
+            const double scale = d.direction[j] / (half[i] * half[j]);
+            const double a0 = bounds[2 * (i * 3 + j)] * scale, a1 = bounds[2 * (i * 3 + j) + 1] * scale;
+            low += std::min(a0, a1);
+            high += std::max(a0, a1);
+        }
+        b[2 + 2 * i] = low;
+        b[3 + 2 * i] = high;
+    }
+    return 1;
+}
+} // namespace
+
+AnalyticLevelSet directional_derivative(const DirectionalDerivative& d)
+{
+    AnalyticLevelSet out;
+    out.context = const_cast<DirectionalDerivative*>(&d);
+    out.value = derivative_value;
+    out.gradient = derivative_gradient;
+    out.box_bounds = derivative_box_bounds;
+    return out;
 }
 
 } // namespace cutcells::quadrays

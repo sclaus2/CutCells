@@ -67,6 +67,20 @@ int parallelepiped_bounds(const AnalyticLevelSet& phi, const double* centre, con
 int parallelepiped_hessian(const AnalyticLevelSet& phi, const double* centre, const double* axes, int m,
                            double* bounds);
 
+/// The derivative of an analytic level set along a fixed direction of physical
+/// space. A level set the engine can read like any other: values from the gradient,
+/// its gradient and the derivative bounds from hessian_bounds.
+struct DirectionalDerivative
+{
+    const AnalyticLevelSet* phi = nullptr;
+    double direction[3] = {0, 0, 0};
+};
+
+/// @brief @p d as an analytic level set; @p d must outlive it. @p d.phi needs
+/// hessian_bounds. Without Taylor models: bounds over slanted boxes come from their
+/// bounding boxes.
+AnalyticLevelSet directional_derivative(const DirectionalDerivative& d);
+
 // ============================================================================
 // Adapter for templated functors
 // ============================================================================

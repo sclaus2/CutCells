@@ -117,7 +117,8 @@ void write_cell_report(const std::string& path, const CellLabel<T>& label, const
     std::fputc(']', f);
     write_key(f, "selection");
     write_string(f, label.selection);
-    std::fprintf(f, ",\n\"dim\": %d, \"order\": %d, \"q\": %d", label.dim, label.order, label.q);
+    std::fprintf(f, ",\n\"dim\": %d, \"order\": %d, \"q\": %d, \"seconds\": %.6f", label.dim, label.order, label.q,
+                 label.seconds);
     std::fprintf(f, ",\n\"options\": {\"margin\": %g, \"tolerance\": %g, \"max_depth\": %d, \"max_bisections\": %d, "
                     "\"max_points\": %d, \"rotation_depth\": %d, \"fold_splits\": %s, \"anchor_folds\": %d}",
                  opt.margin, opt.tolerance, opt.max_depth, opt.max_bisections, point_limit(opt, label.q, box.tdim),
