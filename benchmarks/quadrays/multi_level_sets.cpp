@@ -8,9 +8,10 @@
 // cubes of a grid. For each case, part, mesh and points per segment q, one CSV
 // line per generator: points on cut cells (total, mean per cut cell with points
 // of the part, worst cell), time, per-cell L1 and worst errors against quadrays
-// at q = 14 without limits, of the part's measure and of a polynomial of degree
-// 8, which is what assembly sees, the error of the total, and the smallest
-// weight.
+// at q = 14 without limits, of the part's measure, of a polynomial of degree 8
+// in physical coordinates, and of one in the cell's coordinates, which varies
+// over the cell at any h as a product of shape functions does and so is what
+// assembly sees; the error of the total, and the smallest weight.
 //
 // usage: quadrays_multi_level_sets [case|all] [n,n,...] [q,q,...] [generator,...]
 
@@ -202,11 +203,26 @@ double integrand(const V3& x)
     return std::pow(1.0 + 0.7 * x[0] + 0.5 * x[1] - 0.3 * x[2], 8);
 }
 
+/// A polynomial in the cell's coordinates with degree 8 along each axis, the
+/// squares of Legendre polynomials of degree 4: as the mass matrix of shape
+/// functions of degree 4 along that axis.
+double shape_integrand(double u0, double u1, double u2)
+{
+    const auto square = [](double u)
+    {
+        const double t = 2 * u - 1, t2 = t * t;
+        const double p = (35 * t2 * t2 - 30 * t2 + 3) / 8;
+        return p * p;
+    };
+    return square(u0) + square(u1) + square(u2);
+}
+
 struct CellResult
 {
     int points = 0;
     double sum = 0;  ///< the measure
     double moment = 0; ///< the integral of integrand
+    double shape = 0; ///< the integral of shape_integrand
     double min_weight = 0;
 };
 
@@ -228,6 +244,7 @@ CellResult run_quadrays(const GridCell& g, const std::vector<std::vector<Selecti
         const double w = rule._weights[p];
         r.sum += w;
         r.moment += w * integrand(physical(g.cell, {rule._points[3 * p], rule._points[3 * p + 1], rule._points[3 * p + 2]}));
+        r.shape += w * shape_integrand(rule._points[3 * p], rule._points[3 * p + 1], rule._points[3 * p + 2]);
         r.min_weight = std::min(r.min_weight, w);
     }
     return r;
@@ -253,6 +270,7 @@ CellResult run_algoim(const GridCell& g, const Selection& part, int q, algoim::Q
         ++r.points;
         r.sum += w;
         r.moment += w * integrand(physical(g.cell, {x(0), x(1), x(2)}));
+        r.shape += w * shape_integrand(x(0), x(1), x(2));
         r.min_weight = std::min(r.min_weight, w);
     };
     const bool interface = part.clauses.front().sign == 0;
@@ -347,7 +365,7 @@ int main(int argc, char** argv)
         = split(argc > 4 ? argv[4] : "algoim-gl,algoim-auto,quadrays,quadrays-nocheck,quadrays-norot-nocheck,quadrays-nocheck-m10");
 
     std::printf("case,part,n,q,generator,cut_cells,cells_with_points,points,mean,worst,seconds,cell_l1,cell_max,total_err,"
-                "moment_l1,moment_max,min_weight\n");
+                "moment_l1,moment_max,shape_l1,shape_max,min_weight\n");
     for (const Case& c : all_cases())
     {
         if (which != "all" && which != c.name)
@@ -362,7 +380,8 @@ int main(int argc, char** argv)
             {
                 const std::vector<std::vector<SelectionTerm>> groups = groups_of(part, c.level_sets.size());
                 // the reference: quadrays with many points and no limits
-                std::vector<double> reference(cells.size(), 0.0), reference_moment(cells.size(), 0.0);
+                std::vector<double> reference(cells.size(), 0.0), reference_moment(cells.size(), 0.0),
+                    reference_shape(cells.size(), 0.0);
                 double reference_total = 0;
                 Options ref_opt;
                 ref_opt.max_points = -1;
@@ -373,6 +392,7 @@ int main(int argc, char** argv)
                         const CellResult r = run_quadrays(cells[i], groups, 14, ref_opt);
                         reference[i] = r.sum;
                         reference_moment[i] = r.moment;
+                        reference_shape[i] = r.shape;
                         reference_total += reference[i];
                         ++cut_cells;
                     }
@@ -386,7 +406,7 @@ int main(int argc, char** argv)
                         long long points = 0;
                         int worst = 0, with_points = 0;
                         double l1 = 0, largest = 0, total = 0, min_weight = 1e300, seconds = 0, moment_l1 = 0,
-                               moment_max = 0;
+                               moment_max = 0, shape_l1 = 0, shape_max = 0;
                         for (std::size_t i = 0; i < cells.size(); ++i)
                         {
                             if (!cells[i].cut)
@@ -406,11 +426,14 @@ int main(int argc, char** argv)
                             const double em = std::abs(r.moment - reference_moment[i]);
                             moment_l1 += em;
                             moment_max = std::max(moment_max, em);
+                            const double es = std::abs(r.shape - reference_shape[i]);
+                            shape_l1 += es;
+                            shape_max = std::max(shape_max, es);
                         }
-                        std::printf("%s,%s,%d,%d,%s,%d,%d,%lld,%.1f,%d,%.4f,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e\n", c.name.c_str(),
+                        std::printf("%s,%s,%d,%d,%s,%d,%d,%lld,%.1f,%d,%.4f,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e\n", c.name.c_str(),
                                     part.name.c_str(), n, q, generator.c_str(), cut_cells, with_points, points,
                                     with_points > 0 ? double(points) / with_points : 0.0, worst, seconds, l1, largest,
-                                    std::abs(total - reference_total), moment_l1, moment_max, min_weight);
+                                    std::abs(total - reference_total), moment_l1, moment_max, shape_l1, shape_max, min_weight);
                         std::fflush(stdout);
                     }
             }
