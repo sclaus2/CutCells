@@ -78,12 +78,11 @@ result = cutcells.cut(mesh, ball)                       # named "phi"
 named = cutcells.analytic_sphere([0.0, 0.0, 0.0], 0.5, name="ball")
 ```
 
-quadrays bounds an analytic level set by first-order Taylor models. Those of
-a distance function, whose square root they model only on boxes small against
-its radius, certify far smaller boxes than those of a polynomial: for the same
-sphere, `signed_distance=False` (`|x - c|^2 - r^2`, the same zero set and
-signs) takes several times fewer points, and a lens of two such balls about
-ten times fewer.
+quadrays bounds an analytic level set by first-order Taylor models, which
+certify smaller boxes for a distance function than for a polynomial: for the
+same sphere, `signed_distance=False` (`|x - c|^2 - r^2`, the same zero set and
+signs) takes two to three times fewer points on hexahedra, and a little fewer
+on tetrahedra.
 
 Other sources:
 

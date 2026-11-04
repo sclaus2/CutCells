@@ -31,10 +31,15 @@ namespace cutcells::quadrays
 ///   f(y) in alpha + beta . y + [-eps, eps].
 ///
 /// The arithmetic is Saye's (2015) and algoim's Interval<N>, with the variables
-/// scaled to [-1, 1], so the half-widths need no storage, and with the full
-/// remainder for sqrt and log. An operation that cannot bound its result (sqrt
-/// or log of a range reaching 0, division by a range containing 0) returns a
-/// lost model, of NaN entries, and so does every operation on one: bounded()
+/// scaled to [-1, 1], so the half-widths need no storage. sqrt, log, exp and
+/// 1 / x are concave or convex about alpha, so their remainders come from
+/// their values at the ends of the range, which is tighter than the
+/// second-order bound C/2 b^2 and keeps a linear model of sqrt where the range
+/// reaches 0; a square's remainder is one-sided. A distance function
+/// sqrt(sum (x_i - c_i)^2) then certifies boxes several times larger than with
+/// C/2 b^2. An operation that cannot bound its result (sqrt of a negative
+/// range, log of a range reaching 0, division by a range containing 0) returns
+/// a lost model, of NaN entries, and so does every operation on one: bounded()
 /// tells whether a result holds. algoim throws instead, but bounds are lost
 /// often (around the centre of a distance function, say), and an exception
 /// costs far more than the bound.
@@ -134,6 +139,20 @@ Taylor<T, N> operator-(const Taylor<T, N>& a, const Taylor<T, N>& b)
 template <std::floating_point T, int N>
 Taylor<T, N> operator*(const Taylor<T, N>& a, const Taylor<T, N>& b)
 {
+    // A square, the same model twice (x * x in a functor): (alpha + l)^2 =
+    // alpha^2 + 2 alpha l + l^2 with l^2 in [0, d^2], one-sided, half the
+    // remainder of a product. Two models with equal entries may bound
+    // different functions, whose product is no square.
+    if (&a == &b)
+    {
+        const T d = deviation(a);
+        Taylor<T, N> r;
+        r.alpha = a.alpha * a.alpha + T(0.5) * d * d;
+        for (int k = 0; k < N; ++k)
+            r.beta[k] = T(2) * a.alpha * a.beta[k];
+        r.eps = T(2) * std::abs(a.alpha) * a.eps + T(0.5) * d * d;
+        return r;
+    }
     // (alpha_a + l_a)(alpha_b + l_b) with |l| <= deviation
     Taylor<T, N> r;
     r.eps = deviation(a) * deviation(b) + std::abs(a.alpha) * b.eps + std::abs(b.alpha) * a.eps;
@@ -143,21 +162,34 @@ Taylor<T, N> operator*(const Taylor<T, N>& a, const Taylor<T, N>& b)
     return r;
 }
 
+/// 1 / b about alpha: 1 / x = 1 / alpha - (x - alpha) / alpha^2 + g(x) with g
+/// convex and g(alpha) = 0 its minimum, so that on the range [alpha - d,
+/// alpha + d], which must not contain 0, g lies between 0 and its larger end
+/// value, d^2 / (alpha^2 (|alpha| - d)).
+template <std::floating_point T, int N>
+Taylor<T, N> reciprocal(const Taylor<T, N>& b)
+{
+    if (!bounded(b))
+        return lost_model<T, N>();
+    const T d = deviation(b), m = std::abs(b.alpha);
+    if (!(d < m))
+        return lost_model<T, N>(); // the range may contain 0
+    const T inv = T(1) / b.alpha;
+    // g on the end nearer 0, with the sign of 1 / alpha, and a few rounding errors
+    const T gmax = d * d / (b.alpha * b.alpha * (m - d)) * (T(1) + T(8) * std::numeric_limits<T>::epsilon());
+    const T g = b.alpha > T(0) ? gmax : -gmax;
+    Taylor<T, N> r;
+    r.alpha = inv + T(0.5) * g;
+    for (int k = 0; k < N; ++k)
+        r.beta[k] = -b.beta[k] * inv * inv;
+    r.eps = b.eps * inv * inv + T(0.5) * gmax;
+    return r;
+}
+
 template <std::floating_point T, int N>
 Taylor<T, N> operator/(const Taylor<T, N>& a, const Taylor<T, N>& b)
 {
-    const T inv = T(1) / b.alpha;
-    const T tau = deviation(b) * std::abs(inv);
-    if (!(tau < T(1)))
-        return lost_model<T, N>(); // the range may contain 0
-    const T rho = tau * tau / ((T(1) - tau) * (T(1) - tau) * (T(1) - tau));
-    const T b_num = deviation(a);
-    Taylor<T, N> r;
-    r.eps = (std::abs(a.alpha * inv) * b.eps + (std::abs(a.alpha) + b_num) * rho + b_num * tau + a.eps) * std::abs(inv);
-    for (int k = 0; k < N; ++k)
-        r.beta[k] = a.beta[k] * inv - a.alpha * b.beta[k] * inv * inv;
-    r.alpha = a.alpha * inv;
-    return r;
+    return a * reciprocal(b);
 }
 
 // with constants
@@ -209,61 +241,77 @@ Taylor<T, N> operator/(std::type_identity_t<T> c, const Taylor<T, N>& a)
     return Taylor<T, N>(c) / a;
 }
 
-/// sqrt with the full first-order remainder |f'(alpha)| eps + C/2 b^2, C bounding
-/// |sqrt''| = x^(-3/2) / 4 on [alpha - b, alpha + b]. algoim's sqrt leaves out
-/// the first term, which declared cut cells uncut for |x - c| - r. A range
-/// reaching 0 has no first-order model, only the values [0, sqrt(alpha + b)]
-/// (around the centre of a distance function, say); its derivative, which a
-/// Dual divides by sqrt, then loses its bound.
+/// sqrt about alpha: sqrt(x) = s + (x - alpha) / (2 s) + g(x) with g concave
+/// and g(alpha) = 0 its maximum, so that on the range [max(alpha - b, 0),
+/// alpha + b] g lies between its smaller end value and 0. This bound never
+/// exceeds the second-order remainder C/2 b^2 (C bounding |sqrt''| on the
+/// range) and stays finite where the range reaches 0 (around the centre of a
+/// distance function, where that remainder has no bound).
 template <std::floating_point T, int N>
 Taylor<T, N> sqrt(const Taylor<T, N>& a)
 {
+    if (!bounded(a))
+        return lost_model<T, N>();
     const T b = deviation(a);
-    if (!(b < a.alpha))
-    {
-        if (!(a.alpha + b >= T(0)))
-            return lost_model<T, N>(); // a negative range
-        return constant_range<T, N>(T(0), std::sqrt(a.alpha + b));
-    }
-    const T s = std::sqrt(a.alpha);
-    const T lo = a.alpha - b;
-    const T C = T(0.25) / (lo * std::sqrt(lo));
+    const T hi = a.alpha + b;
+    if (!(hi >= T(0)))
+        return lost_model<T, N>(); // a negative range
+    if (!(a.alpha > T(0)))
+        return constant_range<T, N>(T(0), std::sqrt(hi));
+    const T s = std::sqrt(a.alpha), lo = std::max(a.alpha - b, T(0));
+    const auto g = [&](T x) { return std::sqrt(x) - s - (x - a.alpha) / (2 * s); };
+    // a few rounding errors of the terms of g
+    const T pad = T(8) * std::numeric_limits<T>::epsilon() * (s + b / (2 * s));
+    const T gmin = std::min(g(lo), g(hi)) - pad;
     Taylor<T, N> r;
-    r.alpha = s;
+    r.alpha = s + T(0.5) * gmin;
     for (int k = 0; k < N; ++k)
         r.beta[k] = T(0.5) / s * a.beta[k];
-    r.eps = T(0.5) / s * a.eps + T(0.5) * C * b * b;
+    r.eps = T(0.5) / s * a.eps - T(0.5) * gmin;
     return r;
 }
 
-/// log, with |log''| <= 1 / (alpha - b)^2.
+/// log about alpha: log(x) = log(alpha) + (x - alpha) / alpha + g(x) with g
+/// concave and g(alpha) = 0 its maximum, so that on [alpha - b, alpha + b],
+/// which must not reach 0, g lies between its smaller end value and 0.
 template <std::floating_point T, int N>
 Taylor<T, N> log(const Taylor<T, N>& a)
 {
+    if (!bounded(a))
+        return lost_model<T, N>();
     const T b = deviation(a);
     if (!(b < a.alpha))
         return lost_model<T, N>(); // the range reaches 0
-    const T inv = T(1) / a.alpha;
-    const T C = T(1) / ((a.alpha - b) * (a.alpha - b));
+    const T inv = T(1) / a.alpha, l = std::log(a.alpha);
+    const auto g = [&](T x) { return std::log(x) - l - (x - a.alpha) * inv; };
+    const T pad = T(8) * std::numeric_limits<T>::epsilon() * (std::abs(l) + b * inv);
+    const T gmin = std::min(g(a.alpha - b), g(a.alpha + b)) - pad;
     Taylor<T, N> r;
-    r.alpha = std::log(a.alpha);
+    r.alpha = l + T(0.5) * gmin;
     for (int k = 0; k < N; ++k)
         r.beta[k] = inv * a.beta[k];
-    r.eps = inv * a.eps + T(0.5) * C * b * b;
+    r.eps = inv * a.eps - T(0.5) * gmin;
     return r;
 }
 
-/// exp, with exp'' bounded by its value at alpha + b.
+/// exp about alpha: exp(x) = e + e (x - alpha) + g(x) with g convex and
+/// g(alpha) = 0 its minimum, so that on [alpha - b, alpha + b] g lies between
+/// 0 and its larger end value.
 template <std::floating_point T, int N>
 Taylor<T, N> exp(const Taylor<T, N>& a)
 {
+    if (!bounded(a))
+        return lost_model<T, N>();
     const T b = deviation(a);
     const T e = std::exp(a.alpha);
+    const auto g = [&](T x) { return std::exp(x) - e - e * (x - a.alpha); };
+    const T pad = T(8) * std::numeric_limits<T>::epsilon() * (std::exp(a.alpha + b) + e * b);
+    const T gmax = std::max(g(a.alpha - b), g(a.alpha + b)) + pad;
     Taylor<T, N> r;
-    r.alpha = e;
+    r.alpha = e + T(0.5) * gmax;
     for (int k = 0; k < N; ++k)
         r.beta[k] = e * a.beta[k];
-    r.eps = e * a.eps + T(0.5) * std::exp(a.alpha + b) * b * b;
+    r.eps = e * a.eps + T(0.5) * gmax;
     return r;
 }
 

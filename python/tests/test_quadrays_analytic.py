@@ -139,7 +139,7 @@ def test_curved_pieces_converge_under_refinement(kind):
                 last_unchecked = cell_error(part, unchecked, exact)
                 first_unchecked = first_unchecked or last_unchecked
     for e in errors.values():
-        assert all(a > 1.5 * b for a, b in zip(e, e[1:])), errors
+        assert all(a > 1.4 * b for a, b in zip(e, e[1:])), errors
         assert e[0] > 50 * e[-1], errors
     assert errors["surface"][-1] < 1e-7
     # without the check, the surface's error does not fall

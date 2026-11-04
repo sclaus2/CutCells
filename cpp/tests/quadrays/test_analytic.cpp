@@ -6,7 +6,9 @@
 // Analytic level sets through quadrays' interface (analytic.h):
 //  - Taylor models and their adapter enclose sampled values and derivatives,
 //    for square roots (the term algoim's sqrt leaves out), exp, log, sin, cos,
-//    division and the branch helpers;
+//    division and the branch helpers; the remainders of sqrt, log, exp and
+//    1 / x from their end values and of squares enclose random models' samples
+//    and are never wider than the second-order ones;
 //  - an operation that cannot bound its result gives a lost model, without an
 //    exception, and every later operation keeps it, branch helpers included;
 //    a branch that min certainly does not take loses nothing;
@@ -197,6 +199,73 @@ void test_enclosures(const AnalyticLevelSet& phi, const std::string& name, const
             worst = std::max(worst, outside(g[i], b[2 + 2 * i], b[3 + 2 * i]));
     }
     check(worst <= 1e-12, name + ": box bounds miss samples by " + std::to_string(worst));
+}
+
+/// The remainders of sqrt, log, exp and 1 / x from their end values (concave
+/// or convex about alpha) and of squares (one-sided) enclose sampled values of
+/// random models, functions anywhere in their eps band included, sqrt over
+/// ranges that reach 0 too; and they are never wider than the second-order
+/// remainders C/2 b^2.
+void test_tight_remainders()
+{
+    using TM = Taylor<double, 2>;
+    unsigned seed = 12345;
+    const auto uniform = [&seed](double lo, double hi)
+    {
+        seed = seed * 1103515245u + 12345u;
+        return lo + (hi - lo) * ((seed >> 8) & 0xffff) / 65535.0;
+    };
+    double worst = 0;
+    int wider = 0;
+    for (int trial = 0; trial < 400; ++trial)
+    {
+        TM a;
+        a.alpha = uniform(0.2, 2.0);
+        a.beta = {uniform(-0.6, 0.6), uniform(-0.6, 0.6)};
+        a.eps = uniform(0.0, 0.3);
+        const double b = deviation(a);
+        const auto band = [&](double y0, double y1, double w)
+        { return a.alpha + a.beta[0] * y0 + a.beta[1] * y1 + a.eps * w; };
+        const auto encloses = [&](const TM& r, auto&& f, double x, double y0, double y1)
+        {
+            const double m = r.alpha + r.beta[0] * y0 + r.beta[1] * y1;
+            worst = std::max(worst, (std::abs(f(x) - m) - r.eps) / (1.0 + std::abs(f(x))));
+        };
+        const TM s = sqrt(a), sq = a * a;
+        const bool clear = b < a.alpha;
+        const TM l = clear ? log(a) : TM(0.0), e = exp(a), inv = clear ? 1.0 / a : TM(0.0);
+        for (int i = 0; i <= 8; ++i)
+            for (int j = 0; j <= 8; ++j)
+                for (const double w : {-1.0, -0.37, 0.0, 0.81, 1.0})
+                {
+                    const double y0 = -1 + 0.25 * i, y1 = -1 + 0.25 * j, x = band(y0, y1, w);
+                    if (x >= 0)
+                        encloses(s, [](double v) { return std::sqrt(v); }, x, y0, y1);
+                    encloses(sq, [](double v) { return v * v; }, x, y0, y1);
+                    encloses(e, [](double v) { return std::exp(v); }, x, y0, y1);
+                    if (clear)
+                    {
+                        encloses(l, [](double v) { return std::log(v); }, x, y0, y1);
+                        encloses(inv, [](double v) { return 1.0 / v; }, x, y0, y1);
+                    }
+                }
+        if (clear)
+        {
+            // the second-order remainder of sqrt, which the end values never exceed
+            const double lo = a.alpha - b, C = 0.25 / (lo * std::sqrt(lo));
+            wider += s.eps > 0.5 / std::sqrt(a.alpha) * a.eps + 0.5 * C * b * b + 1e-15;
+        }
+    }
+    check(worst <= 1e-12, "tight remainders miss samples by " + std::to_string(worst));
+    check(wider == 0, std::to_string(wider) + " sqrt remainders wider than C/2 b^2");
+
+    // sqrt of a range reaching 0 keeps its linear part
+    TM y;
+    y.alpha = 1.0;
+    y.beta = {1.0, 0.0};
+    const TM r = sqrt(y);
+    check(bounded(r) && r.beta[0] > 0 && r.alpha - deviation(r) <= 0 && r.alpha + deviation(r) >= std::sqrt(2.0),
+          "sqrt over [0, 2]: a linear model that encloses [0, sqrt 2]");
 }
 
 /// Operations that cannot bound their results give lost models, and every
@@ -503,15 +572,21 @@ int main()
     test_enclosures(phi_branches, "branches", {0.02, 0.1, 0.05}, 0.1, 1);
     test_enclosures(phi_branches, "branches, kinks inside", {0.0, 0.0, 0.0}, 0.2, 1);
     test_enclosures(phi_two_spheres, "two balls around the small one's centre", {0.5, 0.0, 0.0}, 0.05, 1);
+    test_tight_remainders();
     test_lost_models();
 
     test_plane_exactness();
     test_cell_sign();
 
-    // The distance against the polynomial sphere's numbers at n = 8
-    // (test_sphere.cpp, the prototype's Bernstein path), 25% slack, with Taylor
-    // models over whole boxes as in phase 2, with plain Gauss-Legendre points
-    // and without the accuracy checks.
+    // The distance against the polynomial sphere at n = 8, both with Taylor
+    // models over whole boxes as in phase 2, anchored points and the accuracy
+    // checks, 50% slack: the two decompositions differ, and at q = 3 the
+    // checks bound both only by the rule's rate. (With plain points and no
+    // checks the distance's errors followed the polynomial's only while its
+    // first-order models of the square root were so loose that it bisected
+    // more; the remainders from the end values certify boxes as large as the
+    // polynomial's.) The table's errors are the polynomial path's with plain
+    // points (test_sphere.cpp).
     struct Expected
     {
         const char* mesh;
@@ -527,19 +602,23 @@ int main()
     };
     Options whole_boxes;
     whole_boxes.taylor_subdivisions = 1;
-    whole_boxes.tolerance = -1;
-    whole_boxes.anchor_folds = 0;
     int whole_tet_bisections = 0;
     for (const Expected& p : polynomial)
     {
         const Errors e = sphere_errors(&phi_distance, p.mesh, 8, p.q, p.part, whole_boxes);
-        const bool ok = e.l1 <= 1.25 * p.l1 && e.worst <= 1.25 * p.worst;
+        const Errors poly = sphere_errors(nullptr, p.mesh, 8, p.q, p.part, whole_boxes);
+        // rounding of the cells' measures
+        const double floor = 1e-12;
+        const bool ok = e.l1 <= 1.5 * poly.l1 + floor && e.worst <= 1.5 * poly.worst + floor;
         std::printf("distance %s q = %d %-8s L1 %.1e (polynomial %.1e), worst %.1e (%.1e), bisections %d %s\n", p.mesh,
-                    p.q, p.part, e.l1, p.l1, e.worst, p.worst, e.bisections, ok ? "" : "FAILED");
+                    p.q, p.part, e.l1, poly.l1, e.worst, poly.worst, e.bisections, ok ? "" : "FAILED");
         failures += !ok;
-        if (std::string(p.mesh) == "tet")
-            whole_tet_bisections = e.bisections;
     }
+    // the bisections of whole boxes with plain points and no checks, as below
+    Options whole_plain = whole_boxes;
+    whole_plain.tolerance = -1;
+    whole_plain.anchor_folds = 0;
+    whole_tet_bisections = sphere_errors(&phi_distance, "tet", 8, 5, "phi < 0", whole_plain).bisections;
 
     // Taylor models over the sub-boxes that meet a tetrahedron (the default):
     // at most half the whole boxes' bisections, and at q = 5 the errors of the
