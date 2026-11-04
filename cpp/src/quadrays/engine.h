@@ -172,6 +172,13 @@ struct Options
     /// needs both. If the base does not settle, the box is bisected after all, and a
     /// cell makes few such attempts. Analytic level sets need hessian_bounds.
     bool silhouette_splits = true;
+    /// The accuracy check (tolerance) also compares a moment of what a mass matrix sees,
+    /// the sum over the axes of the cell's box of a Legendre polynomial squared, of half
+    /// the degree the points integrate, relative to the piece as the measure is: a box
+    /// whose moment differs by more is bisected. The measure alone does not see an
+    /// anchored rule (anchor_folds) that integrates polynomials less well than it does
+    /// the measure. 0: the measure only.
+    double moment_tolerance = 0;
     /// The front end (part::quadrature_rules): Gauss-Legendre points per
     /// segment of each height line. 0: enough for its order, ceil((order + m)
     /// / 2) for a part of dimension m, so that flat pieces integrate

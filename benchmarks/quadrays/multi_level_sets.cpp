@@ -339,6 +339,10 @@ Options quadrays_options(const std::string& generator)
     }
     if (generator.find("nocheck") != std::string::npos)
         opt.tolerance = -1;
+    if (generator.find("anchor1") != std::string::npos)
+        opt.anchor_folds = 1;
+    if (const std::size_t m = generator.find("-check"); m != std::string::npos)
+        opt.moment_tolerance = std::stod(generator.substr(m + 6));
     if (generator.find("nofold") != std::string::npos)
         opt.fold_splits = false;
     if (const std::size_t m = generator.find("-m"); m != std::string::npos)

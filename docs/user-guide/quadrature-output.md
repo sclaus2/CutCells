@@ -53,7 +53,12 @@ pieces quadrays also
 checks each box against one more point per segment and bisects where they
 disagree by more than the order's rate allows at the cell's size, so that the
 error falls with $h$ (`QuadraysOptions.tolerance`); boxes split at folds must
-agree to $10^{-12}$.
+agree to $10^{-12}$. This check looks at the measure only, which an anchored rule
+integrates better than it does a polynomial. `QuadraysOptions.moment_tolerance` makes
+it also compare a moment of what a mass matrix sees. With `anchor_folds = 1` and
+`moment_tolerance = 1e-8`, a lens at order 8 takes about half the points, at the
+price of more time per cell and an error of about $10^{-9}$ on that moment instead of
+$10^{-13}$; the default keeps `anchor_folds = 2` and no moment check.
 
 Modes:
 

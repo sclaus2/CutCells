@@ -360,6 +360,53 @@ def test_analytic_lens(n, signed_distance, limits):
     assert worst <= 3000
 
 
+def test_moment_check_controls_what_assembly_sees():
+    """One anchored factor takes far fewer points. The measure alone does not see what
+    that costs a polynomial; a check on a moment of the mass matrix does, and bisects."""
+    radius, distance = 0.6, 0.5
+    axis = np.array([1.0, 2.0, 2.0]) / 3
+    first = np.array([-0.21, 0.07, 0.04])
+    mesh = box_mesh(5)
+    a = cc.create_level_set(mesh, sphere(first, radius), degree=2, name="a")
+    b = cc.create_level_set(mesh, sphere(first + distance * axis, radius), degree=2, name="b")
+    part = cc.cut(mesh, [a, b])["a < 0 and b < 0"]
+
+    def per_cell(options):
+        rules = part.quadrature(order=8, mode="cut_only", options=options)
+        points = np.asarray(rules.points).reshape(-1, 3)
+        weights = np.asarray(rules.weights)
+        offset = np.asarray(rules.offset)
+        moments = {int(c): weights[offset[i]:offset[i + 1]] @ legendre_squares(points[offset[i]:offset[i + 1]])
+                   for i, c in enumerate(np.asarray(rules.parent_map))}
+        return moments, np.diff(offset).max(), weights.min()
+
+    fine = cc.QuadraysOptions()
+    fine.points_per_segment = 12
+    fine.max_points = -1
+    reference, _, _ = per_cell(fine)
+
+    def l1(moments):
+        return sum(abs(moments.get(c, 0.0) - reference[c]) for c in reference)
+
+    default, default_worst, _ = per_cell(cc.QuadraysOptions())
+
+    light = cc.QuadraysOptions()
+    light.anchor_folds = 1
+    unchecked, _, _ = per_cell(light)
+
+    checked_options = cc.QuadraysOptions()
+    checked_options.anchor_folds = 1
+    checked_options.moment_tolerance = 1e-8
+    checked, checked_worst, smallest = per_cell(checked_options)
+
+    assert cc.QuadraysOptions().moment_tolerance == 0
+    assert smallest > 0
+    assert checked_worst < 0.75 * default_worst
+    assert l1(checked) < 1e-7
+    assert l1(checked) < 0.5 * l1(unchecked)
+    assert l1(default) < 1e-9
+
+
 def test_slow_cells_are_written_for_plotting(tmp_path):
     """debug_seconds writes a cell for its time, whatever its points."""
     debug = pytest.importorskip("cutcells.quadrays_debug")

@@ -287,6 +287,7 @@ struct Context
     bool silhouettes = false;    ///< Options::silhouette_splits applies to this run
     int abandoned = 0;           ///< top boxes tried without a margin whose base did not settle, so far
     bool measure_only = false;   ///< the second run of an accuracy check: only the measure counts
+    int moment_degree = 0;       ///< of the Legendre polynomial in Options::moment_tolerance
     std::vector<Requirement> terms;
     std::uint64_t used = 0; ///< level sets some term constrains
     int surface = -1;       ///< interface parts: the level set whose zero set is integrated
@@ -4788,7 +4789,8 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             const Stats stats = *ctx.stats;
             const int bisections = ctx.bisections;
             swap_rules(ctx);
-            ctx.measure_only = !interface && !ctx.any_analytic;
+            const bool moments = ctx.opt.moment_tolerance > 0 && ctx.partner < 0;
+            ctx.measure_only = !interface && !ctx.any_analytic && !moments;
             reduce<T, D, Rotated, Top>(ctx, p, an, emit, depth, interface, false);
             ctx.measure_only = false;
             swap_rules(ctx);
@@ -4796,6 +4798,29 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             *ctx.stats = stats;
             ctx.bisections = bisections;
             const T a = measure(start, mid), b = measure(mid, out.n_points());
+            const auto moment = [&out, &ctx](int from, int to)
+            {
+                T sum = 0;
+                for (int i = from; i < to; ++i)
+                {
+                    T shape = 0;
+                    for (int j = 0; j < ctx.tdim; ++j)
+                    {
+                        const T t = 2 * out.points[3 * static_cast<std::size_t>(i) + static_cast<std::size_t>(j)] - 1;
+                        T low = T(1), high = t;
+                        for (int m = 1; m < ctx.moment_degree; ++m)
+                        {
+                            const T next = (T(2 * m + 1) * t * high - T(m) * low) / T(m + 1);
+                            low = high;
+                            high = next;
+                        }
+                        shape += high * high;
+                    }
+                    sum += out.weights[static_cast<std::size_t>(i)] * shape;
+                }
+                return sum;
+            };
+            const T moment_a = moments ? moment(start, mid) : T(0), moment_b = moments ? moment(mid, out.n_points()) : T(0);
             truncate(mid);
             if (mid == start)
                 return;
@@ -4827,7 +4852,9 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                     scale *= p.hi[j] - p.lo[j];
             }
             const T tol = rel * scale + accuracy_floor<T> * ctx.measure_scale;
-            if (!(std::abs(a - b) > tol) || depth >= ctx.opt.max_depth || ctx.bisections >= ctx.opt.max_bisections)
+            const T moment_tol = static_cast<T>(ctx.opt.moment_tolerance) * scale + accuracy_floor<T> * ctx.measure_scale;
+            if ((!(std::abs(a - b) > tol) && !(std::abs(moment_a - moment_b) > moment_tol))
+                || depth >= ctx.opt.max_depth || ctx.bisections >= ctx.opt.max_bisections)
                 return;
             truncate(start);
             trace_fate(ctx, BoxFate::refined);
@@ -6037,6 +6064,7 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
         ctx.out = &out;
         // h^m for a part of dimension m
         const int m = cell.tdim - std::popcount(zero);
+        ctx.moment_degree = std::max(1, (2 * q - m) / 2);
         ctx.measure_scale = std::pow(ctx.detj, T(m) / T(cell.tdim));
         ctx.cell_size = std::pow(ctx.detj, T(1) / T(cell.tdim));
         ctx.inv = inverse_jacobian(cell);
