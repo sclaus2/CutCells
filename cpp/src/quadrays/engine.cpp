@@ -62,6 +62,13 @@ SelectionTerm term_of(Part part, int level_set)
     return term;
 }
 
+int point_limit(const Options& opt, int q, int tdim)
+{
+    if (opt.max_points != 0)
+        return opt.max_points < 0 ? std::numeric_limits<int>::max() : opt.max_points;
+    return static_cast<int>(std::min(1000.0 * std::pow(static_cast<double>(q), tdim), 300000.0));
+}
+
 namespace
 {
 
@@ -261,6 +268,12 @@ struct Context
     std::array<int, 3> box_ids{};
     int bisections = 0; ///< bisections so far in this cell
     int splits_blocked = 0; ///< > 0: inside a box whose fold-split search did not settle
+    CellPoints<T>* emitted = nullptr; ///< the cell's points, as ctx.out but also without accuracy checks
+    int first_point = 0;    ///< the first of this run in it
+    int points_allowed = 0; ///< Options::max_points of this run
+    bool over_limit = false; ///< it exceeded them: the recursion unwinds, and the cell is integrated again
+    BoxTrace<T>* trace = nullptr; ///< not null: the boxes are recorded
+    int trace_box = -1;     ///< the box being integrated
 
     // Gauss-Legendre rule on [0, 1], and the one with a point more for accuracy checks
     int q = 0;
@@ -1872,14 +1885,16 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
         return constant ? T(1) : an.ratios[c][kk];
     };
 
-    // surface functions: dropped where they have no root, and a curve part's
-    // where the curve does not cross the box above or its two zero sets coincide
+    // surface functions: dropped where they have no root, where their two zero
+    // sets coincide (no kink on the height lines, and the function is rounding
+    // noise, whose sign changes would each split them), and a curve part's
+    // where the curve does not cross the box above
     if constexpr (D <= 2)
     {
         for (const Surface<T, D>& s : p.surfaces)
         {
-            if (partner_surface<T, D>(ctx, s)
-                && (under_signed<T, D>(ctx, s, p.lo, p.hi) || surface_vanishes_identically<T, D>(ctx, s, p.lo, p.hi)))
+            if (surface_vanishes_identically<T, D>(ctx, s, p.lo, p.hi)
+                || (partner_surface<T, D>(ctx, s) && under_signed<T, D>(ctx, s, p.lo, p.hi)))
                 continue;
             VecD<T, D> ratio{};
             if (!surface_margins<T, D>(ctx, s, p.lo, p.hi, ratio))
@@ -2981,7 +2996,8 @@ void integrate_line(Context<T>& ctx, const Problem<T, 1>& p, const Emit& emit, c
         isolate_roots(std::span<const T>(ctx.line[1].coeffs), L, U, nodes, ctx.root_work[1]);
     }
     for (const Surface<T, 1>& s : p.surfaces)
-        surface_line_roots<T>(ctx, s, L, U, nodes);
+        if (!surface_vanishes_identically<T, 1>(ctx, s, {L}, {U}))
+            surface_line_roots<T>(ctx, s, L, U, nodes);
     std::sort(nodes.begin(), nodes.end());
     NodeTag tag;
     tag.box[0] = ctx.box_ids[0]++;
@@ -3176,6 +3192,55 @@ T curvature(const Context<T>& ctx, const Vec3<T>& u)
         }
     }
     return kappa;
+}
+
+/// Enters box @p p in the trace (Context::trace) as the one being integrated.
+/// Returns its index, or -1 if nothing is recorded.
+template <std::floating_point T, int D, int Top>
+int trace_enter(Context<T>& ctx, const Problem<T, D>& p, int k, int depth, bool rotated, BoxFate fate)
+{
+    if (ctx.trace == nullptr)
+        return -1;
+    BoxTrace<T>& t = *ctx.trace;
+    const int id = t.n_boxes();
+    t.parent.push_back(ctx.trace_box);
+    t.level.push_back(D);
+    t.depth.push_back(depth);
+    t.height.push_back(k);
+    t.fate.push_back(fate);
+    t.rotated.push_back(rotated ? 1 : 0);
+    for (int j = 0; j < 3; ++j)
+    {
+        t.lo.push_back(j < D ? p.lo[j] : T(0));
+        t.hi.push_back(j < D ? p.hi[j] : T(0));
+    }
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            t.frame.push_back(D == Top && j < D ? p.frame.A[i][j] : T(0));
+    for (int i = 0; i < 3; ++i)
+        t.frame.push_back(D == Top ? p.frame.b[i] : T(0));
+    t.points.push_back(ctx.emitted->n_points());
+    ctx.trace_box = id;
+    return id;
+}
+
+/// Leaves box @p id of the trace (trace_enter): its points are those emitted since.
+template <std::floating_point T>
+void trace_leave(Context<T>& ctx, int id)
+{
+    if (id < 0)
+        return;
+    BoxTrace<T>& t = *ctx.trace;
+    t.points[static_cast<std::size_t>(id)] = ctx.emitted->n_points() - t.points[static_cast<std::size_t>(id)];
+    ctx.trace_box = t.parent[static_cast<std::size_t>(id)];
+}
+
+/// Sets what became of the box being integrated.
+template <std::floating_point T>
+void trace_fate(Context<T>& ctx, BoxFate fate)
+{
+    if (ctx.trace != nullptr)
+        ctx.trace->fate[static_cast<std::size_t>(ctx.trace_box)] = fate;
 }
 
 /// Bisect a box along its longest side and integrate the halves.
@@ -3512,6 +3577,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             {
                 k = ks;
                 ctx.stats->fold_splits += !checked;
+                trace_fate(ctx, BoxFate::split);
             }
             else
                 block = true;
@@ -3524,12 +3590,14 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             // where the search does not settle (a singular point, nearly
             // tangent curves), the boxes within are bisected as before: the
             // lines of a split box would pass arbitrarily close to it
+            trace_fate(ctx, BoxFate::bisected);
             ctx.splits_blocked += block;
             bisect<T, D, Rotated, Top>(ctx, std::move(p), emit, depth, interface);
             ctx.splits_blocked -= block;
             return;
         }
         ++ctx.stats->uncertified;
+        trace_fate(ctx, BoxFate::uncertified);
         // a curve part's top box makes no surface functions uncertified: its
         // piece of the curve, if any, is lost
         if (D == Top && ctx.partner >= 0)
@@ -3619,10 +3687,14 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             if (!(std::abs(a - b) > tol) || depth >= ctx.opt.max_depth || ctx.bisections >= ctx.opt.max_bisections)
                 return;
             truncate(start);
+            trace_fate(ctx, BoxFate::refined);
             bisect<T, D, Rotated, Top>(ctx, std::move(p), emit, depth, interface);
             return;
         }
     }
+
+    if (ctx.trace != nullptr)
+        ctx.trace->height[static_cast<std::size_t>(ctx.trace_box)] = k;
 
     // bounds of the height lines: box faces and clip planes
     std::vector<Bound<T, D>> lowers, uppers;
@@ -4262,7 +4334,9 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
 template <std::floating_point T, int D, bool Rotated, int Top, typename Emit>
 void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth, bool interface)
 {
-    if (!tighten<T, D>(p.lo, p.hi, p.clips))
+    if (ctx.emitted->n_points() - ctx.first_point > ctx.points_allowed)
+        ctx.over_limit = true;
+    if (ctx.over_limit || !tighten<T, D>(p.lo, p.hi, p.clips))
         return;
 
     // keep the functions that may vanish on the box, with their direction margins
@@ -4324,7 +4398,11 @@ void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth
                         emit(VecD<T, 2>{T(0.5) * (z[0] - z[1]), T(0.5) * (z[0] + z[1])}, curve ? w : T(0.5) * w, tag,
                              VecD<T, 2>{T(0.5) * (dz[0] - dz[1]), T(0.5) * (dz[0] + dz[1])});
                     };
+                    const int region = trace_enter<T, 2, Top>(ctx, p, an.k, depth, Rotated, BoxFate::rotated);
+                    const int box = trace_enter<T, 2, Top>(ctx, r, ar.k, depth, true, BoxFate::certified);
                     reduce<T, 2, true, Top>(ctx, std::move(r), ar, back, depth, interface);
+                    trace_leave(ctx, box);
+                    trace_leave(ctx, region);
                     return;
                 }
             }
@@ -4382,13 +4460,19 @@ void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth
                             }
                         emit(y, w, tag, dy);
                     };
+                    const int region = trace_enter<T, D, Top>(ctx, p, an.k, depth, Rotated, BoxFate::rotated);
+                    const int box = trace_enter<T, D, Top>(ctx, r, ar.k, depth, true, BoxFate::certified);
                     reduce<T, D, true, Top>(ctx, std::move(r), ar, back, depth, interface);
+                    trace_leave(ctx, box);
+                    trace_leave(ctx, region);
                     return;
                 }
             }
         }
     }
+    const int box = trace_enter<T, D, Top>(ctx, p, an.k, depth, Rotated, BoxFate::certified);
     reduce<T, D, Rotated, Top>(ctx, std::move(p), an, emit, depth, interface);
+    trace_leave(ctx, box);
 }
 
 /// Whether a Bernstein form is affine: its coefficients are then its values at
@@ -4564,7 +4648,7 @@ void merge_points(CellPoints<T>& out, int start, T tol)
 /// The engine on one cell.
 template <std::floating_point T>
 void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms, int q,
-         int vis_order, const Options& opt, CellPoints<T>& out, Stats& stats)
+         int vis_order, const Options& opt, CellPoints<T>& out, Stats& stats, BoxTrace<T>* trace = nullptr)
 {
     if (phis.empty() || phis.size() > 64)
         throw std::invalid_argument("quadrays: give 1 to 64 level sets");
@@ -4676,12 +4760,47 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     }
     ctx.tdim = cell.tdim;
     const int start = out.n_points();
-    if (cell.tdim == 3)
-        run_top<T, 3>(ctx, cell, out, interface);
-    else if (cell.tdim == 2)
-        run_top<T, 2>(ctx, cell, out, interface);
-    else
-        run_interval<T>(ctx, out, interface);
+    ctx.emitted = &out;
+    ctx.first_point = start;
+    ctx.points_allowed = vis_order == 0 ? point_limit(opt, q, cell.tdim) : std::numeric_limits<int>::max();
+    ctx.over_limit = false;
+    ctx.trace = trace;
+    ctx.trace_box = -1;
+    const auto integrate_cell = [&]()
+    {
+        if (cell.tdim == 3)
+            run_top<T, 3>(ctx, cell, out, interface);
+        else if (cell.tdim == 2)
+            run_top<T, 2>(ctx, cell, out, interface);
+        else
+            run_interval<T>(ctx, out, interface);
+    };
+    integrate_cell();
+    if (ctx.over_limit)
+    {
+        ++stats.points_limited;
+        // the trace keeps the run that went wrong
+        ctx.trace = nullptr;
+        for (const int depth : {6, 4, 2, 1, 0})
+        {
+            if (depth >= opt.max_depth)
+                continue;
+            out.points.resize(3 * static_cast<std::size_t>(start));
+            out.weights.resize(static_cast<std::size_t>(start));
+            ctx.opt.max_depth = depth;
+            ctx.over_limit = false;
+            ctx.bisections = 0;
+            ctx.splits_blocked = 0;
+            ctx.box_ids = {0, 0, 0};
+            if (depth == 0)
+                ctx.points_allowed = std::numeric_limits<int>::max();
+            integrate_cell();
+            if (!ctx.over_limit)
+                break;
+        }
+    }
+    if (ctx.bisections >= opt.max_bisections)
+        ++stats.bisections_limited;
     if (ctx.partner >= 0 && cell.tdim == 2)
         merge_points(out, start, T(2) * point_tol<T>);
 }
@@ -4690,9 +4809,9 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
 
 template <std::floating_point T>
 void integrate(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms,
-               int q, const Options& opt, CellPoints<T>& out, Stats& stats)
+               int q, const Options& opt, CellPoints<T>& out, Stats& stats, BoxTrace<T>* trace)
 {
-    run(cell, phis, terms, q, 0, opt, out, stats);
+    run(cell, phis, terms, q, 0, opt, out, stats, trace);
 }
 
 template <std::floating_point T>
@@ -4740,9 +4859,11 @@ void leaf_nodes(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part
 // ============================================================================
 
 template void integrate<float>(const ClippedBox<float>&, std::span<const Source<float>>,
-                               std::span<const SelectionTerm>, int, const Options&, CellPoints<float>&, Stats&);
+                               std::span<const SelectionTerm>, int, const Options&, CellPoints<float>&, Stats&,
+                               BoxTrace<float>*);
 template void integrate<double>(const ClippedBox<double>&, std::span<const Source<double>>,
-                                std::span<const SelectionTerm>, int, const Options&, CellPoints<double>&, Stats&);
+                               std::span<const SelectionTerm>, int, const Options&, CellPoints<double>&, Stats&,
+                               BoxTrace<double>*);
 template void integrate<float>(const ClippedBox<float>&, const Source<float>&, Part, int, const Options&,
                                CellPoints<float>&, Stats&);
 template void integrate<double>(const ClippedBox<double>&, const Source<double>&, Part, int, const Options&,

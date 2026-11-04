@@ -561,6 +561,31 @@ Dual<V, N> operator/(double c, const Dual<V, N>& a)
     return Dual<V, N>(c) / a;
 }
 
+/// True if a derivative is exactly 0: plain numbers, and models or Duals all of
+/// whose entries are 0, so that the function does not vary over the region.
+template <std::floating_point T>
+bool identically_zero(T v)
+{
+    return v == T(0);
+}
+template <std::floating_point T, int N>
+bool identically_zero(const Taylor<T, N>& a)
+{
+    return a.alpha == T(0) && a.eps == T(0) && std::all_of(a.beta.begin(), a.beta.end(), [](T b) { return b == T(0); });
+}
+template <typename V, int N>
+bool identically_zero(const Dual<V, N>& a)
+{
+    return identically_zero(a.v)
+           && std::all_of(a.d.begin(), a.d.end(), [](const V& d) { return identically_zero(d); });
+}
+
+/// sqrt(a), d sqrt(a) = d a / (2 sqrt(a)). A derivative of a that is exactly 0
+/// stays 0, also where sqrt(a) vanishes and the quotient is 0 / 0: the length
+/// of (max(d_0, 0), max(d_1, 0)) in a capped shape's distance, inside the
+/// shape, does not vary, and neither point gradients nor Taylor models of it
+/// are undefined. Where a's derivative does not vanish, as for a distance at
+/// its centre, the derivative's bound is lost.
 template <typename V, int N>
 Dual<V, N> sqrt(const Dual<V, N>& a)
 {
@@ -569,7 +594,7 @@ Dual<V, N> sqrt(const Dual<V, N>& a)
     r.v = sqrt(a.v);
     const V twice = r.v * V(2.0);
     for (int k = 0; k < N; ++k)
-        r.d[k] = a.d[k] / twice;
+        r.d[k] = identically_zero(a.d[k]) ? V(0.0) : a.d[k] / twice;
     return r;
 }
 

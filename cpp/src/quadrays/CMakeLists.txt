@@ -11,6 +11,7 @@ set(QUADRAYS_HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/analytic.h
   ${CMAKE_CURRENT_SOURCE_DIR}/box_bernstein.h
   ${CMAKE_CURRENT_SOURCE_DIR}/clipped_box.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/debug.h
   ${CMAKE_CURRENT_SOURCE_DIR}/engine.h
   ${CMAKE_CURRENT_SOURCE_DIR}/leaves.h
   ${CMAKE_CURRENT_SOURCE_DIR}/rules.h
@@ -23,6 +24,7 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/analytic.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/box_bernstein.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/clipped_box.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/debug.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/engine.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/leaves.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/rules.cpp

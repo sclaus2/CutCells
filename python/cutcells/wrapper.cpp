@@ -3087,7 +3087,12 @@ NB_MODULE(_cutcellscpp, m)
       .def_rw("max_depth", &cutcells::quadrays::Options::max_depth,
               "Bisections allowed per level along a branch.")
       .def_rw("max_bisections", &cutcells::quadrays::Options::max_bisections,
-              "Bisections allowed per cell; beyond it boxes are integrated uncertified.")
+              "Bisections allowed per cell; beyond it boxes are integrated uncertified, and "
+              "part.quadrature warns.")
+      .def_rw("max_points", &cutcells::quadrays::Options::max_points,
+              "Points allowed in a cell, per selection group. A cell that exceeds them is integrated "
+              "again with fewer bisections, less accurately, and part.quadrature warns. 0: 1000 "
+              "q^tdim for q points per segment, at most 300000; < 0: no limit.")
       .def_rw("prune_bounds", &cutcells::quadrays::Options::prune_bounds,
               "Drop bounds of the height lines that are never active.")
       .def_rw("split_bounds", &cutcells::quadrays::Options::split_bounds,
@@ -3107,6 +3112,12 @@ NB_MODULE(_cutcellscpp, m)
               "that never merge in the box (two sheets of one level set).")
       .def_rw("diagnose", &cutcells::quadrays::Options::diagnose,
               "Record why each bisection happened in QuadraysStats.causes.")
+      .def_rw("debug_dir", &cutcells::quadrays::Options::debug_dir,
+              "Not empty: part.quadrature writes each cell that reaches a limit or exceeds "
+              "debug_points to this directory, at most 16 per call, as a JSON file with its level "
+              "sets, boxes and points; python -m cutcells.quadrays_debug plots them.")
+      .def_rw("debug_points", &cutcells::quadrays::Options::debug_points,
+              "Points from which a cell is written to debug_dir.")
       .def_rw("points_per_segment", &cutcells::quadrays::Options::points_per_segment,
               "Gauss-Legendre points per segment of each height line in part.quadrature; 0: "
               "enough for the order, ceil((order + part.dim) / 2), which integrates "
@@ -3142,6 +3153,10 @@ NB_MODULE(_cutcellscpp, m)
       .def_ro("surfaces", &cutcells::quadrays::Stats::surfaces)
       .def_ro("fold_splits", &cutcells::quadrays::Stats::fold_splits,
               "Boxes split at folds and crossings instead of bisected.")
+      .def_ro("points_limited", &cutcells::quadrays::Stats::points_limited,
+              "Runs that exceeded QuadraysOptions.max_points and were redone with fewer bisections.")
+      .def_ro("bisections_limited", &cutcells::quadrays::Stats::bisections_limited,
+              "Runs that used all of QuadraysOptions.max_bisections.")
       .def_ro("curve_lost", &cutcells::quadrays::Stats::curve_lost,
               "Top boxes of a curve part integrated uncertified, where the curve, if any, is missing.")
       .def_ro("causes", &cutcells::quadrays::Stats::causes);

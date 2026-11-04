@@ -234,7 +234,10 @@ def test_cells_are_classified_by_the_analytic_level_set(kind):
     mesh = box_mesh(kind, 4)
     result = cutcells.cut(mesh, cutcells.analytic_sphere(centre, radius))
     assert result.num_cut_cells == (7 if kind == "hex" else 18)
-    volume = result["phi < 0"].quadrature(order=5, mode="full", backend="quadrays")
+    # the hexahedron holding the ball takes more points than the default limit
+    options = cutcells.QuadraysOptions()
+    options.max_points = -1
+    volume = result["phi < 0"].quadrature(order=5, mode="full", backend="quadrays", options=options)
     area = result["phi = 0"].quadrature(order=5, mode="cut_only", backend="quadrays")
     assert np.sum(volume.weights) == pytest.approx(4.0 / 3.0 * math.pi * radius**3, rel=1e-6)
     assert np.sum(area.weights) == pytest.approx(4.0 * math.pi * radius**2, rel=1e-5)

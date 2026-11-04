@@ -104,9 +104,16 @@ void isolate(const Source<T>& phi, const std::array<double, 3>& p, const std::ar
         return;
     }
     // phi vanishes on the interval up to the tolerance: the line lies in the
-    // zero set (a plane in a face, say) or touches it; no breakpoint
+    // zero set (a plane in a face, say) or touches it, no breakpoint; or, where
+    // no slope is bounded, it crosses the zero set here, with ends of opposite
+    // signs that differ by more than rounding, whose root must not be lost
     if (magnitude <= zero)
+    {
+        const T ga = value_on_line(phi, p, v, a), gb = value_on_line(phi, p, v, b);
+        if (ga != T(0) && gb != T(0) && (ga > T(0)) != (gb > T(0)) && std::abs(ga - gb) > 1e-3 * zero)
+            roots.push_back(illinois_root([&](T t) { return value_on_line(phi, p, v, t); }, a, b, ga, gb));
         return;
+    }
     const T m = T(0.5) * (a + b);
     isolate(phi, p, v, a, m, zero, depth + 1, visited, roots);
     isolate(phi, p, v, m, b, zero, depth + 1, visited, roots);

@@ -89,6 +89,11 @@ struct Options
     /// level set closer than the depth limit resolves, singular points). (The
     /// prototype allowed 256.)
     int max_bisections = 1024;
+    /// Points allowed in a cell, per selection group. A cell that exceeds them
+    /// is integrated again with at most 6, 4, 2, 1 or 0 bisections per level,
+    /// the first that stays below, which costs accuracy; the front end warns.
+    /// 0: 1000 q^tdim for q points per segment, at most 300000. < 0: no limit.
+    int max_points = 0;
     /// Drop bounds of the height lines that are never active on the base region.
     bool prune_bounds = true;
     /// Split the base where the active bounds of the height lines change, so
@@ -125,6 +130,15 @@ struct Options
     int two_roots_depth = 0;
     /// Record why each bisection happened in Stats::causes.
     bool diagnose = false;
+    /// The front end (part::quadrature_rules), for studying cells that take
+    /// many points. Not empty: each cell that reaches a limit or exceeds
+    /// debug_points is written to this directory as a JSON file (its level sets
+    /// on a grid, its boxes and points; write_cell_report), at most 16 per call,
+    /// which `python -m cutcells.quadrays_debug` plots. Empty: nothing is
+    /// recorded, at the cost of one test per box.
+    std::string debug_dir;
+    /// Points from which a cell is written to debug_dir.
+    int debug_points = 10000;
     /// A box with two free coordinates that no axis certifies is not
     /// bisected: along the axis with the best sampled margins, the points where
     /// a zero curve turns along it (a fold, f = d_k f = 0) and where two zero
@@ -156,6 +170,8 @@ struct Stats
     int two_roots = 0;         ///< boxes certified with two roots per height line
     int surfaces = 0;          ///< surface functions made where two level sets cut a box
     int fold_splits = 0;       ///< boxes split at folds and crossings (Options::fold_splits)
+    int points_limited = 0;    ///< runs that exceeded Options::max_points and were redone with fewer bisections
+    int bisections_limited = 0; ///< runs that used all of Options::max_bisections
     /// top boxes of a curve part integrated uncertified (depth or bisection
     /// limit): no surface function finds the curve there, so its piece, if
     /// any, is missing
@@ -163,6 +179,41 @@ struct Stats
     /// With Options::diagnose: bisections counted by level, the function that
     /// blocked certification, and what sampling the clipped region says.
     std::map<std::string, std::int64_t> causes;
+};
+
+/// @brief The points Options::max_points allows in a cell of dimension @p tdim
+/// with @p q points per segment; the largest int if none.
+int point_limit(const Options& opt, int q, int tdim);
+
+/// What became of a box in the engine's recursion (BoxTrace).
+enum class BoxFate : std::uint8_t
+{
+    certified = 0,   ///< a height direction holds on all of it
+    split = 1,       ///< split at folds and crossings (Options::fold_splits)
+    bisected = 2,    ///< no direction holds on all of it: bisected
+    refined = 3,     ///< certified or split, but its accuracy check failed: bisected
+    rotated = 4,     ///< no axis holds: its one child is the box in a rotated frame
+    uncertified = 5  ///< no direction holds and a limit is reached: roots isolated in full
+};
+
+/// The boxes of the engine's recursion in a cell, in the order it visits them,
+/// for studying cells that take many points. Boxes without a point of the part
+/// that the bounds decide at once are not entered.
+template <std::floating_point T>
+struct BoxTrace
+{
+    std::vector<int> parent;       ///< the box it came from; -1: the cell
+    std::vector<int> level;        ///< free coordinates
+    std::vector<int> depth;        ///< bisections above it on its level
+    std::vector<int> height;       ///< its height direction
+    std::vector<BoxFate> fate;
+    std::vector<std::uint8_t> rotated; ///< in a rotated frame: its faces are not the cell's
+    std::vector<T> lo, hi;         ///< 3 per box, in the frame's coordinates (0 for unused ones)
+    /// 12 per box, top boxes: the frame u = A y + b, A row-wise, then b; else 0.
+    std::vector<T> frame;
+    std::vector<int> points;       ///< points emitted in it and below it
+
+    int n_boxes() const { return static_cast<int>(parent.size()); }
 };
 
 /// What a selection term asks of one level set.
@@ -230,11 +281,13 @@ struct CellPoints
 /// @param opt    engine options
 /// @param out    points in box coordinates and physical weights
 /// @param stats  counters, accumulated
+/// @param trace  not null: the boxes of the recursion are appended (of the run
+///               that exceeded Options::max_points, if one did)
 /// @throws std::invalid_argument if terms ask for different zero sets, for
 ///         three zero sets at once, or for two on an interval
 template <std::floating_point T>
 void integrate(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms,
-               int q, const Options& opt, CellPoints<T>& out, Stats& stats);
+               int q, const Options& opt, CellPoints<T>& out, Stats& stats, BoxTrace<T>* trace = nullptr);
 
 /// @brief Quadrature points of one part of a cell with one level set,
 /// appended to @p out.

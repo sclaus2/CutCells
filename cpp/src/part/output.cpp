@@ -7,9 +7,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
+#include <cstdio>
+#include <filesystem>
 #include <limits>
+#include <string>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
@@ -20,6 +24,7 @@
 #include "../lut/piece_rules.h"
 #include "../quadrature_tables.h"
 #include "../quadrays/analytic.h"
+#include "../quadrays/debug.h"
 #include "../reference_cell.h"
 #include "../write_vtk.h"
 #include "../quadrays/rules.h"
@@ -891,6 +896,121 @@ void partial_entity(const MeshPart<T, I>& part, std::int32_t e, PartialEntity<T,
     }
 }
 
+// ============================================================================
+// Cells that reach a limit of the engine
+// ============================================================================
+
+/// The most cells of a quadrature call written to Options::debug_dir.
+constexpr int max_debug_reports = 16;
+
+/// The cells of a quadrature call that reached a limit of the engine
+/// (Options::max_points, Options::max_bisections) and took many points.
+struct LimitedCells
+{
+    int cells = 0;            ///< cells integrated
+    int points = 0;           ///< cells over max_points
+    std::int64_t first_points = -1;     ///< the first of them
+    int bisections = 0;       ///< cells that used all of max_bisections
+    std::int64_t first_bisections = -1; ///< the first of them
+    int reports = 0;          ///< cells written to Options::debug_dir
+    int over_reports = 0;     ///< cells that would have been, beyond max_debug_reports
+};
+
+void count_limits(LimitedCells& limited, std::int64_t cell, const quadrays::Stats& stats)
+{
+    ++limited.cells;
+    if (stats.points_limited > 0 && limited.points++ == 0)
+        limited.first_points = cell;
+    if (stats.bisections_limited > 0 && limited.bisections++ == 0)
+        limited.first_bisections = cell;
+}
+
+/// Prints what reached a limit of the engine in a quadrature call, once per call.
+void warn_limits(const LimitedCells& limited, const char* what, const quadrays::Options& options, int q, int tdim,
+                 int order, int dim)
+{
+    if (limited.points > 0 || limited.bisections > 0)
+    {
+        std::fprintf(stderr, "CutCells quadrays warning: %d of %d cut %s reached a limit (order %d, part of dimension %d).\n",
+                     std::max(limited.points, limited.bisections), limited.cells, what, order, dim);
+        if (limited.points > 0)
+            std::fprintf(stderr,
+                         "  %d exceeded max_points = %d (first: %lld) and were integrated again with fewer "
+                         "bisections, less accurately.\n",
+                         limited.points, quadrays::point_limit(options, q, tdim),
+                         static_cast<long long>(limited.first_points));
+        if (limited.bisections > 0)
+            std::fprintf(stderr,
+                         "  %d used all of max_bisections = %d (first: %lld): their remaining boxes are "
+                         "integrated uncertified, less accurately.\n",
+                         limited.bisections, options.max_bisections, static_cast<long long>(limited.first_bisections));
+        if (options.debug_dir.empty())
+            std::fprintf(stderr, "  QuadraysOptions.debug_dir writes such cells for plotting "
+                                 "(python -m cutcells.quadrays_debug).\n");
+    }
+    if (limited.reports > 0)
+        std::fprintf(stderr, "CutCells quadrays: %d %s written to %s%s; plot them with python -m cutcells.quadrays_debug.\n",
+                     limited.reports, what, options.debug_dir.c_str(),
+                     limited.over_reports > 0 ? " (the first ones only)" : "");
+}
+
+/// A cell's terms as text, the groups the engine runs one by one set apart.
+std::string terms_text(const CellTerms& ct, const std::vector<std::string>& names)
+{
+    std::string text;
+    for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
+    {
+        text += g > 0 ? "; " : "";
+        for (int t = ct.offsets[g]; t < ct.offsets[g + 1]; ++t)
+        {
+            const SelectionTerm& term = ct.terms[static_cast<std::size_t>(t)];
+            text += t > ct.offsets[g] ? " or " : "";
+            std::string clauses;
+            for (std::size_t l = 0; l < ct.level_sets.size(); ++l)
+            {
+                const std::uint64_t bit = std::uint64_t(1) << l;
+                const std::string& name = names[static_cast<std::size_t>(ct.level_sets[l])];
+                for (const auto& [mask, sign] : {std::pair{term.negative_required, " < 0"},
+                                                 std::pair{term.positive_required, " > 0"},
+                                                 std::pair{term.zero_required, " = 0"}})
+                    if (mask & bit)
+                        clauses += (clauses.empty() ? "" : " and ") + name + sign;
+            }
+            text += clauses.empty() ? "everywhere" : clauses;
+        }
+    }
+    return text;
+}
+
+/// Writes a cell to Options::debug_dir (quadrays::write_cell_report).
+template <std::floating_point T, std::integral I>
+void write_debug_report(const MeshPart<T, I>& part, I cell_id, cell::type type, const CellTerms& ct,
+                        const CellSources<T, I>& cs, int order, int q, const quadrays::Options& options,
+                        const quadrays::BoxTrace<T>& trace, const quadrays::CellPoints<T>& points,
+                        const quadrays::Stats& stats)
+{
+    static std::atomic<int> count{0};
+    const CutResult<T, I>& r = *part.result;
+    quadrays::CellLabel<T> label;
+    label.cell = static_cast<std::int64_t>(cell_id);
+    label.cell_type = cell::cell_type_to_str(type);
+    label.gdim = r.mesh->gdim;
+    label.vertices = cs.vertices;
+    for (const int l : ct.level_sets)
+        label.level_sets.push_back(r.level_set_names[static_cast<std::size_t>(l)]);
+    label.selection = terms_text(ct, r.level_set_names);
+    label.dim = part.dim;
+    label.order = order;
+    label.q = q;
+    std::filesystem::create_directories(options.debug_dir);
+    const std::string path = (std::filesystem::path(options.debug_dir)
+                              / ("cell" + std::to_string(label.cell) + "_dim" + std::to_string(part.dim) + "_order"
+                                 + std::to_string(order) + "_" + std::to_string(count++) + ".json"))
+                                 .string();
+    quadrays::write_cell_report<T>(path, label, cs.box, std::span<const quadrays::Source<T>>(cs.sources), options,
+                                   trace, points, stats);
+}
+
 /// Appends to @p entities[part.dim] the rules of the entities @p part holds a
 /// part of (MeshPart::partial_entities), integrated by quadrays on each entity
 /// as a cell of its own (partial_entity). Points are in the entity's chart.
@@ -907,15 +1027,17 @@ void append_partial_entities(const MeshPart<T, I>& part, int order, const quadra
     const int q = points_per_segment(order, part.dim, options);
     PartialEntity<T, I> pe;
     quadrays::CellPoints<T> points;
-    quadrays::Stats stats;
+    LimitedCells limited;
     for (std::size_t k = 0; k < part.partial_entities[d].size(); ++k)
     {
         const std::int32_t e = part.partial_entities[d][k];
         partial_entity(part, e, pe);
         points.points.clear();
         points.weights.clear();
+        quadrays::Stats stats;
         quadrays::integrate(pe.box, std::span<const quadrays::Source<T>>(pe.sources),
                             std::span<const SelectionTerm>(pe.terms), q, options, points, stats);
+        count_limits(limited, e, stats);
         if (points.n_points() == 0)
             continue;
         rules.entity_types.push_back(table.types[static_cast<std::size_t>(e)]);
@@ -933,6 +1055,7 @@ void append_partial_entities(const MeshPart<T, I>& part, int order, const quadra
         rules.offsets.push_back(static_cast<std::int32_t>(rules.weights.size()));
         append_sharing_cells(*r.mesh, table, e, rules);
     }
+    warn_limits(limited, "mesh entities", options, q, part.dim, order, part.dim);
 }
 
 // ============================================================================
@@ -963,7 +1086,9 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
     CellTerms ct;
     quadrays::ClippedBox<T> box;
     quadrays::CellPoints<T> points;
-    quadrays::Stats stats;
+    quadrays::BoxTrace<T> trace;
+    const bool debugging = !options.debug_dir.empty();
+    LimitedCells limited;
     for (std::size_t i = 0; i < entries.size();)
     {
         const I c = entries[i].cell;
@@ -981,6 +1106,9 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                                       cut ? quadrays::BoxFrame::orthogonal : quadrays::BoxFrame::reference);
         points.points.clear();
         points.weights.clear();
+        quadrays::Stats stats;
+        if (debugging)
+            trace = quadrays::BoxTrace<T>{};
         for (; i < entries.size() && entries[i].cell == c; ++i)
         {
             if (!entries[i].whole)
@@ -995,10 +1123,26 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                                         std::span<const SelectionTerm>(ct.terms).subspan(
                                             static_cast<std::size_t>(ct.offsets[g]),
                                             static_cast<std::size_t>(ct.offsets[g + 1] - ct.offsets[g])),
-                                        q, options, points, stats);
+                                        q, options, points, stats, debugging ? &trace : nullptr);
             }
             else
                 append_cell_points(box, type, degree, points);
+        }
+        if (cut)
+        {
+            count_limits(limited, static_cast<std::int64_t>(c), stats);
+            if (debugging && !ct.terms.empty()
+                && (points.n_points() >= options.debug_points || stats.points_limited > 0
+                    || stats.bisections_limited > 0))
+            {
+                if (limited.reports < max_debug_reports)
+                {
+                    write_debug_report<T, I>(part, c, type, ct, cs, order, q, options, trace, points, stats);
+                    ++limited.reports;
+                }
+                else
+                    ++limited.over_reports;
+            }
         }
         const std::size_t first = rules._weights.size();
         for (int k = 0; k < points.n_points(); ++k)
@@ -1015,6 +1159,7 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
         rules._offset.push_back(static_cast<std::int32_t>(rules._weights.size()));
         rules._parent_map.push_back(static_cast<std::int32_t>(c));
     }
+    warn_limits(limited, "cells", options, q, rules._tdim, order, part.dim);
     if (part.dim == 0 && rules._tdim == 2)
         points_to_entities(part, rules, entities);
 }

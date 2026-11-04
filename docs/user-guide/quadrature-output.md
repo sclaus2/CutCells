@@ -139,6 +139,31 @@ curve where only one of the two level sets lies in mesh faces (a plane through
 grid faces cut by a sphere, say); where both do, the curve runs along mesh
 edges and comes from the entity rules.
 
+## Cells that take many points
+
+quadrays stops a cell that takes too many points, and says so on the terminal.
+A cell over `QuadraysOptions.max_points` (by default $1000\,q^{\text{tdim}}$ for
+$q$ points per segment, at most 300000) is integrated again with fewer
+bisections, which costs accuracy; a cell that uses all of `max_bisections`
+integrates its remaining boxes without a certified height direction. To see why
+a cell needed so many, set `debug_dir`: each cell that reaches a limit or exceeds
+`debug_points` is written there as a JSON file with its level sets on a grid, the
+boxes of the recursion and the points, at most 16 per call.
+
+```python
+options = cutcells.QuadraysOptions()
+options.debug_dir = "bad_cells"
+inside.quadrature(order=8, options=options)
+```
+
+```bash
+python -m cutcells.quadrays_debug bad_cells/*.json
+```
+
+prints what the engine did in each cell and plots its boxes, zero sets and points
+next to the file (matplotlib is needed only for the plots). Nothing is recorded
+while `debug_dir` is empty.
+
 ## Fewer points
 
 `compress_rules` replaces every rule by at most as many of its points as the
