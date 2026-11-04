@@ -99,17 +99,23 @@ struct Options
     /// Split the base where the active bounds of the height lines change, so
     /// that each region carries only the restrictions to its two bounds.
     bool split_bounds = true;
-    /// Level 2: if no axis certifies, try the diagonal frame before bisecting.
-    /// On a tet, phi on a box face and phi on the slanted face can need
-    /// different axes where their zero curves meet; no bisection separates them.
+    /// Level 2, where boxes are not split at their folds and crossings
+    /// (fold_splits off, anchor_folds 0, or leaf nodes): if no axis certifies, try
+    /// the diagonal frame and a frame rotated between the normals of the zero
+    /// curves before bisecting. On a tet, phi on a box face and phi on the slanted
+    /// face can need different axes where their zero curves meet; no bisection
+    /// separates them. With fold splits these frames gain nothing and cost up to
+    /// 40% of the points (a ball, 5 cells per direction), so they are not tried.
     bool diagonal_frames = true;
-    /// Where the zero sets of two level sets meet, their normals may differ so
-    /// much that no axis suits both, and bisection does not help. Such boxes
-    /// are tried in a frame rotated between the normals: at level 2 always,
-    /// in 3D from this depth of bisection on (the levels below a rotated box
-    /// get its faces as oblique clip planes, which costs). Above max_depth:
-    /// never in 3D.
-    int rotation_depth = 6;
+    /// Where the zero sets of two level sets meet in 3D, their normals may differ
+    /// so much that no axis suits both, and bisection does not help. Boxes from
+    /// this depth of bisection on, in which both zero sets change sign in one
+    /// sub-box, are tried in a frame rotated between the normals; the box's faces
+    /// become oblique clip planes, so that the rule covers the box exactly, and
+    /// each such box costs about nine times the points of an axis-aligned one.
+    /// The default is max_depth: a last resort before a box goes uncertified.
+    /// Above max_depth: never.
+    int rotation_depth = 12;
     /// M > 1: margins from M^D sub-cells that meet the clipped region and on
     /// which the function may vanish (enough for at most one root per height
     /// line). Fewer bisections, but less accurate at the same margin.

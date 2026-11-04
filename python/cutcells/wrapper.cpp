@@ -3098,10 +3098,11 @@ NB_MODULE(_cutcellscpp, m)
       .def_rw("split_bounds", &cutcells::quadrays::Options::split_bounds,
               "Split the base where the active bounds of the height lines change.")
       .def_rw("diagonal_frames", &cutcells::quadrays::Options::diagonal_frames,
-              "Level 2: try the diagonal frame before bisecting.")
+              "Level 2, where boxes are not split at folds and crossings (fold_splits off): try the "
+              "diagonal frame and frames rotated between the normals before bisecting.")
       .def_rw("rotation_depth", &cutcells::quadrays::Options::rotation_depth,
-              "Where no axis suits the zero sets of two level sets, try a frame rotated between "
-              "their normals: at level 2 always, in 3D from this depth of bisection on.")
+              "In 3D, from this depth of bisection on, where the zero sets of two level sets meet and "
+              "no axis suits both, try a frame rotated between their normals. Above max_depth: never.")
       .def_rw("mask_subdivisions", &cutcells::quadrays::Options::mask_subdivisions,
               "M > 1: margins from M^D sub-cells; 1: bounds on the whole box.")
       .def_rw("taylor_subdivisions", &cutcells::quadrays::Options::taylor_subdivisions,

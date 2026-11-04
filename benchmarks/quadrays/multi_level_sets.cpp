@@ -13,7 +13,9 @@
 // over the cell at any h as a product of shape functions does and so is what
 // assembly sees; the error of the total, and the smallest weight.
 //
-// usage: quadrays_multi_level_sets [case|all] [n,n,...] [q,q,...] [generator,...]
+// usage: quadrays_multi_level_sets [case|all] [n,n,...] [q,q,...] [generator,...|none] [reference.csv]
+// With a reference file, the reference values of each cut cell are written to it,
+// for comparing with generators outside this driver.
 
 #include <algorithm>
 #include <chrono>
@@ -364,6 +366,9 @@ int main(int argc, char** argv)
     const std::vector<std::string> generators
         = split(argc > 4 ? argv[4] : "algoim-gl,algoim-auto,quadrays,quadrays-nocheck,quadrays-norot-nocheck,quadrays-nocheck-m10");
 
+    std::FILE* reference_file = argc > 5 ? std::fopen(argv[5], "w") : nullptr;
+    if (reference_file != nullptr)
+        std::fprintf(reference_file, "case,part,n,cell,measure,moment,shape\n");
     std::printf("case,part,n,q,generator,cut_cells,cells_with_points,points,mean,worst,seconds,cell_l1,cell_max,total_err,"
                 "moment_l1,moment_max,shape_l1,shape_max,min_weight\n");
     for (const Case& c : all_cases())
@@ -395,10 +400,15 @@ int main(int argc, char** argv)
                         reference_shape[i] = r.shape;
                         reference_total += reference[i];
                         ++cut_cells;
+                        if (reference_file != nullptr)
+                            std::fprintf(reference_file, "%s,%s,%d,%zu,%.17g,%.17g,%.17g\n", c.name.c_str(),
+                                         part.name.c_str(), n, i, r.sum, r.moment, r.shape);
                     }
                 for (const int q : qs)
                     for (const std::string& generator : generators)
                     {
+                        if (generator == "none")
+                            continue;
                         const bool algoim_engine = generator.rfind("algoim", 0) == 0;
                         const algoim::QuadStrategy strategy
                             = generator == "algoim-gl" ? algoim::AlwaysGL : algoim::AutoMixed;
@@ -439,5 +449,7 @@ int main(int argc, char** argv)
             }
         }
     }
+    if (reference_file != nullptr)
+        std::fclose(reference_file);
     return 0;
 }

@@ -2360,6 +2360,56 @@ Problem<T, D> rotate_frame(const Problem<T, D>& p, const std::array<VecD<T, D>, 
     return r;
 }
 
+/// Whether level-2 boxes try frames before bisecting: only where they are not
+/// split at their folds and crossings, which needs no frame.
+template <std::floating_point T>
+bool level2_frames(const Context<T>& ctx)
+{
+    return ctx.opt.diagonal_frames && !(ctx.opt.fold_splits && ctx.opt.anchor_folds > 0 && ctx.vis_order == 0);
+}
+
+/// Whether the zero sets of two level sets may meet in a box: on a grid of
+/// its sub-boxes, one shows a sign change of both at its corners. Where they do
+/// not meet, bisection separates them, and a rotated frame only costs points.
+template <std::floating_point T>
+bool zero_sets_meet(Context<T>& ctx, const Problem<T, 3>& p, const std::vector<int>& curved)
+{
+    constexpr int n = 8;
+    constexpr int nodes = n + 1;
+    std::vector<std::uint64_t> changes(n * n * n, 0);
+    std::vector<T> values(nodes * nodes * nodes);
+    for (const int c : curved)
+    {
+        const Func<T, 3>& f = p.funcs[static_cast<std::size_t>(c)];
+        const std::uint64_t bit = std::uint64_t(1) << f.ls;
+        for (int i = 0; i < nodes; ++i)
+            for (int j = 0; j < nodes; ++j)
+                for (int l = 0; l < nodes; ++l)
+                {
+                    const VecD<T, 3> y = {p.lo[0] + (p.hi[0] - p.lo[0]) * T(i) / T(n),
+                                          p.lo[1] + (p.hi[1] - p.lo[1]) * T(j) / T(n),
+                                          p.lo[2] + (p.hi[2] - p.lo[2]) * T(l) / T(n)};
+                    values[(i * nodes + j) * nodes + l] = value<T, 3>(ctx, f, y);
+                }
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j)
+                for (int l = 0; l < n; ++l)
+                {
+                    bool negative = false, positive = false;
+                    for (int corner = 0; corner < 8; ++corner)
+                    {
+                        const T v = values[((i + (corner & 1)) * nodes + j + ((corner >> 1) & 1)) * nodes + l
+                                           + ((corner >> 2) & 1)];
+                        negative = negative || v < T(0);
+                        positive = positive || v > T(0);
+                    }
+                    if (negative && positive)
+                        changes[(i * n + j) * n + l] |= bit;
+                }
+    }
+    return std::any_of(changes.begin(), changes.end(), [](std::uint64_t m) { return std::popcount(m) >= 2; });
+}
+
 /// A rotated frame for a box where no axis suits all curved functions, as
 /// where the zero sets of two level sets meet: the height direction among the
 /// unit normals of the functions (curved ones and surface functions) at the
@@ -4379,7 +4429,7 @@ void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth
     // are the box's own coordinates.
     if constexpr (D == 2 && !Rotated && Top != 2)
     {
-        if (!an.certified && ctx.opt.diagonal_frames)
+        if (!an.certified && level2_frames(ctx))
         {
             Problem<T, 2> r = rotate_diagonal<T>(p);
             if (tighten<T, 2>(r.lo, r.hi, r.clips))
@@ -4418,9 +4468,12 @@ void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth
             two = p.funcs[static_cast<std::size_t>(an.curved[c])].ls
                   != p.funcs[static_cast<std::size_t>(an.curved[0])].ls;
         std::array<VecD<T, D>, D> R;
-        // in 3D only once bisection has not helped: a rotated box has its faces
-        // as clip planes, which make the levels below costly
-        const bool allowed = D < 3 || depth >= ctx.opt.rotation_depth;
+        // in 3D only once bisection has not helped and where the zero sets meet:
+        // a rotated box has its faces as clip planes, which make the levels
+        // below costly
+        bool allowed = D < 3 ? level2_frames(ctx) : depth >= ctx.opt.rotation_depth;
+        if constexpr (D == 3)
+            allowed = allowed && !an.certified && two && zero_sets_meet<T>(ctx, p, an.curved);
         if (!an.certified && two && allowed && choose_frame<T, D>(ctx, p, an, R))
         {
             Problem<T, D> r = rotate_frame<T, D>(p, R);

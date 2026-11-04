@@ -117,6 +117,35 @@ def test_debug_report_regions_partition_the_points(tmp_path):
         start += n
 
 
+@pytest.mark.parametrize("distance", [False, True])
+def test_rotated_frames_give_usable_rules(distance):
+    """A rule with rotated frames is one a finite element method can use: positive
+    weights, every point in the part, and the moments of the rule without them."""
+    result, a, b = lens(n=3, distance=distance)
+    part = result[(a < 0) & (b < 0)]
+    options = cc.QuadraysOptions()
+    options.max_points = -1
+    options.rotation_depth = 0
+    rotated = part.quadrature(order=8, options=options)
+    options.rotation_depth = 100
+    plain = part.quadrature(order=8, options=options)
+
+    points = np.asarray(rotated.points).reshape(-1, 3)
+    weights = np.asarray(rotated.weights)
+    assert weights.min() > 0
+    assert np.all(np.isfinite(points)) and points.min() >= 0 and points.max() <= 1
+
+    def moments(rules):
+        x = np.asarray(rules.points).reshape(-1, 3)
+        w = np.asarray(rules.weights)
+        off = np.asarray(rules.offset)
+        shape = sum(np.polynomial.legendre.legval(2 * x[:, j] - 1, [0, 0, 0, 0, 1]) ** 2 for j in range(3))
+        return np.add.reduceat(w, off[:-1]), np.add.reduceat(w * shape, off[:-1])
+
+    for value, reference in zip(moments(rotated), moments(plain)):
+        assert np.abs(value - reference).max() < 1e-7
+
+
 def test_debug_plot(tmp_path):
     pytest.importorskip("matplotlib")
     debug = pytest.importorskip("cutcells.quadrays_debug")

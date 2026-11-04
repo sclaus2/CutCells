@@ -44,7 +44,7 @@ struct CellLabel
 /// @param phis    its level sets on the box
 /// @param opt     the options of the run
 /// @param trace   the boxes of the recursion
-/// @param points  the cell's points, every n-th if there are more than 100000
+/// @param points  the cell's points, every n-th if there are more than 300000
 /// @param stats   the cell's counters
 /// @throws std::runtime_error if the file cannot be written
 template <std::floating_point T>

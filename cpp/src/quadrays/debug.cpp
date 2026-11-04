@@ -16,8 +16,11 @@ namespace
 {
 
 // The most points a report holds, and the grid of its level sets by the cell's dimension.
-constexpr int report_points = 100000;
+constexpr int report_points = 300000;
 constexpr int report_grid[4] = {0, 201, 201, 41};
+// Every n-th point, n prime and large: the points come in tensor products of a
+// few points per segment, of which a small n would keep only some heights.
+constexpr int report_strides[] = {1, 97, 197, 397, 797, 1597, 3203, 6421};
 
 void write_string(std::FILE* f, const std::string& s)
 {
@@ -176,7 +179,13 @@ void write_cell_report(const std::string& path, const CellLabel<T>& label, const
     std::fputc('}', f);
 
     // the points, in box coordinates
-    const std::size_t stride = static_cast<std::size_t>(points.n_points() / report_points + 1);
+    std::size_t stride = 1;
+    for (const int n : report_strides)
+    {
+        stride = static_cast<std::size_t>(n);
+        if (points.n_points() / n <= report_points)
+            break;
+    }
     std::fprintf(f, ",\n\"point_stride\": %d", static_cast<int>(stride));
     write_key(f, "points");
     std::fputc('[', f);
