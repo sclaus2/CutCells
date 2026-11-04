@@ -258,6 +258,18 @@ struct ColumnFold
     VecD<T, 2> y{};
 };
 
+/// A level set's form with one box coordinate fixed, kept between lines along one axis:
+/// the lines of a slice of a base share that coordinate (line_form).
+template <std::floating_point T>
+struct PlaneForm
+{
+    int axis = -1;  ///< the axis of the lines
+    int fixed = -1; ///< the coordinate fixed in coeffs
+    T value = 0;    ///< and its value
+    std::array<T, 3> last{}; ///< the origin of the last line
+    std::vector<T> coeffs;   ///< over the other two coordinates, the lower one fastest
+};
+
 template <std::floating_point T>
 struct Context
 {
@@ -268,6 +280,9 @@ struct Context
     std::vector<int> derived; ///< index in phis of d_a phi_l at 3 l + a, or -1
     std::vector<BoxBernstein<T>> linear_forms; ///< of analytic level sets linear on the cell
     std::vector<T> scales;       ///< size of each (reference_magnitude)
+    mutable std::vector<PlaneForm<T>> plane_forms; ///< by level set (line_form)
+    bool any_analytic = false;   ///< some level set is analytic
+    bool measure_only = false;   ///< the second run of an accuracy check: only the measure counts
     std::vector<Requirement> terms;
     std::uint64_t used = 0; ///< level sets some term constrains
     int surface = -1;       ///< interface parts: the level set whose zero set is integrated
@@ -646,6 +661,86 @@ void bernstein_form(const Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>
                     std::span<const T>(matrix.data(), static_cast<std::size_t>(phi.dim * D)), D, out, work);
 }
 
+/// Bernstein basis of degree n at s.
+template <std::floating_point T>
+void bernstein_basis(int n, T s, std::array<T, max_box_degree + 1>& b)
+{
+    const T t = T(1) - s;
+    b[0] = T(1);
+    for (int r = 1; r <= n; ++r)
+    {
+        T carry = T(0);
+        for (int j = 0; j < r; ++j)
+        {
+            const T v = b[static_cast<std::size_t>(j)];
+            b[static_cast<std::size_t>(j)] = carry + t * v;
+            carry = s * v;
+        }
+        b[static_cast<std::size_t>(r)] = carry;
+    }
+}
+
+/// The Bernstein form on [0, 1] of a 3D form along a line of direction @p step along
+/// @p axis from @p origin. Lines come in slices sharing one coordinate: the contraction
+/// along it is kept in @p plane, and only the other is done for each line.
+template <std::floating_point T>
+void axis_line_form(const BoxBernstein<T>& phi, PlaneForm<T>& plane, const std::array<T, 3>& origin, int axis, T step,
+                    BoxBernstein<T>& out)
+{
+    const int i = axis == 0 ? 1 : 0, j = axis == 2 ? 1 : 2; // the fixed coordinates, i < j
+    const std::array<int, 3> extent = {phi.degree[0] + 1, phi.degree[1] + 1, phi.degree[2] + 1};
+    const std::array<int, 3> stride = {1, extent[0], extent[0] * extent[1]};
+    std::array<T, max_box_degree + 1> basis;
+    const auto index = [](int c) { return static_cast<std::size_t>(c); };
+    if (!(plane.axis == axis && ((plane.fixed == i && plane.value == origin[index(i)])
+                                 || (plane.fixed == j && plane.value == origin[index(j)]))))
+    {
+        // fix the coordinate that stayed from the last line
+        const int fixed = plane.axis == axis && plane.last[index(i)] != origin[index(i)]
+                                  && plane.last[index(j)] == origin[index(j)]
+                              ? j
+                              : i;
+        const int low = fixed == 0 ? 1 : 0, high = fixed == 2 ? 1 : 2; // the kept coordinates
+        bernstein_basis(phi.degree[index(fixed)], origin[index(fixed)], basis);
+        plane.coeffs.resize(index(extent[index(low)]) * index(extent[index(high)]));
+        std::size_t at = 0;
+        for (int b = 0; b < extent[index(high)]; ++b)
+            for (int a = 0; a < extent[index(low)]; ++a)
+            {
+                const T* source = phi.coeffs.data() + a * stride[index(low)] + b * stride[index(high)];
+                T sum = T(0);
+                for (int m = 0; m < extent[index(fixed)]; ++m)
+                    sum += basis[index(m)] * source[m * stride[index(fixed)]];
+                plane.coeffs[at++] = sum;
+            }
+        plane.axis = axis;
+        plane.fixed = fixed;
+        plane.value = origin[index(fixed)];
+    }
+    plane.last = origin;
+    // the other fixed coordinate, in the kept plane
+    const int other = plane.fixed == i ? j : i;
+    const int low = plane.fixed == 0 ? 1 : 0;
+    const int n = phi.degree[index(axis)];
+    const int plane_low = extent[index(low)];
+    const int along = axis == low ? 1 : plane_low, across = other == low ? 1 : plane_low;
+    bernstein_basis(phi.degree[index(other)], origin[index(other)], basis);
+    std::array<T, max_box_degree + 1> line;
+    for (int t = 0; t <= n; ++t)
+    {
+        const T* source = plane.coeffs.data() + t * along;
+        T sum = T(0);
+        for (int m = 0; m < extent[index(other)]; ++m)
+            sum += basis[index(m)] * source[m * across];
+        line[index(t)] = sum;
+    }
+    out.dim = 1;
+    out.degree = {n, 0, 0};
+    out.coeffs.resize(index(n + 1));
+    reparametrise_1d(std::span<T>(line.data(), index(n + 1)), origin[index(axis)], origin[index(axis)] + step,
+                     std::span<T>(out.coeffs));
+}
+
 /// Bernstein form on [L, U] of t -> psi(y0 + (t - L) e_k), y0 on the line at t = L.
 template <std::floating_point T, int D>
 void line_form(const Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& y0, int k, T L, T U,
@@ -653,6 +748,7 @@ void line_form(const Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& y0,
 {
     const BoxBernstein<T>& phi = *ctx.phis[static_cast<std::size_t>(f.ls)].bernstein;
     std::array<T, 3> origin, column;
+    int axis = -1, moving = 0;
     for (int i = 0; i < 3; ++i)
     {
         T o = f.b[i];
@@ -660,6 +756,19 @@ void line_form(const Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& y0,
             o += snap(f.A[i][j]) * y0[j];
         origin[i] = o;
         column[i] = snap(f.A[i][k]) * (U - L);
+        if (column[i] != T(0))
+        {
+            axis = i;
+            ++moving;
+        }
+    }
+    if (phi.dim == 3 && moving == 1)
+    {
+        if (ctx.plane_forms.size() <= static_cast<std::size_t>(f.ls))
+            ctx.plane_forms.resize(static_cast<std::size_t>(f.ls) + 1);
+        axis_line_form(phi, ctx.plane_forms[static_cast<std::size_t>(f.ls)], origin, axis,
+                       column[static_cast<std::size_t>(axis)], out);
+        return;
     }
     restrict_affine(phi, std::span<const T>(origin.data(), static_cast<std::size_t>(phi.dim)),
                     std::span<const T>(column.data(), static_cast<std::size_t>(phi.dim)), 1, out, work);
@@ -991,7 +1100,8 @@ T under_root(Context<T>& ctx, const Surface<T, D>& s, const VecD<T, D>& y, T a, 
     }
     BoxBernstein<T>& line = ctx.inner_line[D + 1];
     line_form<T, D + 1>(ctx, s.under, insert<T, D + 1>(y, s.k, a), s.k, a, b, line, ctx.inner_work[D + 1]);
-    return bracketed_root(std::span<const T>(line.coeffs), a, b, a, b, fa, fb);
+    return ctx.vis_order == 0 ? newton_root(std::span<const T>(line.coeffs), a, b, a, b, fa, fb)
+                              : bracketed_root(std::span<const T>(line.coeffs), a, b, a, b, fa, fb);
 }
 
 /// The root of a surface function's under on its branch (Surface::branch), within
@@ -1421,14 +1531,15 @@ void surface_line_roots(Context<T>& ctx, const Surface<T, 1>& s, T a, T b, T sa,
     surface_line_roots<T>(ctx, s, m, b, sm, sb, depth + 1, budget, roots);
 }
 
-/// A surface function on a branch (Surface::branch) is sampled along the line: bounds
-/// of its root prove little near the silhouette, and cost more than the roots do. The
-/// boxes below such surfaces are checked, which has what this misses.
+/// A surface function is sampled along the line: bounds of its root prove little, and
+/// cost far more than the roots do (restricting forms to a box for every line of a
+/// base, most of the time of a cell). The boxes below it are checked, which has what
+/// this misses. Curve parts and leaf cells, which have no check, keep the bounds.
 template <std::floating_point T>
 void surface_line_roots(Context<T>& ctx, const Surface<T, 1>& s, T a, T b, std::vector<T>& roots)
 {
     const T sa = surface_value<T, 1>(ctx, s, VecD<T, 1>{a}), sb = surface_value<T, 1>(ctx, s, VecD<T, 1>{b});
-    if (s.branch != 0)
+    if (s.branch != 0 || (ctx.partner < 0 && ctx.vis_order == 0))
     {
         constexpr int pieces = 16;
         const auto at = [&](T t) { return surface_value<T, 1>(ctx, s, VecD<T, 1>{t}); };
@@ -3040,6 +3151,11 @@ void curved_roots(Context<T>& ctx, const Func<T, D>& f, const VecD<T, D - 1>& yb
         return;
     }
     const T gl = c.front(), gu = c.back();
+    const auto solve = [&ctx](std::span<const T> poly, T a, T b, T lo, T hi, T glo, T ghi)
+    {
+        return ctx.vis_order == 0 ? newton_root(poly, a, b, lo, hi, glo, ghi)
+                                  : bracketed_root(poly, a, b, lo, hi, glo, ghi);
+    };
     if (two && c.size() > 2)
     {
         // the extreme point: the root of the line's derivative, which is monotone
@@ -3051,17 +3167,17 @@ void curved_roots(Context<T>& ctx, const Func<T, D>& f, const VecD<T, D - 1>& yb
         const T dl = dc.front(), du = dc.back();
         if (opposite(dl, du))
         {
-            const T x = bracketed_root(std::span<const T>(dc), L, U, L, U, dl, du);
+            const T x = solve(std::span<const T>(dc), L, U, L, U, dl, du);
             const T gx = evaluate_1d(c, (x - L) / (U - L));
             if (opposite(gl, gx))
-                roots.push_back(bracketed_root(c, L, U, L, x, gl, gx));
+                roots.push_back(solve(c, L, U, L, x, gl, gx));
             if (opposite(gx, gu))
-                roots.push_back(bracketed_root(c, L, U, x, U, gx, gu));
+                roots.push_back(solve(c, L, U, x, U, gx, gu));
             return;
         }
     }
     if (opposite(gl, gu))
-        roots.push_back(bracketed_root(c, L, U, L, U, gl, gu));
+        roots.push_back(solve(c, L, U, L, U, gl, gu));
 }
 
 /// The gradient and Hessian of f at y (forward differences of the gradient,
@@ -3943,8 +4059,9 @@ bool fold_split_points(Context<T>& ctx, const Problem<T, 2>& p, int k, bool top,
     const bool Top3 = !top;
     // Below a 3D box the curves of surface functions are walked on a grid (see below):
     // the search need not be complete, the accuracy check has what it misses. A curve
-    // part has no such check for what it misses: its one curve is the integration domain.
-    const bool lenient = Top3 && ctx.partner < 0;
+    // part has no such check for what it misses (its one curve is the integration
+    // domain), and the segments of leaf cells must line up across all curves.
+    const bool lenient = Top3 && ctx.partner < 0 && ctx.vis_order == 0;
     constexpr int max_boxes = 400;
     folds.clear();
     crossings.clear();
@@ -4529,8 +4646,8 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
         if (!certified && ctx.opt.fold_splits && ctx.opt.anchor_folds > 0 && ctx.vis_order == 0
             && ctx.splits_blocked == 0)
         {
-            const int ks = Top == 3 && ctx.partner < 0 ? crossing_direction<T>(ctx, p, k)
-                                                       : uncertified_direction<T, D>(ctx, p, an, k);
+            const int ks = Top == 3 && ctx.partner < 0 && ctx.vis_order == 0 ? crossing_direction<T>(ctx, p, k)
+                                                                             : uncertified_direction<T, D>(ctx, p, an, k);
             split = fold_split_points<T>(ctx, p, ks, D == Top, an.surface, split_folds, split_crossings);
             if (split)
             {
@@ -4615,7 +4732,9 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             const Stats stats = *ctx.stats;
             const int bisections = ctx.bisections;
             swap_rules(ctx);
+            ctx.measure_only = !interface && !ctx.any_analytic;
             reduce<T, D, Rotated, Top>(ctx, p, an, emit, depth, interface, false);
+            ctx.measure_only = false;
             swap_rules(ctx);
             ctx.fold_pass = 0;
             *ctx.stats = stats;
@@ -5277,6 +5396,23 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                 if (ctx.vis_order == 0 && b - a <= segment_tol<T>)
                     continue;
                 tag.segment[D - 1] = static_cast<int>(s);
+                // the roots of Bernstein forms on this line are all found: no level set
+                // changes sign within a segment, its middle decides for all its points
+                bool whole = false;
+                if constexpr (D == Top)
+                    if (ctx.vis_order == 0 && !ctx.any_analytic)
+                    {
+                        const T middle = T(0.5) * (a + b);
+                        const VecD<T, D> y = insert<T, D>(yb, k, middle);
+                        if (an.decided == 0 && !holds<T>(ctx, an.terms, to_u<T, D>(p.frame, y), (middle - L) / (U - L)))
+                            continue;
+                        whole = true;
+                        if (ctx.measure_only)
+                        {
+                            emit(y, w * (b - a) * ctx.detj, tag, VecD<T, D>{});
+                            continue;
+                        }
+                    }
                 const auto node = [&](int j, T t, T wt)
                 {
                     tag.node[D - 1] = j;
@@ -5286,7 +5422,8 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                         if (ctx.vis_order == 0)
                         {
                             // top level: keep the points of the selected part
-                            if (an.decided == 0 && !holds<T>(ctx, an.terms, to_u<T, D>(p.frame, y), (t - L) / (U - L)))
+                            if (!whole && an.decided == 0
+                                && !holds<T>(ctx, an.terms, to_u<T, D>(p.frame, y), (t - L) / (U - L)))
                                 return;
                             emit(y, w * wt * ctx.detj, tag, VecD<T, D>{});
                             return;
@@ -5787,6 +5924,12 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     ctx.surface = zero != 0 ? std::countr_zero(zero) : -1;
     ctx.partner = std::popcount(zero) == 2 ? 63 - std::countl_zero(zero) : -1;
     ctx.phis.assign(phis.begin(), phis.end());
+    for (PlaneForm<T>& plane : ctx.plane_forms)
+        plane.axis = -1;
+    ctx.any_analytic = false;
+    for (const Source<T>& phi : ctx.phis)
+        ctx.any_analytic = ctx.any_analytic || phi.is_analytic();
+    ctx.measure_only = false;
     // An analytic level set that is linear on the cell (a plane) is read as its
     // form of degree 1, as a level set of degree 1 is: its zero set then needs
     // no surface function where it meets another's, whose bounds would come

@@ -145,6 +145,11 @@ void margins(const BoxBernstein<T>& p, std::span<const T> lengths, std::span<T> 
 template <std::floating_point T>
 T evaluate_1d(std::span<const T> c, T s);
 
+/// @brief Bernstein coefficients on [0, 1] of s -> p(a + (b - a) s), from those of p on
+/// [0, 1] in @p c, which is overwritten.
+template <std::floating_point T>
+void reparametrise_1d(std::span<T> c, T a, T b, std::span<T> out);
+
 /// @brief Root of @p g in the bracket [lo, hi] where its values @p glo and @p ghi
 /// have opposite signs: secant steps that halve the stale end's value when one
 /// end is kept twice (Illinois), bisection when a step leaves the bracket.
@@ -153,14 +158,18 @@ T illinois_root(const G& g, T lo, T hi, T glo, T ghi)
 {
     const T tol = scaled_tolerance<T>(4e-16);
     int side = 0;
+    T previous = std::numeric_limits<T>::infinity();
     for (int it = 0; it < 200; ++it)
     {
         T x = (lo * ghi - hi * glo) / (ghi - glo);
         if (!(x > lo && x < hi))
             x = T(0.5) * (lo + hi);
         const T gx = g(x);
-        if (gx == T(0) || hi - lo <= tol * std::max(T(1), std::abs(x)))
+        // a value may be costly: the step shows convergence before the bracket does
+        if (gx == T(0) || hi - lo <= tol * std::max(T(1), std::abs(x))
+            || std::abs(x - previous) <= tol * std::max(T(1), std::abs(x)))
             return x;
+        previous = x;
         if ((gx > T(0)) == (ghi > T(0)))
         {
             hi = x;
@@ -186,6 +195,12 @@ T illinois_root(const G& g, T lo, T hi, T glo, T ghi)
 /// @p ghi have opposite signs (illinois_root).
 template <std::floating_point T>
 T bracketed_root(std::span<const T> c, T a, T b, T lo, T hi, T glo, T ghi);
+
+/// @brief The same root by Newton's method kept in the bracket, from the root of a
+/// quadratic or the secant: few evaluations, but its rounding is its own, so a line's
+/// neighbours need not agree on which side of a zero they fall (leaf cells).
+template <std::floating_point T>
+T newton_root(std::span<const T> c, T a, T b, T lo, T hi, T glo, T ghi);
 
 /// @brief All roots in (a, b) of the univariate polynomial with Bernstein
 /// coefficients @p c on [a, b], isolated by de Casteljau subdivision and
