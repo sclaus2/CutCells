@@ -142,6 +142,182 @@ def test_cells_where_the_equator_lies_in_a_face():
     assert sizes.max() <= 15000
 
 
+def measures(result, selection, order=8):
+    """The total weight of a part over the mesh, its smallest weight, and the most
+    points in one cell."""
+    rules = result[selection].quadrature(order=order, mode="full")
+    weights = np.asarray(rules.weights)
+    _, sizes = statistics(result[selection], order=order)
+    return weights.sum(), weights.min(), sizes.max()
+
+
+def cylinder(centre, radius, axis):
+    def phi(x):
+        return sum((x[i] - centre[i]) ** 2 for i in range(3) if i != axis) - radius**2
+
+    return phi
+
+
+CENTRE = (0.0123, -0.0371, 0.0217)
+
+
+@pytest.mark.parametrize("n", [1, 3, 5, 9])
+def test_lens(n):
+    """Two balls: the curve where they meet, their silhouettes and traces in the base
+    of a box, which needs no bisection however large the cell."""
+    radius, distance = 0.6, 0.5
+    axis = np.array([1.0, 2.0, 2.0]) / 3
+    first = np.array([-0.21, 0.07, 0.04])
+    mesh = box_mesh(n)
+    a = cc.create_level_set(mesh, sphere(first, radius), degree=2, name="a")
+    b = cc.create_level_set(mesh, sphere(first + distance * axis, radius), degree=2, name="b")
+    result = cc.cut(mesh, [a, b])
+
+    total, smallest, worst = measures(result, "a < 0 and b < 0")
+    assert abs(total - math.pi * (4 * radius + distance) * (2 * radius - distance) ** 2 / 12) < 1e-11
+    assert smallest > 0
+    assert worst <= {1: 45000, 3: 30000, 5: 25000, 9: 15000}[n]
+
+    total, smallest, worst = measures(result, "a = 0 and b < 0")
+    assert abs(total - 2 * math.pi * radius * (radius - distance / 2)) < 1e-11
+    assert smallest > 0
+    assert worst <= 6000
+
+
+@pytest.mark.parametrize("n", [1, 3, 5, 9])
+def test_ball_and_plane(n):
+    radius, offset = 0.6, 0.05
+    normal = np.array([0.93, 0.33, -0.19])
+    normal /= np.linalg.norm(normal)
+    centre = np.array([-0.21, 0.07, 0.04])
+    mesh = box_mesh(n)
+    a = cc.create_level_set(mesh, sphere(centre, radius), degree=2, name="a")
+    b = cc.create_level_set(mesh, lambda x: sum(normal[i] * x[i] for i in range(3)) - offset, degree=1, name="b")
+    result = cc.cut(mesh, [a, b])
+    # the height of the cap on the side where b < 0
+    height = radius + offset - normal @ centre
+
+    total, smallest, worst = measures(result, "a < 0 and b < 0")
+    assert abs(total - math.pi * height**2 * (3 * radius - height) / 3) < 1e-11
+    assert smallest > 0
+    assert worst <= {1: 25000, 3: 10000, 5: 15000, 9: 12000}[n]
+
+    total, smallest, worst = measures(result, "a = 0 and b < 0")
+    assert abs(total - 2 * math.pi * radius * height) < 1e-11
+    assert smallest > 0
+    assert worst <= 8000
+
+
+@pytest.mark.parametrize("n", [3, 5, 9])
+def test_two_cylinders(n):
+    """Their zero curves on faces are straight, some along the height of the base. On
+    the interface, the cell where the cylinders touch is less accurate."""
+    radius = 0.6
+    mesh = box_mesh(n)
+    a = cc.create_level_set(mesh, cylinder(CENTRE, radius, 2), degree=2, name="a")
+    b = cc.create_level_set(mesh, cylinder(CENTRE, radius, 1), degree=2, name="b")
+    result = cc.cut(mesh, [a, b])
+
+    total, smallest, worst = measures(result, "a < 0 and b < 0")
+    assert abs(total - 16 / 3 * radius**3) < 1e-11
+    assert smallest > 0
+    assert worst <= 20000
+
+    total, smallest, worst = measures(result, "a = 0 and b < 0")
+    assert abs(total - 8 * radius**2) < 1e-8
+    assert smallest > 0
+    assert worst <= 2000
+
+
+@pytest.mark.parametrize("n", [3, 5, 9])
+def test_three_cylinders(n):
+    radius = 0.6
+    mesh = box_mesh(n)
+    a = cc.create_level_set(mesh, cylinder(CENTRE, radius, 2), degree=2, name="a")
+    b = cc.create_level_set(mesh, cylinder(CENTRE, radius, 1), degree=2, name="b")
+    c = cc.create_level_set(mesh, cylinder(CENTRE, radius, 0), degree=2, name="c")
+    result = cc.cut(mesh, [a, b, c])
+
+    total, smallest, worst = measures(result, "a < 0 and b < 0 and c < 0")
+    assert abs(total - 8 * (2 - math.sqrt(2)) * radius**3) < 1e-11
+    assert smallest > 0
+    assert worst <= 20000
+
+    total, smallest, worst = measures(result, "a = 0 and b < 0 and c < 0")
+    assert abs(total - 8 * (2 - math.sqrt(2)) * radius**2) < 1e-7
+    assert smallest > 0
+    assert worst <= 2000
+
+
+def test_lens_integrates_shape_functions():
+    """What assembly sees: against the rule without silhouette splits, cell by cell."""
+    radius, distance = 0.6, 0.5
+    axis = np.array([1.0, 2.0, 2.0]) / 3
+    first = np.array([-0.21, 0.07, 0.04])
+    mesh = box_mesh(5)
+    a = cc.create_level_set(mesh, sphere(first, radius), degree=2, name="a")
+    b = cc.create_level_set(mesh, sphere(first + distance * axis, radius), degree=2, name="b")
+    result = cc.cut(mesh, [a, b])
+    options = cc.QuadraysOptions()
+    options.silhouette_splits = False
+    options.max_points = -1
+    for selection in ("a < 0 and b < 0", "a = 0 and b < 0"):
+        rules, _ = statistics(result[selection], order=8)
+        reference, _ = statistics(result[selection], order=8, options=options)
+        assert np.array_equal(np.asarray(rules.parent_map), np.asarray(reference.parent_map))
+        for mine, theirs in zip(np.split(np.arange(len(rules.weights)), np.asarray(rules.offset)[1:-1]),
+                                np.split(np.arange(len(reference.weights)), np.asarray(reference.offset)[1:-1])):
+            x = np.asarray(rules.points).reshape(-1, 3)[mine]
+            y = np.asarray(reference.points).reshape(-1, 3)[theirs]
+            assert abs(np.asarray(rules.weights)[mine] @ legendre_squares(x)
+                       - np.asarray(reference.weights)[theirs] @ legendre_squares(y)) < 1e-9
+
+
+@pytest.mark.parametrize("gap", [1e-3, 1e-5, 1e-7, 1e-9])
+def test_small_features_are_not_lost(gap):
+    """A closed curve smaller than the grid of a base's search shows in no sign change,
+    and no point of a rule lands on it for the accuracy check to see."""
+    mesh = box_mesh(4)
+    distance = 2 * 0.3 - gap
+    a = cc.create_level_set(mesh, sphere((0.13, -0.03 - distance / 2, 0.21), 0.3), degree=2, name="a")
+    b = cc.create_level_set(mesh, sphere((0.13, -0.03 + distance / 2, 0.21), 0.3), degree=2, name="b")
+    result = cc.cut(mesh, [a, b])
+    total, _, _ = measures(result, "a = 0 and b < 0")
+    assert abs(total - 2 * math.pi * 0.3 * (0.3 - distance / 2)) < 1e-14
+
+    c = cc.create_level_set(mesh, sphere((0.1, 0.07, 0.02), 0.4), degree=2, name="c")
+    d = cc.create_level_set(mesh, lambda x: 0.42 - gap - x[2], degree=1, name="d")
+    result = cc.cut(mesh, [c, d])
+    total, _, _ = measures(result, "c = 0 and d < 0")
+    assert abs(total - 2 * math.pi * 0.4 * gap) < 1e-14
+
+
+@pytest.mark.parametrize("gap", [0.0, 1e-13, 1e-9, 1e-5])
+def test_events_on_the_borders_of_cells(gap):
+    """Folds and crossings exactly on, or just off, faces and edges of the mesh."""
+    radius, distance = 0.6, 0.5
+    rho = math.sqrt(radius**2 - distance**2 / 4)
+    exact_volume = math.pi * (4 * radius + distance) * (2 * radius - distance) ** 2 / 12
+    exact_area = 2 * math.pi * radius * (radius - distance / 2)
+    z = 0.11
+    centres = {"in a face": (gap, 0.07, 0.04),
+               "touching a face": (0.13, 0.5 - rho + gap, 0.04),
+               "through an edge": (0.13, 0.5 - math.sqrt(rho**2 - (0.5 - z) ** 2) + gap, z)}
+    mesh = box_mesh(4)
+    for x, y, z0 in centres.values():
+        a = cc.create_level_set(mesh, sphere((x - distance / 2, y, z0), radius), degree=2, name="a")
+        b = cc.create_level_set(mesh, sphere((x + distance / 2, y, z0), radius), degree=2, name="b")
+        result = cc.cut(mesh, [a, b])
+        total, smallest, worst = measures(result, "a < 0 and b < 0")
+        assert abs(total - exact_volume) < 1e-12
+        assert smallest > 0
+        assert worst <= 15000
+        total, smallest, worst = measures(result, "a = 0 and b < 0")
+        assert abs(total - exact_area) < 1e-12
+        assert smallest > 0
+        assert worst <= 2000
+
+
 def test_splits_can_be_turned_off(ball_in_cell):
     options = cc.QuadraysOptions()
     assert options.silhouette_splits

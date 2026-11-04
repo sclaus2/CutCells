@@ -3085,10 +3085,11 @@ NB_MODULE(_cutcellscpp, m)
               "curves instead of bisected; its height lines take all roots. True (default). With "
               "tolerance 0, such boxes are bisected unless q and q + 1 points agree to 1e-12.")
       .def_rw("silhouette_splits", &cutcells::quadrays::Options::silhouette_splits,
-              "A 3D box that no axis certifies is not bisected where its level set, along an axis, is "
-              "monotone or has a monotone derivative: its lines take all roots and the base splits at "
-              "the silhouette, where the zero set turns along that axis. True (default); needs "
-              "fold_splits and anchor_folds. For now one Bernstein level set in the box, no clip planes.")
+              "A 3D box that no axis certifies is not bisected where each of its level sets, along an "
+              "axis, is monotone or has a monotone derivative: its lines take all roots and the base "
+              "splits at the silhouettes, where a zero set turns along that axis, and where two zero "
+              "sets meet. True (default); needs fold_splits and anchor_folds. For now Bernstein level "
+              "sets and no clip planes.")
       .def_rw("max_depth", &cutcells::quadrays::Options::max_depth,
               "Bisections allowed per level along a branch.")
       .def_rw("max_bisections", &cutcells::quadrays::Options::max_bisections,
