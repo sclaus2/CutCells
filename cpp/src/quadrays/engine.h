@@ -158,6 +158,15 @@ struct Options
     /// bisects otherwise. Where the search does not settle (a singular point,
     /// nearly tangent curves), the box and the boxes within are bisected.
     bool fold_splits = true;
+    /// A 3D box that no axis certifies is not bisected where, along an axis, its
+    /// level set is monotone or has a monotone derivative: its lines take all
+    /// roots, at most two per line, and the base splits at the silhouette, where
+    /// the zero set turns along the axis (f = d_k f = 0; Beck and Kummer 2023,
+    /// Section 5.4, read d_k f as a second level set the same way). Segments
+    /// anchor there (anchor_folds) and level-2 boxes split at the silhouette's
+    /// folds (fold_splits); needs both. For now: one Bernstein level set in the
+    /// box, and no clip planes; other boxes bisect.
+    bool silhouette_splits = true;
     /// The front end (part::quadrature_rules): Gauss-Legendre points per
     /// segment of each height line. 0: enough for its order, ceil((order + m)
     /// / 2) for a part of dimension m, so that flat pieces integrate
@@ -176,6 +185,7 @@ struct Stats
     int two_roots = 0;         ///< boxes certified with two roots per height line
     int surfaces = 0;          ///< surface functions made where two level sets cut a box
     int fold_splits = 0;       ///< boxes split at folds and crossings (Options::fold_splits)
+    int silhouettes = 0;       ///< 3D boxes integrated without certificate (Options::silhouette_splits)
     int points_limited = 0;    ///< runs that exceeded Options::max_points and were redone with fewer bisections
     int bisections_limited = 0; ///< runs that used all of Options::max_bisections
     /// top boxes of a curve part integrated uncertified (depth or bisection

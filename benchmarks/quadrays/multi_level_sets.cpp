@@ -226,6 +226,7 @@ struct CellResult
     double moment = 0; ///< the integral of integrand
     double shape = 0; ///< the integral of shape_integrand
     double min_weight = 0;
+    int bisections = 0;
 };
 
 CellResult run_quadrays(const GridCell& g, const std::vector<std::vector<SelectionTerm>>& groups, int q, const Options& opt)
@@ -240,6 +241,7 @@ CellResult run_quadrays(const GridCell& g, const std::vector<std::vector<Selecti
                              0, rule, stats);
     CellResult r;
     r.points = static_cast<int>(rule._weights.size());
+    r.bisections = stats.bisections;
     r.min_weight = 1e300;
     for (std::size_t p = 0; p < rule._weights.size(); ++p)
     {
@@ -370,7 +372,7 @@ int main(int argc, char** argv)
     if (reference_file != nullptr)
         std::fprintf(reference_file, "case,part,n,cell,measure,moment,shape\n");
     std::printf("case,part,n,q,generator,cut_cells,cells_with_points,points,mean,worst,seconds,cell_l1,cell_max,total_err,"
-                "moment_l1,moment_max,shape_l1,shape_max,min_weight\n");
+                "moment_l1,moment_max,shape_l1,shape_max,min_weight,bisections_mean,bisections_worst\n");
     for (const Case& c : all_cases())
     {
         if (which != "all" && which != c.name)
@@ -414,7 +416,8 @@ int main(int argc, char** argv)
                             = generator == "algoim-gl" ? algoim::AlwaysGL : algoim::AutoMixed;
                         const Options opt = quadrays_options(generator);
                         long long points = 0;
-                        int worst = 0, with_points = 0;
+                        int worst = 0, with_points = 0, bisections_worst = 0;
+                        long long bisections = 0;
                         double l1 = 0, largest = 0, total = 0, min_weight = 1e300, seconds = 0, moment_l1 = 0,
                                moment_max = 0, shape_l1 = 0, shape_max = 0;
                         for (std::size_t i = 0; i < cells.size(); ++i)
@@ -427,6 +430,8 @@ int main(int argc, char** argv)
                             seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
                             points += r.points;
                             worst = std::max(worst, r.points);
+                            bisections += r.bisections;
+                            bisections_worst = std::max(bisections_worst, r.bisections);
                             with_points += r.points > 0;
                             total += r.sum;
                             min_weight = std::min(min_weight, r.min_weight);
@@ -440,10 +445,11 @@ int main(int argc, char** argv)
                             shape_l1 += es;
                             shape_max = std::max(shape_max, es);
                         }
-                        std::printf("%s,%s,%d,%d,%s,%d,%d,%lld,%.1f,%d,%.4f,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e\n", c.name.c_str(),
+                        std::printf("%s,%s,%d,%d,%s,%d,%d,%lld,%.1f,%d,%.4f,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e,%.1f,%d\n", c.name.c_str(),
                                     part.name.c_str(), n, q, generator.c_str(), cut_cells, with_points, points,
                                     with_points > 0 ? double(points) / with_points : 0.0, worst, seconds, l1, largest,
-                                    std::abs(total - reference_total), moment_l1, moment_max, shape_l1, shape_max, min_weight);
+                                    std::abs(total - reference_total), moment_l1, moment_max, shape_l1, shape_max, min_weight,
+                                    cut_cells > 0 ? double(bisections) / cut_cells : 0.0, bisections_worst);
                         std::fflush(stdout);
                     }
             }

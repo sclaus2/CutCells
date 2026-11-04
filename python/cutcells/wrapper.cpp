@@ -3084,6 +3084,11 @@ NB_MODULE(_cutcellscpp, m)
               "(where a zero curve turns along the height direction) and crossings of its zero "
               "curves instead of bisected; its height lines take all roots. True (default). With "
               "tolerance 0, such boxes are bisected unless q and q + 1 points agree to 1e-12.")
+      .def_rw("silhouette_splits", &cutcells::quadrays::Options::silhouette_splits,
+              "A 3D box that no axis certifies is not bisected where its level set, along an axis, is "
+              "monotone or has a monotone derivative: its lines take all roots and the base splits at "
+              "the silhouette, where the zero set turns along that axis. True (default); needs "
+              "fold_splits and anchor_folds. For now one Bernstein level set in the box, no clip planes.")
       .def_rw("max_depth", &cutcells::quadrays::Options::max_depth,
               "Bisections allowed per level along a branch.")
       .def_rw("max_bisections", &cutcells::quadrays::Options::max_bisections,
@@ -3154,6 +3159,8 @@ NB_MODULE(_cutcellscpp, m)
       .def_ro("surfaces", &cutcells::quadrays::Stats::surfaces)
       .def_ro("fold_splits", &cutcells::quadrays::Stats::fold_splits,
               "Boxes split at folds and crossings instead of bisected.")
+      .def_ro("silhouettes", &cutcells::quadrays::Stats::silhouettes,
+              "3D boxes integrated without a certified height direction, split at their silhouette.")
       .def_ro("points_limited", &cutcells::quadrays::Stats::points_limited,
               "Runs that exceeded QuadraysOptions.max_points and were redone with fewer bisections.")
       .def_ro("bisections_limited", &cutcells::quadrays::Stats::bisections_limited,
