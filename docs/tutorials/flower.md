@@ -71,7 +71,7 @@ exact: area = 1.181867156280, length = 5.410322100309, int |x|^2 = 0.25915886870
    P1 + quadrays          2.73e-04          2.96e-02          1.00e-03
    P2 + quadrays          3.07e-06          9.56e-05          1.59e-06
    P3 + quadrays          1.24e-06          1.15e-05          2.06e-07
-   P4 + quadrays          9.05e-09          2.39e-07          1.92e-09
+   P4 + quadrays          9.06e-09          2.39e-07          1.92e-09
         P3 + lut          6.11e-05          3.55e-03          1.55e-04
 ```
 
@@ -83,7 +83,7 @@ quadrilaterals: 6400, cut cells: 276
    P1 + quadrays          7.23e-05          7.69e-03          2.54e-04
    P2 + quadrays          8.55e-07          7.97e-06          4.58e-08
    P3 + quadrays          7.10e-08          9.08e-07          8.37e-09
-   P4 + quadrays          1.54e-10          8.11e-10          3.43e-11
+   P4 + quadrays          1.54e-10          8.09e-10          3.43e-11
         P3 + lut          1.45e-05          9.20e-04          3.95e-05
 ```
 

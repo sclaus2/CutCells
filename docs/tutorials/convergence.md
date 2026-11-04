@@ -72,10 +72,10 @@ area error (rate)
 
 perimeter error (rate)
         h                  P1 + lut             P3 + quadrays          exact + quadrays
-   0.2500         3.170e-02                 2.650e-05                 6.510e-13
+   0.2500         3.170e-02                 2.650e-05                 6.506e-13
    0.1250         7.739e-03 ( 2.03)         1.547e-06 ( 4.10)         7.998e-12 (-3.62)
    0.0625         1.921e-03 ( 2.01)         4.509e-08 ( 5.10)         5.373e-13 ( 3.90)
-   0.0312         4.796e-04 ( 2.00)         2.209e-09 ( 4.35)         1.510e-14 ( 5.15)
+   0.0312         4.796e-04 ( 2.00)         2.209e-09 ( 4.35)         1.554e-14 ( 5.11)
 ```
 
 The straight pieces converge with rate 2 and the interpolated level set with

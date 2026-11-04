@@ -81,9 +81,9 @@ level sets: ['ring.ball', 'ring.cyl'], insides: {'ring': 'ball < 0 and cyl > 0'}
 cut cells: 2832, ring height h = 1.322876
     part  dim         measure           exact      error
     ring    3    1.2121527673    1.2121481286   4.64e-06
- surface    2   10.3898449423   10.3898411026   3.84e-06
+ surface    2   10.3898449307   10.3898411026   3.83e-06
     zone    2    6.6495067799    6.6494983057   8.47e-06
-    hole    2    3.7403381623    3.7403427969   4.63e-06
+    hole    2    3.7403381508    3.7403427969   4.65e-06
     rims    1    5.6548531408    5.6548667765   1.36e-05
 ```
 

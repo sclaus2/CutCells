@@ -78,7 +78,7 @@ For a P3 level set on 24576 tetrahedra:
 tetrahedra: 24576, cut cells: 1959
         quantity          computed             exact      error
           volume    0.645072721701    0.645073691537   9.70e-07
-  flux of x - x0    1.935250556081    1.935221074611   2.95e-05
+  flux of x - x0    1.935250556090    1.935221074611   2.95e-05
       centroid x    0.040000446944    0.040000000000   4.47e-07
       centroid y   -0.029999061580   -0.030000000000   9.38e-07
       centroid z    0.019999596705    0.020000000000   4.03e-07

@@ -72,8 +72,8 @@ view above.
 
 ```text
 hexahedra: 4096, cut by g: 1248
-volume fraction of g < 0:  0.500000000000  (exact 1/2, error 1.6e-13)
-area of g = 0, quadrays:   3.09164526 L^2
+volume fraction of g < 0:  0.500000000000  (exact 1/2, error 3.4e-14)
+area of g = 0, quadrays:   3.09164525 L^2
 area of g = 0, lut:        3.09422760 L^2
 volume fraction of sheet:  0.25832662
 ```

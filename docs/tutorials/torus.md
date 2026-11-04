@@ -69,7 +69,7 @@ hexahedra: 4096, cut cells: 568
  level set   volume error   area error
         P2       1.69e-04     8.34e-04
         P3       1.75e-05     5.15e-05
-        P4       2.34e-06     6.07e-06
+        P4       2.34e-06     6.05e-06
 ```
 
 With `--analytic` the same mesh gives a volume error of 1.0e-12 and an area

@@ -94,8 +94,8 @@ plotter.add_mesh(surface(circle, 4).tube(radius=0.012), color="#be185d")
 ```text
 level sets: ['ball', 'plane'], cut cells: 2582
                     part                     selection  dim           measure      error
-    ball below the plane        ball < 0 and plane < 0    3    1.647241748032   9.15e-14
-  sphere below the plane        ball = 0 and plane < 0    2    5.529203065070   5.25e-09
+    ball below the plane        ball < 0 and plane < 0    3    1.647241748032   7.66e-14
+  sphere below the plane        ball = 0 and plane < 0    2    5.529203065064   5.25e-09
                     disk        plane = 0 and ball < 0    2    1.727875959535   6.05e-11
                   circle        ball = 0 and plane = 0    1    4.659734936864   6.11e-11
 ```
