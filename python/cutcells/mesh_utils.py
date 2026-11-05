@@ -255,6 +255,36 @@ def _hexahedron_grid(x0, y0, z0, x1, y1, z1, nx, ny, nz):
     return _mesh_view(_grid_points((x0, y0, z0), (x1, y1, z1), n), cells, 12, 3)  # VTK_HEXAHEDRON
 
 
+def _prism_grid(x0, y0, z0, x1, y1, z1, nx, ny, nz):
+    """Two prisms per grid cell: the triangles of its bottom face, extruded along z."""
+    n = (nx, ny, nz)
+    c = _grid_corners(n)
+    cells = np.vstack([
+        np.column_stack([c[0, 0, 0], c[1, 0, 0], c[0, 1, 0], c[0, 0, 1], c[1, 0, 1], c[0, 1, 1]]),
+        np.column_stack([c[1, 0, 0], c[1, 1, 0], c[0, 1, 0], c[1, 0, 1], c[1, 1, 1], c[0, 1, 1]]),
+    ])
+    return _mesh_view(_grid_points((x0, y0, z0), (x1, y1, z1), n), cells, 13, 3)  # VTK_WEDGE
+
+
+def _pyramid_grid(x0, y0, z0, x1, y1, z1, nx, ny, nz):
+    """Six pyramids per grid cell, one per face, with their apex at the cell's centre."""
+    n = (nx, ny, nz)
+    c = _grid_corners(n)
+    points = _grid_points((x0, y0, z0), (x1, y1, z1), n)
+    apex = points.shape[0] + np.arange(c[0, 0, 0].size)
+    centres = points[np.stack([c[bits] for bits in np.ndindex(2, 2, 2)])].mean(axis=0)
+    faces = (
+        ((0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)),
+        ((0, 0, 1), (0, 1, 1), (1, 1, 1), (1, 0, 1)),
+        ((0, 0, 0), (0, 0, 1), (1, 0, 1), (1, 0, 0)),
+        ((0, 1, 0), (1, 1, 0), (1, 1, 1), (0, 1, 1)),
+        ((0, 0, 0), (0, 1, 0), (0, 1, 1), (0, 0, 1)),
+        ((1, 0, 0), (1, 0, 1), (1, 1, 1), (1, 1, 0)),
+    )
+    cells = np.vstack([np.column_stack([c[v] for v in face] + [apex]) for face in faces])
+    return _mesh_view(np.vstack([points, centres]), cells, 14, 3)  # VTK_PYRAMID
+
+
 def rectangle_mesh(x0, y0, x1, y1, nx, ny, cell_type="triangle"):
     """Structured mesh of the rectangle [x0,x1] x [y0,y1], built with NumPy.
 
@@ -274,12 +304,19 @@ def box_mesh(x0, y0, z0, x1, y1, z1, nx, ny, nz, cell_type="tetrahedron"):
 
     ``nx``, ``ny`` and ``nz`` are numbers of grid points. ``cell_type`` is
     ``"tetrahedron"`` (six per grid cell around its diagonal, conforming and
-    positively oriented) or ``"hexahedron"`` (VTK node order). Returns a
-    ``MeshView`` that holds the mesh's NumPy arrays.
+    positively oriented), ``"hexahedron"`` (VTK node order), ``"prism"`` (two
+    per grid cell, extruded along z) or ``"pyramid"`` (six per grid cell, with
+    an extra node at its centre). Returns a ``MeshView`` that holds the mesh's
+    NumPy arrays.
     """
-    builders = {"tetrahedron": _tetrahedron_grid, "hexahedron": _hexahedron_grid}
+    builders = {
+        "tetrahedron": _tetrahedron_grid,
+        "hexahedron": _hexahedron_grid,
+        "prism": _prism_grid,
+        "pyramid": _pyramid_grid,
+    }
     if cell_type not in builders:
-        raise ValueError(f"cell_type must be 'tetrahedron' or 'hexahedron', not {cell_type!r}")
+        raise ValueError(f"cell_type must be one of {sorted(builders)}, not {cell_type!r}")
     return builders[cell_type](x0, y0, z0, x1, y1, z1, nx, ny, nz)
 
 
