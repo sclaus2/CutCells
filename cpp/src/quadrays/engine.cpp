@@ -101,6 +101,9 @@ constexpr T margin_cap = T(0.9);
 /// the largest relative difference between q and q + 1 points they keep.
 template <std::floating_point T>
 constexpr T split_tolerance = scaled_tolerance<T>(1e-12);
+/// Bisections of a level-2 box for the moment of the accuracy check alone
+/// (Options::moment_tolerance).
+constexpr int moment_depth = 6;
 /// Level-2 bisections allowed below a 3D box without a margin along its height
 /// direction (Options::silhouette_splits); beyond, the box itself is bisected.
 constexpr int unmargined_bisections = 8;
@@ -287,7 +290,14 @@ struct Context
     bool silhouettes = false;    ///< Options::silhouette_splits applies to this run
     int abandoned = 0;           ///< top boxes tried without a margin whose base did not settle, so far
     bool measure_only = false;   ///< the second run of an accuracy check: only the measure counts
+    bool moment_only = false;    ///< the next bisection is for the moment alone
+    T moment_floor = 0;          ///< > 0: below such a bisection, the tolerance on the moment it failed
+    T measure_floor = 0;         ///< and the tolerance on the measure it passed
     int moment_degree = 0;       ///< of the Legendre polynomial in Options::moment_tolerance
+    // what those tolerances ask of a rule with q points: all they say from q = 6,
+    // less below (tolerance^(q / 6)), which a rule with fewer points cannot reach
+    T moment_relative = 0;       ///< Options::moment_tolerance
+    T split_relative = 0;        ///< split_tolerance
     std::vector<Requirement> terms;
     std::uint64_t used = 0; ///< level sets some term constrains
     int surface = -1;       ///< interface parts: the level set whose zero set is integrated
@@ -315,6 +325,11 @@ struct Context
     // the rules of segments anchored at a fold and at folds beyond both ends
     // (Options::anchor_folds, anchored_nodes), and those of the checks
     std::vector<T> fold_x, fold_w, fold_check_x, fold_check_w, cubic_x, cubic_w, cubic_check_x, cubic_check_w;
+    // the same with twice the points, for boxes the accuracy check finds short of them
+    std::vector<T> more_fold_x, more_fold_w, more_fold_check_x, more_fold_check_w, more_cubic_x, more_cubic_w,
+        more_cubic_check_x, more_cubic_check_w;
+    bool more_points = false;          ///< those are in use
+    mutable bool anchored_any = false; ///< a segment took the anchored rule since this was last reset
     CellPoints<T>* out = nullptr; ///< the points emitted so far, which accuracy checks roll back
     std::vector<char> flat;       ///< per level set: affine on the cell
     bool curved = false;          ///< the current top box has a curved function that may vanish
@@ -3081,6 +3096,7 @@ void anchored_nodes(const Context<T>& ctx, T a, T b, const std::vector<T>& folds
         segment_nodes(ctx, a, b, f);
         return;
     }
+    ctx.anchored_any = true;
     // x = x_f - s^2 (a fold above b) or x_f + s^2 (below a) on [a, b]
     const auto anchored = [&](T fold)
     {
@@ -3105,7 +3121,7 @@ void anchored_nodes(const Context<T>& ctx, T a, T b, const std::vector<T>& folds
     const T ta = std::sqrt(std::max(a - left, T(0))), tb = std::sqrt(std::max(b - left, T(0)));
     const T other_left = std::max(a - left, T(0)) * (sa + sb) / (len * (sw + sa));
     const T other_right = std::max(right - b, T(0)) * (ta + tb) / (len * (sw + tb));
-    if (std::pow(ellipse_parameter(std::max(other_left, other_right)), T(ctx.opt.anchor_folds))
+    if (std::pow(ellipse_parameter(std::max(other_left, other_right)), T(ctx.fold_x.size() / ctx.gauss_x.size()))
         >= ellipse_parameter(fold_reach<T>))
     {
         anchored(other_left >= other_right ? right : left);
@@ -3869,7 +3885,9 @@ void bisect(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth, bool 
 {
     if constexpr (D == 2 && Top == 3)
     {
-        if (ctx.top_unmargined && ++ctx.level2_bisections > unmargined_bisections)
+        const bool for_moment = ctx.moment_only;
+        ctx.moment_only = false;
+        if (ctx.top_unmargined && !for_moment && ++ctx.level2_bisections > unmargined_bisections)
         {
             ctx.unmargined_failed = true;
             return;
@@ -4641,6 +4659,21 @@ bool fold_split_points(Context<T>& ctx, const Problem<T, 2>& p, int k, bool top,
     return !unresolved && static_cast<int>(folds.size() + crossings.size()) <= max_points;
 }
 
+/// Swap the anchored rules with those of twice the points.
+template <std::floating_point T>
+void swap_more_points(Context<T>& ctx)
+{
+    std::swap(ctx.fold_x, ctx.more_fold_x);
+    std::swap(ctx.fold_w, ctx.more_fold_w);
+    std::swap(ctx.fold_check_x, ctx.more_fold_check_x);
+    std::swap(ctx.fold_check_w, ctx.more_fold_check_w);
+    std::swap(ctx.cubic_x, ctx.more_cubic_x);
+    std::swap(ctx.cubic_w, ctx.more_cubic_w);
+    std::swap(ctx.cubic_check_x, ctx.more_cubic_check_x);
+    std::swap(ctx.cubic_check_w, ctx.more_cubic_check_w);
+    ctx.more_points = !ctx.more_points;
+}
+
 /// Swap the Gauss-Legendre rule with the one of the accuracy checks.
 template <std::floating_point T>
 void swap_rules(Context<T>& ctx)
@@ -4763,6 +4796,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                 out.weights.resize(static_cast<std::size_t>(n));
             };
             const int start = out.n_points();
+            ctx.anchored_any = false;
             // the second run takes on the folds the first finds
             const bool anchored = ctx.opt.anchor_folds > 0;
             if (anchored)
@@ -4840,7 +4874,7 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
             // split_tolerance, or be bisected. Likewise below a 3D box without a
             // margin along its height direction.
             if ((split || (Top == 3 && ctx.top_unmargined)) && ctx.opt.tolerance == 0)
-                rel = std::min(rel, split_tolerance<T>);
+                rel = std::min(rel, ctx.split_relative);
             // Relative to the piece's measure on interfaces and curves; a volume
             // part's to the whole box's, as the difference: both sides of a
             // level set then bisect alike and still add up to the box exactly.
@@ -4851,11 +4885,47 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                 for (int j = 0; j < D; ++j)
                     scale *= p.hi[j] - p.lo[j];
             }
-            const T tol = rel * scale + accuracy_floor<T> * ctx.measure_scale;
-            const T moment_tol = static_cast<T>(ctx.opt.moment_tolerance) * scale + accuracy_floor<T> * ctx.measure_scale;
-            if ((!(std::abs(a - b) > tol) && !(std::abs(moment_a - moment_b) > moment_tol))
-                || depth >= ctx.opt.max_depth || ctx.bisections >= ctx.opt.max_bisections)
+            // Below a bisection for the moment, a box is held to the tolerances of the box
+            // that failed: not to shares by its size, which the part with a singular point
+            // would never pass, nor to a certified box's rate, which would undo the measure.
+            const T tol = ctx.measure_floor > T(0) ? ctx.measure_floor : rel * scale + accuracy_floor<T> * ctx.measure_scale;
+            const T moment_tol = ctx.moment_floor > T(0) ? ctx.moment_floor : ctx.moment_relative * scale + accuracy_floor<T> * ctx.measure_scale;
+            // The moment answers for the anchored rule: elsewhere Gauss points integrate it as
+            // they always did, and a box without anchored segments has nothing to answer for.
+            const bool measure_holds = !(std::abs(a - b) > tol);
+            const bool moment_holds = !ctx.anchored_any || !(std::abs(moment_a - moment_b) > moment_tol);
+            if (measure_holds && moment_holds)
                 return;
+            // Anchored segments with one factor are short of points before the box is too
+            // large: twice as many in that direction first, which is often all it takes.
+            if (ctx.opt.anchor_folds == 1 && !ctx.more_points && ctx.anchored_any)
+            {
+                truncate(start);
+                swap_more_points(ctx);
+                reduce<T, D, Rotated, Top>(ctx, p, an, emit, depth, interface);
+                swap_more_points(ctx);
+                return;
+            }
+            if (depth >= ctx.opt.max_depth || ctx.bisections >= ctx.opt.max_bisections)
+                return;
+            if (measure_holds)
+            {
+                // The moment alone bisects a few times, as far as bisection helps a rule
+                // that is right about the measure: not without end at a singular point (a
+                // cone's apex), and it uses up no attempt below a box without a margin.
+                if (depth >= moment_depth)
+                    return;
+                ctx.moment_only = true;
+                const T saved_moment = ctx.moment_floor, saved_measure = ctx.measure_floor;
+                ctx.moment_floor = moment_tol;
+                ctx.measure_floor = std::min(tol, ctx.split_relative * scale + accuracy_floor<T> * ctx.measure_scale);
+                truncate(start);
+                trace_fate(ctx, BoxFate::refined);
+                bisect<T, D, Rotated, Top>(ctx, std::move(p), emit, depth, interface);
+                ctx.moment_floor = saved_moment;
+                ctx.measure_floor = saved_measure;
+                return;
+            }
             truncate(start);
             trace_fate(ctx, BoxFate::refined);
             bisect<T, D, Rotated, Top>(ctx, std::move(p), emit, depth, interface);
@@ -6027,6 +6097,11 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     ctx.top_line_set.assign(n, 0);
     ctx.top_values.assign(n, T(0));
     ctx.opt = opt;
+    // A curve part's check has no moment to catch the rule of one factor, and has
+    // few anchored segments to save points on: it keeps two.
+    if (ctx.partner >= 0 && ctx.opt.anchor_folds == 1)
+        ctx.opt.anchor_folds = 2;
+    const int anchor_folds = ctx.opt.anchor_folds;
     ctx.margin = static_cast<T>(opt.margin);
     ctx.stats = &stats;
     ctx.vis_order = vis_order;
@@ -6042,17 +6117,29 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
         gauss_legendre<T>(q, ctx.gauss_x, ctx.gauss_w);
         ctx.q = q;
     }
-    if (vis_order == 0 && opt.anchor_folds > 0)
+    if (vis_order == 0 && anchor_folds > 0)
     {
-        if (static_cast<int>(ctx.fold_x.size()) != opt.anchor_folds * q)
-            gauss_legendre<T>(opt.anchor_folds * q, ctx.fold_x, ctx.fold_w);
-        if (static_cast<int>(ctx.fold_check_x.size()) != opt.anchor_folds * (q + 1))
-            gauss_legendre<T>(opt.anchor_folds * (q + 1), ctx.fold_check_x, ctx.fold_check_w);
-        if (static_cast<int>(ctx.cubic_x.size()) != (3 * opt.anchor_folds * q + 1) / 2)
-            gauss_legendre<T>((3 * opt.anchor_folds * q + 1) / 2, ctx.cubic_x, ctx.cubic_w);
-        if (static_cast<int>(ctx.cubic_check_x.size()) != (3 * opt.anchor_folds * (q + 1) + 1) / 2)
-            gauss_legendre<T>((3 * opt.anchor_folds * (q + 1) + 1) / 2, ctx.cubic_check_x, ctx.cubic_check_w);
+        if (static_cast<int>(ctx.fold_x.size()) != anchor_folds * q)
+            gauss_legendre<T>(anchor_folds * q, ctx.fold_x, ctx.fold_w);
+        if (static_cast<int>(ctx.fold_check_x.size()) != anchor_folds * (q + 1))
+            gauss_legendre<T>(anchor_folds * (q + 1), ctx.fold_check_x, ctx.fold_check_w);
+        if (static_cast<int>(ctx.cubic_x.size()) != (3 * anchor_folds * q + 1) / 2)
+            gauss_legendre<T>((3 * anchor_folds * q + 1) / 2, ctx.cubic_x, ctx.cubic_w);
+        if (static_cast<int>(ctx.cubic_check_x.size()) != (3 * anchor_folds * (q + 1) + 1) / 2)
+            gauss_legendre<T>((3 * anchor_folds * (q + 1) + 1) / 2, ctx.cubic_check_x, ctx.cubic_check_w);
+        if (anchor_folds == 1)
+        {
+            if (static_cast<int>(ctx.more_fold_x.size()) != 2 * q)
+                gauss_legendre<T>(2 * q, ctx.more_fold_x, ctx.more_fold_w);
+            if (static_cast<int>(ctx.more_fold_check_x.size()) != 2 * (q + 1))
+                gauss_legendre<T>(2 * (q + 1), ctx.more_fold_check_x, ctx.more_fold_check_w);
+            if (static_cast<int>(ctx.more_cubic_x.size()) != 3 * q)
+                gauss_legendre<T>(3 * q, ctx.more_cubic_x, ctx.more_cubic_w);
+            if (static_cast<int>(ctx.more_cubic_check_x.size()) != 3 * (q + 1))
+                gauss_legendre<T>(3 * (q + 1), ctx.more_cubic_check_x, ctx.more_cubic_check_w);
+        }
     }
+    ctx.more_points = false;
     ctx.flat.assign(n, 0);
     for (std::size_t l = 0; l < n; ++l)
         ctx.flat[l] = ((ctx.used >> l) & 1) && !ctx.phis[l].is_analytic() && affine(*ctx.phis[l].bernstein);
@@ -6065,6 +6152,8 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
         // h^m for a part of dimension m
         const int m = cell.tdim - std::popcount(zero);
         ctx.moment_degree = std::max(1, (2 * q - m) / 2);
+        ctx.moment_relative = static_cast<T>(std::pow(opt.moment_tolerance, std::min(q, 6) / 6.0));
+        ctx.split_relative = static_cast<T>(std::pow(static_cast<double>(split_tolerance<T>), std::min(q, 6) / 6.0));
         ctx.measure_scale = std::pow(ctx.detj, T(m) / T(cell.tdim));
         ctx.cell_size = std::pow(ctx.detj, T(1) / T(cell.tdim));
         ctx.inv = inverse_jacobian(cell);
@@ -6125,6 +6214,9 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     ctx.top_unmargined = false;
     ctx.top_clips = nullptr;
     ctx.unmargined_failed = false;
+    ctx.moment_only = false;
+    ctx.moment_floor = T(0);
+    ctx.measure_floor = T(0);
     ctx.trace = trace;
     ctx.trace_box = -1;
     const auto integrate_cell = [&]()

@@ -339,8 +339,12 @@ Options quadrays_options(const std::string& generator)
     }
     if (generator.find("nocheck") != std::string::npos)
         opt.tolerance = -1;
-    if (generator.find("anchor1") != std::string::npos)
-        opt.anchor_folds = 1;
+    // the rule before the check on a moment: two anchored factors, the measure only
+    if (generator.find("anchor2") != std::string::npos)
+    {
+        opt.anchor_folds = 2;
+        opt.moment_tolerance = 0;
+    }
     if (const std::size_t m = generator.find("-check"); m != std::string::npos)
         opt.moment_tolerance = std::stod(generator.substr(m + 6));
     if (generator.find("nofold") != std::string::npos)
@@ -396,6 +400,8 @@ int main(int argc, char** argv)
                 double reference_total = 0;
                 Options ref_opt;
                 ref_opt.max_points = -1;
+                ref_opt.anchor_folds = 2;
+                ref_opt.moment_tolerance = 0;
                 int cut_cells = 0;
                 for (std::size_t i = 0; i < cells.size(); ++i)
                     if (cells[i].cut)

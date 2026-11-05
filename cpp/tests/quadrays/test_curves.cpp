@@ -294,7 +294,7 @@ int main(int argc, char** argv)
                 const Run in = run(three, "a = 0 and b = 0 and c < 0", cells, 0.25, 5, analytic, {});
                 std::snprintf(what, sizeof what, "tricylinder %-9s %s q = 5 edges in c, total error",
                               source_name(analytic).c_str(), mesh.c_str());
-                report(what, in, std::abs(in.total / inside - 1), 2e-12);
+                report(what, in, std::abs(in.total / inside - 1), 5e-12);
                 const Run out = run(three, "a = 0 and b = 0 and c > 0", cells, 0.25, 5, analytic, {});
                 std::snprintf(what, sizeof what, "tricylinder %-9s %s q = 5 edges out of c, total error",
                               source_name(analytic).c_str(), mesh.c_str());

@@ -180,22 +180,26 @@ def test_anchored_folds_follow_the_silhouette(kind):
     perpendicular to a box's height direction just beyond the box (its
     silhouette), where the height function has a square-root branch point
     too. The height lines of the base boxes are anchored at it, and their
-    base segments where it crosses the lines' bounds: with n = 2, the
-    default, the cells' surface errors fall far below those the accuracy
-    check leaves on plain points, with or without the check."""
+    base segments where it crosses the lines' bounds: with n = 2 the cells'
+    surface errors fall far below those the accuracy check leaves on plain
+    points, with or without the check; with the default, well below."""
     make = {"hex": cutcells.structured_hexahedron_mesh_view, "tet": cutcells.structured_tetrahedron_mesh_view}
     phi = cutcells.analytic_sphere([0.1, -0.05, 0.03], 0.6, name="b")
     part = cutcells.cut(make[kind](-1, -1, -1, 1, 1, 1, 9, 9, 9), phi)[phi == 0]
-    reference, unchecked, plain = (cutcells.QuadraysOptions() for _ in range(3))
+    reference, unchecked, plain, two = (cutcells.QuadraysOptions() for _ in range(4))
     reference.tolerance = unchecked.tolerance = -1
     reference.points_per_segment = 14
+    reference.anchor_folds = unchecked.anchor_folds = two.anchor_folds = 2
+    two.moment_tolerance = 0
     plain.anchor_folds = 0
     exact = cell_totals(part.quadrature(order=6, options=reference))
     checked_plain = cell_error(part, plain, exact)
-    for options in (cutcells.QuadraysOptions(), unchecked):
+    for options in (two, unchecked):
         error = cell_error(part, options, exact)
         assert error < 1e-10
         assert error < checked_plain / 1000
+    default_error = cell_error(part, cutcells.QuadraysOptions(), exact)
+    assert default_error < checked_plain / 20
 
 
 def test_flat_pieces_get_no_extra_points():

@@ -153,7 +153,7 @@ def _boxes_panel(ax, report, leaves, norm, cmap, axes, normal, at):
 
 def plot_report(report, path=None, at=None):
     """Plot a cell report: its top boxes and zero sets in slices through the
-    heaviest box (or the point @p at of the unit box), where the points land,
+    heaviest box (or the point @p at of the unit box), where all its points land,
     and how the points divide by box depth.
 
     Args:
@@ -206,11 +206,9 @@ def plot_report(report, path=None, at=None):
     fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=list(slice_axes), fraction=0.02, pad=0.01,
                  label="points in the box")
 
-    # where the points land: a slab about the first slice
+    # where the points land: all of them, seen along the normal of the first slice
     axes, normal = list(slices[0][0]), slices[0][1]
     x = report["points"]
-    if normal is not None:
-        x = x[np.abs(x[:, normal] - at[normal]) < 0.03]
     if len(x):
         h, xe, ye = np.histogram2d(x[:, axes[0]], x[:, axes[1]], bins=200, range=[[0, 1], [0, 1]])
         density.pcolormesh(xe, ye, np.ma.masked_equal(h.T, 0), cmap=cmap, norm=LogNorm(vmin=1, vmax=max(2, h.max())),
@@ -220,8 +218,10 @@ def plot_report(report, path=None, at=None):
     density.set_xlim(0, 1)
     density.set_ylim(0, 1)
     density.set_aspect("equal")
-    slab = "" if normal is None else f" within 0.03 of u{normal} = {at[normal]:.3f}"
-    _style(density, f"Where the points land{slab}", (f"u{axes[0]}", f"u{axes[1]}"))
+    stride = report["point_stride"]
+    shown = f"every {stride}th of the {report['n_points']:,} points" if stride > 1 else f"all {report['n_points']:,} points"
+    along = "" if normal is None else f"\nseen along u{normal}; lines: zero sets at u{normal} = {at[normal]:.3f}"
+    _style(density, f"Where the points land: {shown}{along}", (f"u{axes[0]}", f"u{axes[1]}"))
 
     # the points by the depth of their box
     if len(leaves):

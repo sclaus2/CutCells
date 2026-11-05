@@ -110,7 +110,7 @@ neighbouring pieces do not share nodes: they meet up to hairline gaps, about
 ```text
 background cells: 10368, cut cells: 1524
  level set   volume error   area error
-     exact       6.10e-13     5.34e-09
+     exact       1.12e-10     4.39e-08
         P2       1.38e-05     1.19e-04
 ```
 

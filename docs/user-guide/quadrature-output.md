@@ -31,7 +31,7 @@ quadrays chooses its Gauss-Legendre points per segment from the order; setting
 `points_per_segment` on a `QuadraysOptions` fixes them instead, for studies.
 Where a curved zero set turns back along the height direction just beyond a
 segment (a fold), the height function has a square-root branch point there;
-such segments take twice the points, in a variable anchored at the fold in
+such segments take their points in a variable anchored at the fold, in
 which the integrand is smooth (`QuadraysOptions.anchor_folds`). Where no
 height direction keeps one root per line for every zero curve of a box (a
 curve that turns through both axes, or the curves of two level sets that need
@@ -53,12 +53,13 @@ pieces quadrays also
 checks each box against one more point per segment and bisects where they
 disagree by more than the order's rate allows at the cell's size, so that the
 error falls with $h$ (`QuadraysOptions.tolerance`); boxes split at folds must
-agree to $10^{-12}$. This check looks at the measure only, which an anchored rule
-integrates better than it does a polynomial. `QuadraysOptions.moment_tolerance` makes
-it also compare a moment of what a mass matrix sees. With `anchor_folds = 1` and
-`moment_tolerance = 1e-8`, a lens at order 8 takes about half the points, at the
-price of more time per cell and an error of about $10^{-9}$ on that moment instead of
-$10^{-13}$; the default keeps `anchor_folds = 2` and no moment check.
+agree to $10^{-12}$. An anchored rule integrates the measure better than it does a
+polynomial, so on boxes with anchored segments the check also compares a moment of
+what a mass matrix sees, to $10^{-8}$ (`QuadraysOptions.moment_tolerance`). Both are
+what the check asks of six or more points per segment; fewer points are asked for
+that tolerance to the power $q/6$. A box that fails first takes twice the points on
+its anchored segments, and is bisected only if that fails too. `anchor_folds = 2`
+with `moment_tolerance = 0` takes those points everywhere.
 
 Modes:
 

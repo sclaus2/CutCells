@@ -3077,8 +3077,9 @@ NB_MODULE(_cutcellscpp, m)
               "n > 0: base segments that end at or near a fold of a curved zero set "
               "(where it turns back along the height direction) take n q Gauss points in s, "
               "x = x_f -+ s^2, anchored at the fold; in 3D cells also the segments near the "
-              "silhouette of the level set seen along the height direction. 2 (default) keeps "
-              "polynomials of degree 2q - 1 exact; 0: off.")
+              "silhouette of the level set seen along the height direction. 1 (default): as "
+              "moment_tolerance allows, and twice the points on the boxes it does not; 2 keeps "
+              "polynomials of degree 2q - 1 exact everywhere, at twice the points; 0: off.")
       .def_rw("fold_splits", &cutcells::quadrays::Options::fold_splits,
               "A box with two free coordinates that no axis certifies is split at the folds "
               "(where a zero curve turns along the height direction) and crossings of its zero "
@@ -3124,9 +3125,11 @@ NB_MODULE(_cutcellscpp, m)
               "debug_seconds to this directory, at most debug_reports per call, as a JSON file with its "
               "level sets, boxes and points; python -m cutcells.quadrays_debug plots them.")
       .def_rw("moment_tolerance", &cutcells::quadrays::Options::moment_tolerance,
-              "The accuracy check also compares a moment of what a mass matrix sees, a Legendre "
-              "polynomial squared along each axis of the cell, relative to the piece as the measure "
-              "is, and bisects where it differs by more. 0 (default): the measure only.")
+              "On a box with anchored segments, the accuracy check also compares a moment of what a "
+              "mass matrix sees, a Legendre polynomial squared along each axis of the cell, relative "
+              "to the piece as the measure is. A box that fails first takes twice the points on those "
+              "segments, then is bisected. What it asks of 6 or more points per segment, of fewer the "
+              "tolerance to the power q / 6. 1e-8 (default); 0: the measure only.")
       .def_rw("debug_seconds", &cutcells::quadrays::Options::debug_seconds,
               "A cut cell that takes at least this many seconds is also written to debug_dir.")
       .def_rw("debug_reports", &cutcells::quadrays::Options::debug_reports,
