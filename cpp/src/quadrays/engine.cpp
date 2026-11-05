@@ -6097,6 +6097,11 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
     ctx.top_line_set.assign(n, 0);
     ctx.top_values.assign(n, T(0));
     ctx.opt = opt;
+    // A curve part's check has no moment to catch the rule of one factor, and has
+    // few anchored segments to save points on: it keeps two.
+    if (ctx.partner >= 0 && ctx.opt.anchor_folds == 1)
+        ctx.opt.anchor_folds = 2;
+    const int anchor_folds = ctx.opt.anchor_folds;
     ctx.margin = static_cast<T>(opt.margin);
     ctx.stats = &stats;
     ctx.vis_order = vis_order;
@@ -6112,17 +6117,17 @@ void run(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<c
         gauss_legendre<T>(q, ctx.gauss_x, ctx.gauss_w);
         ctx.q = q;
     }
-    if (vis_order == 0 && opt.anchor_folds > 0)
+    if (vis_order == 0 && anchor_folds > 0)
     {
-        if (static_cast<int>(ctx.fold_x.size()) != opt.anchor_folds * q)
-            gauss_legendre<T>(opt.anchor_folds * q, ctx.fold_x, ctx.fold_w);
-        if (static_cast<int>(ctx.fold_check_x.size()) != opt.anchor_folds * (q + 1))
-            gauss_legendre<T>(opt.anchor_folds * (q + 1), ctx.fold_check_x, ctx.fold_check_w);
-        if (static_cast<int>(ctx.cubic_x.size()) != (3 * opt.anchor_folds * q + 1) / 2)
-            gauss_legendre<T>((3 * opt.anchor_folds * q + 1) / 2, ctx.cubic_x, ctx.cubic_w);
-        if (static_cast<int>(ctx.cubic_check_x.size()) != (3 * opt.anchor_folds * (q + 1) + 1) / 2)
-            gauss_legendre<T>((3 * opt.anchor_folds * (q + 1) + 1) / 2, ctx.cubic_check_x, ctx.cubic_check_w);
-        if (opt.anchor_folds == 1)
+        if (static_cast<int>(ctx.fold_x.size()) != anchor_folds * q)
+            gauss_legendre<T>(anchor_folds * q, ctx.fold_x, ctx.fold_w);
+        if (static_cast<int>(ctx.fold_check_x.size()) != anchor_folds * (q + 1))
+            gauss_legendre<T>(anchor_folds * (q + 1), ctx.fold_check_x, ctx.fold_check_w);
+        if (static_cast<int>(ctx.cubic_x.size()) != (3 * anchor_folds * q + 1) / 2)
+            gauss_legendre<T>((3 * anchor_folds * q + 1) / 2, ctx.cubic_x, ctx.cubic_w);
+        if (static_cast<int>(ctx.cubic_check_x.size()) != (3 * anchor_folds * (q + 1) + 1) / 2)
+            gauss_legendre<T>((3 * anchor_folds * (q + 1) + 1) / 2, ctx.cubic_check_x, ctx.cubic_check_w);
+        if (anchor_folds == 1)
         {
             if (static_cast<int>(ctx.more_fold_x.size()) != 2 * q)
                 gauss_legendre<T>(2 * q, ctx.more_fold_x, ctx.more_fold_w);
