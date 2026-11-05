@@ -143,7 +143,7 @@ def plot(state: dict, screenshot: Path | None = None) -> None:
             plotter.add_points(pv.PolyData(volume), color="#64748b", point_size=5, render_points_as_spheres=True)
             plotter.add_points(pv.PolyData(surface), color="#eb6834", point_size=6, render_points_as_spheres=True)
             label = f"{backend}, {shape}\n{volume.shape[0]} + {surface.shape[0]} points"
-            plotter.add_text(label, font_size=9, color="#1e293b", position="upper_left")
+            plotter.add_text(label, font_size=14, color="#1e293b", position="upper_left")
             if mesh.tdim == 2:
                 plotter.view_xy()
             else:

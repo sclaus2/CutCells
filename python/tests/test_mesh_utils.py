@@ -75,6 +75,18 @@ def test_tetrahedra_are_conforming():
     assert boundary == 6 * 2 * 2 * 2  # two triangles per boundary grid square
 
 
+@pytest.mark.parametrize("cell_type, per_grid_cell", [("prism", 2), ("pyramid", 6)])
+def test_box_mesh_prism_pyramid(cell_type, per_grid_cell):
+    mesh = cutcells.box_mesh(-1, -1, -1, 1, 1, 1, 4, 4, 4, cell_type=cell_type)
+    assert mesh.num_cells() == per_grid_cell * 3**3
+    # the cells fill the box: a plane leaves the exact volumes on its two sides
+    phi = cutcells.create_level_set(mesh, lambda X: X[0] - 0.1, degree=1, name="phi")
+    result = cutcells.cut(mesh, phi)
+    assert result[phi < 0].quadrature(order=2).weights.sum() == pytest.approx(4.4)
+    assert result[phi > 0].quadrature(order=2).weights.sum() == pytest.approx(3.6)
+    assert result[phi == 0].quadrature(order=2).weights.sum() == pytest.approx(4.0)
+
+
 def test_to_pyvista():
     pytest.importorskip("pyvista")
     mesh = cutcells.rectangle_mesh(-1, -1, 1, 1, 9, 9, cell_type="triangle")

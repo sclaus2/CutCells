@@ -54,9 +54,9 @@ pip install cutcells
 
 ## Tutorials
 
-- [Tutorial book](tutorials/index.md): ten chapters, each following a runnable
-  demo in `python/demo`, from a disk in a square to a gyroid sheet, with exact
-  values to check against and PyVista views.
+- [Tutorial book](tutorials/index.md): twelve chapters, each following a runnable
+  demo in `python/demo`: the workflow, measurements of degree, cell shape,
+  points and compression, and several level sets.
 
 ## Reference
 

@@ -1,4 +1,4 @@
-# Ellipsoid
+# Integrating Functions
 
 This tutorial follows `python/demo/demo_ellipsoid.py`. A quadrature rule is
 points and weights, so it integrates any function. On a rotated ellipsoid the

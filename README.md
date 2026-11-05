@@ -164,17 +164,19 @@ grid = cutcells.to_pyvista(surface.visualization_mesh(mode="cut_only", degree=3)
 
 ## Tutorials
 
-The [tutorial book](https://sclaus2.github.io/CutCells/tutorials/index.html) works through ten demos in
-`python/demo/`, from a first cut to sharp-edged shapes:
+The [tutorial book](https://sclaus2.github.io/CutCells/tutorials/index.html) works through twelve demos in
+`python/demo/`, from a first cut to measurements of what each choice costs:
 
 | Tutorial | Shows |
 |---|---|
 | [Disk](https://sclaus2.github.io/CutCells/tutorials/disk.html) | the workflow: mesh, level set, cut, selections, quadrature |
 | [Convergence](https://sclaus2.github.io/CutCells/tutorials/convergence.html) | straight pieces, Pk level sets and exact geometry against the mesh size |
 | [Ball](https://sclaus2.github.io/CutCells/tutorials/sphere.html) | 3D, analytic and interpolated level sets, curved VTU output |
-| [Flower](https://sclaus2.github.io/CutCells/tutorials/flower.html) | a non-convex curve on quadrilaterals, and what each degree gains |
-| [Ellipsoid](https://sclaus2.github.io/CutCells/tutorials/ellipsoid.html) | integrating functions: moments, normals, the divergence theorem |
-| [Torus](https://sclaus2.github.io/CutCells/tutorials/torus.html) | hexahedra, and an analytic level set written in Python |
+| [Degree and order](https://sclaus2.github.io/CutCells/tutorials/degree-order.html) | which error each dial controls, and what a higher degree costs |
+| [Cell shapes](https://sclaus2.github.io/CutCells/tutorials/cell-shapes.html) | one ball on six cell shapes, with both backends |
+| [Points and accuracy](https://sclaus2.github.io/CutCells/tutorials/points-accuracy.html) | lookup tables, quadrays and Algoim, by the error per point |
+| [Compression](https://sclaus2.github.io/CutCells/tutorials/compression.html) | rules reduced to their moments: when that pays and what it gives up |
+| [Integrating functions](https://sclaus2.github.io/CutCells/tutorials/ellipsoid.html) | moments, normals, the divergence theorem on an ellipsoid |
 | [Plane on mesh facets](https://sclaus2.github.io/CutCells/tutorials/mesh-aligned.html) | surfaces on the mesh, integrated once, and the cells that take them |
 | [Ball and plane](https://sclaus2.github.io/CutCells/tutorials/sphere-plane.html) | two level sets and selections of every dimension |
 | [Napkin ring](https://sclaus2.github.io/CutCells/tutorials/napkin-ring.html) | a level set made of level sets and its faces |
@@ -333,7 +335,7 @@ need NumPy, and PyVista or matplotlib for their views.
 
 The documentation is online at <https://sclaus2.github.io/CutCells/>. It
 covers installation, a Python quickstart, mesh views, level sets, selection
-expressions, quadrature and output, a tutorial book of ten demos, and a
+expressions, quadrature and output, a tutorial book of twelve demos, and a
 compact API overview. Its source is in `docs/`.
 
 Build it locally with:

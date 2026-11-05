@@ -202,7 +202,7 @@ def plot(state: dict, screenshot: Path | None = None) -> None:
             plotter.add_mesh(cell, style="wireframe", color="#64748b", line_width=2)
             plotter.add_points(cloud, scalars="weight", cmap="viridis", point_size=7 if name == "full rule" else 14,
                                render_points_as_spheres=True, show_scalar_bar=False)
-            plotter.add_text(f"{shape}, {name}: {b - a} points", font_size=10, color="#1e293b", position="upper_left")
+            plotter.add_text(f"{shape}, {name}: {b - a} points", font_size=13, color="#1e293b", position="upper_left")
             plotter.view_isometric()
             column += 1
     if screenshot is not None:

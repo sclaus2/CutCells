@@ -87,7 +87,9 @@ on tetrahedra.
 Other sources:
 
 - `cutcells.AnalyticLevelSet(value, gradient, box_bounds, taylor_bounds=None)`
-  from Python callables (slow, for experiments);
+  from Python callables (slow, for experiments). `box_bounds` should also bound
+  the gradient: with only the two bounds of the value, quadrays cannot certify a
+  box and bisects to its limits;
 - `cutcells.AnalyticLevelSet.from_capsule(capsule)` from a capsule holding the
   C struct of function pointers (fast, for compiled geometry libraries);
 - `cutcells.shapeforest.analytic_level_set(shape)` for ShapeForest shapes,
