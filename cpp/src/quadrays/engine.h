@@ -80,6 +80,11 @@ struct Options
     /// coordinate on them, and their base segments where it crosses the
     /// lines' bounds. 0: off.
     int anchor_folds = 1;
+    /// Curve parts in cells of dimension 3 follow the curve instead of its
+    /// height lines (curve_points): arcs between the cell's faces, split where
+    /// branches cross, with Gauss-Legendre points in arc length. Cells it cannot
+    /// do go the other way, and are counted in Stats::curve_fallbacks.
+    bool follow_curves = true;
     /// Bisections allowed per level along a branch. Bernstein bounds certify
     /// after a few; Taylor models of an analytic level set, a distance function
     /// in particular, need boxes small against the radius of curvature, which
@@ -208,6 +213,8 @@ struct Stats
     /// limit): no surface function finds the curve there, so its piece, if
     /// any, is missing
     int curve_lost = 0;
+    int curve_arcs = 0;      ///< arcs followed in curve parts (Options::follow_curves)
+    int curve_fallbacks = 0; ///< curve parts that could not be followed, integrated by height lines
     /// With Options::diagnose: bisections counted by level, the function that
     /// blocked certification, and what sampling the clipped region says.
     std::map<std::string, std::int64_t> causes;

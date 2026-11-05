@@ -3073,6 +3073,9 @@ NB_MODULE(_cutcellscpp, m)
               "Relative accuracy of curved pieces: boxes with two free coordinates are bisected "
               "while q and q + 1 points per segment disagree by more. 0: the rule's own rate, "
               "(h kappa / 2)^(2q) for cells of size h and curvature kappa; < 0: no check.")
+      .def_rw("follow_curves", &cutcells::quadrays::Options::follow_curves,
+              "Curve parts in 3D cells follow the curve: arcs between the faces, split where branches cross, Gauss "
+              "points in arc length. True (default); cells it cannot do go by height lines.")
       .def_rw("anchor_folds", &cutcells::quadrays::Options::anchor_folds,
               "n > 0: base segments that end at or near a fold of a curved zero set "
               "(where it turns back along the height direction) take n q Gauss points in s, "
@@ -3177,6 +3180,9 @@ NB_MODULE(_cutcellscpp, m)
               "Runs that exceeded QuadraysOptions.max_points and were redone with fewer bisections.")
       .def_ro("bisections_limited", &cutcells::quadrays::Stats::bisections_limited,
               "Runs that used all of QuadraysOptions.max_bisections.")
+      .def_ro("curve_arcs", &cutcells::quadrays::Stats::curve_arcs, "Arcs followed in curve parts.")
+      .def_ro("curve_fallbacks", &cutcells::quadrays::Stats::curve_fallbacks,
+              "Curve parts that could not be followed, integrated by height lines.")
       .def_ro("curve_lost", &cutcells::quadrays::Stats::curve_lost,
               "Top boxes of a curve part integrated uncertified, where the curve, if any, is missing.")
       .def_ro("causes", &cutcells::quadrays::Stats::causes);

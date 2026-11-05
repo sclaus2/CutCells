@@ -155,6 +155,17 @@ curve where only one of the two level sets lies in mesh faces (a plane through
 grid faces cut by a sphere, say); where both do, the curve runs along mesh
 edges and comes from the entity rules.
 
+In 3D cells, quadrays does not take height lines to these curves. It finds where
+a curve meets the faces of the cell, follows it between them along the cross
+product of the two gradients, splits it where two branches cross and where a
+further level set the selection names vanishes, and takes Gauss-Legendre points
+in arc length on each arc (`QuadraysOptions.follow_curves`). The length comes
+out right at every order, closed curves inside a cell are found too, and a cell
+takes the points of its few arcs. An arc takes more points than the order asks
+for where a moment of the mass matrix has not settled
+(`QuadraysOptions.moment_tolerance`). A cell it cannot follow goes by height
+lines, and `QuadraysStats.curve_fallbacks` counts it.
+
 ## Cells that take many points
 
 quadrays stops a cell that takes too many points, and says so on the terminal.
