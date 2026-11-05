@@ -119,6 +119,14 @@ def test_length_on_every_cell_type(case, kind, n):
         assert weights.sum() == pytest.approx(exact, abs=1e-10)
 
 
+@pytest.mark.parametrize("case", ["lens", "ball_plane", "two_cylinders"])
+@pytest.mark.parametrize("kind", ["hexahedron", "tetrahedron", "prism", "pyramid"])
+def test_no_cell_falls_back(case, kind, capfd):
+    mesh = mesh_of(kind, 5)
+    rules(cc.cut(mesh, level_sets(case, mesh)), 6)
+    assert "could not be followed" not in capfd.readouterr().err
+
+
 @pytest.mark.parametrize("kind", ["hexahedron", "tetrahedron"])
 def test_points_lie_on_both_zero_sets(kind):
     n = 5
@@ -245,6 +253,38 @@ def test_lookup_tables_do_not_find_a_curve_in_mesh_faces():
     b = cc.create_level_set(mesh, plane((1.0, 0.0, 0.0), 0.2), degree=1, name="b")
     rule = cc.cut(mesh, [a, b])["a = 0 and b = 0"].quadrature(order=2, backend="lut")
     assert len(np.asarray(rule.weights)) == 0
+
+
+def ellipses_length(r):
+    x, w = np.polynomial.legendre.leggauss(400)
+    t = math.pi * (x + 1)
+    return 2 * math.pi * float(w @ (r * np.sqrt(1 + np.cos(t) ** 2)))
+
+
+@pytest.mark.parametrize("kind", ["hexahedron", "tetrahedron", "prism", "pyramid"])
+@pytest.mark.parametrize("n", [4, 8])
+def test_curve_lying_in_cell_faces_counts_once(kind, n):
+    """A circle in the mesh plane x = 0, where neither level set vanishes on a face: one cell of each pair keeps it."""
+    mesh = mesh_of(kind, n)
+    a = cc.create_level_set(mesh, ball((-0.3, 0.0, 0.0)), degree=2, name="a")
+    b = cc.create_level_set(mesh, ball((0.3, 0.0, 0.0)), degree=2, name="b")
+    weights = np.asarray(cc.cut(mesh, [a, b])["a = 0 and b = 0"].quadrature(order=8, mode="cut_only").weights)
+    assert weights.sum() == pytest.approx(2 * math.pi * math.sqrt(R**2 - 0.3**2), abs=1e-8)
+
+
+@pytest.mark.parametrize("kind", ["hexahedron", "tetrahedron", "prism", "pyramid"])
+@pytest.mark.parametrize("n", [4, 5, 8, 9])
+def test_ellipses_through_mesh_lines_and_vertices(kind, n):
+    """Crossings on mesh vertices and edges, and on tetrahedra ellipses in the cells' diagonal faces. A few cells
+    at such exactly singular places may still go by height lines; the length has to be right all the same."""
+    r = 0.5
+    centre = (0.0, 0.0, 0.0)
+    mesh = mesh_of(kind, n)
+    a = cc.create_level_set(mesh, lambda x: sum((x[i] - centre[i]) ** 2 for i in (0, 1)) - r**2, degree=2, name="a")
+    b = cc.create_level_set(mesh, lambda x: sum((x[i] - centre[i]) ** 2 for i in (0, 2)) - r**2, degree=2, name="b")
+    rule = cc.cut(mesh, [a, b])["a = 0 and b = 0"].quadrature(order=8, mode="cut_only")
+    assert np.asarray(rule.weights).sum() == pytest.approx(ellipses_length(r), abs=1e-7)
+    assert np.diff(np.asarray(rule.offset)).max() <= 200
 
 
 def test_height_lines_stay_available():

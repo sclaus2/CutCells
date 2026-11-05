@@ -165,8 +165,9 @@ in arc length on each arc (`QuadraysOptions.follow_curves`). The length comes
 out right at every order, closed curves inside a cell are found too, and a cell
 takes the points of its few arcs. An arc takes more points than the order asks
 for where a moment of the mass matrix has not settled
-(`QuadraysOptions.moment_tolerance`). A cell it cannot follow goes by height
-lines, and `QuadraysStats.curve_fallbacks` counts it.
+(`QuadraysOptions.moment_tolerance`). A curve lying in a face between two cells
+goes to one of them, and a crossing on a mesh vertex or edge ends the arcs that
+reach it. A cell it cannot follow goes by height lines, and says so on the terminal.
 
 ## Cells that take many points
 

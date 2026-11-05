@@ -30,7 +30,8 @@ namespace cutcells::quadrays
 /// many more as a moment of the mass matrix asks for, or it is split.
 ///
 /// Values and gradients are all it reads of the curve, so polynomial and
-/// analytic level sets take the same path.
+/// analytic level sets take the same path. A crossing on the cell's boundary
+/// ends the arcs that reach it.
 ///
 /// @param cell   the cell, tdim == 3
 /// @param phis   the cell's level sets

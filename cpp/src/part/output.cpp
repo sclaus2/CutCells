@@ -6,6 +6,7 @@
 #include "output.h"
 
 #include <algorithm>
+#include <map>
 #include <array>
 #include <atomic>
 #include <bit>
@@ -344,6 +345,48 @@ std::array<I, 4> sub_entity_key(cell::type type, int dim, int i, std::span<const
     for (std::size_t k = 0; k < sv.size(); ++k)
         local[k] = nodes[static_cast<std::size_t>(sv[k])];
     return entity_key(std::span<const I>(local.data(), sv.size()));
+}
+
+/// The cell that keeps the points of a curve lying in each facet: the first the part
+/// cuts among those sharing it, by the facet's nodes. Made when first needed.
+template <std::integral I>
+struct FacetOwners
+{
+    bool built = false;
+    std::map<std::array<I, 4>, I> owner;
+};
+
+/// Whether cell @p c keeps a curve part's points on its facets @p bits. Every cell that
+/// finds the curve there would otherwise drop it. Where the part has entities along mesh
+/// edges, their rules take what lies on the mesh's edges and faces.
+template <std::floating_point T, std::integral I>
+bool keeps_points_on_facets(const MeshPart<T, I>& part, I c, unsigned bits, FacetOwners<I>& owners)
+{
+    if (!part.entities[1].empty() || !part.partial_entities[1].empty())
+        return false;
+    const MeshView<T, I>& mesh = *part.result->mesh;
+    thread_local std::vector<I> nodes, scratch;
+    if (!owners.built)
+    {
+        owners.built = true;
+        for (const I cell : part.cut_cells)
+        {
+            const cell::type type = mesh.cell_type(cell);
+            cell_vertex_nodes(mesh, cell, nodes, scratch);
+            const int n_facets = cell::num_sub_entities(type, 2);
+            for (int f = 0; f < n_facets; ++f)
+                owners.owner.try_emplace(sub_entity_key(type, 2, f, std::span<const I>(nodes)), cell);
+        }
+    }
+    const cell::type type = mesh.cell_type(c);
+    cell_vertex_nodes(mesh, c, nodes, scratch);
+    for (unsigned b = bits; b != 0; b &= b - 1)
+    {
+        const auto found = owners.owner.find(sub_entity_key(type, 2, std::countr_zero(b), std::span<const I>(nodes)));
+        if (found == owners.owner.end() || found->second != c)
+            return false;
+    }
+    return true;
 }
 
 // ============================================================================
@@ -967,6 +1010,7 @@ struct LimitedCells
     std::int64_t first_points = -1;     ///< the first of them
     int bisections = 0;       ///< cells that used all of max_bisections
     std::int64_t first_bisections = -1; ///< the first of them
+    int curve_fallbacks = 0;  ///< cells whose curve could not be followed
     int reports = 0;          ///< cells written to Options::debug_dir
     int over_reports = 0;     ///< cells that would have been, beyond max_debug_reports
 };
@@ -978,12 +1022,17 @@ void count_limits(LimitedCells& limited, std::int64_t cell, const quadrays::Stat
         limited.first_points = cell;
     if (stats.bisections_limited > 0 && limited.bisections++ == 0)
         limited.first_bisections = cell;
+    limited.curve_fallbacks += stats.curve_fallbacks > 0;
 }
 
 /// Prints what reached a limit of the engine in a quadrature call, once per call.
 void warn_limits(const LimitedCells& limited, const char* what, const quadrays::Options& options, int q, int tdim,
                  int order, int dim)
 {
+    if (limited.curve_fallbacks > 0)
+        std::fprintf(stderr, "CutCells quadrays warning: the curves of %d of %d cut %s could not be followed, and went "
+                             "by height lines (order %d).\n",
+                     limited.curve_fallbacks, limited.cells, what, order);
     if (limited.points > 0 || limited.bisections > 0)
     {
         std::fprintf(stderr, "CutCells quadrays warning: %d of %d cut %s reached a limit (order %d, part of dimension %d).\n",
@@ -1137,6 +1186,7 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
     append_partial_entities(part, order, options, entities);
     // a curve in 3D lying in a face or an edge of a cell is that entity's
     const bool curves = part.dim == 1 && rules._tdim == 3;
+    FacetOwners<I> owners;
     const std::vector<Entry<I>> entries = part_entries(part, include_uncut_cells);
     CellSources<T, I> cs;
     CellTerms ct;
@@ -1208,8 +1258,12 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
         {
             const quadrays::Vec3<T> u = {points.points[3 * k], points.points[3 * k + 1], points.points[3 * k + 2]};
             const quadrays::Vec3<T> xi = quadrays::reference_point(box, u);
-            if (curves && facets_holding<T>(type, xi.data(), boundary_tol<T>) != 0)
-                continue;
+            if (curves)
+            {
+                const unsigned facets = facets_holding<T>(type, xi.data(), boundary_tol<T>);
+                if (facets != 0 && !keeps_points_on_facets(part, c, facets, owners))
+                    continue;
+            }
             rules._points.insert(rules._points.end(), xi.begin(), xi.begin() + tdim);
             rules._weights.push_back(points.weights[k]);
         }

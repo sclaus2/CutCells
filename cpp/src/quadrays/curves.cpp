@@ -447,6 +447,85 @@ Search face_seeds(const Curve<T>& c, const Face<T>& f, std::vector<Vec3<T>>& see
     return Search::done;
 }
 
+/// The point between @p x0 and @p x1 where the two gradients are parallel:
+/// grad a = mu grad b, a = 0, Newton in (x, mu), the Hessians by differences.
+template <std::floating_point T>
+Vec3<T> crossing_point(const Curve<T>& c, const Vec3<T>& x0, const Vec3<T>& x1)
+{
+    const Vec3<T> middle = add(x0, T(0.5), sub(x1, x0));
+    const T h = std::sqrt(std::numeric_limits<T>::epsilon());
+    Vec3<T> x = middle;
+    T va, vb;
+    Vec3<T> ga, gb;
+    value_gradient(*c.b, x, vb, gb);
+    value_gradient(*c.a, x, va, ga);
+    T mu = dot(ga, gb) / std::max(dot(gb, gb), std::numeric_limits<T>::min());
+    for (int it = 0; it < 30; ++it)
+    {
+        value_gradient(*c.a, x, va, ga);
+        value_gradient(*c.b, x, vb, gb);
+        std::array<std::array<T, 5>, 4> m{};
+        for (int j = 0; j < 3; ++j)
+        {
+            Vec3<T> p = x, q = x, gap, gbp, gaq, gbq;
+            T v;
+            p[j] += h;
+            q[j] -= h;
+            value_gradient(*c.a, p, v, gap);
+            value_gradient(*c.b, p, v, gbp);
+            value_gradient(*c.a, q, v, gaq);
+            value_gradient(*c.b, q, v, gbq);
+            for (int i = 0; i < 3; ++i)
+                m[i][j] = ((gap[i] - mu * gbp[i]) - (gaq[i] - mu * gbq[i])) / (T(2) * h);
+            m[3][j] = ga[j];
+        }
+        for (int i = 0; i < 3; ++i)
+        {
+            m[i][3] = -gb[i];
+            m[i][4] = -(ga[i] - mu * gb[i]);
+        }
+        m[3][4] = -va;
+        // Gaussian elimination with pivoting
+        bool singular = false;
+        for (int col = 0; col < 4 && !singular; ++col)
+        {
+            int pivot = col;
+            for (int i = col + 1; i < 4; ++i)
+                if (std::abs(m[i][col]) > std::abs(m[pivot][col]))
+                    pivot = i;
+            std::swap(m[pivot], m[col]);
+            if (!(std::abs(m[col][col]) > T(0)))
+            {
+                singular = true;
+                break;
+            }
+            for (int i = col + 1; i < 4; ++i)
+            {
+                const T f = m[i][col] / m[col][col];
+                for (int j = col; j < 5; ++j)
+                    m[i][j] -= f * m[col][j];
+            }
+        }
+        if (singular)
+            return middle;
+        std::array<T, 4> z{};
+        for (int i = 3; i >= 0; --i)
+        {
+            T s = m[i][4];
+            for (int j = i + 1; j < 4; ++j)
+                s -= m[i][j] * z[j];
+            z[i] = s / m[i][i];
+        }
+        for (int i = 0; i < 3; ++i)
+            x[i] += z[i];
+        mu += z[3];
+        const T step = std::sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
+        if (step <= c.accept_tol)
+            return norm(sub(x, middle)) <= T(2) * norm(sub(x1, x0)) ? x : middle;
+    }
+    return middle;
+}
+
 // ============================================================================
 // Following the curve
 // ============================================================================
@@ -475,7 +554,23 @@ Walk follow(const Curve<T>& c, const Vec3<T>& start, Vec3<T> t, bool may_close, 
     for (int step = 0; step < max_steps; ++step)
     {
         if (ds < ds_min)
-            return path.size() == 1 ? Walk::tiny : Walk::failed;
+        {
+            if (path.size() == 1)
+                return Walk::tiny;
+            // ran into a singular point the steps cannot pass: a crossing on the
+            // cell's boundary, where the arc ends
+            const Vec3<T> point = crossing_point(c, x, add(x, T(1e3) * ds_min, t));
+            Vec3<T> ga, gb;
+            T va, vb;
+            value_gradient(*c.a, point, va, ga);
+            value_gradient(*c.b, point, vb, gb);
+            const T sine = norm(cross(ga, gb)) / std::max(norm(ga) * norm(gb), std::numeric_limits<T>::min());
+            if (!(sine <= scaled_tolerance<T>(1e-5)) || !inside(c, point, c.seed_tol))
+                return Walk::failed;
+            path.push_back(point);
+            last_tangent = t;
+            return Walk::left;
+        }
         const Vec3<T> pred = add(x, ds, t);
         Vec3<T> y = pred;
         if (!correct(c, y, &t, dot(t, pred)) || norm(sub(y, x)) > T(2) * ds)
@@ -500,7 +595,7 @@ Walk follow(const Curve<T>& c, const Vec3<T>& start, Vec3<T> t, bool may_close, 
         {
             const Plane<T>& p = c.planes[m];
             const T vy = dot(p.n, y) - p.d;
-            if (vy <= T(0))
+            if (vy <= c.inside_tol)
                 continue;
             const T vx = dot(p.n, x) - p.d;
             if (vx >= -c.inside_tol && path.size() == 1)
@@ -726,85 +821,6 @@ bool on_paths(const std::vector<Path<T>>& arcs, const Vec3<T>& x)
 // ============================================================================
 // Splits: crossings, further level sets, and arcs that turn too far
 // ============================================================================
-
-/// The point between @p x0 and @p x1 where the two gradients are parallel:
-/// grad a = mu grad b, a = 0, Newton in (x, mu), the Hessians by differences.
-template <std::floating_point T>
-Vec3<T> crossing_point(const Curve<T>& c, const Vec3<T>& x0, const Vec3<T>& x1)
-{
-    const Vec3<T> middle = add(x0, T(0.5), sub(x1, x0));
-    const T h = std::sqrt(std::numeric_limits<T>::epsilon());
-    Vec3<T> x = middle;
-    T va, vb;
-    Vec3<T> ga, gb;
-    value_gradient(*c.b, x, vb, gb);
-    value_gradient(*c.a, x, va, ga);
-    T mu = dot(ga, gb) / std::max(dot(gb, gb), std::numeric_limits<T>::min());
-    for (int it = 0; it < 30; ++it)
-    {
-        value_gradient(*c.a, x, va, ga);
-        value_gradient(*c.b, x, vb, gb);
-        std::array<std::array<T, 5>, 4> m{};
-        for (int j = 0; j < 3; ++j)
-        {
-            Vec3<T> p = x, q = x, gap, gbp, gaq, gbq;
-            T v;
-            p[j] += h;
-            q[j] -= h;
-            value_gradient(*c.a, p, v, gap);
-            value_gradient(*c.b, p, v, gbp);
-            value_gradient(*c.a, q, v, gaq);
-            value_gradient(*c.b, q, v, gbq);
-            for (int i = 0; i < 3; ++i)
-                m[i][j] = ((gap[i] - mu * gbp[i]) - (gaq[i] - mu * gbq[i])) / (T(2) * h);
-            m[3][j] = ga[j];
-        }
-        for (int i = 0; i < 3; ++i)
-        {
-            m[i][3] = -gb[i];
-            m[i][4] = -(ga[i] - mu * gb[i]);
-        }
-        m[3][4] = -va;
-        // Gaussian elimination with pivoting
-        bool singular = false;
-        for (int col = 0; col < 4 && !singular; ++col)
-        {
-            int pivot = col;
-            for (int i = col + 1; i < 4; ++i)
-                if (std::abs(m[i][col]) > std::abs(m[pivot][col]))
-                    pivot = i;
-            std::swap(m[pivot], m[col]);
-            if (!(std::abs(m[col][col]) > T(0)))
-            {
-                singular = true;
-                break;
-            }
-            for (int i = col + 1; i < 4; ++i)
-            {
-                const T f = m[i][col] / m[col][col];
-                for (int j = col; j < 5; ++j)
-                    m[i][j] -= f * m[col][j];
-            }
-        }
-        if (singular)
-            return middle;
-        std::array<T, 4> z{};
-        for (int i = 3; i >= 0; --i)
-        {
-            T s = m[i][4];
-            for (int j = i + 1; j < 4; ++j)
-                s -= m[i][j] * z[j];
-            z[i] = s / m[i][i];
-        }
-        for (int i = 0; i < 3; ++i)
-            x[i] += z[i];
-        mu += z[3];
-        const T step = std::sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
-        if (step <= c.accept_tol)
-            return norm(sub(x, middle)) <= T(2) * norm(sub(x1, x0)) ? x : middle;
-    }
-    return middle;
-}
 
 /// A path as the pieces between the crossings on it.
 template <std::floating_point T>
@@ -1112,7 +1128,8 @@ bool integrate_arc(const Curve<T>& c, const Path<T>& path, int q, T moment_relat
         return integrate_arc(c, Path<T>(p.begin(), p.begin() + static_cast<std::ptrdiff_t>(m) + 1), q, moment_relative, degree, depth + 1, out)
                && integrate_arc(c, Path<T>(p.begin() + static_cast<std::ptrdiff_t>(m), p.end()), q, moment_relative, degree, depth + 1, out);
     };
-    if (norm(sub(path.back(), path.front())) <= c.x_tol)
+    // a stub at a crossing, too short to matter or to fit
+    if (norm(sub(path.back(), path.front())) <= c.seed_tol)
         return true;
     ArcFit<T> f;
     if (!fit_arc(c, path, f) && depth < max_depth)
@@ -1192,17 +1209,26 @@ void make_faces(const Polytope<T>& poly, std::vector<Plane<T>>& planes, std::vec
 
 } // namespace
 
+namespace
+{
+
+enum class Attempt : std::uint8_t
+{
+    done,
+    degenerate, ///< a level set vanishes on a face
+    failed
+};
+
 template <std::floating_point T>
-bool curve_points(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms,
-                  int a, int b, int q, const Options& opt, CellPoints<T>& out, Stats& stats)
+Attempt follow_curve(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms,
+                     int a, int b, int q, const Options& opt, CellPoints<T>& out, Stats& stats)
 {
     const std::size_t start_points = out.points.size(), start_weights = out.weights.size();
     const auto failed = [&](bool count)
     {
         out.points.resize(start_points);
         out.weights.resize(start_weights);
-        stats.curve_fallbacks += count;
-        return false;
+        return count ? Attempt::failed : Attempt::degenerate;
     };
 
     thread_local Polytope<T> poly;
@@ -1228,14 +1254,14 @@ bool curve_points(const ClippedBox<T>& cell, std::span<const Source<T>> phis, st
     // the curve's points on the faces
     thread_local std::vector<Vec3<T>> seeds;
     seeds.clear();
-    int budget = 6000;
     for (const Face<T>& f : faces)
     {
-        const Search s = face_seeds(c, f, seeds, budget);
-        if (s == Search::degenerate)
+        // A curve along the face is a continuum of roots to this search, which stops at
+        // its budget with what it has: the arc is reached from its ends on the
+        // neighbouring faces, or as a closed curve.
+        int budget = 3000;
+        if (face_seeds(c, f, seeds, budget) == Search::degenerate)
             return failed(false);
-        if (s == Search::failed)
-            return failed(true);
     }
 
     // follow the curve from each, into the cell
@@ -1346,7 +1372,22 @@ bool curve_points(const ClippedBox<T>& cell, std::span<const Source<T>> phis, st
             }
         }
     }
-    return true;
+    return Attempt::done;
+}
+
+} // namespace
+
+template <std::floating_point T>
+bool curve_points(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms,
+                  int a, int b, int q, const Options& opt, CellPoints<T>& out, Stats& stats)
+{
+    const int arcs = stats.curve_arcs;
+    const Attempt attempt = follow_curve<T>(cell, phis, terms, a, b, q, opt, out, stats);
+    if (attempt == Attempt::done)
+        return true;
+    stats.curve_arcs = arcs;
+    stats.curve_fallbacks += attempt == Attempt::failed;
+    return false;
 }
 
 template bool curve_points<float>(const ClippedBox<float>&, std::span<const Source<float>>, std::span<const SelectionTerm>,
