@@ -220,7 +220,7 @@ def plot_report(report, path=None, at=None):
     density.set_aspect("equal")
     stride = report["point_stride"]
     shown = f"every {stride}th of the {report['n_points']:,} points" if stride > 1 else f"all {report['n_points']:,} points"
-    along = "" if normal is None else f", seen along u{normal} (lines: zero sets at u{normal} = {at[normal]:.3f})"
+    along = "" if normal is None else f"\nseen along u{normal}; lines: zero sets at u{normal} = {at[normal]:.3f}"
     _style(density, f"Where the points land: {shown}{along}", (f"u{axes[0]}", f"u{axes[1]}"))
 
     # the points by the depth of their box

@@ -72,7 +72,8 @@ struct Options
     /// They integrate polynomials of degree n q - 1 in x exactly (q points:
     /// 2 q - 1), so n = 2 keeps the degree at twice the points per anchored
     /// direction, and n = 1 halves it, which moment_tolerance answers for where it
-    /// matters. Below a 3D box, the zero set of its
+    /// matters; curve parts, whose check has no moment, take n = 2 instead of 1.
+    /// Below a 3D box, the zero set of its
     /// level set turns back along its height direction where its normal
     /// turns perpendicular to it, beyond the box (its silhouette): the height
     /// lines of the base boxes are anchored likewise at the silhouette's
