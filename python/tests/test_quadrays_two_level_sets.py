@@ -70,6 +70,8 @@ def cell_error(totals, reference):
 def reference_options():
     options = cutcells.QuadraysOptions()
     options.points_per_segment = 14
+    options.anchor_folds = 2
+    options.moment_tolerance = 0
     return options
 
 
@@ -79,11 +81,11 @@ def test_exact_spheres_are_accurate_in_every_cell(kind, n, order):
     """Quadratic level sets |x - c|^2 - r^2 are exact as P2 interpolants. In
     2D the cells' errors are rounding. On the coarse 3D meshes the accuracy
     check bisects until the rule's own rate is met, (h kappa / 2)^(2 q): the
-    lens is rounding, the caps and the circle within 1e-10 and 1e-9 (without
+    lens is rounding, the caps and the circle within 5e-9 and 1e-9 (without
     the check and the anchoring at folds, the caps err by 6e-9 to 2e-7). The
     3D lens, whose reference costs most, is checked by its total."""
     gdim = 2 if kind in ("triangle", "quadrilateral") else 3
-    bounds = {"lens": 1e-13, "cap": 1e-13, "curve": 1e-13} if gdim == 2 else {"lens": 5e-13, "cap": 1e-10,
+    bounds = {"lens": 1e-13, "cap": 1e-13, "curve": 1e-13} if gdim == 2 else {"lens": 5e-12, "cap": 5e-9,
                                                                               "curve": 1e-9}
     mesh = mesh_of(kind, n)
     a = cutcells.create_level_set(mesh, ball(C1, gdim, True), degree=2, name="a")

@@ -70,14 +70,15 @@ struct Options
     /// q points do at four lengths; otherwise both, by x = c + r (3t - t^3) / 2,
     /// whose derivative vanishes at both folds, with ceil(3 n q / 2) points.
     /// They integrate polynomials of degree n q - 1 in x exactly (q points:
-    /// 2 q - 1), so n = 2 keeps the degree, and n = 1 halves the rate at which
-    /// the error falls under refinement. Below a 3D box, the zero set of its
+    /// 2 q - 1), so n = 2 keeps the degree at twice the points per anchored
+    /// direction, and n = 1 halves it, which moment_tolerance answers for where it
+    /// matters. Below a 3D box, the zero set of its
     /// level set turns back along its height direction where its normal
     /// turns perpendicular to it, beyond the box (its silhouette): the height
     /// lines of the base boxes are anchored likewise at the silhouette's
     /// coordinate on them, and their base segments where it crosses the
     /// lines' bounds. 0: off.
-    int anchor_folds = 2;
+    int anchor_folds = 1;
     /// Bisections allowed per level along a branch. Bernstein bounds certify
     /// after a few; Taylor models of an analytic level set, a distance function
     /// in particular, need boxes small against the radius of curvature, which
@@ -172,13 +173,15 @@ struct Options
     /// needs both. If the base does not settle, the box is bisected after all, and a
     /// cell makes few such attempts. Analytic level sets need hessian_bounds.
     bool silhouette_splits = true;
-    /// The accuracy check (tolerance) also compares a moment of what a mass matrix sees,
-    /// the sum over the axes of the cell's box of a Legendre polynomial squared, of half
-    /// the degree the points integrate, relative to the piece as the measure is: a box
-    /// whose moment differs by more is bisected. The measure alone does not see an
-    /// anchored rule (anchor_folds) that integrates polynomials less well than it does
-    /// the measure. 0: the measure only.
-    double moment_tolerance = 0;
+    /// On a box with anchored segments (anchor_folds), the accuracy check (tolerance) also
+    /// compares a moment of what a mass matrix sees, the sum over the axes of the cell's
+    /// box of a Legendre polynomial squared, of half the degree the points integrate,
+    /// relative to the piece as the measure is. The measure alone does not see an anchored
+    /// rule that integrates polynomials less well than it does the measure. A box that
+    /// fails either first takes twice the points on its anchored segments (with
+    /// anchor_folds = 1), and is bisected only if that fails too. This is what it asks of
+    /// q >= 6 points, of fewer the tolerance to the power q / 6. 0: the measure only.
+    double moment_tolerance = 1e-8;
     /// The front end (part::quadrature_rules): Gauss-Legendre points per
     /// segment of each height line. 0: enough for its order, ceil((order + m)
     /// / 2) for a part of dimension m, so that flat pieces integrate

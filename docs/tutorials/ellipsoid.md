@@ -78,14 +78,14 @@ For a P3 level set on 24576 tetrahedra:
 tetrahedra: 24576, cut cells: 1959
         quantity          computed             exact      error
           volume    0.645072721701    0.645073691537   9.70e-07
-  flux of x - x0    1.935250556090    1.935221074611   2.95e-05
+  flux of x - x0    1.935250556244    1.935221074611   2.95e-05
       centroid x    0.040000446944    0.040000000000   4.47e-07
-      centroid y   -0.029999061580   -0.030000000000   9.38e-07
+      centroid y   -0.029999061579   -0.030000000000   9.38e-07
       centroid z    0.019999596705    0.020000000000   4.03e-07
        int y_1^2    0.082571834412    0.082569432517   2.40e-06
        int y_2^2    0.039027615843    0.039026958338   6.58e-07
        int y_3^2    0.015803460848    0.015804305443   8.45e-07
-surface area: 3.9492319025 (no closed form)
+surface area: 3.9492319027 (no closed form)
 ```
 
 The errors belong to the P3 interpolant. From $n=17$ to $n=33$ the volume error

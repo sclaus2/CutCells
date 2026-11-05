@@ -203,7 +203,9 @@ int main(int argc, char** argv)
                 const std::string key = (analytic ? "analytic " : "") + mesh + part;
                 if (c.name == "sphere")
                     baseline[key] = r.total;
-                if (c.scale != 1.0 && std::abs(r.total - baseline[key]) > 1e-12 * baseline[key])
+                // Rounding near a tolerance may decide a box's rule differently: anchored
+                // segments with one factor or two, which differ by what that tolerance allows.
+                if (c.scale != 1.0 && std::abs(r.total - baseline[key]) > 1e-9 * baseline[key])
                     problems.push_back("total differs from the unscaled sphere");
                 if (c.shape == Shape::cone || c.shape == Shape::torus)
                 {
