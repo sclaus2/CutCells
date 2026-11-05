@@ -53,13 +53,17 @@ pieces quadrays also
 checks each box against one more point per segment and bisects where they
 disagree by more than the order's rate allows at the cell's size, so that the
 error falls with $h$ (`QuadraysOptions.tolerance`); boxes split at folds must
-agree to $10^{-12}$. An anchored rule integrates the measure better than it does a
-polynomial, so on boxes with anchored segments the check also compares a moment of
-what a mass matrix sees, to $10^{-8}$ (`QuadraysOptions.moment_tolerance`). Both are
-what the check asks of six or more points per segment; fewer points are asked for
-that tolerance to the power $q/6$. A box that fails first takes twice the points on
-its anchored segments, and is bisected only if that fails too. `anchor_folds = 2`
-with `moment_tolerance = 0` takes those points everywhere.
+agree to $10^{-12}$. The measure does not show a rule short of points: $q$ points are
+exact to degree $2q-1$ on a flat piece, and curvature, or an anchored rule, takes a
+polynomial past that. So the check also compares a moment of what a mass matrix sees,
+to $10^{-8}$ (`QuadraysOptions.moment_tolerance`). Both are what the check asks of six
+or more points per segment; fewer points are asked for that tolerance to the power
+$q/6$. A box that fails first takes twice the points on its anchored segments, then up
+to four points more per direction, and is bisected only if that fails too. This
+tolerance is fixed: as the mesh is refined, the error of this moment, which is the
+worst a mass matrix can see, stays near it, while the error of a smooth integrand
+falls with $h$. Tightening it costs few points, as Gauss-Legendre points converge fast
+here. `anchor_folds = 2` with `moment_tolerance = 0` takes those points everywhere.
 
 Modes:
 

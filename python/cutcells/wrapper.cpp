@@ -3128,11 +3128,11 @@ NB_MODULE(_cutcellscpp, m)
               "debug_seconds to this directory, at most debug_reports per call, as a JSON file with its "
               "level sets, boxes and points; python -m cutcells.quadrays_debug plots them.")
       .def_rw("moment_tolerance", &cutcells::quadrays::Options::moment_tolerance,
-              "On a box with anchored segments, the accuracy check also compares a moment of what a "
-              "mass matrix sees, a Legendre polynomial squared along each axis of the cell, relative "
-              "to the piece as the measure is. A box that fails first takes twice the points on those "
-              "segments, then is bisected. What it asks of 6 or more points per segment, of fewer the "
-              "tolerance to the power q / 6. 1e-8 (default); 0: the measure only.")
+              "The accuracy check also compares a moment of what a mass matrix sees, a Legendre "
+              "polynomial squared along each axis of the cell, relative to the piece as the measure "
+              "is. A box that fails first takes twice the points on its anchored segments, then up to "
+              "four points more per direction, then is bisected. What it asks of 6 or more points per "
+              "segment, of fewer the tolerance to the power q / 6. 1e-8 (default); 0: the measure only.")
       .def_rw("debug_seconds", &cutcells::quadrays::Options::debug_seconds,
               "A cut cell that takes at least this many seconds is also written to debug_dir.")
       .def_rw("debug_reports", &cutcells::quadrays::Options::debug_reports,

@@ -179,14 +179,16 @@ struct Options
     /// needs both. If the base does not settle, the box is bisected after all, and a
     /// cell makes few such attempts. Analytic level sets need hessian_bounds.
     bool silhouette_splits = true;
-    /// On a box with anchored segments (anchor_folds), the accuracy check (tolerance) also
-    /// compares a moment of what a mass matrix sees, the sum over the axes of the cell's
-    /// box of a Legendre polynomial squared, of half the degree the points integrate,
-    /// relative to the piece as the measure is. The measure alone does not see an anchored
-    /// rule that integrates polynomials less well than it does the measure. A box that
-    /// fails either first takes twice the points on its anchored segments (with
-    /// anchor_folds = 1), and is bisected only if that fails too. This is what it asks of
-    /// q >= 6 points, of fewer the tolerance to the power q / 6. 0: the measure only.
+    /// The accuracy check (tolerance) also compares a moment of what a mass matrix sees,
+    /// the sum over the cell's reference coordinates of a Legendre polynomial squared, of
+    /// half the degree the points integrate, relative to the piece as the measure is. The
+    /// measure alone does not see a rule short of points: q points are exact to degree
+    /// 2 q - 1 on a flat piece, and curvature, or an anchored rule, takes the moment past
+    /// that. A box that fails first takes twice the points on its anchored segments (with
+    /// anchor_folds = 1), then up to four points more per direction, and is bisected only
+    /// if that fails too. This is what it asks of q >= 6 points, of fewer the tolerance to
+    /// the power q / 6. A fixed tolerance: the moment's error stays near it as the mesh is
+    /// refined, where the error of a smooth integrand falls. 0: the measure only.
     double moment_tolerance = 1e-8;
     /// The front end (part::quadrature_rules): Gauss-Legendre points per
     /// segment of each height line. 0: enough for its order, ceil((order + m)
