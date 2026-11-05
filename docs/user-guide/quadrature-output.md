@@ -150,10 +150,12 @@ tuned = inside.quadrature(order=4, options=options)
 
 The backend of a part is the backend given to `cut`, or set on the result
 before selecting (`result.backend = "lut"`). Both backends integrate the curves
-where two level sets vanish, with points of unit weight in 2D. Neither finds a
-curve where only one of the two level sets lies in mesh faces (a plane through
-grid faces cut by a sphere, say); where both do, the curve runs along mesh
-edges and comes from the entity rules.
+where two level sets vanish, with points of unit weight in 2D. Where only one of
+the two level sets lies in mesh faces (a plane through grid faces cut by a
+sphere, say), quadrays takes the curve in one of the cells sharing each face,
+with that level set moved off the face by about $2 \cdot 10^{-9}$ of the cell, so
+it counts once; the lookup tables do not find such a curve. Where both lie in
+mesh faces, the curve runs along mesh edges and comes from the entity rules.
 
 In 3D cells, quadrays does not take height lines to these curves. It finds where
 a curve meets the faces of the cell, follows it between them along the cross

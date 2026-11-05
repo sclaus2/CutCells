@@ -138,6 +138,60 @@ int derivative_box_bounds(const double* lo, const double* hi, double* b, void* c
 }
 } // namespace
 
+namespace
+{
+double shifted_value(const double* x, void* context)
+{
+    const ShiftedLevelSet& s = *static_cast<const ShiftedLevelSet*>(context);
+    return s.phi->value(x, s.phi->context) + s.shift;
+}
+
+double shifted_gradient(const double* x, double* grad, void* context)
+{
+    const ShiftedLevelSet& s = *static_cast<const ShiftedLevelSet*>(context);
+    return s.phi->gradient(x, grad, s.phi->context) + s.shift;
+}
+
+int shifted_box_bounds(const double* lo, const double* hi, double* b, void* context)
+{
+    const ShiftedLevelSet& s = *static_cast<const ShiftedLevelSet*>(context);
+    const int ok = s.phi->box_bounds(lo, hi, b, s.phi->context);
+    if (ok != 0)
+    {
+        b[0] += s.shift;
+        b[1] += s.shift;
+    }
+    return ok;
+}
+
+int shifted_taylor_bounds(const double* centre, const double* axes, int m, double* models, void* context)
+{
+    const ShiftedLevelSet& s = *static_cast<const ShiftedLevelSet*>(context);
+    const int ok = s.phi->taylor_bounds(centre, axes, m, models, s.phi->context);
+    if (ok != 0)
+        models[0] += s.shift;
+    return ok;
+}
+
+int shifted_hessian_bounds(const double* centre, const double* axes, int m, double* bounds, void* context)
+{
+    const ShiftedLevelSet& s = *static_cast<const ShiftedLevelSet*>(context);
+    return s.phi->hessian_bounds(centre, axes, m, bounds, s.phi->context);
+}
+} // namespace
+
+AnalyticLevelSet shifted_level_set(const ShiftedLevelSet& s)
+{
+    AnalyticLevelSet out;
+    out.context = const_cast<ShiftedLevelSet*>(&s);
+    out.value = shifted_value;
+    out.gradient = shifted_gradient;
+    out.box_bounds = shifted_box_bounds;
+    out.taylor_bounds = s.phi->taylor_bounds != nullptr ? shifted_taylor_bounds : nullptr;
+    out.hessian_bounds = s.phi->hessian_bounds != nullptr ? shifted_hessian_bounds : nullptr;
+    return out;
+}
+
 AnalyticLevelSet directional_derivative(const DirectionalDerivative& d)
 {
     AnalyticLevelSet out;

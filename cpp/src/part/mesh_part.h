@@ -30,6 +30,14 @@ struct MeshPart
     int dim = -1;                ///< tdim for volume parts, tdim - 1 for interfaces
     std::vector<I> uncut_cells;  ///< cells wholly in a volume part, ascending
     std::vector<I> cut_cells;    ///< cells holding a piece the backend integrates, ascending
+    /// Curve parts in cells of dimension 3: the cut cells that take a curve lying in
+    /// one of their facets, where one of a term's two level sets vanishes on the
+    /// facet and the other cuts the cell. The first cell sharing the facet takes it,
+    /// so it counts once, with that level set moved off the facet into the cell
+    /// (quadrature_rules). Ascending, and parallel: the level sets moved, by the side
+    /// of them the cell lies on.
+    std::vector<I> nudged_cells;
+    std::vector<std::uint64_t> nudged_negative, nudged_positive;
     /// The entities wholly in a part of lower dimension, by dimension: indices
     /// into result->entities[d], ascending. A piece of the part is a whole
     /// entity where the zero sets it lies in all vanish there (and change sign

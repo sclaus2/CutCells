@@ -67,6 +67,16 @@ int parallelepiped_bounds(const AnalyticLevelSet& phi, const double* centre, con
 int parallelepiped_hessian(const AnalyticLevelSet& phi, const double* centre, const double* axes, int m,
                            double* bounds);
 
+/// An analytic level set moved by a constant: phi + shift.
+struct ShiftedLevelSet
+{
+    const AnalyticLevelSet* phi = nullptr;
+    double shift = 0;
+};
+
+/// @brief @p s as an analytic level set; @p s must outlive it.
+AnalyticLevelSet shifted_level_set(const ShiftedLevelSet& s);
+
 /// The derivative of an analytic level set along a fixed direction of physical
 /// space. A level set the engine can read like any other: values from the gradient,
 /// its gradient and the derivative bounds from hessian_bounds.

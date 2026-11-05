@@ -5,6 +5,8 @@
 
 #include "mesh_part.h"
 
+#include <map>
+#include <array>
 #include <algorithm>
 #include <bit>
 #include <stdexcept>
@@ -46,6 +48,46 @@ MeshPart<T, I> select_compiled(const CutResult<T, I>& result, SelectionExpr expr
             part.uncut_cells.push_back(c);
         else if (piece)
             part.cut_cells.push_back(c);
+    }
+
+    // a curve in a facet: one level set vanishes on it, the other cuts the cell
+    if (tdim == 3 && part.dim == 1)
+    {
+        const EntityTable<I>& facets = result.entities[2];
+        std::map<I, std::array<std::uint64_t, 2>> nudges;
+        for (std::int32_t e = 0; e < facets.n_entities(); ++e)
+        {
+            const std::uint64_t zero = facets.zero[static_cast<std::size_t>(e)];
+            if (zero == 0)
+                continue;
+            for (const SelectionTerm& term : part.expr.terms)
+            {
+                const std::uint64_t moved = term.zero_required & zero;
+                if (std::popcount(term.zero_required) != 2 || std::popcount(moved) != 1)
+                    continue;
+                SelectionTerm rest = term;
+                rest.zero_required &= ~moved;
+                for (std::int32_t k = facets.cell_offsets[static_cast<std::size_t>(e)];
+                     k < facets.cell_offsets[static_cast<std::size_t>(e) + 1]; ++k)
+                {
+                    const std::size_t ks = static_cast<std::size_t>(k);
+                    const bool negative = (facets.negative[ks] & moved) != 0, positive = (facets.positive[ks] & moved) != 0;
+                    if ((!negative && !positive) || term_on_cell(rest, result, facets.cells[ks]) != TermCell::piece)
+                        continue;
+                    nudges[facets.cells[ks]][negative ? 0 : 1] |= moved;
+                    break;
+                }
+            }
+        }
+        for (const auto& [cell, moved] : nudges)
+        {
+            part.nudged_cells.push_back(cell);
+            part.nudged_negative.push_back(moved[0]);
+            part.nudged_positive.push_back(moved[1]);
+            part.cut_cells.push_back(cell);
+        }
+        std::sort(part.cut_cells.begin(), part.cut_cells.end());
+        part.cut_cells.erase(std::unique(part.cut_cells.begin(), part.cut_cells.end()), part.cut_cells.end());
     }
 
     // the entities of the part's dimension that it holds whole, or a part of

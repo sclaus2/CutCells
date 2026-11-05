@@ -43,6 +43,8 @@ struct CellSources
     LevelSetCell<T, I> ls_cell;
     std::vector<T> vertices; ///< Basix order, gdim per vertex
     std::vector<I> nodes;    ///< scratch
+    std::vector<quadrays::ShiftedLevelSet> shifts;  ///< analytic level sets moved off a facet
+    std::vector<quadrays::AnalyticLevelSet> shifted; ///< what their sources point to
 };
 
 /// @brief Reference coordinates of vertex @p v (Basix numbering) of a cell

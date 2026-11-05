@@ -55,13 +55,27 @@ template <std::floating_point T, std::integral I>
 void cell_terms(const MeshPart<T, I>& part, I cell_id, CellTerms& out)
 {
     const CutResult<T, I>& r = *part.result;
-    const std::uint64_t cut = cut_mask(r, cell_id);
+    // a level set moved off a facet of the cell (MeshPart::nudged_cells) cuts it
+    const auto nudged = std::lower_bound(part.nudged_cells.begin(), part.nudged_cells.end(), cell_id);
+    std::uint64_t moved = 0;
+    if (nudged != part.nudged_cells.end() && *nudged == cell_id)
+    {
+        const std::size_t n = static_cast<std::size_t>(nudged - part.nudged_cells.begin());
+        moved = part.nudged_negative[n] | part.nudged_positive[n];
+    }
+    const auto is_piece = [&](const SelectionTerm& term)
+    {
+        SelectionTerm rest = term;
+        rest.zero_required &= ~moved;
+        return term_on_cell(rest, r, cell_id) == TermCell::piece;
+    };
+    const std::uint64_t cut = cut_mask(r, cell_id) | moved;
     out.level_sets.clear();
     out.terms.clear();
     out.offsets.assign(1, 0);
     std::uint64_t named = 0;
     for (const SelectionTerm& term : part.expr.terms)
-        if (term_on_cell(term, r, cell_id) == TermCell::piece)
+        if (is_piece(term))
             named |= (term.negative_required | term.positive_required | term.zero_required) & cut;
     std::array<int, 64> local;
     local.fill(-1);
@@ -79,7 +93,7 @@ void cell_terms(const MeshPart<T, I>& part, I cell_id, CellTerms& out)
     };
     for (const SelectionTerm& term : part.expr.terms)
     {
-        if (term_on_cell(term, r, cell_id) != TermCell::piece)
+        if (!is_piece(term))
             continue;
         SelectionTerm t;
         t.negative_required = to_local(term.negative_required);
@@ -188,6 +202,48 @@ std::vector<Entry<I>> part_entries(const MeshPart<T, I>& part, bool include_uncu
 /// quadrays counts a root at an end of a line (engine.cpp, point_tol).
 template <std::floating_point T>
 constexpr T boundary_tol = T(2) * std::max(static_cast<T>(1e-10), T(100) * std::numeric_limits<T>::epsilon());
+
+/// Moves the level sets that vanish on a facet of the cell off it, into the cell
+/// (MeshPart::nudged_cells), past the distance at which points count as on a facet.
+template <std::floating_point T, std::integral I>
+void nudge_sources(const MeshPart<T, I>& part, I cell_id, const CellTerms& ct, CellSources<T, I>& cs)
+{
+    const auto found = std::lower_bound(part.nudged_cells.begin(), part.nudged_cells.end(), cell_id);
+    if (found == part.nudged_cells.end() || *found != cell_id)
+        return;
+    const std::size_t n = static_cast<std::size_t>(found - part.nudged_cells.begin());
+    const std::size_t count = ct.level_sets.size();
+    cs.shifts.resize(count);
+    cs.shifted.resize(count);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const std::uint64_t bit = std::uint64_t(1) << ct.level_sets[i];
+        if (!((part.nudged_negative[n] | part.nudged_positive[n]) & bit))
+            continue;
+        quadrays::Source<T>& source = cs.sources[i];
+        // the gradient at the box's corners: a pyramid's function, (1 - z)^n phi, may
+        // have none in between
+        T size = 0;
+        for (int corner = 0; corner < 8; ++corner)
+        {
+            const quadrays::Vec3<T> u = {T(corner & 1), T((corner >> 1) & 1), T((corner >> 2) & 1)};
+            quadrays::Vec3<T> g;
+            quadrays::gradient(source, std::span<const T>(u), std::span<T>(g));
+            size = std::max(size, std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]));
+        }
+        // towards the side the cell lies on
+        const T shift = ((part.nudged_positive[n] & bit) ? T(-1) : T(1)) * T(10) * boundary_tol<T> * size;
+        if (source.is_analytic())
+        {
+            cs.shifts[i] = {source.analytic, static_cast<double>(shift)};
+            cs.shifted[i] = quadrays::shifted_level_set(cs.shifts[i]);
+            source.analytic = &cs.shifted[i];
+        }
+        else
+            for (T& v : cs.forms[i].coeffs)
+                v += shift;
+    }
+}
 
 /// The facets of a reference cell as planes n . x = c with unit n (n has tdim
 /// entries), made once per thread.
@@ -1118,6 +1174,7 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                 if (ct.terms.empty())
                     continue;
                 sources_of(part, c, ct, cs);
+                nudge_sources(part, c, ct, cs);
                 const std::span<const quadrays::Source<T>> sources(cs.sources);
                 for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
                     quadrays::integrate(cs.box, sources,
@@ -1372,6 +1429,7 @@ quadrays::LeafMesh<T> visualization_mesh(const MeshPart<T, I>& part, int degree,
             if (ct.terms.empty())
                 continue;
             sources_of(part, e.cell, ct, cs);
+            nudge_sources(part, e.cell, ct, cs);
             for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
                 quadrays::append_leaves(cs.box, std::span<const quadrays::Source<T>>(cs.sources),
                                         std::span<const SelectionTerm>(ct.terms).subspan(

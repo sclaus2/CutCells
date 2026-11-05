@@ -217,6 +217,36 @@ def test_curve_next_to_a_mesh_face(gap):
     assert np.asarray(rules(result, 6).weights).sum() == pytest.approx(exact, abs=1e-9)
 
 
+@pytest.mark.parametrize("kind", ["hexahedron", "tetrahedron", "prism", "pyramid"])
+def test_curve_in_mesh_faces_counts_once(kind):
+    """A plane through mesh faces at x = 0.2: one cell per face takes the curve, moved just off the face."""
+    mesh = mesh_of(kind, 5)
+    a = cc.create_level_set(mesh, ball(F), degree=2, name="a")
+    b = cc.create_level_set(mesh, plane((1.0, 0.0, 0.0), 0.2), degree=1, name="b")
+    result = cc.cut(mesh, [a, b])
+    exact = 2 * math.pi * math.sqrt(R**2 - (0.2 - F[0]) ** 2)
+    for mode in ("cut_only", "full"):
+        weights = np.asarray(result["a = 0 and b = 0"].quadrature(order=8, mode=mode).weights)
+        assert weights.min() > 0
+        assert weights.sum() == pytest.approx(exact, abs=2e-8)
+
+
+def test_analytic_curve_in_mesh_faces_counts_once():
+    mesh = mesh_of("hexahedron", 5)
+    a = cc.analytic_sphere(list(F), R, signed_distance=False, name="a")
+    b = cc.create_level_set(mesh, plane((1.0, 0.0, 0.0), 0.2), degree=1, name="b")
+    weights = np.asarray(cc.cut(mesh, [a, b])["a = 0 and b = 0"].quadrature(order=8).weights)
+    assert weights.sum() == pytest.approx(2 * math.pi * math.sqrt(R**2 - (0.2 - F[0]) ** 2), abs=2e-8)
+
+
+def test_lookup_tables_do_not_find_a_curve_in_mesh_faces():
+    mesh = mesh_of("hexahedron", 5)
+    a = cc.create_level_set(mesh, ball(F), degree=2, name="a")
+    b = cc.create_level_set(mesh, plane((1.0, 0.0, 0.0), 0.2), degree=1, name="b")
+    rule = cc.cut(mesh, [a, b])["a = 0 and b = 0"].quadrature(order=2, backend="lut")
+    assert len(np.asarray(rule.weights)) == 0
+
+
 def test_height_lines_stay_available():
     mesh = mesh_of("hexahedron", 5)
     result = cc.cut(mesh, level_sets("lens", mesh))
