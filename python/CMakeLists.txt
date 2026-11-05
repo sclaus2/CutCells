@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(cutcells_nanobind VERSION "0.4.0" LANGUAGES CXX)
+project(cutcells_nanobind VERSION "0.5.0" LANGUAGES CXX)
 include(GNUInstallDirs)
 
 # nanobind uses aligned deallocators only present on macOS > 10.14
@@ -34,7 +34,7 @@ if(CUTCELLS_PYTHON_BUNDLE_CORE AND NOT TARGET CUTCELLS::cutcells)
 endif()
 
 if(NOT TARGET CUTCELLS::cutcells)
-  find_package(CutCells 0.4.0 REQUIRED CONFIG)
+  find_package(CutCells 0.5.0 REQUIRED CONFIG)
 endif()
 
 if(CutCells_FOUND)
