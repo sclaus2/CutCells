@@ -326,6 +326,22 @@ int cell_sign(const CellSource<T, I>& cs, cell::type type, int max_depth, T touc
         return simplex_sign<T, I, 4>(cs, max_depth, touch);
     if (type == cell::type::triangle)
         return simplex_sign<T, I, 3>(cs, max_depth, touch);
+    if (type == cell::type::pyramid && !cs.source.is_analytic())
+    {
+        // the level set on the cube of the collapsed coordinates, which has
+        // no zero at the apex as (1 - z)^n phi on the reference box has
+        thread_local quadrays::BoxBernstein<T> form;
+        thread_local quadrays::ClippedBox<T> cube = []
+        {
+            quadrays::ClippedBox<T> b;
+            for (int k = 0; k < 3; ++k)
+                b.jacobian[k][k] = b.ref_jacobian[k][k] = T(1);
+            return b;
+        }();
+        quadrays::collapsed_pyramid_form<T>(cs.ls_cell.bernstein_order, std::span<const T>(cs.ls_cell.bernstein_coeffs),
+                                            form);
+        return quadrays::cell_sign(cube, quadrays::bernstein_source(form), max_depth, touch);
+    }
     // boxes, and the boxes of prisms and pyramids with their clips
     return quadrays::cell_sign(cs.box, cs.source, max_depth, touch);
 }
