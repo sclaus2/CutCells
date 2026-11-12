@@ -69,18 +69,19 @@ below are absolute.)
 ```text
 hexahedron, cut cells: 591; q is the points per segment (the order for lut)
     part       rule  q  points/cut  us/cut  per-cell err  total err
-  volume lut, k = 1  1         6.5      39       3.4e-02    3.4e-02
-  volume lut, k = 1  4        90.5      41       3.4e-02    3.4e-02
-  volume lut, k = 2  1        29.2      92       8.6e-03    8.6e-03
-  volume lut, k = 2  4       429.9     165       8.6e-03    8.6e-03
-  volume lut, k = 4  1       134.7     334       2.1e-03    2.1e-03
-  volume lut, k = 4  4      2153.2    1050       2.1e-03    2.1e-03
+  volume lut, k = 1  1         6.5      27       3.4e-02    3.4e-02
+  volume lut, k = 1  4        90.5      38       3.4e-02    3.4e-02
+  volume lut, k = 2  1        29.2      80       8.6e-03    8.6e-03
+  volume lut, k = 2  4       429.9     166       8.6e-03    8.6e-03
+  volume lut, k = 4  1       134.7     382       2.1e-03    2.1e-03
+  volume lut, k = 4  4      2153.2    1246       2.1e-03    2.1e-03
 ```
 
 A higher order changes nothing: the straight pieces integrate the wrong region,
 and the order only integrates it more exactly. Refining falls as $k^{-2}$, like
-refining the mesh, and the points grow more than fourfold per doubling. quadrays reaches the 2.1e-3 of
-`k = 4` with 6.4 points, against 134.7.
+refining the mesh, and the points grow more than fourfold per doubling. quadrays'
+smallest rule, 25 points at $q = 1$, already reaches 5.6e-4, a quarter of the error
+of `k = 4` with its 134.7 points.
 
 So keep the lookup tables for what they do well: flat zero sets (see
 [Cell shapes](cell-shapes.md)) and low accuracy at small cost per cell.
@@ -90,40 +91,40 @@ So keep the lookup tables for what they do well: flat zero sets (see
 ```text
 hexahedron
     part       rule  q  points/cut  us/cut  per-cell err  total err
-  volume   quadrays  3        58.9     118       4.6e-08    2.5e-09
-  volume   quadrays  4       192.7     199       3.8e-11    2.1e-11
-  volume   quadrays  5       505.2     382       5.2e-15    2.1e-15
+  volume   quadrays  3        58.9     107       4.6e-08    2.5e-09
+  volume   quadrays  4       192.7     185       3.8e-11    2.1e-11
+  volume   quadrays  5       512.2     372       3.8e-15    5.6e-16
   volume      plain  3        46.3      22       3.2e-07    4.6e-08
-  volume      plain  5       214.5      41       1.1e-10    7.3e-12
+  volume      plain  5       214.5      38       1.1e-10    7.3e-12
   volume      plain  6       370.6      60       4.4e-12    1.1e-13
-  volume      plain  8       878.5     109       1.7e-14    0.0e+00
- surface   quadrays  3        29.0     178       1.1e-08    8.8e-09
- surface   quadrays  4        54.1     252       1.6e-11    1.4e-11
- surface   quadrays  5        94.4     431       3.6e-14    3.0e-14
- surface      plain  5        31.7      29       2.1e-08    3.6e-10
- surface      plain  6        45.7      36       1.4e-09    7.2e-12
- surface      plain  8        81.2      54       8.7e-12    3.6e-15
+  volume      plain  8       878.5     116       1.7e-14    0.0e+00
+ surface   quadrays  3        29.6     189       5.8e-09    4.0e-09
+ surface   quadrays  4        54.8     262       5.1e-12    3.8e-12
+ surface   quadrays  5        92.0     400       8.3e-15    2.7e-15
+ surface      plain  5        31.7      68       2.1e-08    3.6e-10
+ surface      plain  6        45.7      80       1.4e-09    7.2e-12
+ surface      plain  8        81.2     103       8.7e-12    3.6e-15
 ```
 
-Compare rows of about equal points. At about 30 surface points the two are even
-per cell. By 50 quadrays is about 100 times better, and by 80 to 90 about 200
-times better, and it continues to round-off. On the volume, the gain at 200
-points is about three times.
+Compare rows of about equal points. At about 30 surface points quadrays is about
+four times better per cell, by 50 about 300 times, and by 80 to 90 about 1000
+times, and it continues to round-off. On the volume, the gain at 200 points is
+about three times.
 
 The rest of the comparison is less flattering, so here it is plainly:
 
 - **Plain points are better at the totals on hexahedra.** At about 30 surface
-  points plain has a total error of 3.6e-10 against 8.8e-9, and the figure's right
+  points plain has a total error of 3.6e-10 against 4.0e-9, and the figure's right
   panel shows the same for Algoim. Errors of neighbouring cells cancel, and more
   so for plain points. If you only need an integral over the whole surface of a
   smooth function, plain points do well.
-- **The defaults take more time.** quadrays spends about 5 to 15 times as long as
+- **The defaults take more time.** quadrays spends about 5 to 10 times as long as
   plain points at the same $q$, in the check and on the extra factors. Timings are
   from a busy machine, so read them for their size only.
 - **The worst placement matters.** The green band in the figure is what per-cell
   numbers show and medians hide: at $q = 8$ Algoim's volume error is 2.1e-12 for
   the median placement and 1.3e-8 for the worst, and its surface error 7.8e-10
-  and 3.4e-7. quadrays stays within a factor of about two over the 16 placements.
+  and 3.4e-7. quadrays stays within a factor of about three over the 16 placements.
 
 ## Tetrahedra Gain the Most
 
@@ -132,16 +133,16 @@ On tetrahedra, plain points stall, and the totals do not rescue them:
 ```text
 tetrahedron, cut cells: 2698
     part       rule  q  points/cut  us/cut  per-cell err  total err
-  volume   quadrays  4       228.7     391       5.4e-11    2.4e-11
-  volume   quadrays  5       511.1     683       7.7e-14    3.2e-14
-  volume      plain  4       196.6     101       1.6e-08    4.0e-09
-  volume      plain  6       663.7     179       1.3e-10    8.1e-11
-  volume      plain  8      1573.2     339       2.6e-12    2.1e-12
- surface   quadrays  4        34.4     304       7.5e-11    2.2e-11
- surface   quadrays  5        61.7     449       9.8e-14    5.1e-14
- surface      plain  5        41.7     114       4.3e-07    2.5e-07
- surface      plain  6        60.1      93       6.4e-08    4.7e-08
- surface      plain  8       106.8     134       2.0e-09    1.8e-09
+  volume   quadrays  4       221.6     279       6.0e-11    1.9e-11
+  volume   quadrays  5       493.2     447       8.0e-14    2.9e-14
+  volume      plain  4       196.6     354       1.6e-08    4.0e-09
+  volume      plain  6       663.7     356       1.3e-10    8.1e-11
+  volume      plain  8      1573.2     587       2.6e-12    2.1e-12
+ surface   quadrays  4        40.7     647       6.2e-11    3.0e-11
+ surface   quadrays  5        71.1     808       5.8e-14    3.1e-14
+ surface      plain  5        41.7     199       4.3e-07    2.5e-07
+ surface      plain  6        60.1     187       6.4e-08    4.7e-08
+ surface      plain  8       106.8     254       2.0e-09    1.8e-09
 ```
 
 At about 60 surface points, quadrays is six orders of magnitude better than plain

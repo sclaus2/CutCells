@@ -46,21 +46,21 @@ volume error
  order        1        2        4        6        8       10
     P1  2.0e-02  2.0e-02  2.0e-02  2.0e-02  2.0e-02  2.0e-02
     P2  1.2e-04  1.2e-04  1.2e-04  1.2e-04  1.2e-04  1.2e-04
-    P3  7.0e-06  1.9e-06  1.9e-06  1.9e-06  1.9e-06  1.9e-06
-    P4  1.6e-05  1.3e-07  3.1e-08  3.1e-08  3.1e-08  3.1e-08
-    P5  2.4e-05  1.7e-07  3.6e-09  3.1e-09  3.1e-09  3.1e-09
-    P6  2.7e-05  1.6e-07  1.1e-09  1.0e-10  1.1e-10  1.1e-10
- exact  5.4e-06  4.8e-08  2.2e-11  4.7e-15  2.1e-15  1.7e-15
+    P3  4.9e-06  1.9e-06  1.9e-06  1.9e-06  1.9e-06  1.9e-06
+    P4  1.3e-05  1.3e-07  3.1e-08  3.1e-08  3.1e-08  3.1e-08
+    P5  1.1e-05  1.7e-07  3.1e-09  3.1e-09  3.1e-09  3.1e-09
+    P6  1.3e-05  1.6e-07  2.4e-10  1.1e-10  1.1e-10  1.1e-10
+ exact  5.3e-06  4.8e-08  2.2e-11  4.5e-15  2.1e-15  1.7e-15
 
 area error
  order        1        2        4        6        8       10
     P1  3.1e-01  3.1e-01  3.1e-01  3.1e-01  3.1e-01  3.1e-01
     P2  2.7e-03  2.7e-03  2.7e-03  2.7e-03  2.7e-03  2.7e-03
-    P3  6.9e-05  6.9e-05  4.9e-05  4.9e-05  4.9e-05  4.9e-05
-    P4  8.9e-05  8.9e-05  1.4e-06  1.3e-06  1.3e-06  1.3e-06
-    P5  1.8e-04  1.8e-04  1.1e-06  5.6e-08  5.6e-08  5.6e-08
-    P6  2.0e-04  2.0e-04  1.4e-06  1.3e-08  2.2e-09  2.2e-09
- exact  2.2e-05  2.2e-05  4.2e-09  6.2e-12  1.3e-14  3.9e-15
+    P3  6.2e-05  6.2e-05  4.9e-05  4.9e-05  4.9e-05  4.9e-05
+    P4  5.5e-05  5.5e-05  1.3e-06  1.3e-06  1.3e-06  1.3e-06
+    P5  5.8e-05  5.8e-05  8.0e-08  5.6e-08  5.6e-08  5.6e-08
+    P6  5.1e-05  5.1e-05  5.2e-08  2.2e-09  2.2e-09  2.2e-09
+ exact  2.2e-05  2.2e-05  3.6e-09  4.3e-12  8.0e-15  3.9e-15
 ```
 
 Read each row from the left: it falls with the order and then stays flat. The
@@ -68,8 +68,8 @@ flat part is the interpolation error of the level set, which no rule can
 improve. Read each column from the top: at a low order all the higher degrees
 give about the same error, because the rule limits them.
 
-So the two dials should be raised together. Up to P4, order 4 reaches the floor
-to within 15 %. P5 needs order 6, and the area of P6 needs order 8. Beyond that
+So the two dials should be raised together. Up to P4, order 4 reaches the floor.
+P5 and P6 need order 6. Beyond that
 floor, extra order only adds points. Orders 1 and 2 give the same surface rule,
 as the area columns show.
 
@@ -78,13 +78,13 @@ as the area columns show.
 ```text
 points per cut cell, volume / surface
  order         1         2         4         6         8        10
-    P1    23/7      61/7     135/16    220/26    374/33    594/47
-    P2    26/9      59/9     209/32    554/60   1021/103  1620/168
-    P3    27/9      63/9     186/30    519/58    981/99   1547/156
-    P4    24/9      56/9     196/31    522/63   1011/115  1592/186
-    P5    20/8      58/8     158/23    369/46    726/78   1071/121
-    P6    19/8      58/8     147/20    324/39    603/64    884/97
- exact    28/8      62/8     230/33    569/61   1050/101  1657/162
+    P1    23/7      61/7     135/19    281/37    540/52    812/76
+    P2    26/9      59/9     209/32    554/59   1018/98   1616/146
+    P3    35/9      63/9     193/32    542/59   1003/99   1531/144
+    P4    31/10     56/10    207/32    537/64   1051/106  1537/159
+    P5    33/11     58/11    195/29    458/57    889/94   1290/140
+    P6    33/11     58/11    190/29    439/55    857/91   1225/136
+ exact    29/8      62/8     230/33    570/62   1055/101  1658/149
 ```
 
 The order sets the number of points. The degree does not raise it: P6 at order 6
@@ -97,18 +97,18 @@ Bernstein form on every cell:
 ```text
 cost at order 6
         interpolate       cut  rules, us per cut cell
-    P1       0.034s    0.012s                     179
-    P2       0.030s    0.016s                     836
-    P3       0.087s    0.078s                    3424
-    P4       0.126s    0.214s                    4300
-    P5       0.162s    0.614s                    2545
-    P6       0.271s    2.424s                    2991
- exact       0.000s    0.007s                     638
+    P1       0.061s    0.014s                     461
+    P2       0.064s    0.026s                    1287
+    P3       0.107s    0.069s                    2181
+    P4       0.145s    0.178s                    3142
+    P5       0.319s    1.195s                    5255
+    P6       0.582s    5.213s                   10825
+ exact       0.000s    0.010s                    1578
 ```
 
 The times were taken on a busy machine, so read them for their size only. `cut`
-grows by about three times per degree on hexahedra, and it grows faster still
-at high degree: a separate run took 4.7 s for P6 and 77 s for P8 on these 4096
+grows by three to seven times per degree on hexahedra, faster at the higher
+degrees: a separate run took 4.7 s for P6 and 77 s for P8 on these 4096
 hexahedra, against 1.4 s and 6.2 s on 24576 tetrahedra of the same grid. Degrees
 up to about 5 are the practical range on hexahedra.
 

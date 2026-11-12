@@ -33,21 +33,21 @@ onto degree 4:
 
 ```text
          shape     part   space  moments  before   after  ms/rule  residual
-      triangle   volume   total       15      50      15     0.14   6.1e-16
-      triangle  surface   total       15       6       6     0.00   0.0e+00
- quadrilateral   volume  tensor       25      50      25     0.08   5.0e-16
+      triangle   volume   total       15      56      15     0.17   6.1e-16
+      triangle  surface   total       15       7       7     0.00   0.0e+00
+ quadrilateral   volume  tensor       25      50      25     0.13   5.0e-16
  quadrilateral  surface  tensor       25       9       9     0.00   0.0e+00
-   tetrahedron   volume   total       35    1226      35     0.88   1.1e-15
-   tetrahedron  surface   total       35      82      25     0.16   7.5e-13
-    hexahedron   volume  tensor      125    1066     125    27.04   2.2e-14
-    hexahedron  surface  tensor      125     102      77     0.67   3.4e-11
-         prism   volume  tensor      125    1197     125    33.65   3.4e-13
-         prism  surface  tensor      125     104      70     0.75   4.5e-11
-       pyramid   volume  tensor      125    3032     125    52.86   3.0e-13
-       pyramid  surface  tensor      125     295      86     4.87   5.4e-11
+   tetrahedron   volume   total       35    1276      35     2.24   1.1e-15
+   tetrahedron  surface   total       35      89      25     0.28   7.5e-13
+    hexahedron   volume  tensor      125    1066     125    70.26   2.2e-14
+    hexahedron  surface  tensor      125     102      77     1.39   3.4e-11
+         prism   volume  tensor      125    1246     125    78.43   3.4e-13
+         prism  surface  tensor      125     101      71     1.54   4.7e-11
+       pyramid   volume  tensor      125    3034     125    97.24   3.0e-13
+       pyramid  surface  tensor      125     296      86     4.73   5.4e-11
 ```
 
-A tetrahedron goes from 1226 points to 35, a factor of 35. A hexahedron goes to
+A tetrahedron goes from 1276 points to 35, a factor of 36. A hexahedron goes to
 125, because the tensor space has more moments, and that is more costly to compute
 too. 2D rules gain less, since they start small; a rule smaller than the moment
 count is kept as it is, as on the 2D surfaces here. On a surface the moments are
@@ -61,18 +61,18 @@ and with the compressed one, in NumPy:
 
 ```text
          shape  k          points  difference   compress  assemble, full  compressed  pays after
-   tetrahedron  1      1226 -> 10     7.6e-15     0.17ms          0.41ms      0.08ms         0.5
-   tetrahedron  2      1226 -> 35     7.4e-15     0.95ms          0.99ms      0.16ms         1.1
-   tetrahedron  3      1226 -> 84     1.1e-12    11.67ms          2.20ms      0.37ms         6.4
-    hexahedron  1      1066 -> 27     4.4e-15     0.52ms          0.77ms      0.12ms         0.8
-    hexahedron  2     1066 -> 125     1.0e-14    29.31ms          2.88ms      0.60ms        12.8
-    hexahedron  3     1066 -> 331     1.7e-11    89.63ms          7.19ms      2.63ms        19.6
+   tetrahedron  1      1276 -> 10     7.6e-15     0.30ms          0.36ms      0.06ms         1.0
+   tetrahedron  2      1276 -> 35     7.4e-15     0.89ms          0.96ms      0.14ms         1.1
+   tetrahedron  3      1276 -> 84     1.1e-12    10.42ms          2.18ms      0.34ms         5.7
+    hexahedron  1      1066 -> 27     4.4e-15     0.47ms          0.71ms      0.11ms         0.8
+    hexahedron  2     1066 -> 125     1.0e-14    29.27ms          3.51ms      0.69ms        10.4
+    hexahedron  3     1066 -> 331     1.7e-11   103.59ms          6.74ms      2.47ms        24.2
 ```
 
 `difference` is the largest change of an entry relative to the largest entry,
 over the cells. The matrices are unchanged to near round-off. `pays after` is how
 many assemblies with the compressed rule repay its cost. At low degree that is a
-single assembly. For Q3 on hexahedra it takes about 20. These times depend on the
+single assembly. For Q3 on hexahedra it takes about 24. These times depend on the
 assembly: C++ assembly per point is faster, so compression pays later there.
 
 ## What It Gives Up
@@ -84,7 +84,7 @@ degree 2 with a coefficient that is no polynomial:
 ```text
          shape  degree  points    exp(x + y + z)   1 / (1 + 4 r^2)
    tetrahedron       4      35           4.6e-04           4.4e-03
-   tetrahedron       6      84           1.6e-06           3.0e-04
+   tetrahedron       6      84           1.6e-06           3.6e-04
    tetrahedron       8     162           2.8e-09           2.5e-05
     hexahedron       4     125           2.0e-03           1.4e-03
     hexahedron       6     331           4.4e-06           1.0e-04
