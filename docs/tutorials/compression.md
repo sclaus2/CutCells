@@ -49,9 +49,13 @@ onto degree 4:
 
 A tetrahedron goes from 1276 points to 35, a factor of 36. A hexahedron goes to
 125, because the tensor space has more moments, and that is more costly to compute
-too. 2D rules gain less, since they start small; a rule smaller than the moment
-count is kept as it is, as on the 2D surfaces here. On a surface the moments are
-not independent, so the points stop below the moment count.
+too. 2D rules gain less, since they start small. Only rules with more points than
+moments are compressed; the others are copied as they are, as on the 2D
+surfaces here. How many that leaves depends on the part: at order 4 onto
+degree 4, every volume rule of a cut tetrahedron is compressed, about 60 % of
+those of hexahedra and prisms, and 0 to 18 % of the surface rules in 3D. On a
+surface the moments are not independent, so the points stop below the moment
+count.
 
 ## Mass Matrices
 
