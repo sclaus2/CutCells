@@ -130,14 +130,15 @@ constexpr const char* quadrays_cells
 /// The cell's level sets the terms name, as quadrays reads them; throws if
 /// quadrays does not take the cell.
 template <std::floating_point T, std::integral I>
-void sources_of(const MeshPart<T, I>& part, I cell_id, const CellTerms& ct, CellSources<T, I>& cs)
+void sources_of(const MeshPart<T, I>& part, I cell_id, const CellTerms& ct, CellSources<T, I>& cs,
+                quadrays::BoxFrame frame = quadrays::BoxFrame::orthogonal)
 {
     const CutResult<T, I>& r = *part.result;
     thread_local std::vector<const LevelSetFunction<T, I>*> level_sets;
     level_sets.clear();
     for (const int l : ct.level_sets)
         level_sets.push_back(r.level_sets[static_cast<std::size_t>(l)]);
-    if (!cell_sources(*r.mesh, std::span<const LevelSetFunction<T, I>* const>(level_sets), cell_id, cs))
+    if (!cell_sources(*r.mesh, std::span<const LevelSetFunction<T, I>* const>(level_sets), cell_id, cs, frame))
         throw std::invalid_argument(quadrays_cells);
 }
 
@@ -1209,7 +1210,8 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
         for (std::size_t j = i; j < entries.size() && entries[j].cell == c; ++j)
             cut = cut || !entries[j].whole;
         quadrays::make_clipped_box<T>(type, std::span<const T>(cs.vertices), mesh.gdim, box,
-                                      cut ? quadrays::BoxFrame::orthogonal : quadrays::BoxFrame::reference);
+                                      cut && !options.reference_frame ? quadrays::BoxFrame::orthogonal
+                                                                      : quadrays::BoxFrame::reference);
         points.points.clear();
         points.weights.clear();
         quadrays::Stats stats;
@@ -1223,7 +1225,8 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                 cell_terms(part, c, ct);
                 if (ct.terms.empty())
                     continue;
-                sources_of(part, c, ct, cs);
+                sources_of(part, c, ct, cs,
+                           options.reference_frame ? quadrays::BoxFrame::reference : quadrays::BoxFrame::orthogonal);
                 nudge_sources(part, c, ct, cs);
                 const std::span<const quadrays::Source<T>> sources(cs.sources);
                 for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
@@ -1482,7 +1485,8 @@ quadrays::LeafMesh<T> visualization_mesh(const MeshPart<T, I>& part, int degree,
             cell_terms(part, e.cell, ct);
             if (ct.terms.empty())
                 continue;
-            sources_of(part, e.cell, ct, cs);
+            sources_of(part, e.cell, ct, cs,
+                       options.reference_frame ? quadrays::BoxFrame::reference : quadrays::BoxFrame::orthogonal);
             nudge_sources(part, e.cell, ct, cs);
             for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
                 quadrays::append_leaves(cs.box, std::span<const quadrays::Source<T>>(cs.sources),

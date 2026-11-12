@@ -49,14 +49,14 @@ bool cell_source(const MeshView<T, I>& mesh, const LevelSetFunction<T, I>& ls, I
 
 template <std::floating_point T, std::integral I>
 bool cell_sources(const MeshView<T, I>& mesh, std::span<const LevelSetFunction<T, I>* const> level_sets,
-                  I cell_id, CellSources<T, I>& out)
+                  I cell_id, CellSources<T, I>& out, quadrays::BoxFrame frame)
 {
     const cell::type type = mesh.cell_type(cell_id);
     for (const LevelSetFunction<T, I>* ls : level_sets)
         if (!quadrays_takes(type, mesh.gdim, *ls))
             return false;
     cell_vertex_coords_basix(mesh, cell_id, out.vertices, out.nodes);
-    quadrays::make_clipped_box<T>(type, std::span<const T>(out.vertices), mesh.gdim, out.box);
+    quadrays::make_clipped_box<T>(type, std::span<const T>(out.vertices), mesh.gdim, out.box, frame);
     // the sources point into forms: size it first
     if (out.forms.size() < level_sets.size())
         out.forms.resize(level_sets.size());
@@ -76,9 +76,9 @@ template bool cell_source<double, int>(const MeshView<double, int>&, const Level
                                        CellSource<double, int>&, quadrays::BoxFrame);
 template bool cell_sources<float, int>(const MeshView<float, int>&,
                                        std::span<const LevelSetFunction<float, int>* const>, int,
-                                       CellSources<float, int>&);
+                                       CellSources<float, int>&, quadrays::BoxFrame);
 template bool cell_sources<double, int>(const MeshView<double, int>&,
                                         std::span<const LevelSetFunction<double, int>* const>, int,
-                                        CellSources<double, int>&);
+                                        CellSources<double, int>&, quadrays::BoxFrame);
 
 } // namespace cutcells::part

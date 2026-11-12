@@ -86,7 +86,8 @@ void append_cell_rules(cell::type cell_type, std::span<const T> vertex_coords, i
 {
     thread_local ClippedBox<T> cell;
     thread_local BoxBernstein<T> phi;
-    make_clipped_box(cell_type, vertex_coords, vertex_gdim(cell_type, vertex_coords), cell);
+    make_clipped_box(cell_type, vertex_coords, vertex_gdim(cell_type, vertex_coords), cell,
+                     opt.reference_frame ? BoxFrame::reference : BoxFrame::orthogonal);
     cell_bernstein_on_box(cell_type, degree, coeffs, cell, phi);
     append_rules(cell, phi, part_of(term, level_set), q, opt, parent_cell, rules, stats);
 }
@@ -97,7 +98,8 @@ void append_cell_rules(cell::type cell_type, std::span<const T> vertex_coords, c
                        std::int32_t parent_cell, quadrature::QuadratureRules<T>& rules, Stats& stats)
 {
     thread_local ClippedBox<T> cell;
-    make_clipped_box(cell_type, vertex_coords, vertex_gdim(cell_type, vertex_coords), cell);
+    make_clipped_box(cell_type, vertex_coords, vertex_gdim(cell_type, vertex_coords), cell,
+                     opt.reference_frame ? BoxFrame::reference : BoxFrame::orthogonal);
     append_rules(cell, analytic_source(phi, cell), part_of(term, level_set), q, opt, parent_cell, rules,
                  stats);
 }

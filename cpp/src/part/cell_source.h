@@ -104,6 +104,7 @@ bool cell_source(const MeshView<T, I>& mesh, const LevelSetFunction<T, I>& ls, I
 ///         on it
 template <std::floating_point T, std::integral I>
 bool cell_sources(const MeshView<T, I>& mesh, std::span<const LevelSetFunction<T, I>* const> level_sets,
-                  I cell_id, CellSources<T, I>& out);
+                  I cell_id, CellSources<T, I>& out,
+                  quadrays::BoxFrame frame = quadrays::BoxFrame::orthogonal);
 
 } // namespace cutcells::part

@@ -3123,6 +3123,10 @@ NB_MODULE(_cutcellscpp, m)
               "that never merge in the box (two sheets of one level set).")
       .def_rw("diagnose", &cutcells::quadrays::Options::diagnose,
               "Record why each bisection happened in QuadraysStats.causes.")
+      .def_rw("reference_frame", &cutcells::quadrays::Options::reference_frame,
+              "Triangles, tetrahedra and prisms: reduce the dimension in the cell's reference frame "
+              "(height lines along its edges) instead of an orthonormal frame with the smallest "
+              "bounding box. False (default). For comparing the two.")
       .def_rw("debug_dir", &cutcells::quadrays::Options::debug_dir,
               "Not empty: part.quadrature writes each cell that reaches a limit, debug_points or "
               "debug_seconds to this directory, at most debug_reports per call, as a JSON file with its "
