@@ -35,13 +35,15 @@ sys.path.insert(0, str(ROOT / "python" / "demo"))
 import demo_convergence  # noqa: E402
 import demo_disk  # noqa: E402
 import demo_ellipsoid  # noqa: E402
-import demo_flower  # noqa: E402
+import demo_cell_shapes  # noqa: E402
+import demo_compression  # noqa: E402
+import demo_degree_order  # noqa: E402
 import demo_gyroid  # noqa: E402
 import demo_mesh_aligned  # noqa: E402
 import demo_napkin_ring  # noqa: E402
 import demo_sphere  # noqa: E402
 import demo_sphere_plane  # noqa: E402
-import demo_torus  # noqa: E402
+import demo_points_accuracy  # noqa: E402
 
 pv.OFF_SCREEN = True
 
@@ -287,8 +289,21 @@ def gyroid_scenes() -> None:
     _write_interactive_view(OUTPUT_DIR / "gyroid-view.html", "Gyroid sheet", data)
 
 
-def flower_scenes() -> None:
-    demo_flower.plot(demo_flower.build(), OUTPUT_DIR / "flower-scene.png")
+def degree_order_scenes() -> None:
+    demo_degree_order.plot(demo_degree_order.build(), OUTPUT_DIR / "degree-order-plot.png")
+
+
+def cell_shapes_scenes() -> None:
+    demo_cell_shapes.plot({}, OUTPUT_DIR / "cell-shapes-points.png")
+
+
+def points_accuracy_scenes() -> None:
+    curves = demo_points_accuracy.read_sweep(OUTPUT_DIR / "quadrature-sweep-hex.csv")
+    demo_points_accuracy.plot(curves, OUTPUT_DIR / "points-accuracy-plot.png")
+
+
+def compression_scenes() -> None:
+    demo_compression.plot({}, OUTPUT_DIR / "compression-points.png")
 
 
 def ellipsoid_scenes() -> None:
@@ -296,13 +311,6 @@ def ellipsoid_scenes() -> None:
     demo_ellipsoid.plot(state, OUTPUT_DIR / "ellipsoid-scene.png")
     data = _view_data([(_surface(state["surface"]), ORANGE)])
     _write_interactive_view(OUTPUT_DIR / "ellipsoid-view.html", "Ellipsoid", data)
-
-
-def torus_scenes() -> None:
-    state = demo_torus.build()
-    demo_torus.plot(state, OUTPUT_DIR / "torus-scene.png")
-    data = _view_data([(_surface(state["parts"]["P3"]["surface"]), ORANGE)])
-    _write_interactive_view(OUTPUT_DIR / "torus-view.html", "Torus", data)
 
 
 def mesh_aligned_scenes() -> None:
@@ -313,9 +321,11 @@ SCENES = {
     "disk": disk_scenes,
     "convergence": convergence_scenes,
     "sphere": sphere_scenes,
-    "flower": flower_scenes,
+    "degree-order": degree_order_scenes,
+    "cell-shapes": cell_shapes_scenes,
+    "points-accuracy": points_accuracy_scenes,
+    "compression": compression_scenes,
     "ellipsoid": ellipsoid_scenes,
-    "torus": torus_scenes,
     "mesh-aligned": mesh_aligned_scenes,
     "sphere-plane": sphere_plane_scenes,
     "napkin-ring": napkin_ring_scenes,

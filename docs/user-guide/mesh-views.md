@@ -110,10 +110,14 @@ tri = cutcells.rectangle_mesh(-1, -1, 1, 1, 41, 41, cell_type="triangle")
 quad = cutcells.rectangle_mesh(-1, -1, 1, 1, 41, 41, cell_type="quadrilateral")
 tet = cutcells.box_mesh(-1, -1, -1, 1, 1, 1, 13, 13, 13, cell_type="tetrahedron")
 hexes = cutcells.box_mesh(-1, -1, -1, 1, 1, 1, 13, 13, 13, cell_type="hexahedron")
+prisms = cutcells.box_mesh(-1, -1, -1, 1, 1, 1, 13, 13, 13, cell_type="prism")
+pyramids = cutcells.box_mesh(-1, -1, -1, 1, 1, 1, 13, 13, 13, cell_type="pyramid")
 ```
 
 The tetrahedral mesh splits every grid cube into six tetrahedra around its
-diagonal, so it is conforming.
+diagonal, so it is conforming. The prismatic mesh splits every cube into two
+prisms along z, the pyramidal mesh into six pyramids with their apex at its
+centre, a node of its own.
 
 The following helpers return PyVista grids and require `pyvista`:
 
