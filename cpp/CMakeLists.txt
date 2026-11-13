@@ -44,6 +44,14 @@ file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/src/lut/generated"
   DESTINATION "${CUTCELLS_BUILD_INCLUDE_DIR}/cutcells/lut"
   FILES_MATCHING PATTERN "*.h")
 
+# No fused multiply-adds unless written: compilers for ARM (and x86 with FMA)
+# fuse a * b + c by default, which changes the last bits, and quadrays' cuts
+# decide on signs and comparisons that a last bit can flip. Without fusion
+# every platform computes what x86-64 does.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(cutcells PRIVATE -ffp-contract=off)
+endif()
+
 find_package(OpenMP QUIET COMPONENTS CXX)
 if(OpenMP_CXX_FOUND AND TARGET OpenMP::OpenMP_CXX)
   target_link_libraries(cutcells PUBLIC OpenMP::OpenMP_CXX)
