@@ -2124,7 +2124,7 @@ bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysi
         return true;
     }
     // Several: the largest score on a grid
-    constexpr int G = 7, total = G * G * G;
+    static constexpr int G = 7, total = G * G * G;
     const auto grid_point = [&p](int m)
     {
         VecD<T, 3> y;
@@ -4002,7 +4002,7 @@ void contact_points(Context<T>& ctx, const Func<T, 3>& f, const Func<T, 3>& g, c
 template <std::floating_point T>
 int crossing_direction(Context<T>& ctx, const Problem<T, 2>& p, int k)
 {
-    constexpr int G = 9;
+    static constexpr int G = 9;
     VecD<T, 2> score;
     score.fill(infinity<T>);
     bool seen = false;
