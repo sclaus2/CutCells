@@ -208,6 +208,14 @@ polynomial space of a given degree has, keeping that degree exact:
 small, stats = cutcells.compress_rules(volume_rules, degree=4)
 ```
 
+Rules are compressed in parallel, largest first. A build with OpenMP takes its
+thread count from `OMP_NUM_THREADS`; a build without it (the macOS wheels) uses
+`CUTCELLS_NUM_THREADS`, then `OMP_NUM_THREADS`, then all hardware threads. When
+CutCells is built from source for one machine, `-DCUTCELLS_NATIVE_COMPRESSION=ON`
+compiles the compression kernels for its CPU (`-march=native`), which makes
+compression 5 to 45 % faster with AVX2; the library then runs only on CPUs with
+the same instructions.
+
 ## Visualisation meshes
 
 ```python

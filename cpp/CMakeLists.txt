@@ -10,6 +10,9 @@ option(BUILD_SHARED_LIBS "Build CutCells with shared libraries." ON)
 option(CUTCELLS_ENABLE_IPO
   "Enable interprocedural optimization in release builds when supported."
   OFF)
+option(CUTCELLS_NATIVE_COMPRESSION
+  "Compile the compression kernels for the build machine's CPU (-march=native)."
+  OFF)
 option(BUILD_TESTING "Build the C++ tests in cpp/tests (run with ctest)." OFF)
 
 include(GNUInstallDirs)

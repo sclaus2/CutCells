@@ -7,10 +7,19 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <cstdlib>
+#include <exception>
 #include <limits>
+#include <mutex>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace cutcells::compression
 {
@@ -775,6 +784,76 @@ bool least_squares(const std::vector<double>& a, int m, const std::vector<int>& 
     return true;
 }
 
+/// Threads for compress_rules: OpenMP's setting where the library is built with
+/// it; otherwise CUTCELLS_NUM_THREADS, then OMP_NUM_THREADS, then the hardware's.
+int compression_threads()
+{
+#ifdef _OPENMP
+    return omp_get_max_threads();
+#else
+    for (const char* name : {"CUTCELLS_NUM_THREADS", "OMP_NUM_THREADS"})
+        if (const char* value = std::getenv(name))
+        {
+            const int n = std::atoi(value);
+            if (n > 0)
+                return n;
+        }
+    return static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+#endif
+}
+
+/// body(i) for i in [0, n), each index taken by the next free thread in order
+/// (dynamic scheduling, one index at a time): OpenMP where the library has it,
+/// std::thread otherwise (the macOS wheels are built without OpenMP). The first
+/// exception a body throws is rethrown once all threads have finished.
+template <typename F>
+void parallel_for(int n, F&& body)
+{
+    const int threads = std::min(compression_threads(), n);
+    if (threads <= 1)
+    {
+        for (int i = 0; i < n; ++i)
+            body(i);
+        return;
+    }
+    std::exception_ptr error;
+    std::mutex error_mutex;
+    const auto guarded = [&](int i)
+    {
+        try
+        {
+            body(i);
+        }
+        catch (...)
+        {
+            const std::lock_guard<std::mutex> lock(error_mutex);
+            if (!error)
+                error = std::current_exception();
+        }
+    };
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads)
+    for (int i = 0; i < n; ++i)
+        guarded(i);
+#else
+    std::atomic<int> next{0};
+    const auto work = [&]()
+    {
+        for (int i = next++; i < n; i = next++)
+            guarded(i);
+    };
+    std::vector<std::thread> pool;
+    pool.reserve(static_cast<std::size_t>(threads - 1));
+    for (int t = 1; t < threads; ++t)
+        pool.emplace_back(work);
+    work();
+    for (std::thread& t : pool)
+        t.join();
+#endif
+    if (error)
+        std::rethrow_exception(error);
+}
+
 /// max_j |(a w)_j - mom_j| over the columns `cols` with weights w.
 double moment_error(const std::vector<double>& a, int m, const std::vector<int>& cols,
                     const std::vector<double>& w, const std::vector<double>& mom)
@@ -1031,11 +1110,15 @@ void compress_rules(const quadrature::QuadratureRules<T>& rules, int degree, Mom
     std::vector<std::vector<T>> pts(n_rules), wts(n_rules);
     std::vector<double> res(n_rules, 0.0);
     std::vector<char> status(n_rules, 0); // 0 copied, 1 compressed, 2 negative weight
-#ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (int r = 0; r < n_rules; ++r)
+    // Largest rules first, one at a time: their cost varies by orders of magnitude
+    // between cells, and a large rule handed out last keeps one thread busy alone.
+    std::vector<int> order(n_rules);
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b)
+                     { return rules._offset[a + 1] - rules._offset[a] > rules._offset[b + 1] - rules._offset[b]; });
+    parallel_for(n_rules, [&](int i)
     {
+        const int r = order[static_cast<std::size_t>(i)];
         const std::size_t b = static_cast<std::size_t>(rules._offset[r]);
         const std::size_t n = static_cast<std::size_t>(rules._offset[r + 1]) - b;
         const std::span<const T> p(rules._points.data() + b * dim, n * dim);
@@ -1044,7 +1127,7 @@ void compress_rules(const quadrature::QuadratureRules<T>& rules, int degree, Mom
             status[r] = 1;
         else if (std::any_of(w.begin(), w.end(), [](T v) { return v < T(0); }))
             status[r] = 2;
-    }
+    });
 
     out = quadrature::QuadratureRules<T>{};
     out._tdim = dim;

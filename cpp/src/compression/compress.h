@@ -70,7 +70,9 @@ bool compress_rule(std::span<const T> points, std::span<const T> weights, int di
                    double& residual);
 
 /// @brief compress_rule for every rule of @p rules, into @p out (same parent
-/// cells, same order); rules run in parallel with OpenMP when it is enabled.
+/// cells, same order). Rules run in parallel, largest first: with OpenMP's
+/// threads where the library is built with it, otherwise with std::thread
+/// (CUTCELLS_NUM_THREADS, then OMP_NUM_THREADS, then all hardware threads).
 ///
 /// For Q_k elements on affine hexahedra, stiffness and mass integrands lie in
 /// Q_{2k}: degree = 2k keeps their assembly exact relative to the original
