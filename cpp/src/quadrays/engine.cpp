@@ -4327,8 +4327,9 @@ bool fold_split_points(Context<T>& ctx, const Problem<T, 2>& p, int k, bool top,
     // silhouette), and every sub-box along a curve is kept. So walk the curves on a
     // grid of the base instead: a curve passes through the cells whose corners differ in
     // sign, a fold lies where the slope along k differs in sign on the way through a
-    // cell, and two curves may cross only in a cell they share. Newton's method from
-    // there. What the grid does not resolve is left to the accuracy check.
+    // cell, a curve crosses itself where it turns sharply within a cell, and two curves
+    // may cross only in a cell they share. Newton's method from there. What the grid
+    // does not resolve is left to the accuracy check.
     constexpr int grid = 12;
     constexpr int n_nodes = (grid + 1) * (grid + 1);
     std::vector<T> samples;
@@ -4367,11 +4368,31 @@ bool fold_split_points(Context<T>& ctx, const Problem<T, 2>& p, int k, bool top,
         }
         return n;
     };
+    // Newton's method on grad f = 0, the Hessian from differences of the gradient
+    const auto stationary_system = [&](const Member& m)
+    {
+        return [&, m](const VecD<T, 2>& y, VecD<T, 2>& g, std::array<VecD<T, 2>, 2>& h)
+        {
+            const T eps = T(1e-6) * size;
+            gradient_of(m, y, g);
+            for (int d = 0; d < 2; ++d)
+            {
+                VecD<T, 2> yp = y, gp;
+                yp[d] += eps;
+                gradient_of(m, yp, gp);
+                h[0][d] = (gp[0] - g[0]) / eps;
+                h[1][d] = (gp[1] - g[1]) / eps;
+            }
+            return std::isfinite(g[0]) && std::isfinite(g[1]);
+        };
+    };
+    const T cell_reach = T(2) * std::max(p.hi[0] - p.lo[0], p.hi[1] - p.lo[1]) / T(grid);
     const auto walk_folds = [&](std::size_t a)
     {
         sample_members();
         const Member& m = members[a];
         std::array<VecD<T, 2>, 4> at;
+        std::array<VecD<T, 2>, 4> normal;
         for (int i = 0; i < grid; ++i)
             for (int j = 0; j < grid; ++j)
             {
@@ -4379,15 +4400,45 @@ bool fold_split_points(Context<T>& ctx, const Problem<T, 2>& p, int k, bool top,
                 if (n < 2)
                     continue;
                 int up = -1, down = -1;
+                T turn = T(1); // the least cosine between the curve's normals where it leaves the cell
                 for (int e = 0; e < n; ++e)
                 {
-                    VecD<T, 2> g;
+                    VecD<T, 2>& g = normal[static_cast<std::size_t>(e)];
                     gradient_of(m, at[static_cast<std::size_t>(e)], g);
                     const T norm = scaled_norm(std::span<const T>(g));
                     if (g[k] > T(1e-10) * norm)
                         up = e;
                     else if (g[k] < -T(1e-10) * norm)
                         down = e;
+                    const T length = std::sqrt(g[0] * g[0] + g[1] * g[1]);
+                    for (int d = 0; d < 2; ++d)
+                        g[d] = length > T(0) ? g[d] / length : T(0);
+                    for (int o = 0; o < e; ++o)
+                    {
+                        const VecD<T, 2>& h = normal[static_cast<std::size_t>(o)];
+                        turn = std::min(turn, g[0] * h[0] + g[1] * h[1]);
+                    }
+                }
+                // Where two level sets touch, their meeting curve crosses itself: the surface
+                // function has a saddle on its zero set, and the curve turns by the angle
+                // between its branches within a cell. In exact arithmetic the saddle is a
+                // fold along every direction; rounding makes it two folds a rounding apart, or
+                // none (two branches that pass each other), and the integrand of the base has
+                // a kink there either way, which no bisection isolates (the check then fails at
+                // every depth). So the base splits at the saddle whatever the rounding, where
+                // Newton's method on the gradient finds one in or next to the cell.
+                if (turn < T(0.5))
+                {
+                    const VecD<T, 2> c0 = node(i, j), c1 = node(i + 1, j + 1);
+                    const VecD<T, 2> centre = {T(0.5) * (c0[0] + c1[0]), T(0.5) * (c0[1] + c1[1])};
+                    VecD<T, 2> y = centre;
+                    VecD<T, 2> g;
+                    std::array<VecD<T, 2>, 2> h;
+                    if (newton(stationary_system(m), y)
+                        && std::abs(y[0] - centre[0]) + std::abs(y[1] - centre[1]) <= cell_reach
+                        && stationary_system(m)(y, g, h) && h[0][0] * h[1][1] - h[0][1] * h[1][0] < T(0)
+                        && inside(y, p.lo, p.hi) && on_its_curve(m, y) && splits_at(m, y))
+                        add(crossings, y);
                 }
                 if (up < 0 || down < 0)
                     continue;
@@ -4405,23 +4456,10 @@ bool fold_split_points(Context<T>& ctx, const Problem<T, 2>& p, int k, bool top,
     {
         sample_members();
         const Member& m = members[a];
-        const T eps = T(1e-6) * size;
-        const auto hessian = [&](const VecD<T, 2>& y, VecD<T, 2>& g, std::array<VecD<T, 2>, 2>& h)
-        {
-            gradient_of(m, y, g);
-            for (int d = 0; d < 2; ++d)
-            {
-                VecD<T, 2> yp = y, gp;
-                yp[d] += eps;
-                gradient_of(m, yp, gp);
-                h[0][d] = (gp[0] - g[0]) / eps;
-                h[1][d] = (gp[1] - g[1]) / eps;
-            }
-            return std::isfinite(g[0]) && std::isfinite(g[1]);
-        };
+        const auto hessian = stationary_system(m);
         const auto at_node = [&](int i, int j)
         { return samples[a * n_nodes + static_cast<std::size_t>(i * (grid + 1) + j)]; };
-        const T reach = T(2) * std::max(p.hi[0] - p.lo[0], p.hi[1] - p.lo[1]) / T(grid);
+        const T reach = cell_reach;
         for (int i = 0; i <= grid; ++i)
             for (int j = 0; j <= grid; ++j)
             {

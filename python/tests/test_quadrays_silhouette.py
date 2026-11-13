@@ -212,8 +212,8 @@ def test_ball_and_plane(n):
 
 @pytest.mark.parametrize("n", [3, 5, 9])
 def test_two_cylinders(n):
-    """Their zero curves on faces are straight, some along the height of the base. On
-    the interface, the cell where the cylinders touch is less accurate."""
+    """Their zero curves on faces are straight, some along the height of the base. Where
+    the cylinders touch, their meeting curve crosses itself."""
     radius = 0.6
     mesh = box_mesh(n)
     a = cc.create_level_set(mesh, cylinder(CENTRE, radius, 2), degree=2, name="a")
@@ -226,9 +226,27 @@ def test_two_cylinders(n):
     assert worst <= 20000
 
     total, smallest, worst = measures(result, "a = 0 and b < 0")
-    assert abs(total - 8 * radius**2) < 1e-8
+    assert abs(total - 8 * radius**2) < 1e-11
     assert smallest > 0
     assert worst <= 2000
+
+
+@pytest.mark.parametrize("shift", [-1e-14, -1e-15, 1e-15, 1e-14])
+def test_two_cylinders_touching_under_rounding(shift):
+    """Where the cylinders touch, b on the zero set of a is a saddle with value 0, and
+    rounding (fused multiply-adds, say) leaves it a little above or below: two folds of the
+    meeting curve a rounding apart, or none. The base must split at the saddle either way;
+    without, the integrand of the base kept a kink that no bisection reached, and the cells
+    where the cylinders touch lost 7e-8 of area each. The shift changes the exact area by
+    less than 1e-12."""
+    radius = 0.6
+    mesh = box_mesh(3)
+    a = cc.create_level_set(mesh, cylinder(CENTRE, radius, 2), degree=2, name="a")
+    b = cc.create_level_set(mesh, lambda x: cylinder(CENTRE, radius, 1)(x) + shift, degree=2, name="b")
+    result = cc.cut(mesh, [a, b])
+    total, smallest, _ = measures(result, "a = 0 and b < 0")
+    assert abs(total - 8 * radius**2) < 1e-11
+    assert smallest > 0
 
 
 @pytest.mark.parametrize("n", [3, 5, 9])
@@ -246,7 +264,7 @@ def test_three_cylinders(n):
     assert worst <= 20000
 
     total, smallest, worst = measures(result, "a = 0 and b < 0 and c < 0")
-    assert abs(total - 8 * (2 - math.sqrt(2)) * radius**2) < 1e-7
+    assert abs(total - 8 * (2 - math.sqrt(2)) * radius**2) < 1e-11
     assert smallest > 0
     assert worst <= 2000
 

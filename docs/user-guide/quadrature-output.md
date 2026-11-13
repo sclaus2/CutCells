@@ -43,8 +43,9 @@ set cross or two level sets touch, it bisects. The same holds one level up: a
 cell is not bisected where each level set, along an axis, is monotone or has a
 monotone derivative (an analytic level set needs second-derivative bounds for this).
 Its lines take all roots, and the base splits at the silhouettes, the curves
-where a zero set turns along that axis, and at the folds of the curves where two
-zero sets meet (`QuadraysOptions.silhouette_splits`). A point splits the base only
+where a zero set turns along that axis, at the folds of the curves where two
+zero sets meet, and where such a curve crosses itself, as it does where the two
+zero sets touch (`QuadraysOptions.silhouette_splits`). A point splits the base only
 if it may bound the part, and two curves that cross at different heights along
 the lines do not split it. This keeps a ball in a cell to a few thousand points,
 and two balls, or a ball and a plane, to some 10,000 to 25,000 in the worst cell
