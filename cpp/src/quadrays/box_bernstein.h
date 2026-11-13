@@ -76,6 +76,21 @@ template <std::floating_point T>
 void cell_bernstein_on_box(cell::type cell_type, int degree, std::span<const T> coeffs,
                            const ClippedBox<T>& box, BoxBernstein<T>& out);
 
+/// @brief A pyramid's level set on the cube of its collapsed coordinates.
+///
+/// The pyramid is the image of the unit cube under (s, t, z) -> ((1 - z) s,
+/// (1 - z) t, z), and its level set phi of degree n, stored in the basis
+/// B^m_i(s) B^m_j(t) B^n_k(z), m = n - k (bernstein.h), is a polynomial of
+/// degree (n, n, n) there. Unlike (1 - z)^n phi on the reference box, it adds
+/// no zero at the apex: the face z = 1, which the map collapses to the apex,
+/// takes phi's value there.
+///
+/// @param degree  degree n of the level set (at most 12)
+/// @param coeffs  Bernstein coefficients in CutCells' order
+/// @param out     tensor form of degree (n, n, n) on the unit cube
+template <std::floating_point T>
+void collapsed_pyramid_form(int degree, std::span<const T> coeffs, BoxBernstein<T>& out);
+
 /// @brief Value of @p p at the point @p s (any point, not only in the box).
 template <std::floating_point T>
 T evaluate(const BoxBernstein<T>& p, std::span<const T> s);

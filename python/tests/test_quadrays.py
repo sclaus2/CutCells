@@ -114,3 +114,47 @@ def test_terms_on_one_level_set():
     result = cutcells.cut(mesh, cutcells.create_level_set(mesh, plane, degree=1, name="phi"))
     rules = result["phi < 0 or phi > 0"].quadrature(order=3, backend="quadrays")
     assert np.sum(rules.weights) == pytest.approx(8.0, rel=1e-13)
+
+
+def pyramid_mesh(n: int) -> cutcells.MeshView:
+    """[-1, 1]^3 with n points per side, six pyramids per grid cube around a node at its centre."""
+    g = np.linspace(-1.0, 1.0, n)
+    coords = [np.array([x, y, z]) for x in g for y in g for z in g]
+    node = lambda i, j, k: (i * n + j) * n + k
+    connectivity = []
+    for i, j, k in itertools.product(range(n - 1), repeat=3):
+        apex = len(coords)
+        coords.append(np.array([g[i] + g[i + 1], g[j] + g[j + 1], g[k] + g[k + 1]]) / 2)
+        a, b = (i, i + 1), (j, j + 1)
+        c = (k, k + 1)
+        faces = [
+            [node(a[0], b[0], c[0]), node(a[1], b[0], c[0]), node(a[1], b[1], c[0]), node(a[0], b[1], c[0])],
+            [node(a[0], b[0], c[1]), node(a[0], b[1], c[1]), node(a[1], b[1], c[1]), node(a[1], b[0], c[1])],
+            [node(a[0], b[0], c[0]), node(a[0], b[0], c[1]), node(a[1], b[0], c[1]), node(a[1], b[0], c[0])],
+            [node(a[0], b[1], c[0]), node(a[1], b[1], c[0]), node(a[1], b[1], c[1]), node(a[0], b[1], c[1])],
+            [node(a[0], b[0], c[0]), node(a[0], b[1], c[0]), node(a[0], b[1], c[1]), node(a[0], b[0], c[1])],
+            [node(a[1], b[0], c[0]), node(a[1], b[0], c[1]), node(a[1], b[1], c[1]), node(a[1], b[1], c[0])],
+        ]
+        for f in faces:
+            connectivity += f + [apex]
+    n_cells = len(connectivity) // 5
+    return cutcells.MeshView(np.array(coords), np.array(connectivity, dtype=np.int32),
+                             np.arange(n_cells + 1, dtype=np.int32) * 5, np.full(n_cells, 14, dtype=np.int32), 3)
+
+
+@pytest.mark.parametrize("degree", [1, 2])
+def test_pyramids_cut_only_where_the_surface_is(degree):
+    # the classification reads a pyramid's level set on the cube of its
+    # collapsed coordinates, which has no zero at the apex
+    mesh = pyramid_mesh(5)
+    centre = np.array([0.1, -0.05, 0.03])
+    phi = cutcells.create_level_set(
+        mesh, lambda X: np.sqrt(sum((X[d] - centre[d]) ** 2 for d in range(3))) - 0.6, degree=degree, name="phi")
+    result = cutcells.cut(mesh, phi)
+    surface = result[phi == 0].quadrature(order=2)
+    holding = np.unique(surface.parent_map[np.diff(surface.offset) > 0]).size
+    assert result.num_cut_cells == holding
+    # cells taken as whole are not lost: the two sides fill the box
+    inside = result[phi < 0].quadrature(order=4).weights.sum()
+    outside = result[phi > 0].quadrature(order=4).weights.sum()
+    assert inside + outside == pytest.approx(8.0, rel=1e-9)

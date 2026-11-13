@@ -599,6 +599,53 @@ const std::vector<T>& equispaced_bernstein_inverse(int n)
 } // namespace
 
 template <std::floating_point T>
+void collapsed_pyramid_form(int degree, std::span<const T> coeffs, BoxBernstein<T>& out)
+{
+    const int n = degree, n1 = n + 1;
+    if (n < 0 || n > 12)
+        throw std::invalid_argument("quadrays: pyramid level sets of degree above 12 are not supported");
+    int np = 0;
+    for (int k = 0; k <= n; ++k)
+        np += (n - k + 1) * (n - k + 1);
+    if (static_cast<int>(coeffs.size()) != np)
+        throw std::invalid_argument("quadrays: wrong number of pyramid Bernstein coefficients");
+    // degree elevation from m to n: B^m_i = sum_l C(m, i) C(n - m, l - i) / C(n, l) B^n_l
+    auto choose = [](int a, int b) -> long double
+    {
+        if (b < 0 || b > a)
+            return 0.0L;
+        long double c = 1.0L;
+        for (int r = 1; r <= b; ++r)
+            c = c * (a - b + r) / r;
+        return c;
+    };
+    out.dim = 3;
+    out.degree = {n, n, n};
+    out.coeffs.assign(static_cast<std::size_t>(n1 * n1 * n1), T(0));
+    std::vector<long double> e(static_cast<std::size_t>(n1 * n1));
+    int idx = 0;
+    for (int k = 0; k <= n; ++k)
+    {
+        const int m = n - k;
+        for (int i = 0; i <= m; ++i)
+            for (int l = 0; l <= n; ++l)
+                e[static_cast<std::size_t>(i * n1 + l)] = choose(m, i) * choose(n - m, l - i) / choose(n, l);
+        for (int i = 0; i <= m; ++i)
+            for (int j = 0; j <= m; ++j, ++idx)
+            {
+                const long double c = coeffs[static_cast<std::size_t>(idx)];
+                if (c == 0.0L)
+                    continue;
+                for (int l1 = j; l1 <= j + n - m; ++l1)
+                    for (int l0 = i; l0 <= i + n - m; ++l0)
+                        out.coeffs[static_cast<std::size_t>(l0 + n1 * (l1 + n1 * k))]
+                            += static_cast<T>(c * e[static_cast<std::size_t>(i * n1 + l0)]
+                                              * e[static_cast<std::size_t>(j * n1 + l1)]);
+            }
+    }
+}
+
+template <std::floating_point T>
 void cell_bernstein_on_box(cell::type cell_type, int degree, std::span<const T> coeffs,
                            const ClippedBox<T>& box, BoxBernstein<T>& out)
 {
@@ -1198,6 +1245,8 @@ void isolate_roots(std::span<const T> c, T a, T b, std::vector<T>& roots, std::v
 
 template void cell_bernstein_on_box<float>(cell::type, int, std::span<const float>, const ClippedBox<float>&,
                                           BoxBernstein<float>&);
+template void collapsed_pyramid_form<float>(int, std::span<const float>, BoxBernstein<float>&);
+template void collapsed_pyramid_form<double>(int, std::span<const double>, BoxBernstein<double>&);
 template float evaluate<float>(const BoxBernstein<float>&, std::span<const float>);
 template void gradient<float>(const BoxBernstein<float>&, std::span<const float>, std::span<float>);
 template void derivative<float>(const BoxBernstein<float>&, int, BoxBernstein<float>&);
