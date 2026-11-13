@@ -99,6 +99,133 @@ def test_analytic_beats_its_interpolant():
     assert abs(np.sum(straight.weights) - BALL) > 100 * exact_error
 
 
+def cell_totals(rules):
+    """The sum of the weights of each cell."""
+    offsets, weights = np.asarray(rules.offset), np.asarray(rules.weights)
+    return {int(c): weights[offsets[i]:offsets[i + 1]].sum() for i, c in enumerate(rules.parent_map)}
+
+
+def cell_error(part, options, reference):
+    """The sum over the cells of the error of their measure."""
+    totals = cell_totals(part.quadrature(order=6, options=options))
+    return sum(abs(totals.get(c, 0.0) - reference.get(c, 0.0)) for c in set(totals) | set(reference))
+
+
+@pytest.mark.parametrize("kind", ["hex", "tet"])
+def test_curved_pieces_converge_under_refinement(kind):
+    """With plain points (QuadraysOptions.anchor_folds = 0) the error of each
+    cell's piece falls with h. The traces of a sphere on the faces of the
+    cells near its poles are circles of any radius, whose branch points can
+    lie just beyond the base segments of a certified box: there the points
+    per segment of the order converge slowly, whatever h, unless the accuracy
+    check bisects (QuadraysOptions.tolerance). Whole meshes hide it:
+    neighbours sharing such a face err by opposite amounts."""
+    make = {"hex": cutcells.structured_hexahedron_mesh_view, "tet": cutcells.structured_tetrahedron_mesh_view}
+    phi = cutcells.analytic_sphere([0.1, -0.05, 0.03], 0.6, name="b")
+    reference = cutcells.QuadraysOptions()
+    reference.points_per_segment = 14
+    reference.tolerance = -1
+    checked, unchecked = cutcells.QuadraysOptions(), cutcells.QuadraysOptions()
+    checked.anchor_folds = unchecked.anchor_folds = 0
+    unchecked.tolerance = -1
+    errors = {"surface": [], "volume": []}
+    first_unchecked = last_unchecked = None
+    for n in (5, 9, 17):
+        result = cutcells.cut(make[kind](-1, -1, -1, 1, 1, 1, n, n, n), phi)
+        for name, part in (("surface", result[phi == 0]), ("volume", result[phi < 0])):
+            exact = cell_totals(part.quadrature(order=6, options=reference))
+            errors[name].append(cell_error(part, checked, exact))
+            if name == "surface":
+                last_unchecked = cell_error(part, unchecked, exact)
+                first_unchecked = first_unchecked or last_unchecked
+    for e in errors.values():
+        assert all(a > 1.4 * b for a, b in zip(e, e[1:])), errors
+        assert e[0] > 50 * e[-1], errors
+    assert errors["surface"][-1] < 1e-7
+    # without the check, the surface's error does not fall
+    assert last_unchecked > 0.1 * first_unchecked
+
+
+@pytest.mark.parametrize("kind", ["hex", "tet"])
+def test_anchored_folds_cut_the_cells_errors(kind):
+    """QuadraysOptions.anchor_folds: where a face trace of the sphere turns
+    back along the height direction near a base segment (a fold), the
+    segment's Gauss points are taken in s, x = x_f -+ s^2, anchored at the
+    fold. Without the accuracy check, the cells' errors fall far below those
+    of the plain points, for a few more points with n = 1, and complementary
+    volumes still add up to the box."""
+    make = {"hex": cutcells.structured_hexahedron_mesh_view, "tet": cutcells.structured_tetrahedron_mesh_view}
+    phi = cutcells.analytic_sphere([0.1, -0.05, 0.03], 0.6, name="b")
+    result = cutcells.cut(make[kind](-1, -1, -1, 1, 1, 1, 17, 17, 17), phi)
+    reference = cutcells.QuadraysOptions()
+    reference.points_per_segment = 14
+    plain, anchored = cutcells.QuadraysOptions(), cutcells.QuadraysOptions()
+    reference.tolerance = plain.tolerance = anchored.tolerance = -1
+    plain.anchor_folds = 0
+    anchored.anchor_folds = 1
+    for part in (result[phi == 0], result[phi < 0]):
+        exact = cell_totals(part.quadrature(order=6, options=reference))
+        assert cell_error(part, anchored, exact) < cell_error(part, plain, exact) / 20
+        points = len(part.quadrature(order=6, options=anchored).weights)
+        assert points < 1.5 * len(part.quadrature(order=6, options=plain).weights)
+    anchored.anchor_folds = 2
+    inside = result[phi < 0].quadrature(order=6, options=anchored)
+    outside = result[phi > 0].quadrature(order=6, options=anchored)
+    assert np.sum(inside.weights) + np.sum(outside.weights) == pytest.approx(8.0, rel=1e-13)
+
+
+@pytest.mark.parametrize("kind", ["hex", "tet"])
+def test_anchored_folds_follow_the_silhouette(kind):
+    """QuadraysOptions.anchor_folds: on coarse cells the sphere turns
+    perpendicular to a box's height direction just beyond the box (its
+    silhouette), where the height function has a square-root branch point
+    too. The height lines of the base boxes are anchored at it, and their
+    base segments where it crosses the lines' bounds: with n = 2 the cells'
+    surface errors fall far below those the accuracy check leaves on plain
+    points, with or without the check; with the default, well below."""
+    make = {"hex": cutcells.structured_hexahedron_mesh_view, "tet": cutcells.structured_tetrahedron_mesh_view}
+    phi = cutcells.analytic_sphere([0.1, -0.05, 0.03], 0.6, name="b")
+    part = cutcells.cut(make[kind](-1, -1, -1, 1, 1, 1, 9, 9, 9), phi)[phi == 0]
+    reference, unchecked, plain, two = (cutcells.QuadraysOptions() for _ in range(4))
+    reference.tolerance = unchecked.tolerance = -1
+    reference.points_per_segment = 14
+    reference.anchor_folds = unchecked.anchor_folds = two.anchor_folds = 2
+    two.moment_tolerance = 0
+    plain.anchor_folds = 0
+    exact = cell_totals(part.quadrature(order=6, options=reference))
+    checked_plain = cell_error(part, plain, exact)
+    for options in (two, unchecked):
+        error = cell_error(part, options, exact)
+        assert error < 1e-10
+        assert error < checked_plain / 1000
+    default_error = cell_error(part, cutcells.QuadraysOptions(), exact)
+    assert default_error < checked_plain / 20
+
+
+def test_flat_pieces_get_no_extra_points():
+    mesh = cutcells.structured_tetrahedron_mesh_view(-1, -1, -1, 1, 1, 1, 5, 5, 5)
+    phi = plane_callables([1.0, 0.3, -0.2], 0.137)
+    result = cutcells.cut(mesh, phi)
+    unchecked = cutcells.QuadraysOptions()
+    unchecked.tolerance = -1
+    for part in (result["phi = 0"], result["phi < 0"]):
+        checked, plain = part.quadrature(order=6), part.quadrature(order=6, options=unchecked)
+        assert len(checked.weights) == len(plain.weights)
+        assert np.sum(checked.weights) == pytest.approx(np.sum(plain.weights), rel=1e-14)
+
+
+@pytest.mark.parametrize("kind", ["hex", "tet"])
+def test_large_margins_are_capped(kind):
+    """No axis has a margin above 1/sqrt(3) where the normal points between
+    them: margin 0.9 would bisect until the limits, and leave boxes uncertified."""
+    make = {"hex": cutcells.structured_hexahedron_mesh_view, "tet": cutcells.structured_tetrahedron_mesh_view}
+    result = cutcells.cut(make[kind](-1, -1, -1, 1, 1, 1, 5, 5, 5), cutcells.analytic_sphere([0.1, -0.05, 0.03], 0.6))
+    options = cutcells.QuadraysOptions()
+    options.margin = 0.9
+    area = result["phi = 0"].quadrature(order=6, options=options)
+    assert np.sum(area.weights) == pytest.approx(4.0 * math.pi * 0.6**2, rel=1e-8)
+
+
 @pytest.mark.parametrize("kind", ["hex", "tet"])
 def test_cells_are_classified_by_the_analytic_level_set(kind):
     """A ball about the centre of the cell [0, 0.5]^3 that reaches 0.01 beyond
@@ -111,7 +238,10 @@ def test_cells_are_classified_by_the_analytic_level_set(kind):
     mesh = box_mesh(kind, 4)
     result = cutcells.cut(mesh, cutcells.analytic_sphere(centre, radius))
     assert result.num_cut_cells == (7 if kind == "hex" else 18)
-    volume = result["phi < 0"].quadrature(order=5, mode="full", backend="quadrays")
+    # the hexahedron holding the ball takes more points than the default limit
+    options = cutcells.QuadraysOptions()
+    options.max_points = -1
+    volume = result["phi < 0"].quadrature(order=5, mode="full", backend="quadrays", options=options)
     area = result["phi = 0"].quadrature(order=5, mode="cut_only", backend="quadrays")
     assert np.sum(volume.weights) == pytest.approx(4.0 / 3.0 * math.pi * radius**3, rel=1e-6)
     assert np.sum(area.weights) == pytest.approx(4.0 * math.pi * radius**2, rel=1e-5)
@@ -128,6 +258,40 @@ def test_plane_from_callables_is_exact(kind, n):
     volume, area = totals(result, order=3)
     assert np.sum(volume.weights) == pytest.approx(4.0, rel=1e-13)
     assert np.sum(area.weights) == pytest.approx(4.0 * math.sqrt(1.13), rel=1e-13)
+
+
+@pytest.mark.parametrize("kind", ["hex", "tet"])
+def test_planes_from_callables_are_linear(kind):
+    """Callables without second-derivative bounds whose gradient bounds are
+    points, a plane's, are integrated as a level set of degree 1: quadrays
+    evaluates no gradient of them, and their rules are the P1 plane's."""
+    a, b = np.array([1.0, 0.3, -0.2]), 0.137
+    gradients = []
+
+    def gradient(x):
+        gradients.append(x)
+        return a
+
+    def box_bounds(lo, hi):
+        low = float(np.sum(np.minimum(a * lo, a * hi)) - b)
+        high = float(np.sum(np.maximum(a * lo, a * hi)) - b)
+        return [low, high, a[0], a[0], a[1], a[1], a[2], a[2]]
+
+    mesh = box_mesh(kind, 5)
+    analytic = cutcells.cut(mesh, cutcells.AnalyticLevelSet(lambda x: float(a @ x - b), gradient, box_bounds))
+    p1 = cutcells.cut(mesh, cutcells.create_level_set(mesh, lambda x: a @ x - b, degree=1, name="phi"))
+    for part in ("phi = 0", "phi < 0"):
+        gradients.clear()
+        rules = analytic[part].quadrature(order=4, mode="cut_only")
+        assert not gradients
+        reference = p1[part].quadrature(order=4, mode="cut_only")
+        # a corner of a cell within rounding of the plane may leave a sliver in one of them
+
+        def weighty(weights):
+            return np.count_nonzero(np.asarray(weights) > 1e-14 * np.max(weights))
+
+        assert weighty(rules.weights) == weighty(reference.weights)
+        assert np.sum(rules.weights) == pytest.approx(np.sum(reference.weights), rel=1e-13)
 
 
 def test_callables_match_the_compiled_sphere():

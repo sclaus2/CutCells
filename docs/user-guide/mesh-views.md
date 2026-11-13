@@ -57,6 +57,22 @@ Use C-contiguous arrays with numeric dtypes (`float64` for coordinates and
 `int32` for connectivity metadata) unless you have a reason to use the
 `float32` bindings.
 
+## Where the data lives
+
+A `MeshView` does not copy the mesh. It points into the NumPy arrays it was
+given and keeps a reference to them, so they stay alive as long as the view
+does. Its `coordinates`, `connectivity` and `offsets` properties are those
+same arrays, and editing an array in place changes the mesh the view
+describes. Arrays of another dtype or layout, such as `int64` connectivity,
+are converted once when the view is made; the view then holds the converted
+copy. The view converts the VTK cell types into its own small array.
+
+This makes a `MeshView` cheap to put over a mesh that already lives
+elsewhere, such as the geometry of a DOLFINx mesh. The arrays of a mesh built
+with `rectangle_mesh` or `box_mesh` are held by the view alone, so there the
+view is in effect the mesh. `mesh_from_pyvista` may share the grid's point
+array.
+
 ## Facets and surface meshes
 
 The coordinates may have more components than the cells' dimension: the
@@ -85,11 +101,23 @@ area = rules.weights.sum()                      # the disk on the plane
 
 ## Structured mesh helpers
 
-CutCells provides lightweight helpers for common examples:
+CutCells provides lightweight helpers for common examples. They build a
+`MeshView` on a rectangle or a box with NumPy alone; the arguments are the
+corners and the numbers of grid points per direction:
 
 ```python
-mesh = cutcells.structured_triangle_mesh_view(-1, -1, 1, 1, 41, 41)
+tri = cutcells.rectangle_mesh(-1, -1, 1, 1, 41, 41, cell_type="triangle")
+quad = cutcells.rectangle_mesh(-1, -1, 1, 1, 41, 41, cell_type="quadrilateral")
+tet = cutcells.box_mesh(-1, -1, -1, 1, 1, 1, 13, 13, 13, cell_type="tetrahedron")
+hexes = cutcells.box_mesh(-1, -1, -1, 1, 1, 1, 13, 13, 13, cell_type="hexahedron")
+prisms = cutcells.box_mesh(-1, -1, -1, 1, 1, 1, 13, 13, 13, cell_type="prism")
+pyramids = cutcells.box_mesh(-1, -1, -1, 1, 1, 1, 13, 13, 13, cell_type="pyramid")
 ```
+
+The tetrahedral mesh splits every grid cube into six tetrahedra around its
+diagonal, so it is conforming. The prismatic mesh splits every cube into two
+prisms along z, the pyramidal mesh into six pyramids with their apex at its
+centre, a node of its own.
 
 The following helpers return PyVista grids and require `pyvista`:
 
@@ -107,6 +135,18 @@ mesh = cutcells.mesh_from_pyvista(tet_grid, tdim=3)
 
 If `tdim` is not supplied, `mesh_from_pyvista` tries to infer it from the first
 cell type.
+
+The other way, `cutcells.to_pyvista` converts a `MeshView`, or the
+visualisation mesh of a selected part, to a PyVista grid:
+
+```python
+grid = cutcells.to_pyvista(mesh)
+pieces = cutcells.to_pyvista(part.visualization_mesh(mode="cut_only", degree=3))
+surface = pieces.extract_surface(nonlinear_subdivision=3, algorithm="dataset_surface")
+```
+
+The pieces of quadrays are Lagrange cells; `nonlinear_subdivision` draws them
+curved.
 
 ## Inspecting a mesh
 

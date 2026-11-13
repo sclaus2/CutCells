@@ -5,9 +5,12 @@
 
 #include "level_set_cell.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -396,6 +399,73 @@ const std::vector<T>& cached_reference_lagrange_points(cell::type ctype, int deg
     return inserted_it->second;
 }
 
+/// Reference coordinates of a cell's dofs: the dof coordinates pulled back
+/// through the affine map of the cell (axes from the push-forward, so the
+/// convention is CutCells' own; least squares, so entities of lower dimension
+/// than the space, such as facets in 3D, work too).
+template <std::floating_point T, std::integral I>
+std::vector<T> pull_back_dof_coordinates(const LevelSetMeshData<T, I>& md,
+                                         cell::type ctype,
+                                         const std::vector<T>& vertex_coords,
+                                         int gdim, int tdim,
+                                         std::span<const I> cell_dofs)
+{
+    std::vector<T> ref(static_cast<std::size_t>((tdim + 1) * tdim), T(0));
+    for (int k = 0; k < tdim; ++k)
+        ref[static_cast<std::size_t>((k + 1) * tdim + k)] = T(1);
+    const std::vector<T> x = cell::push_forward_affine_map<T>(
+        ctype, vertex_coords, gdim, std::span<const T>(ref.data(), ref.size()));
+    // J (gdim x tdim): column k = F(e_k) - F(0); G = J^T J
+    std::vector<T> J(static_cast<std::size_t>(gdim * tdim));
+    for (int k = 0; k < tdim; ++k)
+        for (int d = 0; d < gdim; ++d)
+            J[static_cast<std::size_t>(d * tdim + k)]
+                = x[static_cast<std::size_t>((k + 1) * gdim + d)] - x[static_cast<std::size_t>(d)];
+    std::array<T, 9> G{};
+    for (int a = 0; a < tdim; ++a)
+        for (int b = 0; b < tdim; ++b)
+            for (int d = 0; d < gdim; ++d)
+                G[static_cast<std::size_t>(a * 3 + b)]
+                    += J[static_cast<std::size_t>(d * tdim + a)] * J[static_cast<std::size_t>(d * tdim + b)];
+    // inverse of G (tdim <= 3)
+    std::array<T, 9> Gi{};
+    if (tdim == 1)
+        Gi[0] = T(1) / G[0];
+    else if (tdim == 2)
+    {
+        const T det = G[0] * G[4] - G[1] * G[3];
+        Gi[0] = G[4] / det; Gi[1] = -G[1] / det; Gi[3] = -G[3] / det; Gi[4] = G[0] / det;
+    }
+    else
+    {
+        const T det = G[0] * (G[4] * G[8] - G[5] * G[7]) - G[1] * (G[3] * G[8] - G[5] * G[6])
+                      + G[2] * (G[3] * G[7] - G[4] * G[6]);
+        Gi[0] = (G[4] * G[8] - G[5] * G[7]) / det; Gi[1] = (G[2] * G[7] - G[1] * G[8]) / det;
+        Gi[2] = (G[1] * G[5] - G[2] * G[4]) / det; Gi[3] = (G[5] * G[6] - G[3] * G[8]) / det;
+        Gi[4] = (G[0] * G[8] - G[2] * G[6]) / det; Gi[5] = (G[2] * G[3] - G[0] * G[5]) / det;
+        Gi[6] = (G[3] * G[7] - G[4] * G[6]) / det; Gi[7] = (G[1] * G[6] - G[0] * G[7]) / det;
+        Gi[8] = (G[0] * G[4] - G[1] * G[3]) / det;
+    }
+    std::vector<T> X(cell_dofs.size() * static_cast<std::size_t>(tdim));
+    for (std::size_t j = 0; j < cell_dofs.size(); ++j)
+    {
+        const T* xj = md.dof_coordinate(cell_dofs[j]);
+        std::array<T, 3> rhs{};
+        for (int a = 0; a < tdim; ++a)
+            for (int d = 0; d < gdim; ++d)
+                rhs[static_cast<std::size_t>(a)]
+                    += J[static_cast<std::size_t>(d * tdim + a)] * (xj[d] - x[static_cast<std::size_t>(d)]);
+        for (int a = 0; a < tdim; ++a)
+        {
+            T v = T(0);
+            for (int b = 0; b < tdim; ++b)
+                v += Gi[static_cast<std::size_t>(a * 3 + b)] * rhs[static_cast<std::size_t>(b)];
+            X[j * static_cast<std::size_t>(tdim) + static_cast<std::size_t>(a)] = v;
+        }
+    }
+    return X;
+}
+
 /// Determine the cell::type for a cell in the level-set mesh data.
 /// Uses cell_types array if available, otherwise infers from tdim and
 /// number of DOFs per cell (assuming equispaced Lagrange).
@@ -526,6 +596,7 @@ void make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
                 = global_ls.dof_values[static_cast<std::size_t>(cell_dofs[static_cast<std::size_t>(i)])];
         cell_ls.nodal_order = degree;
         std::span<const T> dof_ref;
+        std::vector<T> pulled_back;
         if (!md.cell_reference_points.empty())
         {
             dof_ref = std::span<const T>(
@@ -537,6 +608,29 @@ void make_cell_level_set(const LevelSetFunction<T, I>& global_ls,
                 cached_reference_lagrange_points<T>(ctype, degree);
             dof_ref = std::span<const T>(
                 cached_dof_ref.data(), cached_dof_ref.size());
+            // Without reference points, read the node positions off the dof
+            // coordinates: pull them back through the cell's affine map (the
+            // map the cut uses). Equispaced data reproduce the cached lattice
+            // and keep it; data at other nodes (from degree 3 on, e.g. the
+            // GLL-warped default of Basix/DOLFINx) get their own positions
+            // instead of being read as equispaced values.
+            if (static_cast<int>(dof_ref.size()) == ndofs * cell_ls.tdim)
+            {
+                pulled_back = pull_back_dof_coordinates<T, I>(
+                    md, ctype, cell_ls.parent_vertex_coords, gdim, cell_ls.tdim,
+                    cell_dofs);
+                bool lattice = true;
+                for (std::size_t i = 0; i < pulled_back.size(); ++i)
+                {
+                    if (std::abs(pulled_back[i] - dof_ref[i]) > T(1e-10))
+                    {
+                        lattice = false;
+                        break;
+                    }
+                }
+                if (!lattice)
+                    dof_ref = std::span<const T>(pulled_back.data(), pulled_back.size());
+            }
         }
         if (static_cast<int>(dof_ref.size()) != ndofs * cell_ls.tdim)
         {

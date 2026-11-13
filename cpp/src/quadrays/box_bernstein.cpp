@@ -1157,10 +1157,75 @@ T evaluate_1d(std::span<const T> c, T s)
 }
 
 template <std::floating_point T>
+void reparametrise_1d(std::span<T> c, T a, T b, std::span<T> out)
+{
+    compose_affine_1d(static_cast<int>(c.size()) - 1, a, b, c.data(), out.data());
+}
+
+template <std::floating_point T>
 T bracketed_root(std::span<const T> c, T a, T b, T lo, T hi, T glo, T ghi)
 {
     const T length = b - a;
     return illinois_root([&](T x) { return evaluate_1d(c, (x - a) / length); }, lo, hi, glo, ghi);
+}
+
+template <std::floating_point T>
+T newton_root(std::span<const T> c, T a, T b, T lo, T hi, T glo, T ghi)
+{
+    const T length = b - a;
+    const int n = static_cast<int>(c.size()) - 1;
+    const T tol = scaled_tolerance<T>(4e-16);
+    if (n == 1)
+    {
+        const T x = a + length * c[0] / (c[0] - c[1]);
+        return std::clamp(x, lo, hi);
+    }
+    // the first guess: for a quadratic the root itself, else the secant
+    T x = (lo * ghi - hi * glo) / (ghi - glo);
+    if (n == 2)
+    {
+        const T A = c[0] - T(2) * c[1] + c[2], B = T(2) * (c[1] - c[0]), C = c[0];
+        const T d = B * B - T(4) * A * C;
+        if (d >= T(0))
+        {
+            const T q = -T(0.5) * (B + (B >= T(0) ? std::sqrt(d) : -std::sqrt(d)));
+            for (const T root : {A != T(0) ? q / A : T(-1), q != T(0) ? C / q : T(-1)})
+            {
+                const T candidate = a + length * root;
+                if (candidate > lo && candidate < hi)
+                {
+                    x = candidate;
+                    break;
+                }
+            }
+        }
+    }
+    // Newton's method, kept in the bracket
+    check_degree(n);
+    std::array<T, max_box_degree + 1> w;
+    for (int it = 0; it < 100; ++it)
+    {
+        if (!(x > lo && x < hi))
+            x = T(0.5) * (lo + hi);
+        const T s = (x - a) / length, t = T(1) - s;
+        std::copy(c.begin(), c.end(), w.begin());
+        for (int r = 1; r < n; ++r)
+            for (int j = 0; j <= n - r; ++j)
+                w[j] = t * w[j] + s * w[j + 1];
+        const T g = t * w[0] + s * w[1];
+        if (g == T(0) || hi - lo <= tol * std::max(T(1), std::abs(x)))
+            return x;
+        if ((g > T(0)) == (ghi > T(0)))
+            hi = x;
+        else
+            lo = x;
+        const T slope = T(n) * (w[1] - w[0]) / length;
+        const T next = slope != T(0) ? x - g / slope : T(0.5) * (lo + hi);
+        if (std::abs(next - x) <= tol * std::max(T(1), std::abs(x)) && next >= lo && next <= hi)
+            return next;
+        x = next;
+    }
+    return T(0.5) * (lo + hi);
 }
 
 namespace
@@ -1258,7 +1323,9 @@ template float scaled_norm<float>(std::span<const float>);
 template void margins<float>(const BoxBernstein<float>&, std::span<const float>, std::span<float>, BoxBernstein<float>&,
                              std::span<float>);
 template float evaluate_1d<float>(std::span<const float>, float);
+template void reparametrise_1d<float>(std::span<float>, float, float, std::span<float>);
 template float bracketed_root<float>(std::span<const float>, float, float, float, float, float, float);
+template float newton_root<float>(std::span<const float>, float, float, float, float, float, float);
 template void isolate_roots<float>(std::span<const float>, float, float, std::vector<float>&, std::vector<float>&);
 
 template void cell_bernstein_on_box<double>(cell::type, int, std::span<const double>, const ClippedBox<double>&,
@@ -1274,7 +1341,9 @@ template double scaled_norm<double>(std::span<const double>);
 template void margins<double>(const BoxBernstein<double>&, std::span<const double>, std::span<double>,
                               BoxBernstein<double>&, std::span<double>);
 template double evaluate_1d<double>(std::span<const double>, double);
+template void reparametrise_1d<double>(std::span<double>, double, double, std::span<double>);
 template double bracketed_root<double>(std::span<const double>, double, double, double, double, double, double);
+template double newton_root<double>(std::span<const double>, double, double, double, double, double, double);
 template void isolate_roots<double>(std::span<const double>, double, double, std::vector<double>&, std::vector<double>&);
 
 } // namespace cutcells::quadrays

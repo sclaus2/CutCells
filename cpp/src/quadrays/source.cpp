@@ -104,9 +104,16 @@ void isolate(const Source<T>& phi, const std::array<double, 3>& p, const std::ar
         return;
     }
     // phi vanishes on the interval up to the tolerance: the line lies in the
-    // zero set (a plane in a face, say) or touches it; no breakpoint
+    // zero set (a plane in a face, say) or touches it, no breakpoint; or, where
+    // no slope is bounded, it crosses the zero set here, with ends of opposite
+    // signs that differ by more than rounding, whose root must not be lost
     if (magnitude <= zero)
+    {
+        const T ga = value_on_line(phi, p, v, a), gb = value_on_line(phi, p, v, b);
+        if (ga != T(0) && gb != T(0) && (ga > T(0)) != (gb > T(0)) && std::abs(ga - gb) > 1e-3 * zero)
+            roots.push_back(illinois_root([&](T t) { return value_on_line(phi, p, v, t); }, a, b, ga, gb));
         return;
+    }
     const T m = T(0.5) * (a + b);
     isolate(phi, p, v, a, m, zero, depth + 1, visited, roots);
     isolate(phi, p, v, m, b, zero, depth + 1, visited, roots);
@@ -368,14 +375,28 @@ bool linear_form(const Source<T>& phi, BoxBernstein<T>& form)
         throw std::invalid_argument("quadrays: linear_form needs an analytic level set");
     const int m = phi.tdim;
     std::array<T, 9> matrix{}, lo{}, hi{};
+    const std::array<T, 3> origin{};
     for (int i = 0; i < m; ++i)
         matrix[i * m + i] = T(1);
-    if (!affine_hessian(phi, std::span<const T>(std::array<T, 3>{}), std::span<const T>(matrix.data(), 3 * m), m,
-                        lo, hi))
-        return false;
-    for (int i = 0; i < m * m; ++i)
-        if (lo[i] != T(0) || hi[i] != T(0))
+    const std::span<const T> axes(matrix.data(), static_cast<std::size_t>(3 * m));
+    if (phi.analytic->hessian_bounds != nullptr)
+    {
+        if (!affine_hessian(phi, std::span<const T>(origin), axes, m, lo, hi))
             return false;
+        for (int i = 0; i < m * m; ++i)
+            if (lo[i] != T(0) || hi[i] != T(0))
+                return false;
+    }
+    else
+    {
+        // without second-derivative bounds: gradient bounds that are points
+        AffineBounds<T> b;
+        if (!affine_bounds(phi, std::span<const T>(origin), axes, m, b) || !b.has_derivatives)
+            return false;
+        for (int j = 0; j < m; ++j)
+            if (b.dmin[j] != b.dmax[j])
+                return false;
+    }
     // degree 1: the coefficients are the values at the corners
     form.dim = m;
     form.degree = {1, m >= 2 ? 1 : 0, m == 3 ? 1 : 0};

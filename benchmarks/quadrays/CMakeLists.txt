@@ -130,6 +130,14 @@ if(CUTCELLS_WITH_ALGOIM)
   target_link_libraries(quadrays_sweep PRIVATE quadrays_algoim)
 endif()
 
+# quadrays against algoim's multi-polynomial engine on parts bounded by several
+# level sets, on the same polynomials and cubes
+if(CUTCELLS_WITH_ALGOIM)
+  add_executable(quadrays_multi_level_sets multi_level_sets.cpp)
+  target_include_directories(quadrays_multi_level_sets PRIVATE "${QUADRAYS_SUPPORT_DIR}")
+  target_link_libraries(quadrays_multi_level_sets PRIVATE CUTCELLS::cutcells quadrays_algoim)
+endif()
+
 # algoim's quadrature on the parts of the front end (formerly the library's
 # backend='algoim'), and its checks
 if(CUTCELLS_WITH_ALGOIM)

@@ -26,7 +26,7 @@ The primary helper is `create_level_set`:
 import numpy as np
 import cutcells
 
-mesh = cutcells.structured_triangle_mesh_view(-1, -1, 1, 1, 41, 41)
+mesh = cutcells.rectangle_mesh(-1, -1, 1, 1, 41, 41, cell_type="triangle")
 
 def circle(X):
     # X has shape (gdim, num_dofs).
@@ -78,16 +78,28 @@ result = cutcells.cut(mesh, ball)                       # named "phi"
 named = cutcells.analytic_sphere([0.0, 0.0, 0.0], 0.5, name="ball")
 ```
 
+quadrays bounds an analytic level set by first-order Taylor models, which
+certify smaller boxes for a distance function than for a polynomial: for the
+same sphere, `signed_distance=False` (`|x - c|^2 - r^2`, the same zero set and
+signs) takes two to three times fewer points on hexahedra, and a little fewer
+on tetrahedra.
+
 Other sources:
 
 - `cutcells.AnalyticLevelSet(value, gradient, box_bounds, taylor_bounds=None)`
-  from Python callables (slow, for experiments);
+  from Python callables (slow, for experiments). `box_bounds` should also bound
+  the gradient: with only the two bounds of the value, quadrays cannot certify a
+  box and bisects to its limits;
 - `cutcells.AnalyticLevelSet.from_capsule(capsule)` from a capsule holding the
   C struct of function pointers (fast, for compiled geometry libraries);
 - `cutcells.shapeforest.analytic_level_set(shape)` for ShapeForest shapes,
   expressions and tapes (ShapeForest is optional).
 
 Each takes `name=`; `cut` calls an analytic level set without one `phi`.
+quadrays integrates an analytic level set that is linear on a cell as one of
+degree 1 there: one whose second-derivative bounds vanish on the cell or,
+without them, whose gradient bounds over it are points (the exact gradient of
+a plane, say).
 
 ## Multiple level sets
 

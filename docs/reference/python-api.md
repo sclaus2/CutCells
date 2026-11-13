@@ -11,7 +11,8 @@ mesh utilities. `CutResult`, `MeshPart`, `EntityTable`, `EntityRules` and
 | --- | --- |
 | `MeshView` | Background mesh view from coordinates, connectivity, offsets, cell types, and `tdim`. |
 | `mesh_from_pyvista(grid, tdim=None)` | Convert a PyVista `UnstructuredGrid` to `MeshView`. |
-| `structured_triangle_mesh_view(...)` | Pure NumPy structured triangular mesh helper. |
+| `rectangle_mesh(x0, y0, x1, y1, nx, ny, cell_type="triangle")` | Structured `MeshView` of a rectangle built with NumPy; `nx`, `ny` grid points; `"triangle"` or `"quadrilateral"`. |
+| `box_mesh(x0, y0, z0, x1, y1, z1, nx, ny, nz, cell_type="tetrahedron")` | Structured `MeshView` of a box built with NumPy; `"tetrahedron"` (conforming, six per grid cube) or `"hexahedron"`. |
 | `rectangle_triangle_mesh(...)` | PyVista triangular rectangle mesh helper. |
 | `rectangle_quad_mesh(...)` | PyVista quadrilateral rectangle mesh helper. |
 | `box_tetrahedron_mesh(...)` | PyVista tetrahedral box mesh helper. |
@@ -150,7 +151,12 @@ are the vertices.
 
 | Attribute | Meaning |
 | --- | --- |
-| `margin` | Required `\|d_k psi\| / \|grad psi\|` on a box for a height direction; also the accuracy control. |
+| `margin` | Required `\|d_k psi\| / \|grad psi\|` on a box for a height direction, at most `0.9/sqrt(D)` on boxes with `D` free coordinates. |
+| `tolerance` | Relative accuracy of curved pieces: boxes are bisected while `q` and `q + 1` points per segment disagree by more. 0 (default): the rule's own rate, `(h kappa / 2)^(2q)` for cells of size `h` and curvature `kappa`; negative: no check. |
+| `anchor_folds` | `n > 0`: base segments that end at or within four lengths of a fold of a curved zero set (where it turns back along the height direction) take `n q` Gauss points in `s`, `x = x_f -+ s^2`, anchored at the fold. In 3D cells the same applies to the silhouette of the level set seen along the height direction: on the height lines of the base boxes, and on their base segments where it crosses the lines' bounds. 1 (default): as `moment_tolerance` allows, and twice the points on the boxes it does not; 2: polynomials of degree `2q - 1` stay exact everywhere, at twice the points; 0: off. |
+| `moment_tolerance` | The accuracy check also compares a moment of what a mass matrix sees, a Legendre polynomial squared along each axis of the cell, relative to the piece as the measure is. A box that fails first takes twice the points on its anchored segments, then up to four points more per direction, and is bisected only if that fails too. This is what it asks of six or more points per segment; of fewer, this value to the power `q / 6`. 1e-8 (default); 0: the measure only. |
+| `fold_splits` | A box with two free coordinates that no axis certifies is split at the folds of its zero curves (where one turns along the height direction) and where two of them cross, instead of bisected; its height lines take all roots. True (default). With `tolerance` 0 such boxes must agree with `q + 1` points to `1e-12`, else they are bisected. |
+| `follow_curves` | Curve parts in 3D cells follow the curve: arcs between the faces of the cell, split where branches cross and where a further level set vanishes, with Gauss-Legendre points in arc length. `True` (default); a cell it cannot follow goes by height lines (`QuadraysStats.curve_fallbacks`). |
 | `max_depth`, `max_bisections` | Bisection limits per level and per cell. |
 | `points_per_segment` | Gauss-Legendre points per segment; 0 chooses them from the order. |
 | `diagnose` | Record why each bisection happened (`QuadraysStats.causes`). |
@@ -178,6 +184,7 @@ are the vertices.
 
 | Name | Purpose |
 | --- | --- |
+| `to_pyvista(mesh)` | Convert a `MeshView`, a `CutMesh` or a `QuadraysLeafMesh` (curved Lagrange cells, with the cell array `parent`) to a PyVista `UnstructuredGrid`. |
 | `cutmesh_to_pyvista(cut_mesh)` | Convert a CutCells `CutMesh` to PyVista. |
 | `QuadraysLeafMesh` | Lagrange cells of the quadrays decomposition: `points`, `connectivity`, `offsets`, `vtk_types`, `parent`, `degree`. |
 | `write_vtk(filename, vertex_coordinates, connectivity, offsets, element_types, gdim)` | Low-level VTK/VTU writer for flat arrays. |

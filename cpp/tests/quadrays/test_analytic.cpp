@@ -6,7 +6,15 @@
 // Analytic level sets through quadrays' interface (analytic.h):
 //  - Taylor models and their adapter enclose sampled values and derivatives,
 //    for square roots (the term algoim's sqrt leaves out), exp, log, sin, cos,
-//    division and the branch helpers;
+//    division and the branch helpers; the remainders of sqrt, log, exp and
+//    1 / x from their end values and of squares enclose random models' samples
+//    and are never wider than the second-order ones;
+//  - a capped shape's distance has finite gradients and derivative models
+//    inside, where the length of its positive parts is that of (0, 0), and its
+//    wall's whole area;
+//  - an operation that cannot bound its result gives a lost model, without an
+//    exception, and every later operation keeps it, branch helpers included;
+//    a branch that min certainly does not take loses nothing;
 //  - planes are integrated exactly, per cell to 1e-13;
 //  - the signed-distance sphere |x - c| - r reproduces the polynomial sphere's
 //    errors (test_sphere.cpp) on hexahedra and tetrahedra, and the quadratic
@@ -78,6 +86,42 @@ struct Branches
         using std::max;
         using std::min;
         return abs(x[0]) + max(x[1], 0.5 * x[2]) - min(x[2], x[0] * x[1]) - 0.4;
+    }
+};
+
+/// The union of two balls: around the small ball's centre, where its distance
+/// has no derivative bounds, the large ball's distance is certainly smaller.
+struct TwoSpheres
+{
+    SphereDistance large, small;
+
+    template <typename V>
+    V operator()(const std::array<V, 3>& x) const
+    {
+        using std::min;
+        return min(large(x), small(x));
+    }
+};
+
+/// A cylinder capped far outside the mesh, as ShapeForest writes it: inside and
+/// on it, the length of the positive parts is that of (0, 0), whose derivative
+/// is no 0 / 0.
+struct CappedCylinder
+{
+    V3 c = {0, 0, 0};
+    double r = 0, half = 0;
+
+    template <typename V>
+    V operator()(const std::array<V, 3>& x) const
+    {
+        using std::abs;
+        using std::max;
+        using std::min;
+        using std::sqrt;
+        const V dx = x[0] - c[0], dy = x[1] - c[1];
+        const V d0 = sqrt(dx * dx + dy * dy) - r, d1 = abs(x[2] - c[2]) - half;
+        const V p0 = max(d0, V(0.0)), p1 = max(d1, V(0.0));
+        return min(max(d0, d1), V(0.0)) + sqrt(p0 * p0 + p1 * p1);
     }
 };
 
@@ -180,6 +224,164 @@ void test_enclosures(const AnalyticLevelSet& phi, const std::string& name, const
             worst = std::max(worst, outside(g[i], b[2 + 2 * i], b[3 + 2 * i]));
     }
     check(worst <= 1e-12, name + ": box bounds miss samples by " + std::to_string(worst));
+}
+
+/// The remainders of sqrt, log, exp and 1 / x from their end values (concave
+/// or convex about alpha) and of squares (one-sided) enclose sampled values of
+/// random models, functions anywhere in their eps band included, sqrt over
+/// ranges that reach 0 too; and they are never wider than the second-order
+/// remainders C/2 b^2.
+void test_tight_remainders()
+{
+    using TM = Taylor<double, 2>;
+    unsigned seed = 12345;
+    const auto uniform = [&seed](double lo, double hi)
+    {
+        seed = seed * 1103515245u + 12345u;
+        return lo + (hi - lo) * ((seed >> 8) & 0xffff) / 65535.0;
+    };
+    double worst = 0;
+    int wider = 0;
+    for (int trial = 0; trial < 400; ++trial)
+    {
+        TM a;
+        a.alpha = uniform(0.2, 2.0);
+        a.beta = {uniform(-0.6, 0.6), uniform(-0.6, 0.6)};
+        a.eps = uniform(0.0, 0.3);
+        const double b = deviation(a);
+        const auto band = [&](double y0, double y1, double w)
+        { return a.alpha + a.beta[0] * y0 + a.beta[1] * y1 + a.eps * w; };
+        const auto encloses = [&](const TM& r, auto&& f, double x, double y0, double y1)
+        {
+            const double m = r.alpha + r.beta[0] * y0 + r.beta[1] * y1;
+            worst = std::max(worst, (std::abs(f(x) - m) - r.eps) / (1.0 + std::abs(f(x))));
+        };
+        const TM s = sqrt(a), sq = a * a;
+        const bool clear = b < a.alpha;
+        const TM l = clear ? log(a) : TM(0.0), e = exp(a), inv = clear ? 1.0 / a : TM(0.0);
+        for (int i = 0; i <= 8; ++i)
+            for (int j = 0; j <= 8; ++j)
+                for (const double w : {-1.0, -0.37, 0.0, 0.81, 1.0})
+                {
+                    const double y0 = -1 + 0.25 * i, y1 = -1 + 0.25 * j, x = band(y0, y1, w);
+                    if (x >= 0)
+                        encloses(s, [](double v) { return std::sqrt(v); }, x, y0, y1);
+                    encloses(sq, [](double v) { return v * v; }, x, y0, y1);
+                    encloses(e, [](double v) { return std::exp(v); }, x, y0, y1);
+                    if (clear)
+                    {
+                        encloses(l, [](double v) { return std::log(v); }, x, y0, y1);
+                        encloses(inv, [](double v) { return 1.0 / v; }, x, y0, y1);
+                    }
+                }
+        if (clear)
+        {
+            // the second-order remainder of sqrt, which the end values never exceed
+            const double lo = a.alpha - b, C = 0.25 / (lo * std::sqrt(lo));
+            wider += s.eps > 0.5 / std::sqrt(a.alpha) * a.eps + 0.5 * C * b * b + 1e-15;
+        }
+    }
+    check(worst <= 1e-12, "tight remainders miss samples by " + std::to_string(worst));
+    check(wider == 0, std::to_string(wider) + " sqrt remainders wider than C/2 b^2");
+
+    // sqrt of a range reaching 0 keeps its linear part
+    TM y;
+    y.alpha = 1.0;
+    y.beta = {1.0, 0.0};
+    const TM r = sqrt(y);
+    check(bounded(r) && r.beta[0] > 0 && r.alpha - deviation(r) <= 0 && r.alpha + deviation(r) >= std::sqrt(2.0),
+          "sqrt over [0, 2]: a linear model that encloses [0, sqrt 2]");
+}
+
+/// A capped cylinder's length of positive parts, (0, 0) inside it: finite point
+/// gradients inside and on the wall, with the wall's normal there, Taylor models
+/// of the derivatives inside, and the wall's whole area on hexahedra.
+void test_capped_shape()
+{
+    const CappedCylinder cylinder = {{0.03, -0.02, 0.01}, 0.3, 10.0};
+    const AnalyticLevelSet phi = analytic_level_set(cylinder);
+    double g[3];
+    const double wall[3] = {0.33, -0.02, 0.01}, inside[3] = {0.13, -0.02, 0.01};
+    phi.gradient(wall, g, phi.context);
+    check(std::abs(g[0] - 1) < 1e-12 && std::abs(g[1]) < 1e-12 && std::abs(g[2]) < 1e-12,
+          "capped cylinder: the wall's normal is (1, 0, 0), got (" + std::to_string(g[0]) + ", " + std::to_string(g[1])
+              + ", " + std::to_string(g[2]) + ")");
+    phi.gradient(inside, g, phi.context);
+    check(std::abs(g[0] - 1) < 1e-12 && std::abs(g[1]) < 1e-12 && std::abs(g[2]) < 1e-12,
+          "capped cylinder: the gradient inside is (1, 0, 0)");
+    test_enclosures(phi, "capped cylinder inside", {0.15, -0.02, 0.01}, 0.02, 1);
+
+    // Interval bounds cannot certify min(d, 0) + max(d, 0) where d changes sign:
+    // its boxes go uncertified, and with the default depth the bisection budget
+    // goes to the first of them (2.4% of the area was missing). At a depth the
+    // budget covers, every box finds its roots.
+    Options opt;
+    opt.max_depth = 4;
+    SelectionExpr expr = parse_selection_expr("phi = 0");
+    compile_selection_expr(expr, {"phi"});
+    const double h = 0.5;
+    double area = 0;
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+            for (int k = 0; k < 4; ++k)
+            {
+                ClippedBox<double> box;
+                const TestCell cell = grid_cells("hex", {-1 + i * h, -1 + j * h, -1 + k * h}, h, {0, 0, 0}).front();
+                make_clipped_box<double>(cell.type, cell.vertices, 3, box);
+                const Source<double> source = analytic_source(phi, box);
+                quadrature::QuadratureRules<double> rule;
+                Stats stats;
+                append_rules<double>(box, std::span<const Source<double>>(&source, 1),
+                                     std::span<const SelectionTerm>(expr.terms), 5, opt, 0, rule, stats);
+                for (const double w : rule._weights)
+                    area += w;
+            }
+    const double exact = 2 * M_PI * cylinder.r * 2;
+    std::printf("capped cylinder: wall's area error %.1e at depth %d\n", std::abs(area - exact), opt.max_depth);
+    check(std::abs(area - exact) < 1e-9 * exact,
+          "capped cylinder: the wall's area " + std::to_string(area) + " against " + std::to_string(exact));
+}
+
+/// Operations that cannot bound their results give lost models, and every
+/// operation on a lost model gives one, with either operand lost.
+void test_lost_models()
+{
+    using TM = Taylor<double, 2>;
+    TM y; // y_0 on [-1, 1]
+    y.beta[0] = 1;
+    const TM one(1.0);
+    check(!bounded(one / y), "lost: division by a range containing 0");
+    check(!bounded(sqrt(y - 2.0)), "lost: sqrt of a negative range");
+    check(!bounded(log(y + 1.0)), "lost: log of a range reaching 0");
+    check(bounded(one / (y + 2.0)) && bounded(sqrt(y + 1.0)) && bounded(log(y + 2.0)),
+          "kept: ranges clear of 0, and sqrt of one reaching 0");
+
+    // arithmetic, functions, and branch helpers with either operand lost
+    const TM lost = one / y, x = y + 3.0;
+    const TM results[] = {lost + x, x - lost, lost * x, x * lost, lost / x, x / lost, lost * 0.0, -lost,
+                          sqrt(lost), log(lost), exp(lost), sin(lost), cos(lost), abs(lost), integer_power(lost, 2),
+                          min(x, lost), min(lost, x), max(x, lost), max(lost, x), hull(x, lost), hull(lost, x)};
+    int kept = 0;
+    for (const TM& r : results)
+        kept += bounded(r);
+    check(kept == 0, "lost: " + std::to_string(kept) + " operations on a lost model gave a bounded one");
+
+    // |y_0| = sqrt(y_0^2) around 0: the value has a bound, its derivative none
+    Dual<TM, 2> u;
+    u.v = y;
+    u.d[0] = one;
+    const Dual<TM, 2> r = sqrt(u * u);
+    check(bounded(r.v) && !bounded(r.d[0]) && !bounded(r), "lost: the derivative of |y_0| at 0, not its value");
+
+    // second derivatives of a distance: none around its centre
+    const SphereDistance distance = {centre, radius};
+    const AnalyticLevelSet phi = analytic_level_set(distance);
+    const double axes[9] = {0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1};
+    const double away[3] = {centre[0] + 0.5, centre[1], centre[2]};
+    double bounds[18];
+    check(phi.hessian_bounds(away, axes, 3, bounds, phi.context) == 1, "second derivatives away from the centre");
+    check(phi.hessian_bounds(centre.data(), axes, 3, bounds, phi.context) == 0,
+          "no second derivatives around the centre");
 }
 
 /// Values and gradients of the adapter against the functor and central differences.
@@ -428,8 +630,10 @@ int main()
     const SphereQuadratic quadratic = {centre, radius};
     const Wavy wavy;
     const Branches branches;
+    const TwoSpheres two_spheres = {{{0.0, 0.0, 0.0}, 1.0}, {{0.5, 0.0, 0.0}, 0.1}};
     const AnalyticLevelSet phi_distance = analytic_level_set(distance), phi_quadratic = analytic_level_set(quadratic),
-                           phi_wavy = analytic_level_set(wavy), phi_branches = analytic_level_set(branches);
+                           phi_wavy = analytic_level_set(wavy), phi_branches = analytic_level_set(branches),
+                           phi_two_spheres = analytic_level_set(two_spheres);
 
     // enclosures
     test_point_values(distance, phi_distance, "distance");
@@ -441,13 +645,23 @@ int main()
     test_enclosures(phi_wavy, "wavy", {0.2, -0.1, 0.3}, 0.2, 1);
     test_enclosures(phi_branches, "branches", {0.02, 0.1, 0.05}, 0.1, 1);
     test_enclosures(phi_branches, "branches, kinks inside", {0.0, 0.0, 0.0}, 0.2, 1);
+    test_enclosures(phi_two_spheres, "two balls around the small one's centre", {0.5, 0.0, 0.0}, 0.05, 1);
+    test_tight_remainders();
+    test_capped_shape();
+    test_lost_models();
 
     test_plane_exactness();
     test_cell_sign();
 
-    // The distance against the polynomial sphere's numbers at n = 8
-    // (test_sphere.cpp, the prototype's Bernstein path), 25% slack, with Taylor
-    // models over whole boxes as in phase 2.
+    // The distance against the polynomial sphere at n = 8, both with Taylor
+    // models over whole boxes as in phase 2, anchored points and the accuracy
+    // checks, 50% slack: the two decompositions differ, and at q = 3 the
+    // checks bound both only by the rule's rate. (With plain points and no
+    // checks the distance's errors followed the polynomial's only while its
+    // first-order models of the square root were so loose that it bisected
+    // more; the remainders from the end values certify boxes as large as the
+    // polynomial's.) The table's errors are the polynomial path's with plain
+    // points (test_sphere.cpp).
     struct Expected
     {
         const char* mesh;
@@ -467,26 +681,40 @@ int main()
     for (const Expected& p : polynomial)
     {
         const Errors e = sphere_errors(&phi_distance, p.mesh, 8, p.q, p.part, whole_boxes);
-        const bool ok = e.l1 <= 1.25 * p.l1 && e.worst <= 1.25 * p.worst;
+        const Errors poly = sphere_errors(nullptr, p.mesh, 8, p.q, p.part, whole_boxes);
+        // rounding of the cells' measures; the accuracy check's moment takes either path far
+        // below the table in some boxes, so that the other path is held to the table
+        const double floor = 1e-12;
+        const bool ok = e.l1 <= 1.5 * std::max(poly.l1, p.l1) + floor && e.worst <= 1.5 * std::max(poly.worst, p.worst) + floor;
         std::printf("distance %s q = %d %-8s L1 %.1e (polynomial %.1e), worst %.1e (%.1e), bisections %d %s\n", p.mesh,
-                    p.q, p.part, e.l1, p.l1, e.worst, p.worst, e.bisections, ok ? "" : "FAILED");
+                    p.q, p.part, e.l1, poly.l1, e.worst, poly.worst, e.bisections, ok ? "" : "FAILED");
         failures += !ok;
-        if (std::string(p.mesh) == "tet")
-            whole_tet_bisections = e.bisections;
     }
+    // the bisections of whole boxes with plain points and no checks, as below
+    Options whole_plain = whole_boxes;
+    whole_plain.tolerance = -1;
+    whole_plain.anchor_folds = 0;
+    whole_tet_bisections = sphere_errors(&phi_distance, "tet", 8, 5, "phi < 0", whole_plain).bisections;
 
     // Taylor models over the sub-boxes that meet a tetrahedron (the default):
     // at most half the whole boxes' bisections, and at q = 5 the errors of the
-    // polynomial path in the same (orthogonal) frame, 25% slack. Whole boxes
-    // bisect more, and so integrate more accurately at the same q.
+    // polynomial path in the same (orthogonal) frame, 25% slack, both with
+    // plain points and without the accuracy checks, which bisect to the same
+    // tolerance; with the defaults, no larger errors. Whole boxes bisect more,
+    // and so integrate more accurately at the same q.
+    Options plain;
+    plain.tolerance = -1;
+    plain.anchor_folds = 0;
     for (const Expected& p : polynomial)
     {
         if (std::string(p.mesh) != "tet" || p.q != 5)
             continue;
-        const Errors bernstein = sphere_errors(nullptr, "tet", 8, 5, p.part);
-        const Errors e = sphere_errors(&phi_distance, "tet", 8, 5, p.part);
+        const Errors bernstein = sphere_errors(nullptr, "tet", 8, 5, p.part, plain);
+        const Errors e = sphere_errors(&phi_distance, "tet", 8, 5, p.part, plain);
+        const Errors defaults = sphere_errors(&phi_distance, "tet", 8, 5, p.part);
         const bool ok = e.l1 <= 1.25 * bernstein.l1 && e.worst <= 1.25 * bernstein.worst
-                        && 2 * e.bisections <= whole_tet_bisections;
+                        && 2 * e.bisections <= whole_tet_bisections && defaults.l1 <= e.l1
+                        && defaults.worst <= e.worst;
         std::printf("distance tet sub-boxes q = 5 %-8s L1 %.1e (Bernstein %.1e), worst %.1e (%.1e), bisections %d "
                     "(whole boxes %d) %s\n",
                     p.part, e.l1, bernstein.l1, e.worst, bernstein.worst, e.bisections, whole_tet_bisections,
@@ -494,11 +722,14 @@ int main()
         failures += !ok;
     }
 
-    // The quadratic sphere as a functor: the polynomial path's errors on hexahedra.
+    // The quadratic sphere as a functor: the polynomial path's errors on
+    // hexahedra, with plain points (with anchored ones both are round-off).
+    Options unanchored;
+    unanchored.anchor_folds = 0;
     for (const char* part : {"phi < 0", "phi = 0"})
     {
-        const Errors a = sphere_errors(&phi_quadratic, "hex", 8, 5, part);
-        const Errors b = sphere_errors(nullptr, "hex", 8, 5, part);
+        const Errors a = sphere_errors(&phi_quadratic, "hex", 8, 5, part, unanchored);
+        const Errors b = sphere_errors(nullptr, "hex", 8, 5, part, unanchored);
         const bool ok = std::abs(a.l1 - b.l1) <= 1e-2 * b.l1 && std::abs(a.worst - b.worst) <= 1e-2 * b.worst;
         std::printf("quadratic functor hex q = 5 %-8s L1 %.3e (Bernstein %.3e), worst %.3e (%.3e) %s\n", part, a.l1, b.l1,
                     a.worst, b.worst, ok ? "" : "FAILED");

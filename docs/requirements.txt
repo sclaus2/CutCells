@@ -7,7 +7,5 @@ myst-parser
 linkify-it-py
 tomli; python_version < "3.11"
 
-# Optional examples and local inspection
-numpy
-pyvista
-sphinx-autobuild
+# The tutorial figures are committed in _static/tutorials. Regenerating them
+# with tutorials/make_pyvista_scenes.py needs CutCells, pyvista and matplotlib.

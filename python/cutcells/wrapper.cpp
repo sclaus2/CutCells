@@ -3067,21 +3067,52 @@ NB_MODULE(_cutcellscpp, m)
       "Options of the quadrays engine.")
       .def(nb::init<>())
       .def_rw("margin", &cutcells::quadrays::Options::margin,
-              "Required |d_k psi| / |grad psi| on a box for a height direction; "
-              "also the accuracy control.")
+              "Required |d_k psi| / |grad psi| on a box for a height direction, at most "
+              "0.9/sqrt(D) on boxes with D free coordinates.")
+      .def_rw("tolerance", &cutcells::quadrays::Options::tolerance,
+              "Relative accuracy of curved pieces: boxes with two free coordinates are bisected "
+              "while q and q + 1 points per segment disagree by more. 0: the rule's own rate, "
+              "(h kappa / 2)^(2q) for cells of size h and curvature kappa; < 0: no check.")
+      .def_rw("follow_curves", &cutcells::quadrays::Options::follow_curves,
+              "Curve parts in 3D cells follow the curve: arcs between the faces, split where branches cross, Gauss "
+              "points in arc length. True (default); cells it cannot do go by height lines.")
+      .def_rw("anchor_folds", &cutcells::quadrays::Options::anchor_folds,
+              "n > 0: base segments that end at or near a fold of a curved zero set "
+              "(where it turns back along the height direction) take n q Gauss points in s, "
+              "x = x_f -+ s^2, anchored at the fold; in 3D cells also the segments near the "
+              "silhouette of the level set seen along the height direction. 1 (default): as "
+              "moment_tolerance allows, and twice the points on the boxes it does not; 2 keeps "
+              "polynomials of degree 2q - 1 exact everywhere, at twice the points; 0: off.")
+      .def_rw("fold_splits", &cutcells::quadrays::Options::fold_splits,
+              "A box with two free coordinates that no axis certifies is split at the folds "
+              "(where a zero curve turns along the height direction) and crossings of its zero "
+              "curves instead of bisected; its height lines take all roots. True (default). With "
+              "tolerance 0, such boxes are bisected unless q and q + 1 points agree to 1e-12.")
+      .def_rw("silhouette_splits", &cutcells::quadrays::Options::silhouette_splits,
+              "A 3D box that no axis certifies is not bisected where each of its level sets, along an "
+              "axis, is monotone or has a monotone derivative: its lines take all roots and the base "
+              "splits at the silhouettes, where a zero set turns along that axis, and where two zero "
+              "sets meet. True (default); needs fold_splits and anchor_folds. Analytic level sets need "
+              "second-derivative bounds.")
       .def_rw("max_depth", &cutcells::quadrays::Options::max_depth,
               "Bisections allowed per level along a branch.")
       .def_rw("max_bisections", &cutcells::quadrays::Options::max_bisections,
-              "Bisections allowed per cell; beyond it boxes are integrated uncertified.")
+              "Bisections allowed per cell; beyond it boxes are integrated uncertified, and "
+              "part.quadrature warns.")
+      .def_rw("max_points", &cutcells::quadrays::Options::max_points,
+              "Points allowed in a cell, per selection group. A cell that exceeds them is integrated "
+              "again with fewer bisections, less accurately, and part.quadrature warns. 0: 1000 "
+              "q^tdim for q points per segment, at most 300000; < 0: no limit.")
       .def_rw("prune_bounds", &cutcells::quadrays::Options::prune_bounds,
               "Drop bounds of the height lines that are never active.")
       .def_rw("split_bounds", &cutcells::quadrays::Options::split_bounds,
               "Split the base where the active bounds of the height lines change.")
       .def_rw("diagonal_frames", &cutcells::quadrays::Options::diagonal_frames,
-              "Level 2: try the diagonal frame before bisecting.")
+              "Level 2, where boxes are not split at folds and crossings (fold_splits off): try the "
+              "diagonal frame and frames rotated between the normals before bisecting.")
       .def_rw("rotation_depth", &cutcells::quadrays::Options::rotation_depth,
-              "Where no axis suits the zero sets of two level sets, try a frame rotated between "
-              "their normals: at level 2 always, in 3D from this depth of bisection on.")
+              "In 3D, from this depth of bisection on, where the zero sets of two level sets meet and "
+              "no axis suits both, try a frame rotated between their normals. Above max_depth: never.")
       .def_rw("mask_subdivisions", &cutcells::quadrays::Options::mask_subdivisions,
               "M > 1: margins from M^D sub-cells; 1: bounds on the whole box.")
       .def_rw("taylor_subdivisions", &cutcells::quadrays::Options::taylor_subdivisions,
@@ -3092,6 +3123,22 @@ NB_MODULE(_cutcellscpp, m)
               "that never merge in the box (two sheets of one level set).")
       .def_rw("diagnose", &cutcells::quadrays::Options::diagnose,
               "Record why each bisection happened in QuadraysStats.causes.")
+      .def_rw("debug_dir", &cutcells::quadrays::Options::debug_dir,
+              "Not empty: part.quadrature writes each cell that reaches a limit, debug_points or "
+              "debug_seconds to this directory, at most debug_reports per call, as a JSON file with its "
+              "level sets, boxes and points; python -m cutcells.quadrays_debug plots them.")
+      .def_rw("moment_tolerance", &cutcells::quadrays::Options::moment_tolerance,
+              "The accuracy check also compares a moment of what a mass matrix sees, a Legendre "
+              "polynomial squared along each axis of the cell, relative to the piece as the measure "
+              "is. A box that fails first takes twice the points on its anchored segments, then up to "
+              "four points more per direction, then is bisected. What it asks of 6 or more points per "
+              "segment, of fewer the tolerance to the power q / 6. 1e-8 (default); 0: the measure only.")
+      .def_rw("debug_seconds", &cutcells::quadrays::Options::debug_seconds,
+              "A cut cell that takes at least this many seconds is also written to debug_dir.")
+      .def_rw("debug_reports", &cutcells::quadrays::Options::debug_reports,
+              "The most cells of a quadrature call written to debug_dir.")
+      .def_rw("debug_points", &cutcells::quadrays::Options::debug_points,
+              "Points from which a cell is written to debug_dir.")
       .def_rw("points_per_segment", &cutcells::quadrays::Options::points_per_segment,
               "Gauss-Legendre points per segment of each height line in part.quadrature; 0: "
               "enough for the order, ceil((order + part.dim) / 2), which integrates "
@@ -3125,6 +3172,17 @@ NB_MODULE(_cutcellscpp, m)
       .def_ro("incomplete_leaves", &cutcells::quadrays::Stats::incomplete_leaves)
       .def_ro("two_roots", &cutcells::quadrays::Stats::two_roots)
       .def_ro("surfaces", &cutcells::quadrays::Stats::surfaces)
+      .def_ro("fold_splits", &cutcells::quadrays::Stats::fold_splits,
+              "Boxes split at folds and crossings instead of bisected.")
+      .def_ro("silhouettes", &cutcells::quadrays::Stats::silhouettes,
+              "3D boxes integrated without a certified height direction, split at their silhouette.")
+      .def_ro("points_limited", &cutcells::quadrays::Stats::points_limited,
+              "Runs that exceeded QuadraysOptions.max_points and were redone with fewer bisections.")
+      .def_ro("bisections_limited", &cutcells::quadrays::Stats::bisections_limited,
+              "Runs that used all of QuadraysOptions.max_bisections.")
+      .def_ro("curve_arcs", &cutcells::quadrays::Stats::curve_arcs, "Arcs followed in curve parts.")
+      .def_ro("curve_fallbacks", &cutcells::quadrays::Stats::curve_fallbacks,
+              "Curve parts that could not be followed, integrated by height lines.")
       .def_ro("curve_lost", &cutcells::quadrays::Stats::curve_lost,
               "Top boxes of a curve part integrated uncertified, where the curve, if any, is missing.")
       .def_ro("causes", &cutcells::quadrays::Stats::causes);

@@ -31,12 +31,60 @@ namespace cutcells::quadrays
 /// surface function, which vanishes where their roots cross). A height
 /// direction k is accepted only if every curved function satisfies
 /// |d_k psi| >= margin |grad psi| on the level's box, from Bernstein bounds
-/// or, for analytic level sets, Taylor models; otherwise the box is bisected.
+/// or, for analytic level sets, Taylor models; otherwise a box with two free
+/// coordinates is split at the folds and crossings of its zero curves
+/// (fold_splits), and other boxes are bisected.
 struct Options
 {
-    /// Required |d_k psi| / |grad psi| on a box. It also controls the accuracy:
-    /// larger margins bisect more and integrate more accurately.
+    /// Required |d_k psi| / |grad psi| on a box. Larger margins bisect more.
+    /// A box needs a direction with this margin for every function on it, so
+    /// margins above 1/sqrt(D) on boxes with D free coordinates cannot be met
+    /// where the normal points between the axes: the engine caps the margin of
+    /// each level at 0.9/sqrt(D).
     double margin = 0.25;
+    /// Relative accuracy of curved pieces. Where a box with two free coordinates
+    /// (a 2D cell's box, or the base of a 3D cell's box) carries a curved zero
+    /// set, its piece is integrated with q and q + 1 points per segment; while
+    /// the two differ by more than this times its measure, the box is bisected,
+    /// and the q points are kept. The margin bounds the slope of the height
+    /// functions, not how close their branch points (where a zero set turns
+    /// along the height direction) come to a box: where a box face cuts a
+    /// sphere near its pole, say, the zero set on the face is a circle of any
+    /// radius, whose branch points can lie just beyond the base segments, and
+    /// the points then converge slowly in q and not under mesh refinement.
+    /// anchor_folds anchors the segments near them; the check bisects where
+    /// the points still converge slowly.
+    /// 0: the rule's own rate, (h kappa / 2)^(2 q) with h = |det J|^(1/tdim)
+    /// the cell's size and kappa the curvature of the zero sets in the box, so
+    /// that the error falls as h^(2q) and pieces that converge as expected
+    /// are not bisected. < 0: no check. Flat pieces are not checked.
+    double tolerance = 0;
+    /// On a box with two free coordinates, where the zero set of a curved
+    /// function turns back along the height direction (a fold, where
+    /// d_k psi = 0) at or within four segment lengths beyond an end of a base
+    /// segment, its height function has a square-root branch point there, and
+    /// Gauss-Legendre points in x converge slowly. n > 0: such segments take
+    /// n q Gauss-Legendre points in s, x = x_f -+ s^2 anchored at the fold x_f,
+    /// which makes the integrand analytic. With folds beyond both ends, one of
+    /// them anchors the segment if its points converge at the other as fast as
+    /// q points do at four lengths; otherwise both, by x = c + r (3t - t^3) / 2,
+    /// whose derivative vanishes at both folds, with ceil(3 n q / 2) points.
+    /// They integrate polynomials of degree n q - 1 in x exactly (q points:
+    /// 2 q - 1), so n = 2 keeps the degree at twice the points per anchored
+    /// direction, and n = 1 halves it, which moment_tolerance answers for where it
+    /// matters; curve parts, whose check has no moment, take n = 2 instead of 1.
+    /// Below a 3D box, the zero set of its
+    /// level set turns back along its height direction where its normal
+    /// turns perpendicular to it, beyond the box (its silhouette): the height
+    /// lines of the base boxes are anchored likewise at the silhouette's
+    /// coordinate on them, and their base segments where it crosses the
+    /// lines' bounds. 0: off.
+    int anchor_folds = 1;
+    /// Curve parts in cells of dimension 3 follow the curve instead of its
+    /// height lines (curve_points): arcs between the cell's faces, split where
+    /// branches cross, with Gauss-Legendre points in arc length. Cells it cannot
+    /// do go the other way, and are counted in Stats::curve_fallbacks.
+    bool follow_curves = true;
     /// Bisections allowed per level along a branch. Bernstein bounds certify
     /// after a few; Taylor models of an analytic level set, a distance function
     /// in particular, need boxes small against the radius of curvature, which
@@ -48,22 +96,33 @@ struct Options
     /// level set closer than the depth limit resolves, singular points). (The
     /// prototype allowed 256.)
     int max_bisections = 1024;
+    /// Points allowed in a cell, per selection group. A cell that exceeds them
+    /// is integrated again with at most 6, 4, 2, 1 or 0 bisections per level,
+    /// the first that stays below, which costs accuracy; the front end warns.
+    /// 0: 1000 q^tdim for q points per segment, at most 300000. < 0: no limit.
+    int max_points = 0;
     /// Drop bounds of the height lines that are never active on the base region.
     bool prune_bounds = true;
     /// Split the base where the active bounds of the height lines change, so
     /// that each region carries only the restrictions to its two bounds.
     bool split_bounds = true;
-    /// Level 2: if no axis certifies, try the diagonal frame before bisecting.
-    /// On a tet, phi on a box face and phi on the slanted face can need
-    /// different axes where their zero curves meet; no bisection separates them.
+    /// Level 2, where boxes are not split at their folds and crossings
+    /// (fold_splits off, anchor_folds 0, or leaf nodes): if no axis certifies, try
+    /// the diagonal frame and a frame rotated between the normals of the zero
+    /// curves before bisecting. On a tet, phi on a box face and phi on the slanted
+    /// face can need different axes where their zero curves meet; no bisection
+    /// separates them. With fold splits these frames gain nothing and cost up to
+    /// 40% of the points (a ball, 5 cells per direction), so they are not tried.
     bool diagonal_frames = true;
-    /// Where the zero sets of two level sets meet, their normals may differ so
-    /// much that no axis suits both, and bisection does not help. Such boxes
-    /// are tried in a frame rotated between the normals: at level 2 always,
-    /// in 3D from this depth of bisection on (the levels below a rotated box
-    /// get its faces as oblique clip planes, which costs). Above max_depth:
-    /// never in 3D.
-    int rotation_depth = 6;
+    /// Where the zero sets of two level sets meet in 3D, their normals may differ
+    /// so much that no axis suits both, and bisection does not help. Boxes from
+    /// this depth of bisection on, in which both zero sets change sign in one
+    /// sub-box, are tried in a frame rotated between the normals; the box's faces
+    /// become oblique clip planes, so that the rule covers the box exactly, and
+    /// each such box costs about nine times the points of an axis-aligned one.
+    /// The default is max_depth: a last resort before a box goes uncertified.
+    /// Above max_depth: never.
+    int rotation_depth = 12;
     /// M > 1: margins from M^D sub-cells that meet the clipped region and on
     /// which the function may vanish (enough for at most one root per height
     /// line). Fewer bisections, but less accurate at the same margin.
@@ -84,6 +143,53 @@ struct Options
     int two_roots_depth = 0;
     /// Record why each bisection happened in Stats::causes.
     bool diagnose = false;
+    /// The front end (part::quadrature_rules), for studying cells that take
+    /// many points or much time. Not empty: each cell that reaches a limit, debug_points
+    /// or debug_seconds is written to this directory as a JSON file (its level sets
+    /// on a grid, its boxes and points; write_cell_report), at most debug_reports per
+    /// call, which `python -m cutcells.quadrays_debug` plots. Empty: nothing is
+    /// recorded, at the cost of one test per box.
+    std::string debug_dir;
+    /// Points from which a cell is written to debug_dir.
+    int debug_points = 10000;
+    /// A cut cell is also written if integrating it takes at least this many seconds.
+    double debug_seconds = 0.1;
+    /// The most cells of a quadrature call written to debug_dir.
+    int debug_reports = 16;
+    /// A box with two free coordinates that no axis certifies is not
+    /// bisected: along the axis with the best sampled margins, the points where
+    /// a zero curve turns along it (a fold, f = d_k f = 0) and where two zero
+    /// curves cross (f = g = 0) are found by subdivision with bounds and
+    /// Newton's method, the base line splits at them, the height lines take
+    /// all roots, and segments anchor at the folds (as in Saye 2022, which
+    /// removes these points from the base). Needs anchor_folds > 0, whose rule
+    /// takes the square-root branch of the height functions at a fold at the
+    /// end of a segment. Such boxes are larger than certified ones: with
+    /// tolerance 0, their check asks q and q + 1 points to agree to 1e-12 and
+    /// bisects otherwise. Where the search does not settle (a singular point,
+    /// nearly tangent curves), the box and the boxes within are bisected.
+    bool fold_splits = true;
+    /// A 3D box that no axis certifies is not bisected where, along an axis, each
+    /// of its level sets is monotone or has a monotone derivative: its lines take
+    /// all roots, at most two of each per line, and the base splits at the
+    /// silhouettes, where a zero set turns along the axis (f = d_k f = 0; Beck and
+    /// Kummer 2023, Section 5.4, read d_k f as a second level set the same way), and
+    /// at the curves where two zero sets meet. Segments anchor there (anchor_folds)
+    /// and level-2 boxes split at these curves' folds and crossings (fold_splits);
+    /// needs both. If the base does not settle, the box is bisected after all, and a
+    /// cell makes few such attempts. Analytic level sets need hessian_bounds.
+    bool silhouette_splits = true;
+    /// The accuracy check (tolerance) also compares a moment of what a mass matrix sees,
+    /// the sum over the cell's reference coordinates of a Legendre polynomial squared, of
+    /// half the degree the points integrate, relative to the piece as the measure is. The
+    /// measure alone does not see a rule short of points: q points are exact to degree
+    /// 2 q - 1 on a flat piece, and curvature, or an anchored rule, takes the moment past
+    /// that. A box that fails first takes twice the points on its anchored segments (with
+    /// anchor_folds = 1), then up to four points more per direction, and is bisected only
+    /// if that fails too. This is what it asks of q >= 6 points, of fewer the tolerance to
+    /// the power q / 6. A fixed tolerance: the moment's error stays near it as the mesh is
+    /// refined, where the error of a smooth integrand falls. 0: the measure only.
+    double moment_tolerance = 1e-8;
     /// The front end (part::quadrature_rules): Gauss-Legendre points per
     /// segment of each height line. 0: enough for its order, ceil((order + m)
     /// / 2) for a part of dimension m, so that flat pieces integrate
@@ -101,13 +207,55 @@ struct Stats
     int incomplete_leaves = 0; ///< leaves of the part dropped because their nodes did not line up
     int two_roots = 0;         ///< boxes certified with two roots per height line
     int surfaces = 0;          ///< surface functions made where two level sets cut a box
+    int fold_splits = 0;       ///< boxes split at folds and crossings (Options::fold_splits)
+    int silhouettes = 0;       ///< 3D boxes integrated without certificate (Options::silhouette_splits)
+    int points_limited = 0;    ///< runs that exceeded Options::max_points and were redone with fewer bisections
+    int bisections_limited = 0; ///< runs that used all of Options::max_bisections
     /// top boxes of a curve part integrated uncertified (depth or bisection
     /// limit): no surface function finds the curve there, so its piece, if
     /// any, is missing
     int curve_lost = 0;
+    int curve_arcs = 0;      ///< arcs followed in curve parts (Options::follow_curves)
+    int curve_fallbacks = 0; ///< curve parts that could not be followed, integrated by height lines
     /// With Options::diagnose: bisections counted by level, the function that
     /// blocked certification, and what sampling the clipped region says.
     std::map<std::string, std::int64_t> causes;
+};
+
+/// @brief The points Options::max_points allows in a cell of dimension @p tdim
+/// with @p q points per segment; the largest int if none.
+int point_limit(const Options& opt, int q, int tdim);
+
+/// What became of a box in the engine's recursion (BoxTrace).
+enum class BoxFate : std::uint8_t
+{
+    certified = 0,   ///< a height direction holds on all of it
+    split = 1,       ///< split at folds and crossings (Options::fold_splits)
+    bisected = 2,    ///< no direction holds on all of it: bisected
+    refined = 3,     ///< certified or split, but its accuracy check failed: bisected
+    rotated = 4,     ///< no axis holds: its one child is the box in a rotated frame
+    uncertified = 5, ///< no direction holds and a limit is reached: roots isolated in full
+    abandoned = 6    ///< tried without a margin, its base did not settle: its points were dropped
+};
+
+/// The boxes of the engine's recursion in a cell, in the order it visits them,
+/// for studying cells that take many points. Boxes without a point of the part
+/// that the bounds decide at once are not entered.
+template <std::floating_point T>
+struct BoxTrace
+{
+    std::vector<int> parent;       ///< the box it came from; -1: the cell
+    std::vector<int> level;        ///< free coordinates
+    std::vector<int> depth;        ///< bisections above it on its level
+    std::vector<int> height;       ///< its height direction
+    std::vector<BoxFate> fate;
+    std::vector<std::uint8_t> rotated; ///< in a rotated frame: its faces are not the cell's
+    std::vector<T> lo, hi;         ///< 3 per box, in the frame's coordinates (0 for unused ones)
+    /// 12 per box, top boxes: the frame u = A y + b, A row-wise, then b; else 0.
+    std::vector<T> frame;
+    std::vector<int> points;       ///< points emitted in it and below it
+
+    int n_boxes() const { return static_cast<int>(parent.size()); }
 };
 
 /// What a selection term asks of one level set.
@@ -175,11 +323,13 @@ struct CellPoints
 /// @param opt    engine options
 /// @param out    points in box coordinates and physical weights
 /// @param stats  counters, accumulated
+/// @param trace  not null: the boxes of the recursion are appended (of the run
+///               that exceeded Options::max_points, if one did)
 /// @throws std::invalid_argument if terms ask for different zero sets, for
 ///         three zero sets at once, or for two on an interval
 template <std::floating_point T>
 void integrate(const ClippedBox<T>& cell, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms,
-               int q, const Options& opt, CellPoints<T>& out, Stats& stats);
+               int q, const Options& opt, CellPoints<T>& out, Stats& stats, BoxTrace<T>* trace = nullptr);
 
 /// @brief Quadrature points of one part of a cell with one level set,
 /// appended to @p out.
@@ -198,6 +348,8 @@ void integrate(const ClippedBox<T>& cell, const BoxBernstein<T>& phi, Part part,
 
 /// @brief Nodes of the leaf cells of the same decomposition, appended to @p out.
 ///
+/// The decomposition is the certified one: the bisections of the accuracy
+/// checks (Options::tolerance), which need Gauss points, are not made.
 /// Every segment gets degree + 1 equispaced nodes, pulled 1e-5 of its length
 /// inside its ends, with their tags (a curve part's: those of its base lines;
 /// on 2D cells one node per crossing point, on intervals one per point of an

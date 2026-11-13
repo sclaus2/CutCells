@@ -1,62 +1,197 @@
 # CutCells
 
 [![CutCells CI](https://github.com/sclaus2/cutcells/actions/workflows/python-app.yml/badge.svg)](https://github.com/sclaus2/cutcells/actions/workflows/python-app.yml)
+[![Docs](https://github.com/sclaus2/CutCells/actions/workflows/docs.yml/badge.svg)](https://sclaus2.github.io/CutCells/)
 
 
-**CutCells** is a lightweight **C++20 geometry kernel with Python bindings** to compute **cut-cell decompositions** of standard mesh elements by an **implicit surface / level set** `φ(x)`.
+**CutCells** cuts the cells of a mesh by one or more level sets `φ(x)` and
+returns the inside, outside and interface pieces, with explicit connectivity
+and high-order quadrature rules. It is a geometry kernel for unfitted finite
+element methods (CutFEM): a C++20 core with no dependencies beyond a compiler,
+and a Python interface that hands arrays to and from NumPy without copies.
 
-Given one parent cell (or a whole mesh) and the level set values on its vertices, CutCells builds a **local sub-mesh** that describes:
+<p align="center">
+  <img src="./docs/_static/tutorials/gyroid-scene.png" alt="A gyroid and a gyroid sheet cut out of a hexahedral mesh" width="820"/><br/>
+  <sub>A gyroid cut out of 4096 hexahedra (left) and a sheet between two level sets around it (right), drawn from the curved pieces CutCells returns.</sub>
+</p>
 
-* the **inside** region `φ < 0`,
-* the **outside** region `φ > 0`,
-* and/or the **interface** `φ = 0` (as facets/segments embedded in the cell),
+```console
+pip install cutcells
+```
 
-with **explicit connectivity** and **element types**.
+To build from source, see [Installation](#installation).
 
-It is designed as a building block for **unfitted / immersed FEM** workflows (e.g. **CutFEM**), where robust cut geometry and stable parent mappings are required for runtime quadrature.
+**[Documentation](https://sclaus2.github.io/CutCells/)** · **[Tutorials](https://sclaus2.github.io/CutCells/tutorials/index.html)** · **[Python API](https://sclaus2.github.io/CutCells/reference/python-api.html)**
 
-## Supported cell types
+## Quick example
 
-Current parent cell support:
+Cut a triangle mesh by a circle, then integrate over the disk and along its
+boundary:
 
-* 1D: **interval**
-* 2D: **triangle**, **quadrilateral**
-* 3D: **tetrahedron**, **hexahedron**, **prism**, **pyramid**
+```python
+import numpy as np
+import cutcells
 
-Cells may lie in a space of higher dimension: the facets of a mesh (triangles
-and quadrilaterals in 3D, intervals in 2D or 3D) and surface meshes are cut and
-integrated as the cells they are, with areas and lengths on them.
+mesh = cutcells.rectangle_mesh(-1.0, -1.0, 1.0, 1.0, 41, 41, cell_type="triangle")
 
-Level sets can be **Pk** (interpolated, any degree) or **analytic** (exact
-geometry, e.g. from ShapeForest), with any number of level sets per cell. A
-level set can also be **made of level sets**, for shapes with sharp edges:
-CutCells cuts with its smooth level sets, so edges stay exact. Two backends
-integrate the selected parts:
+def phi(X):
+    # X has shape (gdim, num_points)
+    return np.sqrt(X[0] ** 2 + X[1] ** 2) - 0.55
 
-* **quadrays** (the default): high-order quadrature on curved cut cells, for
-  affine cells.
-* **lookup tables** (`backend="lut"`): straight pieces on Pk-iso-P1 templates.
+level_set = cutcells.create_level_set(mesh, phi, degree=2, name="phi")
+result = cutcells.cut(mesh, level_set)
 
-The low-level single-cell API also cuts **P2 triangles (6 nodes)** and **P2
-tetrahedra (10 nodes)** (`higher_order_cut`), by subdivision into linear
-sub-cells.
+inside = result[level_set < 0]       # whole cells and the cut pieces inside
+interface = result[level_set == 0]   # the curve phi = 0
 
-## Performance and dependencies
+print("area     ", inside.quadrature(order=4, mode="full").weights.sum())
+print("perimeter", interface.quadrature(order=4, mode="cut_only").weights.sum())
+```
+
+Each rule holds points, weights and the background cell of every point, ready
+for assembly.
+
+## Features
+
+### High-order quadrature on curved cut cells
+
+The default backend, **quadrays**, integrates the cut pieces of affine cells as
+the curved regions they are. Points are traced along rays from a flat base piece
+to the zero set of the level set, so the rule follows the true geometry, not a
+straight approximation of it. The level set can be a **Pk interpolant** of any
+degree or **analytic**: with exact geometry the error drops to round-off.
+
+<table>
+  <tr>
+    <td align="center" width="40%">
+      <img src="./docs/_static/tutorials/disk-scene.png" alt="Disk cut out of a triangle mesh with its quadrature points" width="300"/><br/>
+      <sub>Whole cells (green), cut cells (orange) and the quadrature points of the cut pieces.</sub>
+    </td>
+    <td align="center" width="60%">
+      <img src="./docs/_static/tutorials/convergence-plot.png" alt="Convergence of the area and perimeter of a disk" width="480"/><br/>
+      <sub>Area and perimeter errors of a disk: straight pieces (rate 2), a P3 level set (rate 4) and exact geometry (round-off).</sub>
+    </td>
+  </tr>
+</table>
+
+The **lookup tables** (`backend="lut"`) give straight sub-cells on
+Pk-iso-P1 templates, for every cell type below.
+
+### Several level sets and selections
+
+`cut` takes any number of level sets at once. Conditions on them select parts
+of every dimension, with `&` and `|` or as strings; the dimension of a part
+follows from its equality clauses:
+
+```python
+result = cutcells.cut(mesh, [ball, plane])
+
+below = result[(ball < 0) & (plane < 0)]      # a volume
+disk = result[(plane == 0) & (ball < 0)]      # a surface
+circle = result["ball = 0 and plane = 0"]     # a curve
+```
+
+<p align="center">
+  <img src="./docs/_static/tutorials/sphere-plane-scene.png" alt="The sphere below a plane, the disk where the plane crosses the ball and the circle where they meet" width="420"/><br/>
+  <sub>The sphere below the plane, the disk where the plane crosses the ball and the circle where they meet, from one cut.</sub>
+</p>
+
+### Shapes with sharp edges: level sets made of level sets
+
+A single level set for a shape with edges, such as a ball with a hole drilled
+through it, has a kink that no interpolant represents well. CutCells takes the
+smooth level sets the shape is made of instead, so the edges stay exact, and
+each face of its surface can be picked on its own:
+
+```python
+ball = cutcells.analytic_sphere([0.0, 0.0, 0.0], 0.8, name="ball")
+cyl = cutcells.create_level_set(mesh, cylinder, degree=3, name="cyl")
+ring = cutcells.LevelSetFunction(level_sets=[ball, cyl],
+                                 inside=(ball < 0) & (cyl > 0), name="ring")
+
+result = cutcells.cut(mesh, ring)
+solid = result[ring < 0]
+zone = result[ring == 0].on("ball")         # the face on the sphere
+rims = result[(ball == 0) & (cyl == 0)]     # the edges, two circles
+```
+
+<p align="center">
+  <img src="./docs/_static/tutorials/napkin-ring-scene.png" alt="The faces of a napkin ring and the ring cut open" width="700"/><br/>
+  <sub>A napkin ring: its two faces and the rims where they meet (left), and the solid cut open (right).</sub>
+</p>
+
+### Curved output for viewing
+
+Every part has a visualisation mesh of curved Lagrange cells, written to VTU
+or handed to PyVista, with the background cell of every piece:
+
+```python
+inside.write_vtu("ball.vtu", mode="full", degree=3)
+grid = cutcells.to_pyvista(surface.visualization_mesh(mode="cut_only", degree=3))
+```
+
+<p align="center">
+  <img src="./docs/_static/tutorials/sphere-scene.png" alt="Curved sphere and clipped ball from a tetrahedral mesh" width="700"/><br/>
+  <sub>A sphere from the curved pieces of 1524 cut tetrahedra (left) and the ball clipped open, whole cells in green and cut pieces in orange (right).</sub>
+</p>
+
+### Meshes and cells
+
+* Parent cells: **intervals**, **triangles**, **quadrilaterals**,
+  **tetrahedra**, **hexahedra**, **prisms** and **pyramids**, also mixed in
+  one mesh.
+* Cells in a space of higher dimension, such as the facets of a 3D mesh or a
+  surface mesh, are cut and integrated as the cells they are.
+* Pieces that lie exactly on a facet, edge or vertex of the mesh are
+  integrated once, on that entity, with the cells that share it.
+* `MeshView` wraps flat arrays of any mesh without copying; NumPy helpers
+  build structured triangle, quadrilateral, tetrahedron and hexahedron
+  meshes, and `mesh_from_pyvista` converts PyVista grids.
+* Analytic level sets come from Python callables, from compiled geometry
+  libraries through a capsule, or from ShapeForest shapes.
+* The low-level single-cell API also cuts **P2 triangles (6 nodes)** and **P2
+  tetrahedra (10 nodes)** (`higher_order_cut`), by subdivision into linear
+  sub-cells.
+
+### Performance and dependencies
 
 * **Few dependencies**: the computational core is plain C++.
-* **Python bindings via nanobind**: CutCells exposes arrays in NumPy-friendly form and is designed to avoid unnecessary overhead.
-* **Zero-copy where possible**: large buffers (coords, connectivity/offsets, parent IDs, provenance tags) are exposed as **views** when layout permits, minimizing memory traffic between C++ and Python.
+* **Python bindings via nanobind**: CutCells exposes arrays in NumPy-friendly
+  form and is designed to avoid unnecessary overhead.
+* **Zero-copy where possible**: large buffers (coords, connectivity/offsets,
+  parent IDs, provenance tags) are exposed as **views** when layout permits,
+  minimizing memory traffic between C++ and Python.
+
+## Tutorials
+
+The [tutorial book](https://sclaus2.github.io/CutCells/tutorials/index.html) works through twelve demos in
+`python/demo/`, from a first cut to measurements of what each choice costs:
+
+| Tutorial | Shows |
+|---|---|
+| [Disk](https://sclaus2.github.io/CutCells/tutorials/disk.html) | the workflow: mesh, level set, cut, selections, quadrature |
+| [Convergence](https://sclaus2.github.io/CutCells/tutorials/convergence.html) | straight pieces, Pk level sets and exact geometry against the mesh size |
+| [Ball](https://sclaus2.github.io/CutCells/tutorials/sphere.html) | 3D, analytic and interpolated level sets, curved VTU output |
+| [Degree and order](https://sclaus2.github.io/CutCells/tutorials/degree-order.html) | which error each dial controls, and what a higher degree costs |
+| [Cell shapes](https://sclaus2.github.io/CutCells/tutorials/cell-shapes.html) | one ball on six cell shapes, with both backends |
+| [Points and accuracy](https://sclaus2.github.io/CutCells/tutorials/points-accuracy.html) | lookup tables, quadrays and Algoim, by the error per point |
+| [Compression](https://sclaus2.github.io/CutCells/tutorials/compression.html) | rules reduced to their moments: when that pays and what it gives up |
+| [Integrating functions](https://sclaus2.github.io/CutCells/tutorials/ellipsoid.html) | moments, normals, the divergence theorem on an ellipsoid |
+| [Plane on mesh facets](https://sclaus2.github.io/CutCells/tutorials/mesh-aligned.html) | surfaces on the mesh, integrated once, and the cells that take them |
+| [Ball and plane](https://sclaus2.github.io/CutCells/tutorials/sphere-plane.html) | two level sets and selections of every dimension |
+| [Napkin ring](https://sclaus2.github.io/CutCells/tutorials/napkin-ring.html) | a level set made of level sets and its faces |
+| [Gyroid](https://sclaus2.github.io/CutCells/tutorials/gyroid.html) | hexahedra and a sheet between two level sets |
 
 ## Applications
 
-CutCells is intended as a reusable geometry backend for:
+CutCells is a geometry backend for:
 
-* **CutFEM / unfitted FEM**: robust sub-cell and interface extraction for integration on `Ω∩K` and `Γ∩K`
-* **runtime quadrature** generation 
-* general embedded geometry workflows where remeshing is undesirable
+* **CutFEM and unfitted finite elements**: integration on `Ω∩K` and `Γ∩K`
+  for every cell `K` (CutCells is the geometry kernel of CutFEMx);
+* **runtime quadrature** on implicitly defined domains;
+* embedded geometry workflows where remeshing is undesirable.
 
-## Example gallery 
-
+## Example gallery
 
 Below is a gallery of example outputs generated by CutCells and the provided Python demos. See `python/demo/` for scripts to reproduce these images.
 
@@ -106,16 +241,20 @@ Below is a gallery of example outputs generated by CutCells and the provided Pyt
 	</tr>
 </table>
 
-# Installation
+## Installation
 
-To use CutCells from Python, install the wheel from PyPI. It contains the C++
-core and needs nothing else (Linux and macOS, Python 3.10 and newer):
+### With pip (recommended)
+
+The standard way to install CutCells is the wheel from PyPI. It contains the
+C++ core and needs nothing else (Linux and macOS, Python 3.10 and newer):
 
 ```console
 pip install cutcells
 ```
 
-The rest of this section is for developing CutCells and for downstream packages.
+### From source
+
+Building from source is for developing CutCells and for downstream packages.
 CutCells can be installed as a standalone C++ library and as a Python package.
 For downstream packages such as CutFEMx, install the C++ core into the active
 environment first, then build the Python extension against that installed CMake
@@ -188,15 +327,18 @@ cmake --build build/cut_triangle
 from the repository root. If CutCells was installed into a custom prefix, pass
 that prefix through `CMAKE_PREFIX_PATH`.
 
-The Python demos are located in `python/demo`.
+The Python demos are located in `python/demo`. The `demo_*.py` scripts at its
+top level are the chapters of the tutorial book in the documentation; they
+need NumPy, and PyVista or matplotlib for their views.
 
 ## Documentation
 
-The initial Sphinx/MyST documentation source is in `docs/`. It covers
-installation, a Python quickstart, mesh views, level sets, selection
-expressions, quadrature/output, and a compact API overview.
+The documentation is online at <https://sclaus2.github.io/CutCells/>. It
+covers installation, a Python quickstart, mesh views, level sets, selection
+expressions, quadrature and output, a tutorial book of twelve demos, and a
+compact API overview. Its source is in `docs/`.
 
-Build it with:
+Build it locally with:
 
 ```console
 cd docs
@@ -234,18 +376,6 @@ For the python interface, CutCells requires [`nanobind`](https://github.com/wjak
 At runtime for the python examples, CutCells requires [`numpy`](https://numpy.org) and [`pyvista`](https://pyvista.org/) for visualizations.
 
 The library contains python `pytest` tests in `python/tests`.
-
-### Quadrature backends
-
-The Python `MeshPart.quadrature` API uses quadrays by default; the lookup
-tables give straight pieces:
-
-```python
-result = cutcells.cut(mesh, phi)                    # quadrays
-rules = result[phi < 0].quadrature(order=4)         # exact for degree 4 on flat pieces
-straight = result[phi < 0].quadrature(order=4, backend="lut")
-same = result["phi < 0"]                            # a selection string does the same
-```
 
 ### Algoim (benchmarks only)
 

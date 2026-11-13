@@ -11,8 +11,8 @@
 // must be certified with two roots per line, and the per-cell L1 must stay
 // below the bounds given; on hexahedra with Bernstein coefficients it must be
 // three times smaller than with one root per line only (Options::two_roots_depth
-// past max_depth: boxes at the depth limit integrated uncertified), and with
-// analytic level sets not larger. The shell 1e-6 wide takes the checks only,
+// past max_depth and no fold splits: boxes at the depth limit integrated
+// uncertified), and with analytic level sets not larger. The shell 1e-6 wide takes the checks only,
 // on hexahedra.
 // Exits non-zero on failure.
 
@@ -55,6 +55,7 @@ int main()
     }
     Options one_root;
     one_root.two_roots_depth = one_root.max_depth + 1;
+    one_root.fold_splits = false;
 
     int failures = 0;
     auto checks = [](const CaseRun& r, std::vector<std::string>& problems)

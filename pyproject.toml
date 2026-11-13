@@ -44,6 +44,7 @@ dependencies = ["numpy>=1.21"]
 
 [project.urls]
 Homepage = "https://github.com/sclaus2/CutCells"
+Documentation = "https://sclaus2.github.io/CutCells/"
 Source = "https://github.com/sclaus2/CutCells"
 Issues = "https://github.com/sclaus2/CutCells/issues"
 

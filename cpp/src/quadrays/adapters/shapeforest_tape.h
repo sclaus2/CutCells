@@ -209,7 +209,7 @@ inline Tape read_tape(const std::string& path)
 
 /// @brief Run a prepared tape at @p x on the registers @p r (resized as
 /// needed). V is double, Dual<double, 3> or Dual<Taylor<double, N>, N>;
-/// Taylor models throw std::domain_error where a bound is lost.
+/// Taylor models come out lost (bounded() is false) where a bound is lost.
 template <typename V>
 V evaluate(const Tape& t, const std::array<V, 3>& x, std::vector<V>& r)
 {
