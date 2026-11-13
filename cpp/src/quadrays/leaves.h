@@ -53,9 +53,14 @@ struct LeafMesh
 /// @brief Leaf cells of the part of one cell that @p terms select, appended
 /// to @p mesh.
 ///
-/// Every piece the engine integrates becomes a Lagrange cell of the given
-/// degree whose nodes are the images of an equispaced grid under the piece's
-/// parametrisation: hexahedra for volume parts, oriented to a positive
+/// The leaves cover exactly the region the rule integrates, but they are not
+/// the rule's pieces: the engine builds them without fold and silhouette
+/// splits, anchored segments, followed curves or the accuracy check, so where
+/// the rule splits a box at a fold, the leaves bisect it. The rule's own boxes
+/// are recorded by BoxTrace (integrate) and drawn by cutcells.quadrays_debug.
+///
+/// Each leaf is a Lagrange cell of the given degree whose nodes are the images
+/// of an equispaced grid under the leaf's parametrisation: hexahedra for volume parts, oriented to a positive
 /// Jacobian (quadrilaterals along the normal of 2D cells, curves along
 /// intervals), quadrilaterals (curves on 2D cells, vertices on intervals) for
 /// interfaces, with their normal along the gradient of the level set, and

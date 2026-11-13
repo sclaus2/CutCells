@@ -2880,9 +2880,11 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
           return cutcells::part::visualization_mesh(part.part, degree, !cut_only, o);
         },
         nb::arg("part"), nb::arg("degree") = 3, nb::arg("mode") = "full", nb::arg("options") = nb::none(),
-        "part.visualization_mesh(mode, backend='quadrays', degree, options): the pieces "
-        "quadrays integrates in cut cells as Lagrange cells of the given degree; with mode "
-        "'full', the whole cells of volume parts as linear cells.");
+        "part.visualization_mesh(mode, backend='quadrays', degree, options): the region "
+        "quadrays integrates in cut cells, as Lagrange cells of the given degree; with mode "
+        "'full', the whole cells of volume parts as linear cells. The cells show the region, "
+        "not the rule's pieces: they are built without fold splits, so they bisect where the "
+        "rule splits.");
 
   if constexpr (std::is_same_v<T, double>)
   {
