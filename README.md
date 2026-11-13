@@ -96,30 +96,6 @@ circle = result["ball = 0 and plane = 0"]     # a curve
   <sub>The sphere below the plane, the disk where the plane crosses the ball and the circle where they meet, from one cut.</sub>
 </p>
 
-### Shapes with sharp edges: level sets made of level sets
-
-A single level set for a shape with edges, such as a ball with a hole drilled
-through it, has a kink that no interpolant represents well. CutCells takes the
-smooth level sets the shape is made of instead, so the edges stay exact, and
-each face of its surface can be picked on its own:
-
-```python
-ball = cutcells.analytic_sphere([0.0, 0.0, 0.0], 0.8, name="ball")
-cyl = cutcells.create_level_set(mesh, cylinder, degree=3, name="cyl")
-ring = cutcells.LevelSetFunction(level_sets=[ball, cyl],
-                                 inside=(ball < 0) & (cyl > 0), name="ring")
-
-result = cutcells.cut(mesh, ring)
-solid = result[ring < 0]
-zone = result[ring == 0].on("ball")         # the face on the sphere
-rims = result[(ball == 0) & (cyl == 0)]     # the edges, two circles
-```
-
-<p align="center">
-  <img src="./docs/_static/tutorials/napkin-ring-scene.png" alt="The faces of a napkin ring and the ring cut open" width="700"/><br/>
-  <sub>A napkin ring: its two faces and the rims where they meet (left), and the solid cut open (right).</sub>
-</p>
-
 ### Curved output for viewing
 
 Every part has a visualisation mesh of curved Lagrange cells, written to VTU
@@ -140,15 +116,11 @@ grid = cutcells.to_pyvista(surface.visualization_mesh(mode="cut_only", degree=3)
 * Parent cells: **intervals**, **triangles**, **quadrilaterals**,
   **tetrahedra**, **hexahedra**, **prisms** and **pyramids**, also mixed in
   one mesh.
-* Cells in a space of higher dimension, such as the facets of a 3D mesh or a
-  surface mesh, are cut and integrated as the cells they are.
-* Pieces that lie exactly on a facet, edge or vertex of the mesh are
-  integrated once, on that entity, with the cells that share it.
+* Cells in a space of higher dimension, such as the facets of a 3D mesh.
 * `MeshView` wraps flat arrays of any mesh without copying; NumPy helpers
   build structured triangle, quadrilateral, tetrahedron and hexahedron
   meshes, and `mesh_from_pyvista` converts PyVista grids.
-* Analytic level sets come from Python callables, from compiled geometry
-  libraries through a capsule, or from ShapeForest shapes.
+* Analytic level sets come from Python callables.
 * The low-level single-cell API also cuts **P2 triangles (6 nodes)** and **P2
   tetrahedra (10 nodes)** (`higher_order_cut`), by subdivision into linear
   sub-cells.
@@ -377,12 +349,3 @@ At runtime for the python examples, CutCells requires [`numpy`](https://numpy.or
 
 The library contains python `pytest` tests in `python/tests`.
 
-### Algoim (benchmarks only)
-
-Algoim is no longer part of the library or the Python package;
-`backend="algoim"` raises. The comparison drivers in `benchmarks/` compare
-quadrays against the vendored Algoim snapshot in `third_party/algoim`.
-Configure that separate CMake project with `-DCUTCELLS_WITH_ALGOIM=ON` and
-with `CONDA_PREFIX` set. CMake then takes the conda environment's LAPACK
-instead of Apple's Accelerate on macOS, which lacks the LAPACKE symbols Algoim
-needs.
