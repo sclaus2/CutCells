@@ -7,7 +7,10 @@
 #   catches new releases of the build tools (nanobind, scikit-build-core,
 #   cibuildwheel) that break the build before a release does.
 # - Tags `v*` publish to PyPI, once the versions agree with the tag.
-# - A manual run can publish to TestPyPI.
+# - A manual run can publish to TestPyPI under a version of its own
+#   (`testpypi_version`, e.g. 0.6.0rc1: TestPyPI never takes a version twice),
+#   then installs that version back from TestPyPI on every platform and runs
+#   the Python tests against it.
 #
 # Publishing uses PyPI Trusted Publishing (OIDC), so no token is stored. Add
 # the publisher for this workflow and the environments `pypi` / `testpypi` on
@@ -36,6 +39,10 @@ on:
         description: "Publish the build to TestPyPI"
         type: boolean
         default: false
+      testpypi_version:
+        description: "Version for the TestPyPI upload, new each time (e.g. 0.6.0rc1, 0.5.1.dev1)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -59,6 +66,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Set the TestPyPI version
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          VERSION: ${{ inputs.testpypi_version }}
+        run: python3 .github/scripts/set_test_version.py "$VERSION"
       - name: Build the sdist
         run: |
           python -m pip install build twine
@@ -83,6 +95,11 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, macos-15-intel]
     steps:
       - uses: actions/checkout@v7
+      - name: Set the TestPyPI version
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          VERSION: ${{ inputs.testpypi_version }}
+        run: python3 .github/scripts/set_test_version.py "$VERSION"
       - name: Build all wheels
         if: >-
           github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -119,6 +136,41 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+
+  verify-testpypi:
+    name: Install from TestPyPI (${{ matrix.os }}, Python ${{ matrix.python }})
+    needs: publish-testpypi
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, macos-15-intel]
+        python: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install the uploaded wheel
+        env:
+          VERSION: ${{ inputs.testpypi_version }}
+        run: |
+          # the new files can take a few minutes to reach TestPyPI's index;
+          # numpy comes from PyPI
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            python -m pip install --only-binary cutcells \
+              --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ \
+              "cutcells==$VERSION" && break
+            sleep 30
+          done
+          python -m pip install pytest
+      - name: Import and test the installed package
+        env:
+          VERSION: ${{ inputs.testpypi_version }}
+        run: |
+          cd "$RUNNER_TEMP"
+          python -c "import cutcells, os; v = os.environ['VERSION']; assert cutcells.__version__ == v, cutcells.__version__; assert 'site-packages' in cutcells.__file__, cutcells.__file__; print(cutcells.__version__, cutcells.__file__)"
+          python -m pytest "$GITHUB_WORKSPACE/python/tests" -q
 
   publish-pypi:
     name: Publish to PyPI
