@@ -6,6 +6,7 @@
 #include "slicing.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -91,24 +92,145 @@ void clip_polygon(const std::vector<std::array<T, 2>>& poly, const HalfPlane<T>&
     }
 }
 
-/// The level set whose zero set the terms ask for: -1 for a volume part.
-/// @throws std::invalid_argument if they ask for more than one, or differ in it
-inline int zero_set_of(std::span<const SelectionTerm> terms)
+/// The zero sets the terms ask for, as bits: none for a volume, one for a
+/// surface, two for a curve.
+/// @throws std::invalid_argument if they ask for more than two, or differ
+inline std::uint64_t zero_sets_of(std::span<const SelectionTerm> terms)
 {
     if (terms.empty())
         throw std::invalid_argument("quadrays: slices need a selection");
     const std::uint64_t zero = terms[0].zero_required;
     for (const SelectionTerm& term : terms)
         if (term.zero_required != zero)
-            throw std::invalid_argument("quadrays: the terms of a sliced part ask for the same zero set");
-    if (zero == 0)
-        return -1;
-    if (zero & (zero - 1))
-        throw std::invalid_argument("quadrays: slices integrate volumes and the zero set of one level set");
-    int l = 0;
-    while (!((zero >> l) & 1))
-        ++l;
+            throw std::invalid_argument("quadrays: the terms of a sliced part ask for the same zero sets");
+    if (std::popcount(zero) > 2)
+        throw std::invalid_argument("quadrays: slices integrate volumes, surfaces and curves");
+    return zero;
+}
+
+/// The lowest level set of @p mask, and the next: -1 where there is none.
+inline std::array<int, 2> level_sets_of(std::uint64_t mask)
+{
+    std::array<int, 2> l = {-1, -1};
+    for (int k = 0, n = 0; k < 64 && n < 2; ++k)
+        if ((mask >> k) & 1)
+            l[static_cast<std::size_t>(n++)] = k;
     return l;
+}
+
+/// The rectangle [lo, hi] of a slice's box coordinates that holds the part's
+/// closure in the slice, with some room around it: boxes are bisected and
+/// dropped where a level set the terms ask a sign of has the other one, a zero
+/// set the part lies on cannot vanish, or a clip excludes them.
+/// @return 0 if the part misses the slice, 1 if its rectangle has more than a
+///         tenth of the box's area (@p lo and @p hi are then the whole box),
+///         2 otherwise
+template <std::floating_point T>
+int fit_to_part(const ClippedBox<T>& box, std::span<const Source<T>> phis, std::span<const SelectionTerm> terms,
+                std::uint64_t zero, std::array<T, 2>& lo, std::array<T, 2>& hi)
+{
+    struct Rect
+    {
+        std::array<T, 2> lo, hi;
+    };
+    thread_local std::vector<Rect> kept, next;
+    thread_local std::vector<T> size, work;
+    thread_local std::vector<std::array<T, 2>> range;
+    thread_local BoxBernstein<T> scratch;
+    const std::size_t n = phis.size();
+    size.resize(n);
+    range.resize(n);
+    for (std::size_t l = 0; l < n; ++l)
+        size[l] = reference_magnitude(phis[l]);
+    const T eps = T(256) * std::numeric_limits<T>::epsilon();
+    const auto may_meet = [&](const Rect& r)
+    {
+        for (const HalfSpace<T>& h : box.clips)
+            if (std::min(h.c[0] * r.lo[0], h.c[0] * r.hi[0]) + std::min(h.c[1] * r.lo[1], h.c[1] * r.hi[1]) > h.d + eps)
+                return false;
+        const T w0 = r.hi[0] - r.lo[0], w1 = r.hi[1] - r.lo[1];
+        for (std::size_t l = 0; l < n; ++l)
+        {
+            const T all = std::numeric_limits<T>::infinity();
+            range[l] = {-all, all};
+            if (phis[l].is_analytic())
+            {
+                const std::array<T, 3> origin = {r.lo[0], r.lo[1], T(0)};
+                const std::array<T, 6> matrix = {w0, 0, 0, w1, 0, 0};
+                AffineBounds<T> bounds;
+                if (affine_bounds(phis[l], std::span<const T>(origin), std::span<const T>(matrix), 2, bounds)
+                    && bounds.sign != 0)
+                    range[l] = bounds.sign > 0 ? std::array<T, 2>{all, all} : std::array<T, 2>{-all, -all};
+            }
+            else
+            {
+                const std::array<T, 4> matrix = {w0, 0, 0, w1};
+                restrict_affine(*phis[l].bernstein, std::span<const T>(r.lo), std::span<const T>(matrix), 2, scratch, work);
+                const auto [mn, mx] = std::minmax_element(scratch.coeffs.begin(), scratch.coeffs.end());
+                range[l] = {*mn, *mx};
+            }
+            const T tol = eps * size[l];
+            if (((zero >> l) & 1) && (range[l][0] > tol || range[l][1] < -tol))
+                return false;
+        }
+        for (const SelectionTerm& term : terms)
+        {
+            bool possible = true;
+            for (std::size_t l = 0; l < n && possible; ++l)
+            {
+                const std::uint64_t bit = std::uint64_t(1) << l;
+                const T tol = eps * size[l];
+                possible = !((term.negative_required & bit) && range[l][0] > tol)
+                           && !((term.positive_required & bit) && range[l][1] < -tol);
+            }
+            if (possible)
+                return true;
+        }
+        return false;
+    };
+    kept.assign(1, Rect{{T(0), T(0)}, {T(1), T(1)}});
+    for (int depth = 0; depth < 16 && kept.size() <= 160; ++depth)
+    {
+        next.clear();
+        for (const Rect& r : kept)
+        {
+            const T m0 = T(0.5) * (r.lo[0] + r.hi[0]), m1 = T(0.5) * (r.lo[1] + r.hi[1]);
+            const Rect children[4] = {{{r.lo[0], r.lo[1]}, {m0, m1}}, {{m0, r.lo[1]}, {r.hi[0], m1}},
+                                      {{r.lo[0], m1}, {m0, r.hi[1]}}, {{m0, m1}, {r.hi[0], r.hi[1]}}};
+            for (const Rect& child : children)
+                if (may_meet(child))
+                    next.push_back(child);
+        }
+        kept.swap(next);
+        if (kept.empty())
+            return 0;
+    }
+    lo = {T(1), T(1)};
+    hi = {T(0), T(0)};
+    for (const Rect& r : kept)
+        for (std::size_t j = 0; j < 2; ++j)
+        {
+            lo[j] = std::min(lo[j], r.lo[j]);
+            hi[j] = std::max(hi[j], r.hi[j]);
+        }
+    // room around the part: the engine's boxes should not hug its boundary
+    const T leaf = kept[0].hi[0] - kept[0].lo[0];
+    for (std::size_t j = 0; j < 2; ++j)
+    {
+        const T room = std::max(T(0.2) * (hi[j] - lo[j]), leaf);
+        lo[j] = std::max(T(0), lo[j] - room);
+        hi[j] = std::min(T(1), hi[j] + room);
+    }
+    // only a part that is small in its slice gets its own cell: the engine's rule depends on its
+    // cell, and a cell that follows the part changes from slice to slice, which the rule along the
+    // sweep sees as noise
+    if ((hi[0] - lo[0]) * (hi[1] - lo[1]) > T(0.1))
+    {
+        lo = {T(0), T(0)};
+        hi = {T(1), T(1)};
+        return 1;
+    }
+    return 2;
 }
 
 } // namespace
@@ -246,11 +368,24 @@ void integrate_slices(const ClippedBox<T>& cell, std::span<const Source<T>> phis
 {
     if (positions.size() != weights.size())
         throw std::invalid_argument("quadrays: slices need one weight per position");
-    const int zero = zero_set_of(terms);
+    const std::uint64_t zero_sets = zero_sets_of(terms);
+    const std::array<int, 2> zero = level_sets_of(zero_sets);
     const Mat3<T> inverse = inverse_jacobian(cell);
+    // the physical gradient of level set l at the box coordinates u
+    const auto physical_gradient = [&](int l, const Vec3<T>& u)
+    {
+        Vec3<T> du;
+        gradient(phis[static_cast<std::size_t>(l)], std::span<const T>(u), std::span<T>(du));
+        Vec3<T> dx = {0, 0, 0};
+        for (std::size_t r = 0; r < 3; ++r)
+            for (std::size_t c = 0; c < 3; ++c)
+                dx[c] += inverse[r][c] * du[r];
+        return dx;
+    };
     thread_local Slice<T> slice;
-    thread_local std::vector<BoxBernstein<T>> restricted;
-    thread_local std::vector<Source<T>> sources;
+    thread_local std::vector<BoxBernstein<T>> restricted, fitted;
+    thread_local std::vector<Source<T>> sources, fitted_sources;
+    thread_local ClippedBox<T> fitted_box;
     thread_local CellPoints<T> points;
     thread_local std::vector<T> work;
     restricted.resize(phis.size());
@@ -271,31 +406,63 @@ void integrate_slices(const ClippedBox<T>& cell, std::span<const Source<T>> phis
                             restricted[l], work);
             sources.push_back(bernstein_source(restricted[l]));
         }
+        // a part that is small in the slice gets its own rectangle as the engine's cell: tolerances
+        // are relative to the cell, and a small part in a large one would be coarse
+        std::array<T, 2> lo, hi;
+        const int fit = fit_to_part(slice.box, std::span<const Source<T>>(sources), terms, zero_sets, lo, hi);
+        if (fit == 0)
+            continue;
         points.points.clear();
         points.weights.clear();
         points.tags.clear();
-        integrate(slice.box, std::span<const Source<T>>(sources), terms, q, opt, points, stats);
+        if (fit == 1)
+            integrate(slice.box, std::span<const Source<T>>(sources), terms, q, opt, points, stats);
+        else
+        {
+            fitted_box = sub_box(slice.box, Vec3<T>{lo[0], lo[1], T(0)}, Vec3<T>{hi[0], hi[1], T(1)});
+            fitted.resize(phis.size());
+            fitted_sources.clear();
+            for (std::size_t l = 0; l < phis.size(); ++l)
+            {
+                if (phis[l].is_analytic())
+                {
+                    fitted_sources.push_back(analytic_source(*phis[l].analytic, fitted_box));
+                    continue;
+                }
+                subdivide(restricted[l], std::span<const T>(lo), std::span<const T>(hi), fitted[l], work);
+                fitted_sources.push_back(bernstein_source(fitted[l]));
+            }
+            integrate(fitted_box, std::span<const Source<T>>(fitted_sources), terms, q, opt, points, stats);
+        }
         for (int i = 0; i < points.n_points(); ++i)
         {
-            const T s0 = points.points[3 * i], s1 = points.points[3 * i + 1];
+            // the slice's box coordinates of the point
+            const T s0 = lo[0] + (hi[0] - lo[0]) * points.points[3 * i], s1 = lo[1] + (hi[1] - lo[1]) * points.points[3 * i + 1];
             for (int j = 0; j < 3; ++j)
                 out.points.push_back(slice.origin[j] + slice.matrix[2 * j] * s0 + slice.matrix[2 * j + 1] * s1);
             T factor = sweep.kind == SweepKind::turning ? slice.radius_origin + slice.radius_step * s0 : T(1);
-            if (zero >= 0)
+            if (zero[0] >= 0)
             {
-                // a curve of the zero set in the slice: its length to the surface's measure, by the
-                // angle between the zero set's normal and the slice's
                 const std::size_t first = out.points.size() - 3;
                 const Vec3<T> u = {out.points[first], out.points[first + 1], out.points[first + 2]};
-                Vec3<T> du;
-                gradient(phis[static_cast<std::size_t>(zero)], std::span<const T>(u), std::span<T>(du));
-                Vec3<T> dx = {0, 0, 0};
-                for (std::size_t r = 0; r < 3; ++r)
-                    for (std::size_t c = 0; c < 3; ++c)
-                        dx[c] += inverse[r][c] * du[r];
                 const Vec3<T> normal = {slice.box.jacobian[0][2], slice.box.jacobian[1][2], slice.box.jacobian[2][2]};
-                const T cosine = dot(dx, normal) / std::sqrt(dot(dx, dx));
-                factor /= std::sqrt(std::max(T(1) - cosine * cosine, std::numeric_limits<T>::min()));
+                const Vec3<T> da = physical_gradient(zero[0], u);
+                T cosine; // of the angle the slices are crossed at
+                if (zero[1] < 0)
+                {
+                    // a surface: its slice is a curve, whose length becomes the surface's measure by
+                    // the angle between the zero set's normal and the slice's
+                    const Vec3<T> across = cross(da, normal);
+                    cosine = std::sqrt(dot(across, across) / dot(da, da));
+                }
+                else
+                {
+                    // a curve: its slice is points, which become its length by the angle between
+                    // its tangent and the slice's normal
+                    const Vec3<T> tangent = cross(da, physical_gradient(zero[1], u));
+                    cosine = std::abs(dot(tangent, normal)) / std::sqrt(dot(tangent, tangent));
+                }
+                factor /= std::max(cosine, std::numeric_limits<T>::min());
             }
             out.weights.push_back(points.weights[i] * weights[k] * factor);
         }
@@ -547,13 +714,23 @@ bool may_hold(BoxRanges<T>& r, const System& s, int p, int q)
     return false;
 }
 
+/// A box the search kept: its range along the sweep's axis, its centre, and
+/// the first system that may hold on it (-1: a vertex of the cell).
+template <std::floating_point T>
+struct Hit
+{
+    T lo = 0, hi = 0;
+    Vec3<T> centre = {0, 0, 0};
+    int system = -1;
+};
+
 /// Bisect the unit box and keep the boxes on which some system may hold and
-/// which may meet the part, down to @p width along @p axis; their ranges
-/// along @p axis go to @p found.
+/// which may meet the part, down to @p width along @p axis; they go to
+/// @p found.
 /// @return false if more than @p budget boxes were visited
 template <std::floating_point T>
 bool search(const Geometry<T>& cell, std::span<const SelectionTerm> terms, const std::vector<System>& systems,
-            int axis, int p, int q, T width, std::vector<Range<T>>& found, int& budget)
+            int axis, int p, int q, T width, std::vector<Hit<T>>& found, int& budget)
 {
     struct Box
     {
@@ -573,18 +750,18 @@ bool search(const Geometry<T>& cell, std::span<const SelectionTerm> terms, const
         ranges.reset(cell, box.lo, box.hi);
         if (!may_meet_part(ranges, terms))
             continue;
-        bool any = false;
-        for (const System& s : systems)
-            if (may_hold(ranges, s, p, q))
-            {
-                any = true;
-                break;
-            }
-        if (!any)
+        int held = -1;
+        for (std::size_t i = 0; i < systems.size() && held < 0; ++i)
+            if (may_hold(ranges, systems[i], p, q))
+                held = static_cast<int>(i);
+        if (held < 0)
             continue;
         if (box.hi[k] - box.lo[k] <= width)
         {
-            found.push_back({box.lo[k], box.hi[k]});
+            found.push_back({box.lo[k], box.hi[k],
+                             Vec3<T>{T(0.5) * (box.lo[0] + box.hi[0]), T(0.5) * (box.lo[1] + box.hi[1]),
+                                     T(0.5) * (box.lo[2] + box.hi[2])},
+                             held});
             continue;
         }
         std::size_t widest = 0;
@@ -651,6 +828,100 @@ void make_geometry(const ClippedBox<T>& cell, std::span<const Source<T>> phis, G
         }
 }
 
+/// The solution of a system next to @p u, by Newton's method with a Jacobian
+/// from differences: the search finds an event's position to its boxes' width,
+/// and this to rounding.
+/// @return false if the iteration does not settle within @p reach of its start
+template <std::floating_point T>
+bool polish(const Geometry<T>& cell, const System& s, int p, int q, T reach, Vec3<T>& u)
+{
+    const auto value = [&](int l, const Vec3<T>& x) { return evaluate(*cell.jets[static_cast<std::size_t>(l)].source, std::span<const T>(x)); };
+    const auto slope = [&](int l, const Vec3<T>& x)
+    {
+        Vec3<T> g;
+        gradient(*cell.jets[static_cast<std::size_t>(l)].source, std::span<const T>(x), std::span<T>(g));
+        return g;
+    };
+    const auto face = [&](int j, const Vec3<T>& x)
+    {
+        const Face<T>& f = cell.faces[static_cast<std::size_t>(j)];
+        return dot(f.c, x) - f.d;
+    };
+    const std::size_t sp = static_cast<std::size_t>(p), sq = static_cast<std::size_t>(q);
+    const auto residual = [&](const Vec3<T>& x) -> Vec3<T>
+    {
+        switch (s.kind)
+        {
+        case SystemKind::critical:
+        {
+            const Vec3<T> g = slope(s.a, x);
+            return {value(s.a, x), g[sp], g[sq]};
+        }
+        case SystemKind::tangency:
+        {
+            const Vec3<T> ga = slope(s.a, x), gb = slope(s.b, x);
+            return {value(s.a, x), value(s.b, x), ga[sp] * gb[sq] - ga[sq] * gb[sp]};
+        }
+        case SystemKind::triple:
+            return {value(s.a, x), value(s.b, x), value(s.c, x)};
+        case SystemKind::face_tangency:
+        {
+            const Vec3<T> g = slope(s.a, x);
+            const Face<T>& f = cell.faces[static_cast<std::size_t>(s.b)];
+            return {value(s.a, x), face(s.b, x), g[sp] * f.c[sq] - g[sq] * f.c[sp]};
+        }
+        case SystemKind::face_pair:
+            return {value(s.a, x), value(s.b, x), face(s.c, x)};
+        case SystemKind::edge_single:
+        {
+            const std::array<int, 2>& edge = cell.edges[static_cast<std::size_t>(s.b)];
+            return {value(s.a, x), face(edge[0], x), face(edge[1], x)};
+        }
+        }
+        return {0, 0, 0};
+    };
+    const Vec3<T> start = u;
+    const T h = std::cbrt(std::numeric_limits<T>::epsilon());
+    for (int it = 0; it < 30; ++it)
+    {
+        const Vec3<T> r = residual(u);
+        Mat3<T> jac; // jac[i][j] = d r_i / d u_j
+        for (std::size_t j = 0; j < 3; ++j)
+        {
+            Vec3<T> up = u, down = u;
+            up[j] += h;
+            down[j] -= h;
+            const Vec3<T> a = residual(up), b = residual(down);
+            for (std::size_t i = 0; i < 3; ++i)
+                jac[i][j] = (a[i] - b[i]) / (T(2) * h);
+        }
+        const T det = dot(jac[0], cross(jac[1], jac[2]));
+        if (!(std::abs(det) > T(0)) || !std::isfinite(det))
+            return false;
+        // Cramer's rule for jac step = r
+        Vec3<T> step;
+        for (std::size_t j = 0; j < 3; ++j)
+        {
+            Mat3<T> m = jac;
+            for (std::size_t i = 0; i < 3; ++i)
+                m[i][j] = r[i];
+            step[j] = dot(m[0], cross(m[1], m[2])) / det;
+        }
+        T moved = 0, away = 0;
+        for (std::size_t j = 0; j < 3; ++j)
+        {
+            u[j] -= step[j];
+            moved = std::max(moved, std::abs(step[j]));
+            away = std::max(away, std::abs(u[j] - start[j]));
+        }
+        if (!(away <= reach))
+            return false;
+        if (moved <= T(8) * std::numeric_limits<T>::epsilon())
+            return true;
+    }
+    return false;
+}
+
 } // namespace
 
 template <std::floating_point T>
@@ -661,34 +932,37 @@ bool sweep_events(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
         throw std::invalid_argument("quadrays: a sweep runs along box axis 0, 1 or 2");
     if (cell.tdim != 3)
         throw std::invalid_argument("quadrays: slices are of cells of dimension 3");
-    const int zero = zero_set_of(terms);
+    const std::uint64_t zero = zero_sets_of(terms);
     thread_local Geometry<T> g;
     thread_local std::vector<System> systems;
-    thread_local std::vector<Range<T>> found;
+    thread_local std::vector<Hit<T>> found;
     make_geometry(cell, phis, g);
     const int n = static_cast<int>(phis.size());
     const int p = (axis + 1) % 3, q = (axis + 2) % 3;
     const T width = scaled_tolerance<T>(1e-7);
 
-    // the systems: of all zero sets for a volume, of those with the part's own for a surface
+    // the systems that hold all the zero sets the part asks for: every one for a volume
     systems.clear();
-    const auto takes = [&](int a) { return zero < 0 || a == zero; };
+    const auto bit = [](int a) { return std::uint64_t(1) << a; };
+    const auto holds = [&](std::uint64_t sets) { return (zero & ~sets) == 0; };
     const int n_faces = static_cast<int>(g.faces.size());
     for (int a = 0; a < n; ++a)
     {
-        if (takes(a))
+        if (holds(bit(a)))
             systems.push_back({SystemKind::critical, a, 0, 0});
         for (int b = a + 1; b < n; ++b)
         {
-            if (!takes(a) && !takes(b))
-                continue;
-            systems.push_back({SystemKind::tangency, a, b, 0});
+            if (holds(bit(a) | bit(b)))
+            {
+                systems.push_back({SystemKind::tangency, a, b, 0});
+                for (int f = 0; f < n_faces; ++f)
+                    systems.push_back({SystemKind::face_pair, a, b, f});
+            }
             for (int c = b + 1; c < n; ++c)
-                systems.push_back({SystemKind::triple, a, b, c});
-            for (int f = 0; f < n_faces; ++f)
-                systems.push_back({SystemKind::face_pair, a, b, f});
+                if (holds(bit(a) | bit(b) | bit(c)))
+                    systems.push_back({SystemKind::triple, a, b, c});
         }
-        if (!takes(a))
+        if (!holds(bit(a)))
             continue;
         for (int f = 0; f < n_faces; ++f)
         {
@@ -705,10 +979,19 @@ bool sweep_events(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
     int budget = max_boxes;
     if (!search(g, terms, systems, axis, p, q, width, found, budget))
         return false;
+    // an event's position enters a surface's or a curve's measure to first order or worse (where a
+    // slice first touches a surface, its slice integral jumps): Newton's method takes it from the
+    // boxes' width to rounding
+    const std::size_t k = static_cast<std::size_t>(axis);
+    for (Hit<T>& hit : found)
+    {
+        Vec3<T> u = hit.centre;
+        if (polish(g, systems[static_cast<std::size_t>(hit.system)], p, q, T(100) * width, u))
+            hit.lo = hit.hi = u[k];
+    }
 
     // the cell's vertices on the part: the pattern of the slice polygon changes there
     thread_local std::vector<T> values;
-    const std::size_t k = static_cast<std::size_t>(axis);
     for (const Vec3<T>& v : g.vertices)
     {
         values.resize(phis.size());
@@ -718,15 +1001,16 @@ bool sweep_events(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
         bool on_part = false;
         for (const SelectionTerm& term : terms)
             on_part = on_part || term_may_hold(term, g.jets, at);
-        if (zero >= 0)
-            on_part = on_part && std::abs(values[static_cast<std::size_t>(zero)])
-                                     <= scaled_tolerance<T>(1e-9) * g.jets[static_cast<std::size_t>(zero)].size[0];
+        for (const int l : level_sets_of(zero)) // a vertex of the cell on the part's zero sets
+            if (l >= 0)
+                on_part = on_part && std::abs(values[static_cast<std::size_t>(l)])
+                                         <= scaled_tolerance<T>(1e-9) * g.jets[static_cast<std::size_t>(l)].size[0];
         if (on_part)
-            found.push_back({v[k], v[k]});
+            found.push_back({v[k], v[k], v, -1});
     }
 
     // boxes that touch are one event; a longer run of them is kept as its two ends
-    std::sort(found.begin(), found.end(), [](const Range<T>& x, const Range<T>& y) { return x.lo < y.lo; });
+    std::sort(found.begin(), found.end(), [](const Hit<T>& x, const Hit<T>& y) { return x.lo < y.lo; });
     events.clear();
     const T together = scaled_tolerance<T>(1e-5), margin = scaled_tolerance<T>(1e-6);
     const auto add = [&](T t)
@@ -782,7 +1066,7 @@ void piece_rule(T a, bool flat_a, T b, bool flat_b, int m, std::vector<T>& posit
 template <std::floating_point T>
 bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
                          std::span<const SelectionTerm> terms, int q, const Options& opt, CellPoints<T>& out,
-                         Stats& stats)
+                         Stats& stats, unsigned axes)
 {
     if (cell.tdim != 3 || phis.empty() || terms.empty())
         return false;
@@ -790,7 +1074,7 @@ bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const Source<T>> p
         if (!phi.is_analytic() && phi.bernstein->dim != 3)
             return false;
     const std::uint64_t zero = terms[0].zero_required;
-    if (zero & (zero - 1))
+    if (std::popcount(zero) > 2)
         return false;
     for (const SelectionTerm& term : terms)
         if (term.zero_required != zero)
@@ -798,7 +1082,8 @@ bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const Source<T>> p
     thread_local std::vector<T> events, best, positions, weights;
     int axis = -1;
     for (int k = 0; k < 3; ++k)
-        if (sweep_events(cell, phis, terms, k, events) && (axis < 0 || events.size() < best.size()))
+        if (((axes >> k) & 1U) && sweep_events(cell, phis, terms, k, events)
+            && (axis < 0 || events.size() < best.size()))
         {
             axis = k;
             best = events;
@@ -877,7 +1162,7 @@ bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const Source<T>> p
         run(piece, piece.flat_a || piece.flat_b ? first_flat : first_plain);
         volume += piece.moments[0];
     }
-    if (!(volume > T(0))) // nothing found; the measure is an area for a surface
+    if (!(volume > T(0))) // nothing found; the measure is an area for a surface, a length for a curve
         return false;
     const T tolerance = std::max(scaled_tolerance<T>(1e-13), std::pow(T(10), -T(q + 4))) * volume;
     for (Piece& piece : pieces)
@@ -917,10 +1202,10 @@ template void piece_rule<float>(float, bool, float, bool, int, std::vector<float
 template void piece_rule<double>(double, bool, double, bool, int, std::vector<double>&, std::vector<double>&);
 template bool integrate_by_slices<float>(const ClippedBox<float>&, std::span<const Source<float>>,
                                          std::span<const SelectionTerm>, int, const Options&, CellPoints<float>&,
-                                         Stats&);
+                                         Stats&, unsigned);
 template bool integrate_by_slices<double>(const ClippedBox<double>&, std::span<const Source<double>>,
                                           std::span<const SelectionTerm>, int, const Options&,
-                                          CellPoints<double>&, Stats&);
+                                          CellPoints<double>&, Stats&, unsigned);
 
 template bool make_slice<float>(const ClippedBox<float>&, const Sweep<float>&, float, Slice<float>&);
 template bool make_slice<double>(const ClippedBox<double>&, const Sweep<double>&, double, Slice<double>&);

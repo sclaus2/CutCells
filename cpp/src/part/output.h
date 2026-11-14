@@ -67,8 +67,8 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
                                                 const lut::Options& options,
                                                 EntityPolicy entities = EntityPolicy::split);
 
-/// @brief The rule of a volume or surface part on one cut cell of dimension 3,
-/// summed over plane slices of the cell (quadrays/slicing.h): each slice is
+/// @brief The rule of a volume, surface or curve part on one cut cell of
+/// dimension 3, summed over plane slices of the cell (quadrays/slicing.h): each slice is
 /// integrated as a cell of dimension 2, and the caller gives the positions of
 /// the slices along the sweep and their weights. One rule, in the cell's
 /// reference coordinates with physical weights; none if the part misses the
@@ -77,15 +77,15 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
 /// The positions have to be split where the pattern of a slice changes; this
 /// function does not look for those events.
 /// @throws std::invalid_argument for cells of another dimension and parts
-///         that are curves or points
+///         that are points
 template <std::floating_point T, std::integral I>
 quadrature::QuadratureRules<T> sliced_cell_rule(const MeshPart<T, I>& part, I cell_id,
                                                 const quadrays::Sweep<T>& sweep, std::span<const T> positions,
                                                 std::span<const T> weights, int points_per_segment,
                                                 const quadrays::Options& options = {});
 
-/// @brief The events of the sweep along box axis @p axis of a volume or
-/// surface part on one cut cell of dimension 3 (quadrays::sweep_events):
+/// @brief The events of the sweep along box axis @p axis of a volume, surface
+/// or curve part on one cut cell of dimension 3 (quadrays::sweep_events):
 /// positions in (0, 1) along that axis of the cell's box (a hexahedron's
 /// reference axis), for the first zero set and side of a surface part.
 /// @return false if the part misses the cell or the search does not finish
@@ -95,13 +95,18 @@ bool sweep_events(const MeshPart<T, I>& part, I cell_id, int axis, std::vector<T
 /// @brief sliced_cell_rule with the slices chosen by the engine
 /// (quadrays::integrate_by_slices): the box axis with the fewest events, and
 /// slices added to each piece between events until its integrals settle.
+///
+/// On a pyramid whose level sets have dof values the sweep runs across the
+/// pyramid's axis only: the engine reads such a level set as (1 - z)^n times
+/// it, which is flat at the apex, and slices through the apex would meet a
+/// zero of it there.
+/// @param axes  the box axes the sweep may run along, bit k for axis k
 /// @return false, with no rule, if the part misses the cell, the events of no
-///         axis are found, a piece does not settle, or the part is a surface
-///         on a pyramid (not sliced: the pyramid's level set times (1 - z)^n
-///         is flat near the apex, and the usual rule is kept)
+///         axis are found, or a piece does not settle
 template <std::floating_point T, std::integral I>
 bool cell_rule_by_slices(const MeshPart<T, I>& part, I cell_id, int points_per_segment,
-                         const quadrays::Options& options, quadrature::QuadratureRules<T>& rules);
+                         const quadrays::Options& options, quadrature::QuadratureRules<T>& rules,
+                         unsigned axes = 7U);
 
 /// @brief The rules of a part on facets, edges and vertices, one EntityRules
 /// per entity dimension (index d for dimension d < tdim): the entities it holds

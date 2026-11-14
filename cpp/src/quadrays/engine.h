@@ -106,17 +106,18 @@ struct Options
     /// Split the base where the active bounds of the height lines change, so
     /// that each region carries only the restrictions to its two bounds.
     bool split_bounds = true;
-    /// n > 0: where the rule of a volume part, or of a piece of one zero set,
-    /// on a cell of dimension 3 has more than n points, the cell is integrated
-    /// a second time slice by slice (slicing.h, integrate_by_slices): plane
+    /// n > 0: where the rule of a volume, of a piece of one zero set, or of a
+    /// piece of the curve in which two zero sets meet, on a cell of dimension 3
+    /// has more than n points, the cell is integrated a second time slice by
+    /// slice (slicing.h, integrate_by_slices): plane
     /// slices along the box axis with the fewest events, each a cell of
     /// dimension 2, so that the edge between two zero sets is a corner of a
     /// slice and not a curve on a base. The rule with fewer points is kept.
     /// Slicing pays on cells that hold a whole feature, as a lens inside one
     /// cell; on cells that resolve the geometry the usual rule is the cheaper
     /// one, which a threshold of a few thousand points leaves alone. Level
-    /// sets with dof values and analytic ones; surfaces on pyramids keep the
-    /// usual rule. 0: off.
+    /// sets with dof values and analytic ones. A cell whose slices do not
+    /// settle keeps the usual rule. 0: off.
     int slicing = 0;
     /// Level 2, where boxes are not split at their folds and crossings
     /// (fold_splits off, anchor_folds 0, or leaf nodes): if no axis certifies, try

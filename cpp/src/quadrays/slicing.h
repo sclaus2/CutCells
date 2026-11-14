@@ -79,10 +79,12 @@ bool make_slice(const ClippedBox<T>& cell, const Sweep<T>& sweep, T t, Slice<T>&
 /// select, as the sum of the rules of its slices, appended to @p out.
 ///
 /// The points are in the cell's box coordinates and the weights physical, as
-/// integrate gives them. The terms select a volume, or a piece of the zero set
-/// of one level set: its slices are curves, and their lengths become the
-/// surface's measure through the angle between the zero set's normal nu and
-/// the slice's normal n, dS = ds dt / sqrt(1 - (nu . n)^2).
+/// integrate gives them. The terms select a volume, a piece of the zero set of
+/// one level set, or a piece of the curve in which two zero sets meet. A
+/// surface's slices are curves, and their lengths become its measure through
+/// the angle between the zero set's normal nu and the slice's normal n,
+/// dS = ds dt / sqrt(1 - (nu . n)^2). A curve's slices are points, and the
+/// curve's length is dt / |tau . n| at each, tau its unit tangent.
 ///
 /// @param cell       the cell (tdim 3; any clipped box)
 /// @param phis       its level sets on its box (bernstein_source, analytic_source)
@@ -92,8 +94,8 @@ bool make_slice(const ClippedBox<T>& cell, const Sweep<T>& sweep, T t, Slice<T>&
 /// @param weights    their weights (a rule in t), one per position
 /// @param q          Gauss-Legendre points per segment in the slices
 /// @throws std::invalid_argument if the cell is not of dimension 3, the terms
-///         ask for the zero sets of two level sets or differ in what they ask
-///         for, or positions and weights differ in number
+///         differ in the zero sets they ask for, or positions and weights
+///         differ in number
 template <std::floating_point T>
 void integrate_slices(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
                       std::span<const SelectionTerm> terms, const Sweep<T>& sweep, std::span<const T> positions,
@@ -107,20 +109,23 @@ void integrate_slices(const ClippedBox<T>& cell, std::span<const Source<T>> phis
 /// zero set (both other partial derivatives vanish) or on a curve in which two
 /// of those surfaces meet (two zero sets, or a zero set and a face), and at
 /// the points where three meet: three zero sets, two on a face, one on an edge
-/// of the cell, and the cell's vertices on the part. For a surface part only
-/// the systems that hold its own zero set count. Boxes are bisected and
+/// of the cell, and the cell's vertices on the part. For a surface or a curve
+/// only the systems that hold all of its zero sets count. Boxes are bisected and
 /// dropped where bounds give one of a system's equations, or a level set of
 /// the selection, one sign, or the box misses the cell, so that no event lies
 /// outside the positions returned. The bounds are Bernstein coefficients for a
 /// form, and those of affine_bounds (Taylor models) for an analytic level set.
 /// A position may hold no event (the bounds are not sharp), which costs slices
 /// and nothing else, and events closer than 1e-5 come back as one position.
+/// The boxes are 1e-7 wide along the axis; Newton's method on the system then
+/// takes the position to rounding, which a surface or a curve needs: where a
+/// slice first touches a surface, the surface's slice integral jumps.
 ///
 /// @param cell       the cell (tdim 3): a hexahedron, or a tetrahedron, prism
 ///                   or pyramid as a clipped box
 /// @param phis       the level sets on the cell's box
-/// @param terms      a volume selection, or one of a piece of one zero set;
-///                   bit l of a term refers to phis[l]
+/// @param terms      the selection of a volume, a surface or a curve; bit l of
+///                   a term refers to phis[l]
 /// @param max_boxes  boxes the search may visit
 /// @return false if the search does not finish within @p max_boxes, as where
 ///         an edge or a zero set lies in one slice, two zero sets touch along a
@@ -138,15 +143,17 @@ bool sweep_events(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
 template <std::floating_point T>
 void piece_rule(T a, bool flat_a, T b, bool flat_b, int m, std::vector<T>& positions, std::vector<T>& weights);
 
-/// @brief integrate for a volume part, or a piece of one zero set, of a cell of
-/// dimension 3, by slices along the box axis with the fewest events.
+/// @brief integrate for a volume part, a piece of one zero set, or a piece of
+/// the curve in which two zero sets meet, of a cell of dimension 3, by slices
+/// along the box axis with the fewest events.
 ///
 /// Takes any cell of dimension 3 (hexahedra, and tetrahedra, prisms and
 /// pyramids as clipped boxes) with level sets of either kind.
 /// The sweep is cut at its events into pieces, and the slices
 /// of each piece are increased, from q by half each time, until the piece's
 /// integrals of the monomials of degree up to 2 in the box coordinates move by
-/// less than 10^-(q + 4) of the part's measure (its volume or its area).
+/// less than 10^-(q + 4) of the part's measure (its volume, area or length).
+/// @param axes  the box axes the sweep may run along, bit k for axis k
 /// @return false, with nothing appended, if it does not take the cell or the
 ///         terms, the events of no axis are found, or a piece does not settle
 ///         with 64 slices (as at a saddle of a zero set): the caller then
@@ -154,6 +161,6 @@ void piece_rule(T a, bool flat_a, T b, bool flat_b, int m, std::vector<T>& posit
 template <std::floating_point T>
 bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
                          std::span<const SelectionTerm> terms, int q, const Options& opt, CellPoints<T>& out,
-                         Stats& stats);
+                         Stats& stats, unsigned axes = 7U);
 
 } // namespace cutcells::quadrays

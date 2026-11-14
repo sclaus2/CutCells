@@ -140,8 +140,6 @@ def test_sliced_quadrature_refuses_what_it_does_not_do():
     result = cc.cut(mesh, [a, b])
     t, w = gauss(-RADIUS, RADIUS, 4)
     with pytest.raises(Exception):
-        rule(result["a = 0 and b = 0"], "parallel", CENTRE, AXIS, t, w)  # a curve
-    with pytest.raises(Exception):
         rule(result["a < 0 and b < 0"], "spiral", CENTRE, AXIS, t, w)
     with pytest.raises(Exception):
         rule(result["a < 0 and b < 0"], "parallel", CENTRE, AXIS, t, w[:-1])
@@ -222,13 +220,65 @@ def test_slicing_on_every_cell_type(cell_type):
     assert (sliced > 0).all()
     assert len(sliced) < len(usual)
     assert abs(sliced.sum() - lens_volume()) < 2e-9 * lens_volume()
-    if cell_type == "pyramid":
-        return  # surfaces on pyramids keep the usual rule
     usual = np.asarray(surface.quadrature(order=7, mode="cut_only", options=options(0)).weights)
     sliced = np.asarray(surface.quadrature(order=7, mode="cut_only", options=options(1)).weights)
     assert (sliced > 0).all()
-    assert len(sliced) < len(usual)
-    assert abs(sliced.sum() - cap_area()) < 2e-9 * cap_area()
+    assert len(sliced) <= len(usual)
+    if cell_type != "pyramid":  # on pyramids the usual surface rule, kept on some cells, is itself off
+        assert abs(sliced.sum() - cap_area()) < 2e-9 * cap_area()
+
+
+def test_surfaces_on_pyramids():
+    """Across the pyramid's axis the slices are accurate, where they settle: each pyramid's piece of the cap
+    against the same piece on two tetrahedra that fill the pyramid."""
+    mesh = cc.box_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 2, 2, 2, cell_type="pyramid")
+    volume, surface = lens_parts(mesh)
+    x = np.asarray(mesh.coordinates).reshape(-1, 3)
+    connectivity, offsets = np.asarray(mesh.connectivity), np.asarray(mesh.offsets)
+    cells = sorted(set(int(c) for c in np.asarray(surface.quadrature(order=2, mode="cut_only").parent_map)))
+    settled = 0
+    for c in cells:
+        found, r = surface.quadrature_by_slices(c, 5)
+        if not found:
+            continue
+        settled += 1
+        v = x[connectivity[offsets[c] : offsets[c + 1]]]  # VTK order: the base, then the apex
+        reference = 0.0
+        for tet in ([0, 1, 2, 4], [0, 2, 3, 4]):
+            tm = cc.MeshView(v[tet].copy(), np.arange(4, dtype=np.int32), np.array([0, 4], np.int32),
+                             np.array([10], np.int32), tdim=3)
+            reference += np.asarray(lens_parts(tm)[1].quadrature(order=10, mode="cut_only").weights).sum()
+        w = np.asarray(r.weights)
+        assert (w > 0).all()
+        assert abs(w.sum() - reference) < 1e-8 * reference
+    assert settled >= 2
+
+
+def ridge_length():
+    return 2 * math.pi * math.sqrt(RADIUS**2 - (0.5 * APART) ** 2)
+
+
+@pytest.mark.parametrize("cell_type", ["hexahedron", "tetrahedron", "prism", "pyramid"])
+def test_curves_by_slices(cell_type):
+    """The ridge of the lens: a slice meets it in points, each worth the length the curve runs per
+    unit of the sweep."""
+    mesh = cc.box_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 2, 2, 2, cell_type=cell_type)
+    a = cc.create_level_set(mesh, ball(CENTRE - 0.5 * APART * AXIS, RADIUS), degree=2, name="a")
+    b = cc.create_level_set(mesh, ball(CENTRE + 0.5 * APART * AXIS, RADIUS), degree=2, name="b")
+    curve = cc.cut(mesh, [a, b])["a = 0 and b = 0"]
+    cells = sorted(set(int(c) for c in np.asarray(curve.quadrature(order=4, mode="cut_only").parent_map)))
+    total = 0.0
+    for c in cells:
+        found, r = curve.quadrature_by_slices(c, 5)
+        w = np.asarray(r.weights)
+        assert found and (w > 0).all()
+        total += w.sum()
+    assert abs(total - ridge_length()) < 1e-10 * ridge_length()
+    # the usual rule follows the curve and is the cheaper one: the option keeps it
+    usual = np.asarray(curve.quadrature(order=7, mode="cut_only", options=options(0)).weights)
+    sliced = np.asarray(curve.quadrature(order=7, mode="cut_only", options=options(1)).weights)
+    assert len(sliced) <= len(usual)
+    assert abs(sliced.sum() - ridge_length()) < 1e-10 * ridge_length()
 
 
 def test_surface_by_slices():
