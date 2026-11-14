@@ -2676,6 +2676,20 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
           "whose faces the part holds (\"hole\"), or that of a level set made of level sets, for "
           "all its faces. Several names keep several faces.")
       .def(
+          "sweep_events",
+          [](const PartT& self, int cell, int axis)
+          {
+            std::vector<T> events;
+            const bool found = cutcells::part::sweep_events(self.part, cell, axis, events);
+            return std::make_pair(found, as_nbarray(std::move(events)));
+          },
+          nb::arg("cell"), nb::arg("axis"),
+          "Experimental. The positions in (0, 1) along reference axis `axis` of a cut hexahedron at "
+          "which the pattern of the slices of this volume part may change: where a slice touches a "
+          "zero set, where the edge between two zero sets, or between a zero set and a face of the "
+          "cell, is tangent to it, and where it passes a point in which three of them meet. Returns "
+          "(found, positions); found is False where the search does not finish.")
+      .def(
           "sliced_quadrature",
           [](const PartT& self, int cell, const std::string& sweep, const ndarray1<T>& origin,
              const ndarray1<T>& direction, const ndarray1<T>& positions, const ndarray1<T>& weights,
@@ -3113,6 +3127,14 @@ NB_MODULE(_cutcellscpp, m)
       .def_rw("follow_curves", &cutcells::quadrays::Options::follow_curves,
               "Curve parts in 3D cells follow the curve: arcs between the faces, split where branches cross, Gauss "
               "points in arc length. True (default); cells it cannot do go by height lines.")
+      .def_rw("slicing", &cutcells::quadrays::Options::slicing,
+              "n > 0: where the rule of a volume part on a hexahedron has more than n points and two "
+              "zero sets may meet on the part, the cell is integrated a second time slice by slice, "
+              "along the box axis whose slices change their pattern least often, and the rule with "
+              "fewer points is kept. Each slice is a 2D cell, so the edge between the zero sets is a "
+              "corner of a slice. It pays on cells that hold a whole feature (a lens inside one "
+              "cell); a threshold of a few thousand points leaves cells that resolve the geometry "
+              "alone. 0 (default): off.")
       .def_rw("anchor_folds", &cutcells::quadrays::Options::anchor_folds,
               "n > 0: base segments that end at or near a fold of a curved zero set "
               "(where it turns back along the height direction) take n q Gauss points in s, "

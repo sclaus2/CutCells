@@ -83,6 +83,14 @@ quadrature::QuadratureRules<T> sliced_cell_rule(const MeshPart<T, I>& part, I ce
                                                 std::span<const T> weights, int points_per_segment,
                                                 const quadrays::Options& options = {});
 
+/// @brief The events of the sweep along box axis @p axis of a volume part on
+/// one cut hexahedron (quadrays::sweep_events): positions in (0, 1) along that
+/// axis of the cell's box, which is the cell's reference axis.
+/// @return false if the cell is not one integrate_by_slices takes or the
+///         search does not finish
+template <std::floating_point T, std::integral I>
+bool sweep_events(const MeshPart<T, I>& part, I cell_id, int axis, std::vector<T>& events);
+
 /// @brief The rules of a part on facets, edges and vertices, one EntityRules
 /// per entity dimension (index d for dimension d < tdim): the entities it holds
 /// whole (MeshPart::entities), and on 2D cells the points where two curves

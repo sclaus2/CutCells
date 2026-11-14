@@ -143,3 +143,64 @@ def test_sliced_quadrature_refuses_what_it_does_not_do():
         rule(result["a < 0"], "spiral", CENTRE, AXIS, t, w)
     with pytest.raises(Exception):
         rule(result["a < 0"], "parallel", CENTRE, AXIS, t, w[:-1])
+
+
+def test_sweep_events_of_a_lens():
+    """Along x the lens begins and ends where its ridge, a circle, is tangent to the slices."""
+    part = lens(hexahedron())
+    found, events = part.sweep_events(0, 0)
+    ridge = math.sqrt(RADIUS**2 - (0.5 * APART) ** 2) * math.sqrt(1.0 - AXIS[0] ** 2)
+    expected = (np.array([CENTRE[0] - ridge, CENTRE[0] + ridge]) + 1.0) / 2.0
+    assert found
+    assert np.asarray(events) == pytest.approx(expected, abs=2e-6)
+    # along y and z a sphere's pole lies on the lens as well: more events
+    for axis in (1, 2):
+        found, events = part.sweep_events(0, axis)
+        assert found and len(events) == 4
+
+
+def test_slicing_replaces_a_costly_rule():
+    """A lens inside one cell: the rule summed over slices is as accurate and has a fraction of the points."""
+    part = lens(hexahedron())
+    usual = cc.QuadraysOptions()
+    usual.points_per_segment = 5
+    sliced = cc.QuadraysOptions()
+    sliced.points_per_segment = 5
+    sliced.slicing = 4000
+    r0 = part.quadrature(order=7, mode="cut_only", options=usual)
+    r1 = part.quadrature(order=7, mode="cut_only", options=sliced)
+    w0, w1 = np.asarray(r0.weights), np.asarray(r1.weights)
+    assert len(w0) > 4000
+    assert len(w1) < len(w0) / 2
+    assert (w1 > 0).all()
+    assert abs(w1.sum() - lens_volume()) < 5e-9 * lens_volume()
+    X1 = np.asarray(r1.points).reshape(len(w1), 3)
+    assert np.abs(moments(X1, w1) - moments(*reference(part))).max() < 5e-9
+
+
+def test_slicing_leaves_cheap_cells_alone():
+    """On a mesh that resolves the lens no cell reaches the threshold: the rules are the usual ones."""
+    mesh = cc.box_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 5, 5, 5, cell_type="hexahedron")
+    part = lens(mesh)
+    sliced = cc.QuadraysOptions()
+    sliced.slicing = 4000
+    r0 = part.quadrature(order=4, mode="cut_only")
+    r1 = part.quadrature(order=4, mode="cut_only", options=sliced)
+    assert np.array_equal(np.asarray(r0.weights), np.asarray(r1.weights))
+    assert np.array_equal(np.asarray(r0.points), np.asarray(r1.points))
+
+
+def test_slicing_takes_hexahedra_only():
+    """Other cells keep the usual rule whatever it costs."""
+    v = np.array([[-1.6, -1.5, -1.4], [1.9, -1.2, -1.1], [-0.4, 2.0, -1.2], [0.0, 0.1, 1.6]])
+    mesh = cc.MeshView(v, np.arange(4, dtype=np.int32), np.array([0, 4], np.int32), np.array([10], np.int32), tdim=3)
+    centre = v.mean(0)
+    a = cc.create_level_set(mesh, ball(centre - 0.1 * AXIS, 0.3), degree=2, name="a")
+    b = cc.create_level_set(mesh, ball(centre + 0.1 * AXIS, 0.3), degree=2, name="b")
+    part = cc.cut(mesh, [a, b])["a < 0 and b < 0"]
+    sliced = cc.QuadraysOptions()
+    sliced.slicing = 1
+    r0 = part.quadrature(order=4, mode="cut_only")
+    r1 = part.quadrature(order=4, mode="cut_only", options=sliced)
+    assert len(np.asarray(r0.weights)) > 1
+    assert np.array_equal(np.asarray(r0.weights), np.asarray(r1.weights))
