@@ -115,8 +115,8 @@ struct Options
     /// Slicing pays on cells that hold a whole feature, as a lens inside one
     /// cell; on cells that resolve the geometry the usual rule is the cheaper
     /// one, which a threshold of a few thousand points leaves alone. Level
-    /// sets with dof values only; surfaces on pyramids keep the usual rule.
-    /// 0: off.
+    /// sets with dof values and analytic ones; surfaces on pyramids keep the
+    /// usual rule. 0: off.
     int slicing = 0;
     /// Level 2, where boxes are not split at their folds and crossings
     /// (fold_splits off, anchor_folds 0, or leaf nodes): if no axis certifies, try

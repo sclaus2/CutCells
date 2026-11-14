@@ -240,7 +240,7 @@ bool make_slice(const ClippedBox<T>& cell, const Sweep<T>& sweep, T t, Slice<T>&
 }
 
 template <std::floating_point T>
-void integrate_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> forms,
+void integrate_slices(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
                       std::span<const SelectionTerm> terms, const Sweep<T>& sweep, std::span<const T> positions,
                       std::span<const T> weights, int q, const Options& opt, CellPoints<T>& out, Stats& stats)
 {
@@ -253,15 +253,21 @@ void integrate_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>
     thread_local std::vector<Source<T>> sources;
     thread_local CellPoints<T> points;
     thread_local std::vector<T> work;
-    restricted.resize(forms.size());
+    restricted.resize(phis.size());
     for (std::size_t k = 0; k < positions.size(); ++k)
     {
         if (!make_slice(cell, sweep, positions[k], slice))
             continue;
         sources.clear();
-        for (std::size_t l = 0; l < forms.size(); ++l)
+        for (std::size_t l = 0; l < phis.size(); ++l)
         {
-            restrict_affine(forms[l], std::span<const T>(slice.origin), std::span<const T>(slice.matrix), 2,
+            // an analytic level set is read on the slice as on any cell of dimension 2 in 3D
+            if (phis[l].is_analytic())
+            {
+                sources.push_back(analytic_source(*phis[l].analytic, slice.box));
+                continue;
+            }
+            restrict_affine(*phis[l].bernstein, std::span<const T>(slice.origin), std::span<const T>(slice.matrix), 2,
                             restricted[l], work);
             sources.push_back(bernstein_source(restricted[l]));
         }
@@ -282,7 +288,7 @@ void integrate_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>
                 const std::size_t first = out.points.size() - 3;
                 const Vec3<T> u = {out.points[first], out.points[first + 1], out.points[first + 2]};
                 Vec3<T> du;
-                gradient(forms[static_cast<std::size_t>(zero)], std::span<const T>(u), std::span<T>(du));
+                gradient(phis[static_cast<std::size_t>(zero)], std::span<const T>(u), std::span<T>(du));
                 Vec3<T> dx = {0, 0, 0};
                 for (std::size_t r = 0; r < 3; ++r)
                     for (std::size_t c = 0; c < 3; ++c)
@@ -309,11 +315,14 @@ struct Range
     T lo = 0, hi = 0;
 };
 
-/// A level set and its partial derivatives on the box, with their sizes.
+/// A level set on the box: for a Bernstein form its partial derivatives as
+/// forms too, for an analytic level set the source, whose bounds over a box
+/// come from affine_bounds. size: the functions' sizes, for rounding.
 template <std::floating_point T>
 struct Jet
 {
-    std::array<BoxBernstein<T>, 4> form; ///< value, d/du_0, d/du_1, d/du_2
+    const Source<T>* source = nullptr;
+    std::array<BoxBernstein<T>, 4> form; ///< value, d/du_0, d/du_1, d/du_2 (Bernstein forms only)
     std::array<T, 4> size = {};
 };
 
@@ -371,21 +380,46 @@ struct BoxRanges
     }
 };
 
-/// The range of function d (0: value, 1 + i: d/du_i) of level set l on the box.
+/// The range of function d (0: value, 1 + i: d/du_i) of level set l on the
+/// box. Of an analytic level set the value's range is only as good as its
+/// sign (all that is asked of it), and a bound that is lost is the whole line.
 template <std::floating_point T>
 const Range<T>& range_of(BoxRanges<T>& r, int l, int d)
 {
     const std::size_t ls = static_cast<std::size_t>(l), ds = static_cast<std::size_t>(d);
-    if (!r.known[ls][ds])
+    if (r.known[ls][ds])
+        return r.range[ls][ds];
+    const Jet<T>& jet = r.cell->jets[ls];
+    const std::array<T, 9> matrix = {r.hi[0] - r.lo[0], 0, 0, 0, r.hi[1] - r.lo[1], 0, 0, 0, r.hi[2] - r.lo[2]};
+    if (!jet.source->is_analytic())
     {
-        const std::array<T, 9> matrix = {r.hi[0] - r.lo[0], 0, 0, 0, r.hi[1] - r.lo[1], 0, 0, 0, r.hi[2] - r.lo[2]};
-        restrict_affine(r.cell->jets[ls].form[ds], std::span<const T>(r.lo), std::span<const T>(matrix), 3, r.scratch,
-                        r.work);
+        restrict_affine(jet.form[ds], std::span<const T>(r.lo), std::span<const T>(matrix), 3, r.scratch, r.work);
         const auto [mn, mx] = std::minmax_element(r.scratch.coeffs.begin(), r.scratch.coeffs.end());
         r.range[ls][ds] = {*mn, *mx};
         r.known[ls][ds] = true;
+        return r.range[ls][ds];
     }
-    return r.range[ls][ds];
+    const T all = std::numeric_limits<T>::infinity(), far = std::numeric_limits<T>::max();
+    AffineBounds<T> bounds;
+    std::array<Range<T>, 4>& out = r.range[ls];
+    out = {Range<T>{-all, all}, Range<T>{-all, all}, Range<T>{-all, all}, Range<T>{-all, all}};
+    if (affine_bounds(*jet.source, std::span<const T>(r.lo), std::span<const T>(matrix), 3, bounds))
+    {
+        out[0] = bounds.sign > 0 ? Range<T>{far, far}
+                                 : (bounds.sign < 0 ? Range<T>{-far, -far} : Range<T>{-bounds.magnitude, bounds.magnitude});
+        // the bounds are of the derivatives along the box's edges
+        for (std::size_t j = 0; j < 3 && bounds.has_derivatives; ++j)
+            out[1 + j] = {bounds.dmin[j] / matrix[4 * j], bounds.dmax[j] / matrix[4 * j]};
+    }
+    r.known[ls] = {true, true, true, true};
+    return out[ds];
+}
+
+/// True if both ends of the range are numbers: a bound that holds.
+template <std::floating_point T>
+bool bounded(const Range<T>& x)
+{
+    return std::isfinite(x.lo) && std::isfinite(x.hi);
 }
 
 template <std::floating_point T>
@@ -475,6 +509,9 @@ bool may_hold(BoxRanges<T>& r, const System& s, int p, int q)
             const T v[4] = {x.lo * y.lo, x.lo * y.hi, x.hi * y.lo, x.hi * y.hi};
             return Range<T>{*std::min_element(v, v + 4), *std::max_element(v, v + 4)};
         };
+        if (!bounded(range_of(r, s.a, 1 + p)) || !bounded(range_of(r, s.a, 1 + q))
+            || !bounded(range_of(r, s.b, 1 + p)) || !bounded(range_of(r, s.b, 1 + q)))
+            return true;
         const Range<T> first = product(range_of(r, s.a, 1 + p), range_of(r, s.b, 1 + q));
         const Range<T> second = product(range_of(r, s.a, 1 + q), range_of(r, s.b, 1 + p));
         const std::size_t a = static_cast<std::size_t>(s.a), b = static_cast<std::size_t>(s.b);
@@ -489,6 +526,8 @@ bool may_hold(BoxRanges<T>& r, const System& s, int p, int q)
             return false;
         // interval of d_p f_a c_q - d_q f_a c_p
         const Face<T>& face = r.cell->faces[static_cast<std::size_t>(s.b)];
+        if (!bounded(range_of(r, s.a, 1 + p)) || !bounded(range_of(r, s.a, 1 + q)))
+            return true;
         const auto scaled = [](const Range<T>& x, T c)
         { return c >= T(0) ? Range<T>{c * x.lo, c * x.hi} : Range<T>{c * x.hi, c * x.lo}; };
         const Range<T> first = scaled(range_of(r, s.a, 1 + p), face.c[static_cast<std::size_t>(q)]);
@@ -563,18 +602,25 @@ bool search(const Geometry<T>& cell, std::span<const SelectionTerm> terms, const
 /// The level sets with their derivatives, and the faces, edges and vertices of
 /// the cell (the clipped box's polytope; faces in one plane count once).
 template <std::floating_point T>
-void make_geometry(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> forms, Geometry<T>& g)
+void make_geometry(const ClippedBox<T>& cell, std::span<const Source<T>> phis, Geometry<T>& g)
 {
-    g.jets.resize(forms.size());
-    for (std::size_t l = 0; l < forms.size(); ++l)
+    g.jets.resize(phis.size());
+    for (std::size_t l = 0; l < phis.size(); ++l)
     {
-        if (forms[l].dim != 3)
+        Jet<T>& jet = g.jets[l];
+        jet.source = &phis[l];
+        if (phis[l].is_analytic())
+        {
+            jet.size.fill(reference_magnitude(phis[l]));
+            continue;
+        }
+        if (phis[l].bernstein->dim != 3)
             throw std::invalid_argument("quadrays: the events of a sweep need level sets on a box of dimension 3");
-        g.jets[l].form[0] = forms[l];
+        jet.form[0] = *phis[l].bernstein;
         for (int d = 0; d < 3; ++d)
-            derivative(forms[l], d, g.jets[l].form[static_cast<std::size_t>(1 + d)]);
+            derivative(jet.form[0], d, jet.form[static_cast<std::size_t>(1 + d)]);
         for (std::size_t d = 0; d < 4; ++d)
-            g.jets[l].size[d] = max_abs(std::span<const T>(g.jets[l].form[d].coeffs));
+            jet.size[d] = max_abs(std::span<const T>(jet.form[d].coeffs));
     }
     thread_local Polytope<T> poly;
     clipped_polytope(cell, poly);
@@ -608,7 +654,7 @@ void make_geometry(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> f
 } // namespace
 
 template <std::floating_point T>
-bool sweep_events(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> forms,
+bool sweep_events(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
                   std::span<const SelectionTerm> terms, int axis, std::vector<T>& events, int max_boxes)
 {
     if (axis < 0 || axis > 2)
@@ -619,8 +665,8 @@ bool sweep_events(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> fo
     thread_local Geometry<T> g;
     thread_local std::vector<System> systems;
     thread_local std::vector<Range<T>> found;
-    make_geometry(cell, forms, g);
-    const int n = static_cast<int>(forms.size());
+    make_geometry(cell, phis, g);
+    const int n = static_cast<int>(phis.size());
     const int p = (axis + 1) % 3, q = (axis + 2) % 3;
     const T width = scaled_tolerance<T>(1e-7);
 
@@ -665,9 +711,9 @@ bool sweep_events(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> fo
     const std::size_t k = static_cast<std::size_t>(axis);
     for (const Vec3<T>& v : g.vertices)
     {
-        values.resize(forms.size());
-        for (std::size_t l = 0; l < forms.size(); ++l)
-            values[l] = evaluate(forms[l], std::span<const T>(v));
+        values.resize(phis.size());
+        for (std::size_t l = 0; l < phis.size(); ++l)
+            values[l] = evaluate(phis[l], std::span<const T>(v));
         const auto at = [&](int l) { return Range<T>{values[static_cast<std::size_t>(l)], values[static_cast<std::size_t>(l)]}; };
         bool on_part = false;
         for (const SelectionTerm& term : terms)
@@ -734,14 +780,14 @@ void piece_rule(T a, bool flat_a, T b, bool flat_b, int m, std::vector<T>& posit
 }
 
 template <std::floating_point T>
-bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> forms,
+bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
                          std::span<const SelectionTerm> terms, int q, const Options& opt, CellPoints<T>& out,
                          Stats& stats)
 {
-    if (cell.tdim != 3 || forms.empty() || terms.empty())
+    if (cell.tdim != 3 || phis.empty() || terms.empty())
         return false;
-    for (const BoxBernstein<T>& form : forms)
-        if (form.dim != 3)
+    for (const Source<T>& phi : phis)
+        if (!phi.is_analytic() && phi.bernstein->dim != 3)
             return false;
     const std::uint64_t zero = terms[0].zero_required;
     if (zero & (zero - 1))
@@ -752,7 +798,7 @@ bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein
     thread_local std::vector<T> events, best, positions, weights;
     int axis = -1;
     for (int k = 0; k < 3; ++k)
-        if (sweep_events(cell, forms, terms, k, events) && (axis < 0 || events.size() < best.size()))
+        if (sweep_events(cell, phis, terms, k, events) && (axis < 0 || events.size() < best.size()))
         {
             axis = k;
             best = events;
@@ -807,7 +853,7 @@ bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein
         }
         piece.points.points.clear();
         piece.points.weights.clear();
-        integrate_slices(cell, forms, terms, sweep, std::span<const T>(positions), std::span<const T>(weights), q, opt,
+        integrate_slices(cell, phis, terms, sweep, std::span<const T>(positions), std::span<const T>(weights), q, opt,
                          piece.points, stats);
         piece.moments.fill(T(0));
         for (int i = 0; i < piece.points.n_points(); ++i)
@@ -863,25 +909,25 @@ bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein
 // Explicit instantiations
 // ============================================================================
 
-template bool sweep_events<float>(const ClippedBox<float>&, std::span<const BoxBernstein<float>>,
+template bool sweep_events<float>(const ClippedBox<float>&, std::span<const Source<float>>,
                                   std::span<const SelectionTerm>, int, std::vector<float>&, int);
-template bool sweep_events<double>(const ClippedBox<double>&, std::span<const BoxBernstein<double>>,
+template bool sweep_events<double>(const ClippedBox<double>&, std::span<const Source<double>>,
                                    std::span<const SelectionTerm>, int, std::vector<double>&, int);
 template void piece_rule<float>(float, bool, float, bool, int, std::vector<float>&, std::vector<float>&);
 template void piece_rule<double>(double, bool, double, bool, int, std::vector<double>&, std::vector<double>&);
-template bool integrate_by_slices<float>(const ClippedBox<float>&, std::span<const BoxBernstein<float>>,
+template bool integrate_by_slices<float>(const ClippedBox<float>&, std::span<const Source<float>>,
                                          std::span<const SelectionTerm>, int, const Options&, CellPoints<float>&,
                                          Stats&);
-template bool integrate_by_slices<double>(const ClippedBox<double>&, std::span<const BoxBernstein<double>>,
+template bool integrate_by_slices<double>(const ClippedBox<double>&, std::span<const Source<double>>,
                                           std::span<const SelectionTerm>, int, const Options&,
                                           CellPoints<double>&, Stats&);
 
 template bool make_slice<float>(const ClippedBox<float>&, const Sweep<float>&, float, Slice<float>&);
 template bool make_slice<double>(const ClippedBox<double>&, const Sweep<double>&, double, Slice<double>&);
-template void integrate_slices<float>(const ClippedBox<float>&, std::span<const BoxBernstein<float>>,
+template void integrate_slices<float>(const ClippedBox<float>&, std::span<const Source<float>>,
                                       std::span<const SelectionTerm>, const Sweep<float>&, std::span<const float>,
                                       std::span<const float>, int, const Options&, CellPoints<float>&, Stats&);
-template void integrate_slices<double>(const ClippedBox<double>&, std::span<const BoxBernstein<double>>,
+template void integrate_slices<double>(const ClippedBox<double>&, std::span<const Source<double>>,
                                        std::span<const SelectionTerm>, const Sweep<double>&,
                                        std::span<const double>, std::span<const double>, int, const Options&,
                                        CellPoints<double>&, Stats&);

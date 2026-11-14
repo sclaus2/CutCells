@@ -15,13 +15,15 @@
 #include "box_bernstein.h"
 #include "clipped_box.h"
 #include "engine.h"
+#include "source.h"
 
 /// Slicing: a cell of dimension 3 integrated slice by slice.
 ///
 /// A sweep gives plane slices of the cell. Each slice is a cell of dimension 2
-/// lying in 3D, a rectangle of its plane clipped by the cell's faces, and the
-/// level sets restricted to it are Bernstein forms again (restrict_affine,
-/// exact). The engine integrates the slice as it does any cell of dimension 2,
+/// lying in 3D, a rectangle of its plane clipped by the cell's faces. A level
+/// set given as a Bernstein form restricts to a Bernstein form on it
+/// (restrict_affine, exact); an analytic level set is read on it as on any
+/// cell of dimension 2 in 3D. The engine integrates the slice as it does any cell of dimension 2,
 /// with its own height directions, so that the edge where two zero sets meet is
 /// a corner of the slice and never the projection of a curve onto a base. The
 /// rule of the cell is the sum over the slices,
@@ -83,8 +85,8 @@ bool make_slice(const ClippedBox<T>& cell, const Sweep<T>& sweep, T t, Slice<T>&
 /// the slice's normal n, dS = ds dt / sqrt(1 - (nu . n)^2).
 ///
 /// @param cell       the cell (tdim 3; any clipped box)
-/// @param forms      its level sets as Bernstein forms on its box
-/// @param terms      the selection; bit l of a term refers to forms[l]
+/// @param phis       its level sets on its box (bernstein_source, analytic_source)
+/// @param terms      the selection; bit l of a term refers to phis[l]
 /// @param sweep      the family of slices
 /// @param positions  positions t of the slices along the sweep
 /// @param weights    their weights (a rule in t), one per position
@@ -93,7 +95,7 @@ bool make_slice(const ClippedBox<T>& cell, const Sweep<T>& sweep, T t, Slice<T>&
 ///         ask for the zero sets of two level sets or differ in what they ask
 ///         for, or positions and weights differ in number
 template <std::floating_point T>
-void integrate_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> forms,
+void integrate_slices(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
                       std::span<const SelectionTerm> terms, const Sweep<T>& sweep, std::span<const T> positions,
                       std::span<const T> weights, int q, const Options& opt, CellPoints<T>& out, Stats& stats);
 
@@ -106,24 +108,26 @@ void integrate_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>
 /// of those surfaces meet (two zero sets, or a zero set and a face), and at
 /// the points where three meet: three zero sets, two on a face, one on an edge
 /// of the cell, and the cell's vertices on the part. For a surface part only
-/// the systems that hold its own zero set count. Each is a polynomial system;
-/// boxes are bisected and dropped where the Bernstein coefficients of one of
-/// its equations, or of a level set of the selection, have one sign, or the
-/// box misses the cell, so that no event lies outside the positions returned.
+/// the systems that hold its own zero set count. Boxes are bisected and
+/// dropped where bounds give one of a system's equations, or a level set of
+/// the selection, one sign, or the box misses the cell, so that no event lies
+/// outside the positions returned. The bounds are Bernstein coefficients for a
+/// form, and those of affine_bounds (Taylor models) for an analytic level set.
 /// A position may hold no event (the bounds are not sharp), which costs slices
 /// and nothing else, and events closer than 1e-5 come back as one position.
 ///
 /// @param cell       the cell (tdim 3): a hexahedron, or a tetrahedron, prism
 ///                   or pyramid as a clipped box
-/// @param forms      the level sets on the cell's box
+/// @param phis       the level sets on the cell's box
 /// @param terms      a volume selection, or one of a piece of one zero set;
-///                   bit l of a term refers to forms[l]
+///                   bit l of a term refers to phis[l]
 /// @param max_boxes  boxes the search may visit
 /// @return false if the search does not finish within @p max_boxes, as where
-///         an edge or a zero set lies in one slice, or two zero sets touch
-///         along a curve; @p events is then meaningless
+///         an edge or a zero set lies in one slice, two zero sets touch along a
+///         curve, or an analytic level set's bounds are lost; @p events is
+///         then meaningless
 template <std::floating_point T>
-bool sweep_events(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> forms,
+bool sweep_events(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
                   std::span<const SelectionTerm> terms, int axis, std::vector<T>& events, int max_boxes = 60000);
 
 /// @brief Gauss-Legendre positions and weights on the piece [a, b] of a
@@ -138,7 +142,7 @@ void piece_rule(T a, bool flat_a, T b, bool flat_b, int m, std::vector<T>& posit
 /// dimension 3, by slices along the box axis with the fewest events.
 ///
 /// Takes any cell of dimension 3 (hexahedra, and tetrahedra, prisms and
-/// pyramids as clipped boxes) whose level sets are Bernstein forms on its box.
+/// pyramids as clipped boxes) with level sets of either kind.
 /// The sweep is cut at its events into pieces, and the slices
 /// of each piece are increased, from q by half each time, until the piece's
 /// integrals of the monomials of degree up to 2 in the box coordinates move by
@@ -148,7 +152,7 @@ void piece_rule(T a, bool flat_a, T b, bool flat_b, int m, std::vector<T>& posit
 ///         with 64 slices (as at a saddle of a zero set): the caller then
 ///         integrates as usual
 template <std::floating_point T>
-bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> forms,
+bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const Source<T>> phis,
                          std::span<const SelectionTerm> terms, int q, const Options& opt, CellPoints<T>& out,
                          Stats& stats);
 

@@ -269,3 +269,44 @@ def test_sweep_events_see_the_faces_of_a_tetrahedron():
     ref = np.asarray(part.quadrature(order=10, mode="cut_only").weights)
     assert found and (w > 0).all()
     assert abs(w.sum() - ref.sum()) < 1e-9 * ref.sum()
+
+
+def analytic_lens(mesh, signed_distance):
+    a = cc.analytic_sphere(list(CENTRE - 0.5 * APART * AXIS), RADIUS, signed_distance=signed_distance, name="a")
+    b = cc.analytic_sphere(list(CENTRE + 0.5 * APART * AXIS), RADIUS, signed_distance=signed_distance, name="b")
+    result = cc.cut(mesh, [a, b])
+    return result["a < 0 and b < 0"], result["a = 0 and b < 0"]
+
+
+@pytest.mark.parametrize("signed_distance", [False, True])
+def test_analytic_level_sets_by_slices(signed_distance):
+    """Analytic level sets are read on the slices, and their bounds over boxes find the events."""
+    volume, surface = analytic_lens(hexahedron(), signed_distance)
+    found, r = volume.quadrature_by_slices(0, 5)
+    w = np.asarray(r.weights)
+    assert found and (w > 0).all()
+    assert abs(w.sum() - lens_volume()) < 2e-9 * lens_volume()
+    found, r = surface.quadrature_by_slices(0, 5)
+    w = np.asarray(r.weights)
+    assert found and (w > 0).all()
+    assert abs(w.sum() - cap_area()) < 2e-9 * cap_area()
+    # the events are those of the same spheres as polynomials
+    bernstein = lens(hexahedron())
+    for axis in range(3):
+        assert np.asarray(volume.sweep_events(0, axis)[1]) == pytest.approx(np.asarray(bernstein.sweep_events(0, axis)[1]), abs=2e-6)
+
+
+@pytest.mark.parametrize("signed_distance", [False, True])
+def test_slicing_option_with_analytic_level_sets(signed_distance):
+    volume, surface = analytic_lens(cc.box_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 2, 2, 2, cell_type="tetrahedron"),
+                                    signed_distance)
+    usual = np.asarray(volume.quadrature(order=7, mode="cut_only", options=options(0)).weights)
+    sliced = np.asarray(volume.quadrature(order=7, mode="cut_only", options=options(1)).weights)
+    assert (sliced > 0).all()
+    assert len(sliced) < len(usual)
+    assert abs(sliced.sum() - lens_volume()) < 2e-9 * lens_volume()
+    usual = np.asarray(surface.quadrature(order=7, mode="cut_only", options=options(0)).weights)
+    sliced = np.asarray(surface.quadrature(order=7, mode="cut_only", options=options(1)).weights)
+    assert (sliced > 0).all()
+    assert len(sliced) <= len(usual)
+    assert abs(sliced.sum() - cap_area()) < 1e-8 * cap_area()

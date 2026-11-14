@@ -76,8 +76,8 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
 ///
 /// The positions have to be split where the pattern of a slice changes; this
 /// function does not look for those events.
-/// @throws std::invalid_argument for cells of another dimension, parts that
-///         are curves or points, and level sets without dof values
+/// @throws std::invalid_argument for cells of another dimension and parts
+///         that are curves or points
 template <std::floating_point T, std::integral I>
 quadrature::QuadratureRules<T> sliced_cell_rule(const MeshPart<T, I>& part, I cell_id,
                                                 const quadrays::Sweep<T>& sweep, std::span<const T> positions,

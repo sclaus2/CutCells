@@ -3155,8 +3155,8 @@ NB_MODULE(_cutcellscpp, m)
               "their pattern least often, and the rule with fewer points is kept. Each slice is a 2D "
               "cell, so the edge between two zero sets is a corner of a slice. It pays on cells that "
               "hold a whole feature (a lens inside one cell); a threshold of a few thousand points "
-              "leaves cells that resolve the geometry alone. Level sets with dof values only. "
-              "0 (default): off.")
+              "leaves cells that resolve the geometry alone. Level sets with dof values and analytic "
+              "ones; surfaces on pyramids keep the usual rule. 0 (default): off.")
       .def_rw("anchor_folds", &cutcells::quadrays::Options::anchor_folds,
               "n > 0: base segments that end at or near a fold of a curved zero set "
               "(where it turns back along the height direction) take n q Gauss points in s, "

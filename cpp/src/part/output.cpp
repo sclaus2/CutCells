@@ -1227,9 +1227,7 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                 sources_of(part, c, ct, cs);
                 nudge_sources(part, c, ct, cs);
                 const std::span<const quadrays::Source<T>> sources(cs.sources);
-                bool forms_only = options.slicing > 0 && tdim == 3 && cs.forms.size() == cs.sources.size();
-                for (const quadrays::Source<T>& source : cs.sources)
-                    forms_only = forms_only && !source.is_analytic();
+                const bool sliceable = options.slicing > 0 && tdim == 3;
                 for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
                 {
                     const std::span<const SelectionTerm> group = std::span<const SelectionTerm>(ct.terms).subspan(
@@ -1241,13 +1239,13 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                     // a costly rule of a volume or of a piece of one zero set: the rule summed over
                     // slices replaces it if it has fewer points
                     // (not surfaces on pyramids: their level set times (1 - z)^n is flat near the apex)
-                    if (forms_only && (group[0].zero_required & (group[0].zero_required - 1)) == 0
+                    if (sliceable && (group[0].zero_required & (group[0].zero_required - 1)) == 0
                         && !(type == cell::type::pyramid && group[0].zero_required != 0)
                         && points.n_points() - before > options.slicing)
                     {
                         sliced.points.clear();
                         sliced.weights.clear();
-                        if (quadrays::integrate_by_slices(cs.box, std::span<const quadrays::BoxBernstein<T>>(cs.forms),
+                        if (quadrays::integrate_by_slices(cs.box, std::span<const quadrays::Source<T>>(cs.sources),
                                                           group, q, options, sliced, stats)
                             && sliced.n_points() < points.n_points() - before)
                         {
@@ -1440,7 +1438,7 @@ namespace
 {
 
 /// What slices need of one cut cell of dimension 3: its terms and its level
-/// sets as forms on its box.
+/// sets on its box.
 /// @return false if the part misses the cell
 template <std::floating_point T, std::integral I>
 bool slicing_sources(const MeshPart<T, I>& part, I cell_id, CellTerms& ct, CellSources<T, I>& cs)
@@ -1457,9 +1455,6 @@ bool slicing_sources(const MeshPart<T, I>& part, I cell_id, CellTerms& ct, CellS
         return false;
     sources_of(part, cell_id, ct, cs);
     nudge_sources(part, cell_id, ct, cs);
-    for (const quadrays::Source<T>& source : cs.sources)
-        if (source.is_analytic())
-            throw std::invalid_argument("part: slices take level sets with dof values");
     return true;
 }
 
@@ -1502,7 +1497,7 @@ bool sweep_events(const MeshPart<T, I>& part, I cell_id, int axis, std::vector<T
     CellSources<T, I> cs;
     if (!slicing_sources(part, cell_id, ct, cs))
         return false;
-    return quadrays::sweep_events(cs.box, std::span<const quadrays::BoxBernstein<T>>(cs.forms), term_group<I>(ct, 0),
+    return quadrays::sweep_events(cs.box, std::span<const quadrays::Source<T>>(cs.sources), term_group<I>(ct, 0),
                                   axis, events);
 }
 
@@ -1518,7 +1513,7 @@ quadrature::QuadratureRules<T> sliced_cell_rule(const MeshPart<T, I>& part, I ce
     quadrays::Stats stats;
     if (slicing_sources(part, cell_id, ct, cs))
         for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
-            quadrays::integrate_slices(cs.box, std::span<const quadrays::BoxBernstein<T>>(cs.forms), term_group<I>(ct, g),
+            quadrays::integrate_slices(cs.box, std::span<const quadrays::Source<T>>(cs.sources), term_group<I>(ct, g),
                                        sweep, positions, weights, points_per_segment, options, points, stats);
     return one_rule(cs.box, points, cell_id);
 }
@@ -1537,7 +1532,7 @@ bool cell_rule_by_slices(const MeshPart<T, I>& part, I cell_id, int points_per_s
     if (part.dim == 2 && part.result->mesh->cell_type(cell_id) == cell::type::pyramid)
         return false; // as in quadrature(): surfaces on pyramids keep the usual rule
     for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
-        if (!quadrays::integrate_by_slices(cs.box, std::span<const quadrays::BoxBernstein<T>>(cs.forms),
+        if (!quadrays::integrate_by_slices(cs.box, std::span<const quadrays::Source<T>>(cs.sources),
                                            term_group<I>(ct, g), points_per_segment, options, points, stats))
             return false;
     rules = one_rule(cs.box, points, cell_id);
