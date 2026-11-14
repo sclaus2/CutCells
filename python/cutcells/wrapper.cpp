@@ -2684,11 +2684,32 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
             return std::make_pair(found, as_nbarray(std::move(events)));
           },
           nb::arg("cell"), nb::arg("axis"),
-          "Experimental. The positions in (0, 1) along reference axis `axis` of a cut hexahedron at "
-          "which the pattern of the slices of this volume part may change: where a slice touches a "
-          "zero set, where the edge between two zero sets, or between a zero set and a face of the "
-          "cell, is tangent to it, and where it passes a point in which three of them meet. Returns "
-          "(found, positions); found is False where the search does not finish.")
+          "Experimental. The positions in (0, 1) along axis `axis` of the box of a cut cell of "
+          "dimension 3 (a hexahedron's reference axis) at which the pattern of the slices of this "
+          "volume or surface part may change: where a slice touches a zero set, where the edge "
+          "between two zero sets, or between a zero set and a face of the cell, is tangent to it, "
+          "and where it passes a point in which three of them meet. Returns (found, positions); "
+          "found is False where the search does not finish.")
+      .def(
+          "quadrature_by_slices",
+          [](const PartT& self, int cell, int points_per_segment, nb::handle options)
+          {
+            const auto o = call_options<qr::Options>(options, self.options, "quadrays", "QuadraysOptions");
+            cutcells::quadrature::QuadratureRules<T> rules;
+            bool found = false;
+            {
+              nb::gil_scoped_release release;
+              found = cutcells::part::cell_rule_by_slices(self.part, cell, points_per_segment, o, rules);
+            }
+            return std::make_pair(found, std::move(rules));
+          },
+          nb::arg("cell"), nb::arg("points_per_segment") = 5, nb::arg("options") = nb::none(),
+          "Experimental. The rule of this volume or surface part on one cut cell of dimension 3, "
+          "summed over plane slices that the engine chooses: along the box axis whose slices change "
+          "their pattern least often, with slices added between those events until the integrals "
+          "settle. Returns (found, rules); found is False, and the rules empty, where the events are "
+          "not found or a piece does not settle. QuadraysOptions.slicing uses this rule in "
+          "quadrature() where it has fewer points than the usual one.")
       .def(
           "sliced_quadrature",
           [](const PartT& self, int cell, const std::string& sweep, const ndarray1<T>& origin,
@@ -3128,13 +3149,14 @@ NB_MODULE(_cutcellscpp, m)
               "Curve parts in 3D cells follow the curve: arcs between the faces, split where branches cross, Gauss "
               "points in arc length. True (default); cells it cannot do go by height lines.")
       .def_rw("slicing", &cutcells::quadrays::Options::slicing,
-              "n > 0: where the rule of a volume part on a hexahedron has more than n points and two "
-              "zero sets may meet on the part, the cell is integrated a second time slice by slice, "
-              "along the box axis whose slices change their pattern least often, and the rule with "
-              "fewer points is kept. Each slice is a 2D cell, so the edge between the zero sets is a "
-              "corner of a slice. It pays on cells that hold a whole feature (a lens inside one "
-              "cell); a threshold of a few thousand points leaves cells that resolve the geometry "
-              "alone. 0 (default): off.")
+              "n > 0: where the rule of a volume part, or of a piece of one zero set, on a cell of "
+              "dimension 3 (hexahedron, tetrahedron, prism, pyramid) has more than n points, the cell "
+              "is integrated a second time slice by slice, along the box axis whose slices change "
+              "their pattern least often, and the rule with fewer points is kept. Each slice is a 2D "
+              "cell, so the edge between two zero sets is a corner of a slice. It pays on cells that "
+              "hold a whole feature (a lens inside one cell); a threshold of a few thousand points "
+              "leaves cells that resolve the geometry alone. Level sets with dof values only. "
+              "0 (default): off.")
       .def_rw("anchor_folds", &cutcells::quadrays::Options::anchor_folds,
               "n > 0: base segments that end at or near a fold of a curved zero set "
               "(where it turns back along the height direction) take n q Gauss points in s, "

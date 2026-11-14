@@ -91,6 +91,26 @@ void clip_polygon(const std::vector<std::array<T, 2>>& poly, const HalfPlane<T>&
     }
 }
 
+/// The level set whose zero set the terms ask for: -1 for a volume part.
+/// @throws std::invalid_argument if they ask for more than one, or differ in it
+inline int zero_set_of(std::span<const SelectionTerm> terms)
+{
+    if (terms.empty())
+        throw std::invalid_argument("quadrays: slices need a selection");
+    const std::uint64_t zero = terms[0].zero_required;
+    for (const SelectionTerm& term : terms)
+        if (term.zero_required != zero)
+            throw std::invalid_argument("quadrays: the terms of a sliced part ask for the same zero set");
+    if (zero == 0)
+        return -1;
+    if (zero & (zero - 1))
+        throw std::invalid_argument("quadrays: slices integrate volumes and the zero set of one level set");
+    int l = 0;
+    while (!((zero >> l) & 1))
+        ++l;
+    return l;
+}
+
 } // namespace
 
 template <std::floating_point T>
@@ -226,9 +246,8 @@ void integrate_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>
 {
     if (positions.size() != weights.size())
         throw std::invalid_argument("quadrays: slices need one weight per position");
-    for (const SelectionTerm& term : terms)
-        if (term.zero_required != 0)
-            throw std::invalid_argument("quadrays: slices integrate volume parts");
+    const int zero = zero_set_of(terms);
+    const Mat3<T> inverse = inverse_jacobian(cell);
     thread_local Slice<T> slice;
     thread_local std::vector<BoxBernstein<T>> restricted;
     thread_local std::vector<Source<T>> sources;
@@ -255,7 +274,23 @@ void integrate_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>
             const T s0 = points.points[3 * i], s1 = points.points[3 * i + 1];
             for (int j = 0; j < 3; ++j)
                 out.points.push_back(slice.origin[j] + slice.matrix[2 * j] * s0 + slice.matrix[2 * j + 1] * s1);
-            const T factor = sweep.kind == SweepKind::turning ? slice.radius_origin + slice.radius_step * s0 : T(1);
+            T factor = sweep.kind == SweepKind::turning ? slice.radius_origin + slice.radius_step * s0 : T(1);
+            if (zero >= 0)
+            {
+                // a curve of the zero set in the slice: its length to the surface's measure, by the
+                // angle between the zero set's normal and the slice's
+                const std::size_t first = out.points.size() - 3;
+                const Vec3<T> u = {out.points[first], out.points[first + 1], out.points[first + 2]};
+                Vec3<T> du;
+                gradient(forms[static_cast<std::size_t>(zero)], std::span<const T>(u), std::span<T>(du));
+                Vec3<T> dx = {0, 0, 0};
+                for (std::size_t r = 0; r < 3; ++r)
+                    for (std::size_t c = 0; c < 3; ++c)
+                        dx[c] += inverse[r][c] * du[r];
+                const Vec3<T> normal = {slice.box.jacobian[0][2], slice.box.jacobian[1][2], slice.box.jacobian[2][2]};
+                const T cosine = dot(dx, normal) / std::sqrt(dot(dx, dx));
+                factor /= std::sqrt(std::max(T(1) - cosine * cosine, std::numeric_limits<T>::min()));
+            }
             out.weights.push_back(points.weights[i] * weights[k] * factor);
         }
     }
@@ -282,14 +317,32 @@ struct Jet
     std::array<T, 4> size = {};
 };
 
+/// A face of the cell in box coordinates: c . u <= d with |c| = 1.
+template <std::floating_point T>
+struct Face
+{
+    Vec3<T> c = {0, 0, 0};
+    T d = 0;
+};
+
+/// The cell as the search reads it.
+template <std::floating_point T>
+struct Geometry
+{
+    std::vector<Jet<T>> jets;
+    std::vector<Face<T>> faces;
+    std::vector<std::array<int, 2>> edges; ///< the two faces an edge lies in
+    std::vector<Vec3<T>> vertices;
+};
+
 enum class SystemKind : std::uint8_t
 {
     critical,      ///< f_a = 0, d_p f_a = 0, d_q f_a = 0
     tangency,      ///< f_a = 0, f_b = 0, d_p f_a d_q f_b - d_q f_a d_p f_b = 0
     triple,        ///< f_a = f_b = f_c = 0
-    face_tangency, ///< on a lateral face: f_a = 0, d_p f_a = 0
-    pair,          ///< f_a = f_b = 0
-    single         ///< f_a = 0
+    face_tangency, ///< on face b: f_a = 0, d_p f_a c_q - d_q f_a c_p = 0 (c the face's normal)
+    face_pair,     ///< on face c: f_a = f_b = 0
+    edge_single    ///< on edge b: f_a = 0
 };
 
 struct System
@@ -301,20 +354,20 @@ struct System
 template <std::floating_point T>
 struct BoxRanges
 {
-    const std::vector<Jet<T>>* jets = nullptr;
+    const Geometry<T>* cell = nullptr;
     Vec3<T> lo{}, hi{};
     std::vector<std::array<Range<T>, 4>> range;
     std::vector<std::array<bool, 4>> known;
     BoxBernstein<T> scratch;
     std::vector<T> work;
 
-    void reset(const std::vector<Jet<T>>& j, const Vec3<T>& l, const Vec3<T>& h)
+    void reset(const Geometry<T>& g, const Vec3<T>& l, const Vec3<T>& h)
     {
-        jets = &j;
+        cell = &g;
         lo = l;
         hi = h;
-        range.assign(j.size(), {});
-        known.assign(j.size(), {false, false, false, false});
+        range.assign(g.jets.size(), {});
+        known.assign(g.jets.size(), {false, false, false, false});
     }
 };
 
@@ -325,9 +378,8 @@ const Range<T>& range_of(BoxRanges<T>& r, int l, int d)
     const std::size_t ls = static_cast<std::size_t>(l), ds = static_cast<std::size_t>(d);
     if (!r.known[ls][ds])
     {
-        // the form on the box; a dimension of width 0 (a face, an edge) drops out
         const std::array<T, 9> matrix = {r.hi[0] - r.lo[0], 0, 0, 0, r.hi[1] - r.lo[1], 0, 0, 0, r.hi[2] - r.lo[2]};
-        restrict_affine((*r.jets)[ls].form[ds], std::span<const T>(r.lo), std::span<const T>(matrix), 3, r.scratch,
+        restrict_affine(r.cell->jets[ls].form[ds], std::span<const T>(r.lo), std::span<const T>(matrix), 3, r.scratch,
                         r.work);
         const auto [mn, mx] = std::minmax_element(r.scratch.coeffs.begin(), r.scratch.coeffs.end());
         r.range[ls][ds] = {*mn, *mx};
@@ -344,41 +396,71 @@ template <std::floating_point T>
 bool may_vanish_on(BoxRanges<T>& r, int l, int d)
 {
     const Range<T>& x = range_of(r, l, d);
-    const T eps = rounding<T> * (*r.jets)[static_cast<std::size_t>(l)].size[static_cast<std::size_t>(d)];
+    const T eps = rounding<T> * r.cell->jets[static_cast<std::size_t>(l)].size[static_cast<std::size_t>(d)];
     return x.lo <= eps && x.hi >= -eps;
 }
 
-/// True if the box may meet the closure of the part the terms select.
+/// The range of c . u - d of face j on the box.
+template <std::floating_point T>
+Range<T> face_range(const BoxRanges<T>& r, int j)
+{
+    const Face<T>& f = r.cell->faces[static_cast<std::size_t>(j)];
+    Range<T> x = {-f.d, -f.d};
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        const T a = f.c[i] * r.lo[i], b = f.c[i] * r.hi[i];
+        x.lo += std::min(a, b);
+        x.hi += std::max(a, b);
+    }
+    return x;
+}
+
+template <std::floating_point T>
+bool may_touch_face(const BoxRanges<T>& r, int j)
+{
+    const Range<T> x = face_range(r, j);
+    return x.lo <= rounding<T> && x.hi >= -rounding<T>;
+}
+
+/// True if the signs the term asks of the level sets may hold where they
+/// take the values @p value (a range per level set).
+template <std::floating_point T, typename Value>
+bool term_may_hold(const SelectionTerm& term, const std::vector<Jet<T>>& jets, const Value& value)
+{
+    for (int l = 0; l < static_cast<int>(jets.size()); ++l)
+    {
+        const std::uint64_t bit = std::uint64_t(1) << l;
+        if (!((term.negative_required | term.positive_required) & bit))
+            continue;
+        const Range<T> x = value(l);
+        const T eps = rounding<T> * jets[static_cast<std::size_t>(l)].size[0];
+        if (((term.negative_required & bit) && x.lo > eps) || ((term.positive_required & bit) && x.hi < -eps))
+            return false;
+    }
+    return true;
+}
+
+/// True if the box may meet the cell and, in it, the closure of the part the
+/// terms select.
 template <std::floating_point T>
 bool may_meet_part(BoxRanges<T>& r, std::span<const SelectionTerm> terms)
 {
-    const int n = static_cast<int>(r.jets->size());
+    for (int j = 0; j < static_cast<int>(r.cell->faces.size()); ++j)
+        if (face_range(r, j).lo > rounding<T>)
+            return false;
     for (const SelectionTerm& term : terms)
-    {
-        bool possible = true;
-        for (int l = 0; l < n && possible; ++l)
-        {
-            const std::uint64_t bit = std::uint64_t(1) << l;
-            if (!((term.negative_required | term.positive_required) & bit))
-                continue;
-            const Range<T>& x = range_of(r, l, 0);
-            const T eps = rounding<T> * (*r.jets)[static_cast<std::size_t>(l)].size[0];
-            if ((term.negative_required & bit) && x.lo > eps)
-                possible = false;
-            if ((term.positive_required & bit) && x.hi < -eps)
-                possible = false;
-        }
-        if (possible)
+        if (term_may_hold(term, r.cell->jets, [&](int l) { return range_of(r, l, 0); }))
             return true;
-    }
     return false;
 }
 
 /// True if the system may have a solution on the box; p and q are the box
-/// axes other than the sweep's (on a lateral face, p is the free one).
+/// axes other than the sweep's.
 template <std::floating_point T>
 bool may_hold(BoxRanges<T>& r, const System& s, int p, int q)
 {
+    const std::vector<Jet<T>>& jets = r.cell->jets;
+    const std::size_t sp = static_cast<std::size_t>(1 + p), sq = static_cast<std::size_t>(1 + q);
     switch (s.kind)
     {
     case SystemKind::critical:
@@ -395,33 +477,44 @@ bool may_hold(BoxRanges<T>& r, const System& s, int p, int q)
         };
         const Range<T> first = product(range_of(r, s.a, 1 + p), range_of(r, s.b, 1 + q));
         const Range<T> second = product(range_of(r, s.a, 1 + q), range_of(r, s.b, 1 + p));
-        const std::vector<Jet<T>>& jets = *r.jets;
         const std::size_t a = static_cast<std::size_t>(s.a), b = static_cast<std::size_t>(s.b);
-        const std::size_t sp = static_cast<std::size_t>(1 + p), sq = static_cast<std::size_t>(1 + q);
         const T eps = rounding<T> * (jets[a].size[sp] * jets[b].size[sq] + jets[a].size[sq] * jets[b].size[sp]);
         return first.lo - second.hi <= eps && first.hi - second.lo >= -eps;
     }
     case SystemKind::triple:
         return may_vanish_on(r, s.a, 0) && may_vanish_on(r, s.b, 0) && may_vanish_on(r, s.c, 0);
     case SystemKind::face_tangency:
-        return may_vanish_on(r, s.a, 0) && may_vanish_on(r, s.a, 1 + p);
-    case SystemKind::pair:
-        return may_vanish_on(r, s.a, 0) && may_vanish_on(r, s.b, 0);
-    case SystemKind::single:
-        return may_vanish_on(r, s.a, 0);
+    {
+        if (!may_vanish_on(r, s.a, 0) || !may_touch_face(r, s.b))
+            return false;
+        // interval of d_p f_a c_q - d_q f_a c_p
+        const Face<T>& face = r.cell->faces[static_cast<std::size_t>(s.b)];
+        const auto scaled = [](const Range<T>& x, T c)
+        { return c >= T(0) ? Range<T>{c * x.lo, c * x.hi} : Range<T>{c * x.hi, c * x.lo}; };
+        const Range<T> first = scaled(range_of(r, s.a, 1 + p), face.c[static_cast<std::size_t>(q)]);
+        const Range<T> second = scaled(range_of(r, s.a, 1 + q), face.c[static_cast<std::size_t>(p)]);
+        const std::size_t a = static_cast<std::size_t>(s.a);
+        const T eps = rounding<T> * (jets[a].size[sp] + jets[a].size[sq]);
+        return first.lo - second.hi <= eps && first.hi - second.lo >= -eps;
+    }
+    case SystemKind::face_pair:
+        return may_vanish_on(r, s.a, 0) && may_vanish_on(r, s.b, 0) && may_touch_face(r, s.c);
+    case SystemKind::edge_single:
+    {
+        const std::array<int, 2>& edge = r.cell->edges[static_cast<std::size_t>(s.b)];
+        return may_vanish_on(r, s.a, 0) && may_touch_face(r, edge[0]) && may_touch_face(r, edge[1]);
+    }
     }
     return false;
 }
 
-/// Bisect the box [lo, hi] (dimensions of width 0 stay) and keep the boxes on
-/// which some system may hold and which may meet the part, down to @p width
-/// along @p axis, or to @p size in every direction if @p axis is -1; the
-/// ranges of the boxes kept along @p axis go to @p found.
+/// Bisect the unit box and keep the boxes on which some system may hold and
+/// which may meet the part, down to @p width along @p axis; their ranges
+/// along @p axis go to @p found.
 /// @return false if more than @p budget boxes were visited
 template <std::floating_point T>
-bool search(const std::vector<Jet<T>>& jets, std::span<const SelectionTerm> terms,
-            const std::vector<System>& systems, const Vec3<T>& lo, const Vec3<T>& hi, int axis, int p, int q,
-            T width, std::vector<Range<T>>& found, int& budget)
+bool search(const Geometry<T>& cell, std::span<const SelectionTerm> terms, const std::vector<System>& systems,
+            int axis, int p, int q, T width, std::vector<Range<T>>& found, int& budget)
 {
     struct Box
     {
@@ -430,14 +523,15 @@ bool search(const std::vector<Jet<T>>& jets, std::span<const SelectionTerm> term
     thread_local std::vector<Box> stack;
     thread_local BoxRanges<T> ranges;
     stack.clear();
-    stack.push_back({lo, hi});
+    stack.push_back({Vec3<T>{0, 0, 0}, Vec3<T>{1, 1, 1}});
+    const std::size_t k = static_cast<std::size_t>(axis);
     while (!stack.empty())
     {
         const Box box = stack.back();
         stack.pop_back();
         if (--budget < 0)
             return false;
-        ranges.reset(jets, box.lo, box.hi);
+        ranges.reset(cell, box.lo, box.hi);
         if (!may_meet_part(ranges, terms))
             continue;
         bool any = false;
@@ -449,18 +543,15 @@ bool search(const std::vector<Jet<T>>& jets, std::span<const SelectionTerm> term
             }
         if (!any)
             continue;
-        int widest = 0;
-        for (int j = 1; j < 3; ++j)
-            if (box.hi[j] - box.lo[j] > box.hi[widest] - box.lo[widest])
-                widest = j;
-        const T extent = axis >= 0 ? box.hi[axis] - box.lo[axis] : box.hi[widest] - box.lo[widest];
-        if (extent <= width)
+        if (box.hi[k] - box.lo[k] <= width)
         {
-            found.push_back(axis >= 0 ? Range<T>{box.lo[axis], box.hi[axis]} : Range<T>{T(0), T(1)});
-            if (axis < 0)
-                return true; // one box is enough
+            found.push_back({box.lo[k], box.hi[k]});
             continue;
         }
+        std::size_t widest = 0;
+        for (std::size_t j = 1; j < 3; ++j)
+            if (box.hi[j] - box.lo[j] > box.hi[widest] - box.lo[widest])
+                widest = j;
         Box left = box, right = box;
         left.hi[widest] = right.lo[widest] = T(0.5) * (box.lo[widest] + box.hi[widest]);
         stack.push_back(left);
@@ -469,82 +560,123 @@ bool search(const std::vector<Jet<T>>& jets, std::span<const SelectionTerm> term
     return true;
 }
 
+/// The level sets with their derivatives, and the faces, edges and vertices of
+/// the cell (the clipped box's polytope; faces in one plane count once).
 template <std::floating_point T>
-void make_jets(std::span<const BoxBernstein<T>> forms, std::vector<Jet<T>>& jets)
+void make_geometry(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> forms, Geometry<T>& g)
 {
-    jets.resize(forms.size());
+    g.jets.resize(forms.size());
     for (std::size_t l = 0; l < forms.size(); ++l)
     {
         if (forms[l].dim != 3)
             throw std::invalid_argument("quadrays: the events of a sweep need level sets on a box of dimension 3");
-        jets[l].form[0] = forms[l];
+        g.jets[l].form[0] = forms[l];
         for (int d = 0; d < 3; ++d)
-            derivative(forms[l], d, jets[l].form[static_cast<std::size_t>(1 + d)]);
+            derivative(forms[l], d, g.jets[l].form[static_cast<std::size_t>(1 + d)]);
         for (std::size_t d = 0; d < 4; ++d)
-            jets[l].size[d] = max_abs(std::span<const T>(jets[l].form[d].coeffs));
+            g.jets[l].size[d] = max_abs(std::span<const T>(g.jets[l].form[d].coeffs));
     }
+    thread_local Polytope<T> poly;
+    clipped_polytope(cell, poly);
+    g.vertices = poly.vertices;
+    g.faces.clear();
+    g.edges.clear();
+    const T same = scaled_tolerance<T>(1e-9);
+    for (int f = 0; f < poly.n_faces(); ++f)
+    {
+        const Vec3<T>& c = poly.face_normals[static_cast<std::size_t>(f)];
+        const int e = poly.face_edges[static_cast<std::size_t>(poly.face_offsets[static_cast<std::size_t>(f)])];
+        const T d = dot(c, poly.vertices[static_cast<std::size_t>(poly.edges[static_cast<std::size_t>(e)][0])]);
+        bool repeated = false;
+        for (const Face<T>& other : g.faces)
+            repeated = repeated || (std::abs(dot(c, other.c) - T(1)) < same && std::abs(d - other.d) < same);
+        if (!repeated)
+            g.faces.push_back({c, d});
+    }
+    const auto lies_on = [&](const Vec3<T>& v, const Face<T>& f) { return std::abs(dot(f.c, v) - f.d) < same; };
+    for (int i = 0; i < static_cast<int>(g.faces.size()); ++i)
+        for (int j = i + 1; j < static_cast<int>(g.faces.size()); ++j)
+        {
+            int shared = 0;
+            for (const Vec3<T>& v : g.vertices)
+                shared += lies_on(v, g.faces[static_cast<std::size_t>(i)]) && lies_on(v, g.faces[static_cast<std::size_t>(j)]);
+            if (shared >= 2)
+                g.edges.push_back({i, j});
+        }
 }
 
 } // namespace
 
 template <std::floating_point T>
-bool sweep_events(std::span<const BoxBernstein<T>> forms, std::span<const SelectionTerm> terms, int axis,
-                  std::vector<T>& events, int max_boxes)
+bool sweep_events(const ClippedBox<T>& cell, std::span<const BoxBernstein<T>> forms,
+                  std::span<const SelectionTerm> terms, int axis, std::vector<T>& events, int max_boxes)
 {
     if (axis < 0 || axis > 2)
         throw std::invalid_argument("quadrays: a sweep runs along box axis 0, 1 or 2");
-    thread_local std::vector<Jet<T>> jets;
+    if (cell.tdim != 3)
+        throw std::invalid_argument("quadrays: slices are of cells of dimension 3");
+    const int zero = zero_set_of(terms);
+    thread_local Geometry<T> g;
     thread_local std::vector<System> systems;
     thread_local std::vector<Range<T>> found;
-    make_jets(forms, jets);
+    make_geometry(cell, forms, g);
     const int n = static_cast<int>(forms.size());
     const int p = (axis + 1) % 3, q = (axis + 2) % 3;
     const T width = scaled_tolerance<T>(1e-7);
-    int budget = max_boxes;
-    found.clear();
 
-    // inside the box
+    // the systems: of all zero sets for a volume, of those with the part's own for a surface
     systems.clear();
+    const auto takes = [&](int a) { return zero < 0 || a == zero; };
+    const int n_faces = static_cast<int>(g.faces.size());
     for (int a = 0; a < n; ++a)
     {
-        systems.push_back({SystemKind::critical, a, 0, 0});
+        if (takes(a))
+            systems.push_back({SystemKind::critical, a, 0, 0});
         for (int b = a + 1; b < n; ++b)
         {
+            if (!takes(a) && !takes(b))
+                continue;
             systems.push_back({SystemKind::tangency, a, b, 0});
             for (int c = b + 1; c < n; ++c)
                 systems.push_back({SystemKind::triple, a, b, c});
+            for (int f = 0; f < n_faces; ++f)
+                systems.push_back({SystemKind::face_pair, a, b, f});
         }
+        if (!takes(a))
+            continue;
+        for (int f = 0; f < n_faces; ++f)
+        {
+            // on a face that lies in a slice the whole curve is at the face's position: its vertices give it
+            const Face<T>& face = g.faces[static_cast<std::size_t>(f)];
+            if (std::abs(face.c[static_cast<std::size_t>(p)]) + std::abs(face.c[static_cast<std::size_t>(q)])
+                > scaled_tolerance<T>(1e-9))
+                systems.push_back({SystemKind::face_tangency, a, f, 0});
+        }
+        for (int e = 0; e < static_cast<int>(g.edges.size()); ++e)
+            systems.push_back({SystemKind::edge_single, a, e, 0});
     }
-    if (!search(jets, terms, systems, Vec3<T>{0, 0, 0}, Vec3<T>{1, 1, 1}, axis, p, q, width, found, budget))
+    found.clear();
+    int budget = max_boxes;
+    if (!search(g, terms, systems, axis, p, q, width, found, budget))
         return false;
 
-    // on the four lateral faces: the face fixes one of the two other axes
-    for (int side = 0; side < 4; ++side)
+    // the cell's vertices on the part: the pattern of the slice polygon changes there
+    thread_local std::vector<T> values;
+    const std::size_t k = static_cast<std::size_t>(axis);
+    for (const Vec3<T>& v : g.vertices)
     {
-        const int fixed = side < 2 ? p : q, open = side < 2 ? q : p;
-        Vec3<T> lo = {0, 0, 0}, hi = {1, 1, 1};
-        lo[fixed] = hi[fixed] = T(side % 2);
-        systems.clear();
-        for (int a = 0; a < n; ++a)
-        {
-            systems.push_back({SystemKind::face_tangency, a, 0, 0});
-            for (int b = a + 1; b < n; ++b)
-                systems.push_back({SystemKind::pair, a, b, 0});
-        }
-        if (!search(jets, terms, systems, lo, hi, axis, open, open, width, found, budget))
-            return false;
-    }
-    // on the four lateral edges
-    systems.clear();
-    for (int a = 0; a < n; ++a)
-        systems.push_back({SystemKind::single, a, 0, 0});
-    for (int corner = 0; corner < 4; ++corner)
-    {
-        Vec3<T> lo = {0, 0, 0}, hi = {1, 1, 1};
-        lo[p] = hi[p] = T(corner & 1);
-        lo[q] = hi[q] = T(corner >> 1);
-        if (!search(jets, terms, systems, lo, hi, axis, p, q, width, found, budget))
-            return false;
+        values.resize(forms.size());
+        for (std::size_t l = 0; l < forms.size(); ++l)
+            values[l] = evaluate(forms[l], std::span<const T>(v));
+        const auto at = [&](int l) { return Range<T>{values[static_cast<std::size_t>(l)], values[static_cast<std::size_t>(l)]}; };
+        bool on_part = false;
+        for (const SelectionTerm& term : terms)
+            on_part = on_part || term_may_hold(term, g.jets, at);
+        if (zero >= 0)
+            on_part = on_part && std::abs(values[static_cast<std::size_t>(zero)])
+                                     <= scaled_tolerance<T>(1e-9) * g.jets[static_cast<std::size_t>(zero)].size[0];
+        if (on_part)
+            found.push_back({v[k], v[k]});
     }
 
     // boxes that touch are one event; a longer run of them is kept as its two ends
@@ -572,27 +704,6 @@ bool sweep_events(std::span<const BoxBernstein<T>> forms, std::span<const Select
         i = j;
     }
     return true;
-}
-
-template <std::floating_point T>
-bool may_hold_ridge(std::span<const BoxBernstein<T>> forms, std::span<const SelectionTerm> terms)
-{
-    thread_local std::vector<Jet<T>> jets;
-    thread_local std::vector<System> systems;
-    thread_local std::vector<Range<T>> found;
-    make_jets(forms, jets);
-    systems.clear();
-    const int n = static_cast<int>(forms.size());
-    for (int a = 0; a < n; ++a)
-        for (int b = a + 1; b < n; ++b)
-            systems.push_back({SystemKind::pair, a, b, 0});
-    if (systems.empty())
-        return false;
-    found.clear();
-    int budget = 20000;
-    const bool finished = search(jets, terms, systems, Vec3<T>{0, 0, 0}, Vec3<T>{1, 1, 1}, -1, 0, 0, T(1) / T(64),
-                                 found, budget);
-    return !finished || !found.empty();
 }
 
 template <std::floating_point T>
@@ -627,20 +738,21 @@ bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein
                          std::span<const SelectionTerm> terms, int q, const Options& opt, CellPoints<T>& out,
                          Stats& stats)
 {
-    if (cell.tdim != 3 || !cell.clips.empty() || forms.size() < 2)
+    if (cell.tdim != 3 || forms.empty() || terms.empty())
         return false;
     for (const BoxBernstein<T>& form : forms)
         if (form.dim != 3)
             return false;
-    for (const SelectionTerm& term : terms)
-        if (term.zero_required != 0)
-            return false;
-    if (!may_hold_ridge(forms, terms))
+    const std::uint64_t zero = terms[0].zero_required;
+    if (zero & (zero - 1))
         return false;
+    for (const SelectionTerm& term : terms)
+        if (term.zero_required != zero)
+            return false;
     thread_local std::vector<T> events, best, positions, weights;
     int axis = -1;
     for (int k = 0; k < 3; ++k)
-        if (sweep_events(forms, terms, k, events) && (axis < 0 || events.size() < best.size()))
+        if (sweep_events(cell, forms, terms, k, events) && (axis < 0 || events.size() < best.size()))
         {
             axis = k;
             best = events;
@@ -719,7 +831,7 @@ bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein
         run(piece, piece.flat_a || piece.flat_b ? first_flat : first_plain);
         volume += piece.moments[0];
     }
-    if (!(volume > T(0)))
+    if (!(volume > T(0))) // nothing found; the measure is an area for a surface
         return false;
     const T tolerance = std::max(scaled_tolerance<T>(1e-13), std::pow(T(10), -T(q + 4))) * volume;
     for (Piece& piece : pieces)
@@ -751,12 +863,10 @@ bool integrate_by_slices(const ClippedBox<T>& cell, std::span<const BoxBernstein
 // Explicit instantiations
 // ============================================================================
 
-template bool sweep_events<float>(std::span<const BoxBernstein<float>>, std::span<const SelectionTerm>, int,
-                                  std::vector<float>&, int);
-template bool sweep_events<double>(std::span<const BoxBernstein<double>>, std::span<const SelectionTerm>, int,
-                                   std::vector<double>&, int);
-template bool may_hold_ridge<float>(std::span<const BoxBernstein<float>>, std::span<const SelectionTerm>);
-template bool may_hold_ridge<double>(std::span<const BoxBernstein<double>>, std::span<const SelectionTerm>);
+template bool sweep_events<float>(const ClippedBox<float>&, std::span<const BoxBernstein<float>>,
+                                  std::span<const SelectionTerm>, int, std::vector<float>&, int);
+template bool sweep_events<double>(const ClippedBox<double>&, std::span<const BoxBernstein<double>>,
+                                   std::span<const SelectionTerm>, int, std::vector<double>&, int);
 template void piece_rule<float>(float, bool, float, bool, int, std::vector<float>&, std::vector<float>&);
 template void piece_rule<double>(double, bool, double, bool, int, std::vector<double>&, std::vector<double>&);
 template bool integrate_by_slices<float>(const ClippedBox<float>&, std::span<const BoxBernstein<float>>,

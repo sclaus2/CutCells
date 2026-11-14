@@ -1238,9 +1238,12 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                     const int before = points.n_points();
                     quadrays::integrate(cs.box, sources, group, q, options, points, stats,
                                         debugging ? &trace : nullptr);
-                    // a costly volume rule on a cell that holds an edge between zero sets: the
-                    // rule summed over slices replaces it if it has fewer points
-                    if (forms_only && group[0].zero_required == 0 && points.n_points() - before > options.slicing)
+                    // a costly rule of a volume or of a piece of one zero set: the rule summed over
+                    // slices replaces it if it has fewer points
+                    // (not surfaces on pyramids: their level set times (1 - z)^n is flat near the apex)
+                    if (forms_only && (group[0].zero_required & (group[0].zero_required - 1)) == 0
+                        && !(type == cell::type::pyramid && group[0].zero_required != 0)
+                        && points.n_points() - before > options.slicing)
                     {
                         sliced.points.clear();
                         sliced.weights.clear();
@@ -1433,69 +1436,44 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
     return fold(cells, on_entities, entities);
 }
 
-template <std::floating_point T, std::integral I>
-bool sweep_events(const MeshPart<T, I>& part, I cell_id, int axis, std::vector<T>& events)
+namespace
 {
-    check_quadrays(part);
-    events.clear();
-    const MeshView<T, I>& mesh = *part.result->mesh;
-    if (mesh.cell_type(cell_id) != cell::type::hexahedron || part.dim != 3)
-        return false;
-    CellTerms ct;
-    cell_terms(part, cell_id, ct);
-    if (ct.terms.empty() || ct.terms[0].zero_required != 0)
-        return false;
-    CellSources<T, I> cs;
-    sources_of(part, cell_id, ct, cs);
-    nudge_sources(part, cell_id, ct, cs);
-    for (const quadrays::Source<T>& source : cs.sources)
-        if (source.is_analytic())
-            return false;
-    return quadrays::sweep_events(std::span<const quadrays::BoxBernstein<T>>(cs.forms),
-                                  std::span<const SelectionTerm>(ct.terms).subspan(
-                                      0, static_cast<std::size_t>(ct.offsets[1])),
-                                  axis, events);
-}
 
+/// What slices need of one cut cell of dimension 3: its terms and its level
+/// sets as forms on its box.
+/// @return false if the part misses the cell
 template <std::floating_point T, std::integral I>
-quadrature::QuadratureRules<T> sliced_cell_rule(const MeshPart<T, I>& part, I cell_id,
-                                                const quadrays::Sweep<T>& sweep, std::span<const T> positions,
-                                                std::span<const T> weights, int points_per_segment,
-                                                const quadrays::Options& options)
+bool slicing_sources(const MeshPart<T, I>& part, I cell_id, CellTerms& ct, CellSources<T, I>& cs)
 {
     check_quadrays(part);
-    const CutResult<T, I>& r = *part.result;
-    const MeshView<T, I>& mesh = *r.mesh;
+    const MeshView<T, I>& mesh = *part.result->mesh;
     const cell::type type = mesh.cell_type(cell_id);
     if (!quadrays::supported_cell(type) || cell::get_tdim(type) != 3 || mesh.gdim != 3)
         throw std::invalid_argument("part: slices are of cells of dimension 3");
-    if (part.dim != 3)
-        throw std::invalid_argument("part: slices integrate volume parts");
-    quadrature::QuadratureRules<T> rules;
-    rules._tdim = 3;
-    rules._offset.push_back(0);
-    CellTerms ct;
+    if (part.dim != 3 && part.dim != 2)
+        throw std::invalid_argument("part: slices integrate volume and surface parts");
     cell_terms(part, cell_id, ct);
     if (ct.terms.empty())
-        return rules;
-    CellSources<T, I> cs;
+        return false;
     sources_of(part, cell_id, ct, cs);
     nudge_sources(part, cell_id, ct, cs);
     for (const quadrays::Source<T>& source : cs.sources)
         if (source.is_analytic())
             throw std::invalid_argument("part: slices take level sets with dof values");
-    quadrays::CellPoints<T> points;
-    quadrays::Stats stats;
-    for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
-        quadrays::integrate_slices(cs.box, std::span<const quadrays::BoxBernstein<T>>(cs.forms),
-                                   std::span<const SelectionTerm>(ct.terms).subspan(
-                                       static_cast<std::size_t>(ct.offsets[g]),
-                                       static_cast<std::size_t>(ct.offsets[g + 1] - ct.offsets[g])),
-                                   sweep, positions, weights, points_per_segment, options, points, stats);
+    return true;
+}
+
+template <std::floating_point T, std::integral I>
+quadrature::QuadratureRules<T> one_rule(const quadrays::ClippedBox<T>& box, const quadrays::CellPoints<T>& points,
+                                        I cell_id)
+{
+    quadrature::QuadratureRules<T> rules;
+    rules._tdim = 3;
+    rules._offset.push_back(0);
     for (int k = 0; k < points.n_points(); ++k)
     {
         const quadrays::Vec3<T> u = {points.points[3 * k], points.points[3 * k + 1], points.points[3 * k + 2]};
-        const quadrays::Vec3<T> xi = quadrays::reference_point(cs.box, u);
+        const quadrays::Vec3<T> xi = quadrays::reference_point(box, u);
         rules._points.insert(rules._points.end(), xi.begin(), xi.end());
         rules._weights.push_back(points.weights[k]);
     }
@@ -1505,6 +1483,65 @@ quadrature::QuadratureRules<T> sliced_cell_rule(const MeshPart<T, I>& part, I ce
         rules._parent_map.push_back(static_cast<std::int32_t>(cell_id));
     }
     return rules;
+}
+
+template <std::integral I>
+std::span<const SelectionTerm> term_group(const CellTerms& ct, std::size_t g)
+{
+    return std::span<const SelectionTerm>(ct.terms).subspan(static_cast<std::size_t>(ct.offsets[g]),
+                                                            static_cast<std::size_t>(ct.offsets[g + 1] - ct.offsets[g]));
+}
+
+} // namespace
+
+template <std::floating_point T, std::integral I>
+bool sweep_events(const MeshPart<T, I>& part, I cell_id, int axis, std::vector<T>& events)
+{
+    events.clear();
+    CellTerms ct;
+    CellSources<T, I> cs;
+    if (!slicing_sources(part, cell_id, ct, cs))
+        return false;
+    return quadrays::sweep_events(cs.box, std::span<const quadrays::BoxBernstein<T>>(cs.forms), term_group<I>(ct, 0),
+                                  axis, events);
+}
+
+template <std::floating_point T, std::integral I>
+quadrature::QuadratureRules<T> sliced_cell_rule(const MeshPart<T, I>& part, I cell_id,
+                                                const quadrays::Sweep<T>& sweep, std::span<const T> positions,
+                                                std::span<const T> weights, int points_per_segment,
+                                                const quadrays::Options& options)
+{
+    CellTerms ct;
+    CellSources<T, I> cs;
+    quadrays::CellPoints<T> points;
+    quadrays::Stats stats;
+    if (slicing_sources(part, cell_id, ct, cs))
+        for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
+            quadrays::integrate_slices(cs.box, std::span<const quadrays::BoxBernstein<T>>(cs.forms), term_group<I>(ct, g),
+                                       sweep, positions, weights, points_per_segment, options, points, stats);
+    return one_rule(cs.box, points, cell_id);
+}
+
+template <std::floating_point T, std::integral I>
+bool cell_rule_by_slices(const MeshPart<T, I>& part, I cell_id, int points_per_segment,
+                         const quadrays::Options& options, quadrature::QuadratureRules<T>& rules)
+{
+    CellTerms ct;
+    CellSources<T, I> cs;
+    quadrays::CellPoints<T> points;
+    quadrays::Stats stats;
+    rules = quadrature::QuadratureRules<T>{};
+    if (!slicing_sources(part, cell_id, ct, cs))
+        return false;
+    if (part.dim == 2 && part.result->mesh->cell_type(cell_id) == cell::type::pyramid)
+        return false; // as in quadrature(): surfaces on pyramids keep the usual rule
+    for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
+        if (!quadrays::integrate_by_slices(cs.box, std::span<const quadrays::BoxBernstein<T>>(cs.forms),
+                                           term_group<I>(ct, g), points_per_segment, options, points, stats))
+            return false;
+    rules = one_rule(cs.box, points, cell_id);
+    return true;
 }
 
 template <std::floating_point T, std::integral I>
@@ -1681,6 +1718,10 @@ void write_vtu(const std::string& filename, const MeshPart<T, I>& part, bool inc
 // ============================================================================
 
 template bool sweep_events<float, int>(const MeshPart<float, int>&, int, int, std::vector<float>&);
+template bool cell_rule_by_slices<float, int>(const MeshPart<float, int>&, int, int, const quadrays::Options&,
+                                              quadrature::QuadratureRules<float>&);
+template bool cell_rule_by_slices<double, int>(const MeshPart<double, int>&, int, int, const quadrays::Options&,
+                                               quadrature::QuadratureRules<double>&);
 template bool sweep_events<double, int>(const MeshPart<double, int>&, int, int, std::vector<double>&);
 template quadrature::QuadratureRules<float> sliced_cell_rule<float, int>(const MeshPart<float, int>&, int,
                                                                          const quadrays::Sweep<float>&,
