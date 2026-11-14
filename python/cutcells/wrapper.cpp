@@ -2676,6 +2676,41 @@ void declare_part(nb::module_& m, nb::module_& part_module, const std::string& t
           "whose faces the part holds (\"hole\"), or that of a level set made of level sets, for "
           "all its faces. Several names keep several faces.")
       .def(
+          "sliced_quadrature",
+          [](const PartT& self, int cell, const std::string& sweep, const ndarray1<T>& origin,
+             const ndarray1<T>& direction, const ndarray1<T>& positions, const ndarray1<T>& weights,
+             int points_per_segment, nb::handle options)
+          {
+            if (origin.size() != 3 || direction.size() != 3)
+              throw std::invalid_argument("sliced_quadrature: origin and direction have 3 entries");
+            qr::Sweep<T> s;
+            if (sweep == "parallel")
+              s.kind = qr::SweepKind::parallel;
+            else if (sweep == "turning")
+              s.kind = qr::SweepKind::turning;
+            else
+              throw std::invalid_argument("sliced_quadrature: sweep is 'parallel' or 'turning'");
+            for (int i = 0; i < 3; ++i)
+            {
+              s.origin[static_cast<std::size_t>(i)] = origin.data()[i];
+              s.direction[static_cast<std::size_t>(i)] = direction.data()[i];
+            }
+            const auto o = call_options<qr::Options>(options, self.options, "quadrays", "QuadraysOptions");
+            const std::span<const T> t(positions.data(), positions.size());
+            const std::span<const T> w(weights.data(), weights.size());
+            nb::gil_scoped_release release;
+            return cutcells::part::sliced_cell_rule(self.part, cell, s, t, w, points_per_segment, o);
+          },
+          nb::arg("cell"), nb::arg("sweep"), nb::arg("origin"), nb::arg("direction"), nb::arg("positions"),
+          nb::arg("weights"), nb::arg("points_per_segment") = 5, nb::arg("options") = nb::none(),
+          "The rule of a volume part on one cut cell of dimension 3, summed over plane slices of the "
+          "cell: sweep 'parallel' takes the planes orthogonal to direction at the distances positions "
+          "from origin along it, 'turning' the half-planes bounded by the line through origin along "
+          "direction at the angles positions; weights are the weights of the positions, a rule along "
+          "the sweep. Each slice is integrated as a cell of dimension 2 (quadrays), so the edge where "
+          "two zero sets meet is a corner of the slice. The positions have to be split where the "
+          "pattern of a slice changes; this function does not look for those events.")
+      .def(
           "quadrature",
           [](const PartT& self, int order, const std::string& mode, nb::handle backend, nb::handle options,
              const std::string& entities)

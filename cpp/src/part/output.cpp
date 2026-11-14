@@ -1411,6 +1411,56 @@ quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int 
 }
 
 template <std::floating_point T, std::integral I>
+quadrature::QuadratureRules<T> sliced_cell_rule(const MeshPart<T, I>& part, I cell_id,
+                                                const quadrays::Sweep<T>& sweep, std::span<const T> positions,
+                                                std::span<const T> weights, int points_per_segment,
+                                                const quadrays::Options& options)
+{
+    check_quadrays(part);
+    const CutResult<T, I>& r = *part.result;
+    const MeshView<T, I>& mesh = *r.mesh;
+    const cell::type type = mesh.cell_type(cell_id);
+    if (!quadrays::supported_cell(type) || cell::get_tdim(type) != 3 || mesh.gdim != 3)
+        throw std::invalid_argument("part: slices are of cells of dimension 3");
+    if (part.dim != 3)
+        throw std::invalid_argument("part: slices integrate volume parts");
+    quadrature::QuadratureRules<T> rules;
+    rules._tdim = 3;
+    rules._offset.push_back(0);
+    CellTerms ct;
+    cell_terms(part, cell_id, ct);
+    if (ct.terms.empty())
+        return rules;
+    CellSources<T, I> cs;
+    sources_of(part, cell_id, ct, cs);
+    nudge_sources(part, cell_id, ct, cs);
+    for (const quadrays::Source<T>& source : cs.sources)
+        if (source.is_analytic())
+            throw std::invalid_argument("part: slices take level sets with dof values");
+    quadrays::CellPoints<T> points;
+    quadrays::Stats stats;
+    for (std::size_t g = 0; g + 1 < ct.offsets.size(); ++g)
+        quadrays::integrate_slices(cs.box, std::span<const quadrays::BoxBernstein<T>>(cs.forms),
+                                   std::span<const SelectionTerm>(ct.terms).subspan(
+                                       static_cast<std::size_t>(ct.offsets[g]),
+                                       static_cast<std::size_t>(ct.offsets[g + 1] - ct.offsets[g])),
+                                   sweep, positions, weights, points_per_segment, options, points, stats);
+    for (int k = 0; k < points.n_points(); ++k)
+    {
+        const quadrays::Vec3<T> u = {points.points[3 * k], points.points[3 * k + 1], points.points[3 * k + 2]};
+        const quadrays::Vec3<T> xi = quadrays::reference_point(cs.box, u);
+        rules._points.insert(rules._points.end(), xi.begin(), xi.end());
+        rules._weights.push_back(points.weights[k]);
+    }
+    if (!rules._weights.empty())
+    {
+        rules._offset.push_back(static_cast<std::int32_t>(rules._weights.size()));
+        rules._parent_map.push_back(static_cast<std::int32_t>(cell_id));
+    }
+    return rules;
+}
+
+template <std::floating_point T, std::integral I>
 quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                                                 const lut::Options& options, EntityPolicy entities)
 {
@@ -1583,6 +1633,16 @@ void write_vtu(const std::string& filename, const MeshPart<T, I>& part, bool inc
 // Explicit instantiations
 // ============================================================================
 
+template quadrature::QuadratureRules<float> sliced_cell_rule<float, int>(const MeshPart<float, int>&, int,
+                                                                         const quadrays::Sweep<float>&,
+                                                                         std::span<const float>,
+                                                                         std::span<const float>, int,
+                                                                         const quadrays::Options&);
+template quadrature::QuadratureRules<double> sliced_cell_rule<double, int>(const MeshPart<double, int>&, int,
+                                                                           const quadrays::Sweep<double>&,
+                                                                           std::span<const double>,
+                                                                           std::span<const double>, int,
+                                                                           const quadrays::Options&);
 template quadrature::QuadratureRules<float> quadrature_rules<float, int>(const MeshPart<float, int>&, int, bool,
                                                                          const quadrays::Options&, EntityPolicy);
 template quadrature::QuadratureRules<double> quadrature_rules<double, int>(const MeshPart<double, int>&, int, bool,

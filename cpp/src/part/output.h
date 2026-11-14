@@ -6,12 +6,14 @@
 #pragma once
 
 #include <concepts>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "../lut/cell_pieces.h"
 #include "../lut/cut_mesh.h"
 #include "../quadrature.h"
+#include "../quadrays/slicing.h"
 #include "../quadrays/engine.h"
 #include "../quadrays/leaves.h"
 #include "entity_rules.h"
@@ -64,6 +66,22 @@ template <std::floating_point T, std::integral I>
 quadrature::QuadratureRules<T> quadrature_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
                                                 const lut::Options& options,
                                                 EntityPolicy entities = EntityPolicy::split);
+
+/// @brief The rule of a volume part on one cut cell of dimension 3, summed
+/// over plane slices of the cell (quadrays/slicing.h): each slice is integrated
+/// as a cell of dimension 2, and the caller gives the positions of the slices
+/// along the sweep and their weights. One rule, in the cell's reference
+/// coordinates with physical weights; none if the part misses the cell.
+///
+/// The positions have to be split where the pattern of a slice changes; this
+/// function does not look for those events.
+/// @throws std::invalid_argument for cells of another dimension, parts that
+///         are not volumes, and level sets without dof values
+template <std::floating_point T, std::integral I>
+quadrature::QuadratureRules<T> sliced_cell_rule(const MeshPart<T, I>& part, I cell_id,
+                                                const quadrays::Sweep<T>& sweep, std::span<const T> positions,
+                                                std::span<const T> weights, int points_per_segment,
+                                                const quadrays::Options& options = {});
 
 /// @brief The rules of a part on facets, edges and vertices, one EntityRules
 /// per entity dimension (index d for dimension d < tdim): the entities it holds

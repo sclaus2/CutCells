@@ -17,6 +17,7 @@ set(QUADRAYS_HEADERS
   ${CMAKE_CURRENT_SOURCE_DIR}/gauss.h
   ${CMAKE_CURRENT_SOURCE_DIR}/leaves.h
   ${CMAKE_CURRENT_SOURCE_DIR}/rules.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/slicing.h
   ${CMAKE_CURRENT_SOURCE_DIR}/source.h
   ${CMAKE_CURRENT_SOURCE_DIR}/taylor.h
   ${CMAKE_CURRENT_SOURCE_DIR}/adapters/shapeforest_tape.h
@@ -31,5 +32,6 @@ target_sources(cutcells PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/engine.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/leaves.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/rules.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/slicing.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source.cpp
 )
