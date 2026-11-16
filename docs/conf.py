@@ -64,8 +64,9 @@ master_doc = "index"
 html_theme = "pydata_sphinx_theme"
 html_theme_options = {
     "logo": {
-        "text": "CutCells",
-        "alt_text": "CutCells geometry and quadrature documentation",
+        "image_light": "_static/cutcells-logo.svg",
+        "image_dark": "_static/cutcells-logo.svg",
+        "alt_text": "CutCells",
     },
     "navbar_start": ["navbar-logo"],
     "navbar_center": [],
@@ -106,6 +107,7 @@ html_context = {
 }
 
 html_static_path = ["_static"]
+html_favicon = "_static/cutcells-icon.svg"
 html_css_files = ["custom_pydata.css"]
 
 copybutton_prompt_text = r">>> |\.\.\. |\$ "
