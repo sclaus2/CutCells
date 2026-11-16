@@ -1,9 +1,4 @@
-<h1>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./img/cutcells-logo-dark.svg"/>
-    <img src="./img/cutcells-logo.svg" alt="CutCells" width="365"/>
-  </picture>
-</h1>
+<h1><img src="./img/cutcells-logo.svg" alt="CutCells" width="365"/></h1>
 
 [![CutCells CI](https://github.com/sclaus2/cutcells/actions/workflows/python-app.yml/badge.svg)](https://github.com/sclaus2/cutcells/actions/workflows/python-app.yml)
 [![Docs](https://github.com/sclaus2/CutCells/actions/workflows/docs.yml/badge.svg)](https://sclaus2.github.io/CutCells/)
