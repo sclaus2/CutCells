@@ -3151,6 +3151,13 @@ NB_MODULE(_cutcellscpp, m)
       .def_rw("follow_curves", &cutcells::quadrays::Options::follow_curves,
               "Curve parts in 3D cells follow the curve: arcs between the faces, split where branches cross, Gauss "
               "points in arc length. True (default); cells it cannot do go by height lines.")
+      .def_rw("height_axis", &cutcells::quadrays::Options::height_axis,
+              "For studying how the cost of a rule depends on its height directions, on cells of dimension 3. "
+              "0, 1 or 2: the boxes of a cell take only this axis of the cell's box as their height direction; "
+              "a box on which it does not qualify is bisected. -1 (default): the engine chooses.")
+      .def_rw("base_axis", &cutcells::quadrays::Options::base_axis,
+              "Likewise for the bases of those boxes: the axis of the cell's box their height lines run along, "
+              "one of the two the box above does not take. -1 (default): the engine chooses.")
       .def_rw("slicing", &cutcells::quadrays::Options::slicing,
               "n > 0: where the rule of a volume, a surface or a curve part on a cell of "
               "dimension 3 (hexahedron, tetrahedron, prism, pyramid) has more than n points, the cell "

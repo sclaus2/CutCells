@@ -164,6 +164,8 @@ are the vertices.
 | `max_depth`, `max_bisections` | Bisection limits per level and per cell. |
 | `points_per_segment` | Gauss-Legendre points per segment; 0 chooses them from the order. |
 | `diagnose` | Record why each bisection happened (`QuadraysStats.causes`). |
+| `height_axis` | For studying how the cost of a rule depends on its height directions, on cells of dimension 3. `0`, `1` or `2`: the boxes of a cell take only this axis of the cell's box as their height direction; a box on which it does not qualify is bisected. `-1` (default): the engine chooses. |
+| `base_axis` | Likewise for the bases of those boxes: the axis of the cell's box their height lines run along, one of the two the box above does not take. `-1` (default): the engine chooses. |
 | `prune_bounds`, `split_bounds`, `diagonal_frames`, `rotation_depth`, `mask_subdivisions`, `taylor_subdivisions`, `two_roots_depth` | Engine controls; see the docstrings. |
 
 `LutOptions(template_order=0, triangulate=False, triangulation="classical")`:

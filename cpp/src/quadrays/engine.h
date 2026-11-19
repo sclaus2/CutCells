@@ -156,6 +156,17 @@ struct Options
     int two_roots_depth = 0;
     /// Record why each bisection happened in Stats::causes.
     bool diagnose = false;
+    /// For studying how the cost of a rule depends on its height directions, on
+    /// cells of dimension 3. 0, 1 or 2: the boxes of the cell take only this axis
+    /// of the cell's box as their height direction; a box on which it does not
+    /// qualify is bisected. -1: the engine chooses. Boxes in rotated frames are
+    /// not affected.
+    int height_axis = -1;
+    /// Likewise for the bases of those boxes, which have two free coordinates:
+    /// the axis of the cell's box their height lines run along, one of the two
+    /// that the box above does not take (ignored if it takes this one). -1: the
+    /// engine chooses.
+    int base_axis = -1;
     /// The front end (part::quadrature_rules), for studying cells that take
     /// many points or much time. Not empty: each cell that reaches a limit, debug_points
     /// or debug_seconds is written to this directory as a JSON file (its level sets

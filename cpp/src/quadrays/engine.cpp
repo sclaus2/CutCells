@@ -350,6 +350,7 @@ struct Context
     T cell_size = 0;              ///< |det J|^(1 / tdim) (accuracy checks)
     T kappa = 0;                  ///< curvature at the centre of the current top box (accuracy checks)
     T top_extent = 0;             ///< its extent along its height direction (accuracy checks)
+    int top_k = -1;               ///< that direction, in a cell of dimension 3 (Options::base_axis)
     bool top_unmargined = false;  ///< the current top box has no margin along it (Options::silhouette_splits)
     const std::vector<Half<T, 3>>* top_clips = nullptr; ///< its clip planes, in box coordinates; null in a rotated frame
     int level2_bisections = 0;    ///< bisections below it so far
@@ -2070,10 +2071,11 @@ T two_root_score(Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& lo, con
 /// tangent T = grad f x grad g seen along k, relative to |T|, for lines that cross the
 /// curve rather than run along it; less a little per function that needs a
 /// silhouette. @p two receives, per entry of
-/// Analysis::funcs, whether it does. False if the box does not qualify.
+/// Analysis::funcs, whether it does. False if the box does not qualify. With
+/// @p only >= 0 no other axis is taken (Options::height_axis).
 template <std::floating_point T, typename Margin>
 bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysis<T, 3>& an, Margin&& margin_of,
-                          int& k, std::vector<char>& two)
+                          int only, int& k, std::vector<char>& two)
 {
     // A failed attempt is thrown away, so a cell gets few. Volumes gain most from what
     // succeeds lower down; on interfaces a bisected box costs little anyway.
@@ -2096,6 +2098,8 @@ bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysi
     int n_axes = 0;
     for (int kk = 0; kk < 3; ++kk)
     {
+        if (only >= 0 && kk != only)
+            continue;
         std::vector<char>& candidate = candidates[static_cast<std::size_t>(kk)];
         candidate.assign(an.funcs.size(), 0);
         bool qualifies = true;
@@ -2213,8 +2217,10 @@ bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysi
     return found;
 }
 
+/// @p only >= 0: the box takes no other axis as its height direction
+/// (Options::height_axis, base_axis).
 template <std::floating_point T, int D>
-Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int depth)
+Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int depth, int only = -1)
 {
     Analysis<T, D> an;
     an.surface = ctx.surface;
@@ -2375,9 +2381,11 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
     const auto choose_direction = [&]()
     {
         an.best = T(-1);
-        an.k = 0;
+        an.k = only >= 0 ? only : 0;
         for (int kk = 0; kk < D; ++kk)
         {
+            if (only >= 0 && kk != only)
+                continue;
             T best = T(1);
             for (std::size_t c = 0; c < an.ratios.size(); ++c)
                 best = std::min(best, margin_of(c, kk));
@@ -2436,6 +2444,8 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
     std::vector<int> chosen;
     for (int kk = 0; kk < D; ++kk)
     {
+        if (only >= 0 && kk != only)
+            continue;
         T score = T(1);
         for (const VecD<T, D>& r : an.surface_ratios)
             score = std::min(score, r[kk]);
@@ -2472,7 +2482,7 @@ Analysis<T, D> analyse(Context<T>& ctx, const Problem<T, D>& p, bool top, int de
         {
             int k3 = 0;
             std::vector<char> two;
-            if (top && silhouette_direction<T>(ctx, p, an, margin_of, k3, two))
+            if (top && silhouette_direction<T>(ctx, p, an, margin_of, only, k3, two))
             {
                 an.two_roots = two;
                 an.unmargined = true;
@@ -4742,6 +4752,26 @@ void raise_rules(Context<T>& ctx, int level)
     ctx.q_raised = level;
 }
 
+/// Options::height_axis and base_axis: the only axis a box of a cell of dimension
+/// 3 may take as its height direction, in the box's own coordinates; -1 where the
+/// engine chooses (other cells, rotated frames, lines).
+template <std::floating_point T, int D, bool Rotated, int Top>
+int forced_axis(const Context<T>& ctx)
+{
+    if constexpr (Top == 3 && !Rotated && D == 3)
+        return ctx.opt.height_axis >= 0 && ctx.opt.height_axis < 3 ? ctx.opt.height_axis : -1;
+    else if constexpr (Top == 3 && !Rotated && D == 2)
+    {
+        // the base's coordinates are the box's without its height direction
+        const int a = ctx.opt.base_axis, k = ctx.top_k;
+        if (a < 0 || a > 2 || k < 0 || a == k)
+            return -1;
+        return a < k ? a : a - 1;
+    }
+    else
+        return -1;
+}
+
 /// The dimension reduction of a tightened and analysed box: bisect if it is not
 /// certified, otherwise integrate along height lines over the base level. With
 /// @p check, a certified box with two free coordinates whose piece is curved
@@ -4791,8 +4821,10 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
         if (!certified && ctx.opt.fold_splits && ctx.opt.anchor_folds > 0 && ctx.vis_order == 0
             && ctx.splits_blocked == 0)
         {
-            const int ks = Top == 3 && ctx.partner < 0 && ctx.vis_order == 0 ? crossing_direction<T>(ctx, p, k)
-                                                                             : uncertified_direction<T, D>(ctx, p, an, k);
+            const int only = forced_axis<T, D, Rotated, Top>(ctx);
+            const int ks = only >= 0                                           ? only
+                           : Top == 3 && ctx.partner < 0 && ctx.vis_order == 0 ? crossing_direction<T>(ctx, p, k)
+                                                                               : uncertified_direction<T, D>(ctx, p, an, k);
             split = fold_split_points<T>(ctx, p, ks, D == Top, an.surface, split_folds, split_crossings);
             if (split)
             {
@@ -4831,8 +4863,11 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
         // piece of the curve, if any, is lost
         if (D == Top && ctx.partner >= 0)
             ++ctx.stats->curve_lost;
-        k = uncertified_direction<T, D>(ctx, p, an, k);
+        const int only = forced_axis<T, D, Rotated, Top>(ctx);
+        k = only >= 0 ? only : uncertified_direction<T, D>(ctx, p, an, k);
     }
+    if constexpr (D == 3 && Top == 3)
+        ctx.top_k = k;
     if constexpr (D == 2)
     {
         if (checked && (certified || split))
@@ -5769,7 +5804,7 @@ void integrate_box(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth
         return;
 
     // keep the functions that may vanish on the box, with their direction margins
-    Analysis<T, D> an = analyse<T, D>(ctx, p, D == Top, depth);
+    Analysis<T, D> an = analyse<T, D>(ctx, p, D == Top, depth, forced_axis<T, D, Rotated, Top>(ctx));
     if constexpr (D == Top)
     {
         if (an.decided < 0)
