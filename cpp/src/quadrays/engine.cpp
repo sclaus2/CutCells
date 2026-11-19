@@ -3987,8 +3987,9 @@ void bisect(Context<T>& ctx, Problem<T, D> p, const Emit& emit, int depth, bool 
 /// Where a meeting curve of two level sets touches the silhouette of one of them in
 /// a level-2 box: f = g = d_t h = 0, h one of the two. Seen along t both curves pass
 /// through the point with one tangent, so that Newton's method on them fails; in 3D
-/// the three functions cross transversally. Subdivision with bounds, then Newton's
-/// method; the base coordinates of the points inside the box are appended.
+/// the three functions cross transversally, except where the two level sets touch each
+/// other there (see stationary below). Subdivision with bounds, then Newton's method;
+/// the base coordinates of the points inside the box are appended.
 template <std::floating_point T>
 void contact_points(Context<T>& ctx, const Func<T, 3>& f, const Func<T, 3>& g, const Func<T, 3>& slope, int k, T t_lo,
                     T t_hi, const VecD<T, 2>& lo, const VecD<T, 2>& hi, std::vector<VecD<T, 2>>& out)
@@ -4016,6 +4017,164 @@ void contact_points(Context<T>& ctx, const Func<T, 3>& f, const Func<T, 3>& g, c
     stack.push_back({insert<T, 3>(lo, k, t_lo), insert<T, 3>(hi, k, t_hi), 0});
     int cells = 0;
     const T size = std::max({hi[0] - lo[0], hi[1] - lo[1], t_hi - t_lo});
+    // the functions' values and gradients at y, each scaled by its gradient's largest entry;
+    // false where a gradient vanishes or is not finite
+    const auto scaled = [&](const VecD<T, 3>& y, VecD<T, 3>& r, std::array<VecD<T, 3>, 3>& m)
+    {
+        for (std::size_t i = 0; i < 3; ++i)
+        {
+            func_gradient<T, 3>(ctx, *functions[i], y, m[i]);
+            const T scale = max_abs(std::span<const T>(m[i]));
+            if (!(scale > T(0)) || !(scale < infinity<T>))
+                return false;
+            r[i] = value<T, 3>(ctx, *functions[i], y) / scale;
+            for (T& v : m[i])
+                v /= scale;
+        }
+        return true;
+    };
+    // one step of Newton's method on a system with values r and Jacobian m; its length, < 0 if singular
+    const auto newton_step = [](VecD<T, 3>& y, const VecD<T, 3>& r, const std::array<VecD<T, 3>, 3>& m)
+    {
+        const T det = determinant<T, 3>(m);
+        if (!(std::abs(det) > T(0)))
+            return T(-1);
+        T step = T(0);
+        VecD<T, 3> next = y;
+        for (std::size_t col = 0; col < 3; ++col)
+        {
+            std::array<VecD<T, 3>, 3> mc = m;
+            for (std::size_t i = 0; i < 3; ++i)
+                mc[i][col] = r[i];
+            const T d = determinant<T, 3>(mc) / det;
+            next[col] -= d;
+            step += std::abs(d);
+        }
+        y = next;
+        return step;
+    };
+    // Newton's method on the three functions from y
+    const auto solve = [&](VecD<T, 3>& y)
+    {
+        for (int it = 0; it < 12; ++it)
+        {
+            VecD<T, 3> r;
+            std::array<VecD<T, 3>, 3> m;
+            if (!scaled(y, r, m))
+                return false;
+            const T step = newton_step(y, r, m);
+            if (step < T(0))
+                return false;
+            if (step <= T(1e-12) * size)
+                return true;
+        }
+        return false;
+    };
+    const auto emit = [&](const VecD<T, 3>& y)
+    {
+        const T tol = T(1e-9) * size;
+        const VecD<T, 2> base = {y[k == 0 ? 1 : 0], y[k == 2 ? 1 : 2]};
+        if (base[0] < lo[0] - tol || base[0] > hi[0] + tol || base[1] < lo[1] - tol || base[1] > hi[1] + tol
+            || y[static_cast<std::size_t>(k)] < t_lo - tol || y[static_cast<std::size_t>(k)] > t_hi + tol)
+            return;
+        for (const VecD<T, 2>& z : out)
+            if (std::abs(z[0] - base[0]) + std::abs(z[1] - base[1]) <= tol)
+                return;
+        out.push_back(base);
+    };
+    // Where the two level sets touch each other on the silhouette (two cylinders of one
+    // radius whose axes cross, a ball that touches a cylinder along the view), the
+    // meeting curve crosses itself there: the three gradients lie in one plane, the root
+    // is a double one, and Newton's method on the three functions creeps towards it and
+    // gives up. In exact arithmetic one contact; rounding makes it two a rounding apart,
+    // or none, and the integrand of the base has its kink there either way. Such a point
+    // is found on the curve in which two of the three vanish, the two whose gradients
+    // differ most, as the point where the third is stationary along it: the three
+    // gradients in one plane, a regular system. @p y receives it, @p tangent the unit
+    // tangent of the curve, @p v0 the third's value and @p v2 its second derivative along
+    // the curve, both over the size of its gradient: zeros of the third lie at
+    // +- sqrt(-2 v0 / v2) along the curve where the two differ in sign.
+    const auto stationary = [&](VecD<T, 3>& y, VecD<T, 3>& tangent, T& v0, T& v2)
+    {
+        VecD<T, 3> r;
+        std::array<VecD<T, 3>, 3> m;
+        if (!scaled(y, r, m))
+            return false;
+        const auto cross = [](const VecD<T, 3>& a, const VecD<T, 3>& b)
+        { return VecD<T, 3>{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}; };
+        const auto norm = [](const VecD<T, 3>& a) { return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); };
+        std::size_t third = 0;
+        T best = T(-1);
+        for (std::size_t i = 0; i < 3; ++i)
+        {
+            const VecD<T, 3>&a = m[(i + 1) % 3], &b = m[(i + 2) % 3];
+            const T sine = norm(cross(a, b)) / (norm(a) * norm(b));
+            if (sine > best)
+            {
+                best = sine;
+                third = i;
+            }
+        }
+        const std::size_t first = (third + 1) % 3, second = (third + 2) % 3;
+        // the third's derivative along the curve of the other two, per unit length
+        const auto along = [&](const VecD<T, 3>& z, T& d, VecD<T, 3>* unit = nullptr)
+        {
+            VecD<T, 3> rz;
+            std::array<VecD<T, 3>, 3> mz;
+            if (!scaled(z, rz, mz))
+                return false;
+            VecD<T, 3> t = cross(mz[first], mz[second]);
+            const T length = norm(t);
+            if (!(length > T(0)))
+                return false;
+            for (T& v : t)
+                v /= length;
+            d = mz[third][0] * t[0] + mz[third][1] * t[1] + mz[third][2] * t[2];
+            if (unit != nullptr)
+                *unit = t;
+            return std::isfinite(d);
+        };
+        const T eps = T(1e-6) * size;
+        bool converged = false;
+        for (int it = 0; it < 20 && !converged; ++it)
+        {
+            T d = T(0);
+            if (!scaled(y, r, m) || !along(y, d))
+                return false;
+            const VecD<T, 3> residual = {r[first], r[second], d};
+            std::array<VecD<T, 3>, 3> jacobian = {m[first], m[second], VecD<T, 3>{}};
+            for (std::size_t j = 0; j < 3; ++j)
+            {
+                VecD<T, 3> yp = y;
+                yp[j] += eps;
+                T dp = T(0);
+                if (!along(yp, dp))
+                    return false;
+                jacobian[2][j] = (dp - d) / eps;
+            }
+            const T step = newton_step(y, residual, jacobian);
+            if (step < T(0) || !(step < T(4) * size))
+                return false;
+            converged = step <= T(1e-12) * size;
+        }
+        if (!converged || !scaled(y, r, m))
+            return false;
+        v0 = r[third];
+        T before = T(0), after = T(0), here = T(0);
+        if (!along(y, here, &tangent))
+            return false;
+        const T h = T(1e-4) * size;
+        VecD<T, 3> ya = y, yb = y;
+        for (std::size_t j = 0; j < 3; ++j)
+        {
+            ya[j] += h * tangent[j];
+            yb[j] -= h * tangent[j];
+        }
+        if (!along(ya, after) || !along(yb, before))
+            return false;
+        v2 = (after - before) / (T(2) * h);
+        return std::isfinite(v0) && std::isfinite(v2);
+    };
     while (!stack.empty() && ++cells <= max_cells)
     {
         const Cell c = stack.back();
@@ -4040,56 +4199,51 @@ void contact_points(Context<T>& ctx, const Func<T, 3>& f, const Func<T, 3>& g, c
             }
             continue;
         }
-        // Newton's method on the three functions
-        VecD<T, 3> y;
+        VecD<T, 3> centre;
         for (std::size_t j = 0; j < 3; ++j)
-            y[j] = T(0.5) * (c.lo[j] + c.hi[j]);
-        bool converged = false;
-        for (int it = 0; it < 12 && !converged; ++it)
+            centre[j] = T(0.5) * (c.lo[j] + c.hi[j]);
+        VecD<T, 3> y = centre;
+        bool found = solve(y);
+        if (found)
+            emit(y);
+        // A touching contact, or a pair of contacts of which Newton's method from the
+        // centre finds one at most: from the stationary point between them, both. Where
+        // no root comes out and the zeros would lie within the cell's width of the
+        // stationary point, that point splits the base itself: the curve touches the
+        // silhouette there, or comes as near to it as this search resolves.
+        VecD<T, 3> e = centre, tangent;
+        T v0 = T(0), v2 = T(0);
+        if (!stationary(e, tangent, v0, v2))
+            continue;
+        // in the cell or next to it: its neighbours find the same point
+        bool near = true;
+        T width = T(0);
+        for (std::size_t j = 0; j < 3; ++j)
         {
-            std::array<VecD<T, 3>, 3> m;
-            VecD<T, 3> r;
-            bool regular = true;
-            for (std::size_t i = 0; i < 3; ++i)
-            {
-                func_gradient<T, 3>(ctx, *functions[i], y, m[i]);
-                const T scale = max_abs(std::span<const T>(m[i]));
-                regular = regular && scale > T(0) && scale < infinity<T>;
-                if (!regular)
-                    break;
-                r[i] = value<T, 3>(ctx, *functions[i], y) / scale;
-                for (T& v : m[i])
-                    v /= scale;
-            }
-            const T det = regular ? determinant<T, 3>(m) : T(0);
-            if (!(std::abs(det) > T(0)))
-                break;
-            T step = T(0);
-            VecD<T, 3> next = y;
-            for (std::size_t col = 0; col < 3; ++col)
-            {
-                std::array<VecD<T, 3>, 3> mc = m;
-                for (std::size_t i = 0; i < 3; ++i)
-                    mc[i][col] = r[i];
-                const T d = determinant<T, 3>(mc) / det;
-                next[col] -= d;
-                step += std::abs(d);
-            }
-            y = next;
-            converged = step <= T(1e-12) * size;
+            near = near && e[j] >= c.lo[j] - (c.hi[j] - c.lo[j]) && e[j] <= c.hi[j] + (c.hi[j] - c.lo[j]);
+            width = std::max(width, c.hi[j] - c.lo[j]);
         }
-        if (!converged)
+        if (!near)
             continue;
-        const T tol = T(1e-9) * size;
-        const VecD<T, 2> base = {y[k == 0 ? 1 : 0], y[k == 2 ? 1 : 2]};
-        if (base[0] < lo[0] - tol || base[0] > hi[0] + tol || base[1] < lo[1] - tol || base[1] > hi[1] + tol
-            || y[static_cast<std::size_t>(k)] < t_lo - tol || y[static_cast<std::size_t>(k)] > t_hi + tol)
+        if (!(std::abs(v2) > T(0)))
             continue;
-        bool seen = false;
-        for (const VecD<T, 2>& z : out)
-            seen = seen || std::abs(z[0] - base[0]) + std::abs(z[1] - base[1]) <= tol;
-        if (!seen)
-            out.push_back(base);
+        // how far along the curve the third's zeros lie from the stationary point, or
+        // would if it had the other sign there
+        const T delta = std::sqrt(T(2) * std::abs(v0 / v2));
+        if (opposite(v0, v2) && delta > T(1e-6) * size && delta < T(4) * width)
+            for (const T side : {T(-1), T(1)})
+            {
+                VecD<T, 3> z = e;
+                for (std::size_t j = 0; j < 3; ++j)
+                    z[j] += side * delta * tangent[j];
+                if (solve(z))
+                {
+                    emit(z);
+                    found = true;
+                }
+            }
+        if (!found && delta < width)
+            emit(e);
     }
 }
 
