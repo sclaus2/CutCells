@@ -1002,14 +1002,21 @@ void partial_entity(const MeshPart<T, I>& part, std::int32_t e, PartialEntity<T,
 
 
 /// The cells of a quadrature call that reached a limit of the engine
-/// (Options::max_points, Options::max_bisections) and took many points.
+/// (Options::max_points, Options::max_bisections, Options::max_depth) and took
+/// many points.
 struct LimitedCells
 {
     int cells = 0;            ///< cells integrated
+    int any = 0;              ///< cells that reached one of the limits below
     int points = 0;           ///< cells over max_points
     std::int64_t first_points = -1;     ///< the first of them
     int bisections = 0;       ///< cells that used all of max_bisections
     std::int64_t first_bisections = -1; ///< the first of them
+    /// cells with boxes at max_depth on which no height direction is proven,
+    /// and that reached neither of the limits above (which report theirs)
+    int depth = 0;
+    std::int64_t first_depth = -1;      ///< the first of them
+    int curve_lost = 0;       ///< cells of a curve part in which such a box may hold a piece of the curve
     int curve_fallbacks = 0;  ///< cells whose curve could not be followed
     int reports = 0;          ///< cells written to Options::debug_dir
     int over_reports = 0;     ///< cells that would have been, beyond max_debug_reports
@@ -1018,10 +1025,18 @@ struct LimitedCells
 void count_limits(LimitedCells& limited, std::int64_t cell, const quadrays::Stats& stats)
 {
     ++limited.cells;
-    if (stats.points_limited > 0 && limited.points++ == 0)
+    const bool over_points = stats.points_limited > 0, over_bisections = stats.bisections_limited > 0;
+    // A box is integrated uncertified at the depth limit, or once the bisections
+    // or the points of its cell are used up, which the other two report.
+    const bool at_depth = stats.uncertified > 0 && !over_points && !over_bisections;
+    limited.any += over_points || over_bisections || at_depth;
+    if (over_points && limited.points++ == 0)
         limited.first_points = cell;
-    if (stats.bisections_limited > 0 && limited.bisections++ == 0)
+    if (over_bisections && limited.bisections++ == 0)
         limited.first_bisections = cell;
+    if (at_depth && limited.depth++ == 0)
+        limited.first_depth = cell;
+    limited.curve_lost += stats.curve_lost > 0;
     limited.curve_fallbacks += stats.curve_fallbacks > 0;
 }
 
@@ -1033,10 +1048,10 @@ void warn_limits(const LimitedCells& limited, const char* what, const quadrays::
         std::fprintf(stderr, "CutCells quadrays warning: the curves of %d of %d cut %s could not be followed, and went "
                              "by height lines (order %d).\n",
                      limited.curve_fallbacks, limited.cells, what, order);
-    if (limited.points > 0 || limited.bisections > 0)
+    if (limited.any > 0)
     {
         std::fprintf(stderr, "CutCells quadrays warning: %d of %d cut %s reached a limit (order %d, part of dimension %d).\n",
-                     std::max(limited.points, limited.bisections), limited.cells, what, order, dim);
+                     limited.any, limited.cells, what, order, dim);
         if (limited.points > 0)
             std::fprintf(stderr,
                          "  %d exceeded max_points = %d (first: %lld) and were integrated again with fewer "
@@ -1048,6 +1063,14 @@ void warn_limits(const LimitedCells& limited, const char* what, const quadrays::
                          "  %d used all of max_bisections = %d (first: %lld): their remaining boxes are "
                          "integrated uncertified, less accurately.\n",
                          limited.bisections, options.max_bisections, static_cast<long long>(limited.first_bisections));
+        if (limited.depth > 0)
+            std::fprintf(stderr,
+                         "  %d left boxes at max_depth = %d with no height direction proven (first: %lld): these "
+                         "boxes are integrated uncertified, less accurately.\n",
+                         limited.depth, options.max_depth, static_cast<long long>(limited.first_depth));
+        if (limited.curve_lost > 0)
+            std::fprintf(stderr, "  In %d of them such a box may hold a piece of the curve, which is then missing.\n",
+                         limited.curve_lost);
         if (options.debug_dir.empty())
             std::fprintf(stderr, "  QuadraysOptions.debug_dir writes such cells for plotting "
                                  "(python -m cutcells.quadrays_debug).\n");
@@ -1277,7 +1300,7 @@ void part_rules(const MeshPart<T, I>& part, int order, bool include_uncut_cells,
             const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
             if (debugging && !ct.terms.empty()
                 && (points.n_points() >= options.debug_points || seconds >= options.debug_seconds
-                    || stats.points_limited > 0 || stats.bisections_limited > 0))
+                    || stats.points_limited > 0 || stats.bisections_limited > 0 || stats.uncertified > 0))
             {
                 if (limited.reports < options.debug_reports)
                 {

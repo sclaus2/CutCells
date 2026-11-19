@@ -3186,7 +3186,8 @@ NB_MODULE(_cutcellscpp, m)
               "sets meet. True (default); needs fold_splits and anchor_folds. Analytic level sets need "
               "second-derivative bounds.")
       .def_rw("max_depth", &cutcells::quadrays::Options::max_depth,
-              "Bisections allowed per level along a branch.")
+              "Bisections allowed per level along a branch; a box at this depth on which no height "
+              "direction is proven is integrated uncertified, and part.quadrature warns.")
       .def_rw("max_bisections", &cutcells::quadrays::Options::max_bisections,
               "Bisections allowed per cell; beyond it boxes are integrated uncertified, and "
               "part.quadrature warns.")

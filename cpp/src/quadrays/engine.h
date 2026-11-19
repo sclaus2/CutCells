@@ -89,6 +89,8 @@ struct Options
     /// after a few; Taylor models of an analytic level set, a distance function
     /// in particular, need boxes small against the radius of curvature, which
     /// for a feature half a cell wide takes about 10. (The prototype allowed 8.)
+    /// A box at this depth on which no height direction is proven is integrated
+    /// uncertified, less accurately; the front end warns.
     int max_depth = 12;
     /// Bisections allowed per cell, all levels and branches together. Beyond it
     /// boxes are integrated uncertified (roots isolated in full), so the cost

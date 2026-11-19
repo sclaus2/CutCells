@@ -177,3 +177,29 @@ def test_debug_report_in_2d(tmp_path):
     pytest.importorskip("matplotlib")
     debug.plot_report(report, tmp_path / "cell.png")
     assert (tmp_path / "cell.png").stat().st_size > 0
+
+
+def test_depth_limit_warns(capfd, tmp_path):
+    """A whole torus in one hexahedron: boxes reach max_depth with no height direction
+    proven, without using up the bisections or the points of the cell. The call says
+    so (the area is off by 1e-3 there), and the cell is written for plotting."""
+    mesh = cc.box_mesh(-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 2, 2, 2, cell_type="hexahedron")
+    centre = (0.0123, -0.0371, 0.0217)
+
+    def torus(x):
+        d = [x[i] - centre[i] for i in range(3)]
+        s = d[0] ** 2 + d[1] ** 2 + d[2] ** 2 + 0.5**2 - 0.2**2
+        return s**2 - 4 * 0.5**2 * (d[0] ** 2 + d[1] ** 2)
+
+    def ball(x):
+        return (x[0] + 0.21) ** 2 + (x[1] - 0.07) ** 2 + (x[2] - 0.04) ** 2 - 0.6**2
+
+    a = cc.create_level_set(mesh, torus, degree=4, name="a")
+    b = cc.create_level_set(mesh, ball, degree=2, name="b")
+    options = cc.QuadraysOptions()
+    options.debug_dir = str(tmp_path)
+    cc.cut(mesh, [a, b])["a = 0 and b < 0"].quadrature(order=6, mode="cut_only", options=options)
+    err = capfd.readouterr().err
+    assert "reached a limit" in err and "max_depth = 12" in err
+    assert "max_points" not in err and "max_bisections" not in err
+    assert glob.glob(str(tmp_path / "*.json"))
