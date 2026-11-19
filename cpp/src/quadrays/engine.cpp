@@ -350,7 +350,12 @@ struct Context
     T cell_size = 0;              ///< |det J|^(1 / tdim) (accuracy checks)
     T kappa = 0;                  ///< curvature at the centre of the current top box (accuracy checks)
     T top_extent = 0;             ///< its extent along its height direction (accuracy checks)
-    int top_k = -1;               ///< that direction, in a cell of dimension 3 (Options::base_axis)
+    int top_k = -1;               ///< that direction, in a cell of dimension 3
+    T top_lo = 0, top_hi = 0;     ///< the box's range along it
+    /// The level sets that are constant along it on the box (bit l for level set l), in
+    /// a cell of dimension 3 and not in a rotated frame: walls, whose curves in the base
+    /// stand for every height on the lines.
+    std::uint64_t top_walls = 0;
     bool top_unmargined = false;  ///< the current top box has no margin along it (Options::silhouette_splits)
     const std::vector<Half<T, 3>>* top_clips = nullptr; ///< its clip planes, in box coordinates; null in a rotated frame
     int level2_bisections = 0;    ///< bisections below it so far
@@ -1472,6 +1477,24 @@ bool may_bound_part(Context<T>& ctx, const Vec3<T>& u, T margin)
     return false;
 }
 
+/// may_bound_part for a point of the base on the curve of a wall: a level set that is
+/// constant along the height lines of the box above (Context::top_walls). Its curve in
+/// the base stands for every height on the line through @p u, not for the bound of the
+/// lines it was restricted to, where the part need not reach it: true if the part may
+/// reach that line at one of a few heights in the box.
+template <std::floating_point T>
+bool wall_may_bound_part(Context<T>& ctx, Vec3<T> u, T margin)
+{
+    constexpr int heights = 17;
+    for (int i = 0; i < heights; ++i)
+    {
+        u[static_cast<std::size_t>(ctx.top_k)] = ctx.top_lo + (ctx.top_hi - ctx.top_lo) * T(i) / T(heights - 1);
+        if (may_bound_part<T>(ctx, u, margin))
+            return true;
+    }
+    return false;
+}
+
 /// The 3D point of a surface function's curve above y.
 template <std::floating_point T>
 Vec3<T> surface_point(Context<T>& ctx, const Surface<T, 2>& s, const VecD<T, 2>& y)
@@ -2070,7 +2093,11 @@ T two_root_score(Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& lo, con
 /// |grad f| as in Saye's score, near a pair's meeting curve the mean length of its
 /// tangent T = grad f x grad g seen along k, relative to |T|, for lines that cross the
 /// curve rather than run along it; less a little per function that needs a
-/// silhouette. @p two receives, per entry of
+/// silhouette. In a volume part, a function that is constant along an axis counts in
+/// neither for that axis: its lines take no root of it, and no curve on which it meets
+/// another, so that lines along it are the cheapest it allows. (An interface part
+/// takes the other level sets at its own roots whatever the axis, and keeps the
+/// scores above.) @p two receives, per entry of
 /// Analysis::funcs, whether it does. False if the box does not qualify. With
 /// @p only >= 0 no other axis is taken (Options::height_axis).
 template <std::floating_point T, typename Margin>
@@ -2091,6 +2118,14 @@ bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysi
                     return false;
     }
     const std::size_t n = an.curved.size();
+    // constant along an axis, by its bounds (as margin_of has it), in a volume part
+    const auto constant = [&](std::size_t c, int kk)
+    {
+        const VecD<T, 3>& upper = an.uppers[c];
+        const T norm = scaled_norm(std::span<const T>(upper));
+        return an.surface < 0 && norm > T(0) && norm < infinity<T>
+               && upper[static_cast<std::size_t>(kk)] <= tiny<T> * norm;
+    };
     // which axes qualify: this needs bounds only
     std::array<std::vector<char>, 3> candidates;
     std::array<int, 3> needed{};
@@ -2153,7 +2188,7 @@ bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysi
     std::vector<int> close;
     close.reserve(n);
     VecD<T, 3> pair_sum{};
-    int pair_count = 0;
+    std::array<int, 3> pair_count{};
     for (int m = 0; m < total; ++m)
     {
         const VecD<T, 3> y = grid_point(m);
@@ -2189,8 +2224,13 @@ bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysi
                     continue;
                 // the length of the curve seen along each axis
                 for (std::size_t j = 0; j < 3; ++j)
+                {
+                    if (constant(static_cast<std::size_t>(close[a]), static_cast<int>(j))
+                        || constant(static_cast<std::size_t>(close[b]), static_cast<int>(j)))
+                        continue;
                     pair_sum[j] += std::sqrt(std::max(T(0), T(1) - t[j] * t[j] / (norm * norm)));
-                ++pair_count;
+                    ++pair_count[j];
+                }
             }
     }
     T best = -infinity<T>;
@@ -2201,10 +2241,10 @@ bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysi
         const std::size_t K = static_cast<std::size_t>(kk);
         T score = T(1);
         for (std::size_t c = 0; c < n; ++c)
-            if (count[c] > 0)
+            if (count[c] > 0 && !constant(c, kk))
                 score = std::min(score, mean[c][K] / T(count[c]));
-        if (pair_count > 0)
-            score *= pair_sum[K] / T(pair_count);
+        if (pair_count[K] > 0)
+            score *= pair_sum[K] / T(pair_count[K]);
         score -= T(0.1) * T(needed[K]);
         if (score > best)
         {
@@ -4008,13 +4048,19 @@ void contact_points(Context<T>& ctx, const Func<T, 3>& f, const Func<T, 3>& g, c
 /// whose lines cross all zero curves best, functions and surface functions, by the
 /// smallest over the curves of the mean |d_j f| / |grad f| near them on a grid. Lines
 /// along a nearly straight curve would leave nothing to split at, and its fold
-/// search nothing to prune. @p k if no curve shows on the grid.
+/// search nothing to prune. A curve that is constant along an axis, a straight line
+/// along it as a cylinder's silhouette or its trace on a face is, is another matter:
+/// lines along it never cross it, it only breaks the base line where it stands, and at
+/// a silhouette the square root with which the roots above merge lies in the base
+/// line's coordinate alone. In a volume part it does not count for that axis, which is
+/// preferred a little for it. @p k if no curve shows on the grid.
 template <std::floating_point T>
 int crossing_direction(Context<T>& ctx, const Problem<T, 2>& p, int k)
 {
     static constexpr int G = 9;
     VecD<T, 2> score;
     score.fill(infinity<T>);
+    std::array<bool, 2> along{}; // some curve is constant along the axis
     bool seen = false;
     const auto accumulate = [&](auto&& value_at, auto&& gradient_at)
     {
@@ -4048,7 +4094,7 @@ int crossing_direction(Context<T>& ctx, const Problem<T, 2>& p, int k)
             }
         if (!(pos && neg))
             return;
-        VecD<T, 2> mean{};
+        VecD<T, 2> mean{}, largest_part{};
         int count = 0;
         for (int i = 0; i < G; ++i)
             for (int j = 0; j < G; ++j)
@@ -4060,15 +4106,23 @@ int crossing_direction(Context<T>& ctx, const Problem<T, 2>& p, int k)
                 const T norm = scaled_norm(std::span<const T>(g));
                 if (!(norm > T(0)))
                     continue;
-                mean[0] += std::abs(g[0]) / norm;
-                mean[1] += std::abs(g[1]) / norm;
+                for (std::size_t d = 0; d < 2; ++d)
+                {
+                    mean[d] += std::abs(g[d]) / norm;
+                    largest_part[d] = std::max(largest_part[d], std::abs(g[d]) / norm);
+                }
                 ++count;
             }
         if (count == 0)
             return;
         seen = true;
-        score[0] = std::min(score[0], mean[0] / T(count));
-        score[1] = std::min(score[1], mean[1] / T(count));
+        for (std::size_t d = 0; d < 2; ++d)
+        {
+            if (ctx.surface < 0 && largest_part[d] <= T(1e-10))
+                along[d] = true;
+            else
+                score[d] = std::min(score[d], mean[d] / T(count));
+        }
     };
     for (const Func<T, 2>& f : p.funcs)
         if (!f.linear)
@@ -4079,6 +4133,8 @@ int crossing_direction(Context<T>& ctx, const Problem<T, 2>& p, int k)
                    [&](const VecD<T, 2>& y, VecD<T, 2>& g) { surface_gradient<T, 2>(ctx, s, y, g); });
     if (!seen)
         return k;
+    for (std::size_t d = 0; d < 2; ++d)
+        score[d] = std::min(score[d], T(1)) + (along[d] ? T(0.1) : T(0));
     return score[1] > score[0] ? 1 : 0;
 }
 
@@ -4314,12 +4370,22 @@ bool fold_split_points(Context<T>& ctx, const Problem<T, 2>& p, int k, bool top,
     // curves cross only where they meet in 3D: where they cross at different heights
     // along the lines of the box, seen from above, each adds its own smooth term to the
     // integrand and neither sees the other.
+    // A level set constant along the height lines of the box above is a wall there, and
+    // its curve stands for every height on the lines (wall_may_bound_part).
+    const auto wall = [&](const Member& m) { return Top3 && m.func >= 0 && ((ctx.top_walls >> m.ls) & 1) != 0; };
     const auto splits_at = [&](const Member& m, const VecD<T, 2>& y)
-    { return !lenient || may_bound_part<T>(ctx, point_of(m, y), part_margin<T> * size); };
+    {
+        if (!lenient)
+            return true;
+        return wall(m) ? wall_may_bound_part<T>(ctx, point_of(m, y), part_margin<T> * size)
+                       : may_bound_part<T>(ctx, point_of(m, y), part_margin<T> * size);
+    };
     const auto meet_at = [&](const Member& a, const Member& b, const VecD<T, 2>& y)
     {
         if (!lenient)
             return true;
+        if (wall(a) && wall(b))
+            return wall_may_bound_part<T>(ctx, point_of(a, y), part_margin<T> * size);
         const T margin = part_margin<T> * size;
         const auto vanishes = [&](int l, const Vec3<T>& u)
         {
@@ -4867,7 +4933,16 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
         k = only >= 0 ? only : uncertified_direction<T, D>(ctx, p, an, k);
     }
     if constexpr (D == 3 && Top == 3)
+    {
         ctx.top_k = k;
+        ctx.top_lo = p.lo[k];
+        ctx.top_hi = p.hi[k];
+        ctx.top_walls = 0;
+        if (!Rotated && k == an.k)
+            for (std::size_t i = 0; i < p.funcs.size() && i < an.independent.size(); ++i)
+                if (an.independent[i])
+                    ctx.top_walls |= std::uint64_t(1) << p.funcs[i].ls;
+    }
     if constexpr (D == 2)
     {
         if (checked && (certified || split))
@@ -5519,9 +5594,12 @@ void reduce(Context<T>& ctx, Problem<T, D> p, const Analysis<T, D>& an, const Em
                     }
                     const std::size_t found = nodes.size();
                     curved_roots<T, D>(ctx, f, yb, k, L, U, certified, an.two_roots[i] != 0, *form, nodes);
-                    // the roots of a curve outside the part do not split the line
+                    // the roots of a curve outside the part do not split the line; those
+                    // of a wall stay: its curve stands for every height above the line, and
+                    // the point of its restriction, on a bound of the lines above, says
+                    // nothing of the part there
                     if constexpr (D == 2 && Top == 3)
-                        if (ctx.partner < 0 && ctx.vis_order == 0)
+                        if (ctx.partner < 0 && ctx.vis_order == 0 && ((ctx.top_walls >> f.ls) & 1) == 0)
                             nodes.erase(std::remove_if(nodes.begin() + static_cast<std::ptrdiff_t>(found), nodes.end(),
                                                        [&](T t)
                                                        {

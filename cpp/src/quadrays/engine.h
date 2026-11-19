@@ -202,6 +202,9 @@ struct Options
     /// and level-2 boxes split at these curves' folds and crossings (fold_splits);
     /// needs both. If the base does not settle, the box is bisected after all, and a
     /// cell makes few such attempts. Analytic level sets need hessian_bounds.
+    /// A level set that is constant along an axis (a cylinder along it, any shape
+    /// extruded along it) has no root on lines along that axis: in a volume part
+    /// such an axis is preferred, and the level set's outline splits the base.
     bool silhouette_splits = true;
     /// The accuracy check (tolerance) also compares a moment of what a mass matrix sees,
     /// the sum over the cell's reference coordinates of a Legendre polynomial squared, of
