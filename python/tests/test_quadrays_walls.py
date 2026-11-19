@@ -81,3 +81,34 @@ def test_lines_along_a_cylinder_settle_at_once(height, base):
     weights = volume_rule(mesh, a, b, options=options)
     assert abs(weights.sum() - 16 * 0.6**3 / 3) < 1e-11
     assert len(weights) <= 500
+
+
+def area_rule(mesh, a, b):
+    part = cc.cut(mesh, [a, b])["a = 0 and b < 0"]
+    return np.asarray(part.quadrature(order=6, mode="cut_only").weights)
+
+
+@pytest.mark.parametrize("first,second", [(2, 1), (1, 2)])
+@pytest.mark.parametrize("cell_type,n", [("hexahedron", 2), ("tetrahedron", 1), ("tetrahedron", 2)])
+def test_surface_of_a_cylinder_inside_another(first, second, cell_type, n):
+    """The surface of one of two crossing cylinders inside the other: 8 r^2. Beside the
+    points where the cylinders touch, both branches of their meeting curve cross a base
+    line just inside a cell, and the strip between them belongs to the surface (it was
+    lost where the two crossings lay next to the end of the line: 9.4e-4 of 2.88)."""
+    mesh = box_mesh(n, cell_type)
+    a = cc.create_level_set(mesh, cylinder(CENTRE, 0.6, first), degree=2, name="a")
+    b = cc.create_level_set(mesh, cylinder(CENTRE, 0.6, second), degree=2, name="b")
+    weights = area_rule(mesh, a, b)
+    assert weights.min() > 0
+    assert abs(weights.sum() - 8 * 0.6**2) < 1e-7
+
+
+@pytest.mark.parametrize("n", [1, 2])
+def test_surface_of_a_ball_inside_a_cylinder(n):
+    """Two caps of a ball inside a cylinder through its centre: 4 pi R (R - sqrt(R^2 - r^2))."""
+    mesh = box_mesh(n, "tetrahedron")
+    a = cc.create_level_set(mesh, sphere(CENTRE, 0.6), degree=2, name="a")
+    b = cc.create_level_set(mesh, cylinder(CENTRE, 0.25, 2), degree=2, name="b")
+    weights = area_rule(mesh, a, b)
+    assert weights.min() > 0
+    assert abs(weights.sum() - 4 * math.pi * 0.6 * (0.6 - math.sqrt(0.6**2 - 0.25**2))) < 1e-6

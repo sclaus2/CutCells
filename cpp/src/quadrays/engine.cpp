@@ -1583,13 +1583,10 @@ void surface_line_roots(Context<T>& ctx, const Surface<T, 1>& s, T a, T b, std::
                 roots.push_back(ts[i + 1]);
         }
         // Two roots between samples: |s| has a small minimum there, which takes the
-        // opposite sign. A few parabolas through three samples find it.
-        for (std::size_t i = 1; i < pieces; ++i)
+        // opposite sign. A few parabolas through three samples whose middle one is the
+        // smallest find it.
+        const auto dip = [&](T t0, T t1, T t2, T s0, T s1, T s2)
         {
-            T t0 = ts[i - 1], t1 = ts[i], t2 = ts[i + 1], s0 = vs[i - 1], s1 = vs[i], s2 = vs[i + 1];
-            if (s1 == T(0) || opposite(s0, s1) || opposite(s1, s2) || std::abs(s1) > std::abs(s0)
-                || std::abs(s1) > std::abs(s2))
-                continue;
             for (int it = 0; it < 4; ++it)
             {
                 const T below = (t1 - t0) * (s1 - s2) - (t1 - t2) * (s1 - s0);
@@ -1618,7 +1615,59 @@ void surface_line_roots(Context<T>& ctx, const Surface<T, 1>& s, T a, T b, std::
                     (t < t1 ? s0 : s2) = v;
                 }
             }
+        };
+        for (std::size_t i = 1; i < pieces; ++i)
+        {
+            const T s0 = vs[i - 1], s1 = vs[i], s2 = vs[i + 1];
+            if (s1 == T(0) || opposite(s0, s1) || opposite(s1, s2) || std::abs(s1) > std::abs(s0)
+                || std::abs(s1) > std::abs(s2))
+                continue;
+            dip(ts[i - 1], ts[i], ts[i + 1], s0, s1, s2);
         }
+        // In the first and the last piece the smallest sample may be the end of the line
+        // itself, and no three samples have the minimum in the middle: so where the two
+        // branches of a meeting curve cross a line just inside the box, beside the point
+        // in which they cross each other. The value at the end must be small against
+        // the change over the piece for s to pass zero and return within it; then the
+        // piece is halved towards the end until a sample lies below the end's value.
+        const auto end_piece = [&](T t_end, T t_next, T s_end, T s_next)
+        {
+            if (s_end == T(0) || s_next == T(0) || opposite(s_end, s_next)
+                || !(std::abs(s_end) < std::abs(s_next - s_end)))
+                return;
+            T t = t_next, v = s_next;
+            for (int it = 0; it < 3; ++it)
+            {
+                const T tm = T(0.5) * (t_end + t), vm = at(tm);
+                if (opposite(vm, s_end))
+                {
+                    // one root to either side of tm
+                    if (t_end < tm)
+                    {
+                        root_between(t_end, tm, s_end, vm);
+                        root_between(tm, t, vm, v);
+                    }
+                    else
+                    {
+                        root_between(t, tm, v, vm);
+                        root_between(tm, t_end, vm, s_end);
+                    }
+                    return;
+                }
+                if (std::abs(vm) < std::abs(s_end))
+                {
+                    if (t_end < tm)
+                        dip(t_end, tm, t, s_end, vm, v);
+                    else
+                        dip(t, tm, t_end, v, vm, s_end);
+                    return;
+                }
+                t = tm;
+                v = vm;
+            }
+        };
+        end_piece(ts[0], ts[1], vs[0], vs[1]);
+        end_piece(ts[pieces], ts[pieces - 1], vs[pieces], vs[pieces - 1]);
         return;
     }
     int budget = 256;
