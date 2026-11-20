@@ -2146,7 +2146,9 @@ T two_root_score(Context<T>& ctx, const Func<T, D>& f, const VecD<T, D>& lo, con
 /// neither for that axis: its lines take no root of it, and no curve on which it meets
 /// another, so that lines along it are the cheapest it allows. (An interface part
 /// takes the other level sets at its own roots whatever the axis, and keeps the
-/// scores above.) @p two receives, per entry of
+/// scores above; an axis along which its own level set is monotone counts no more
+/// than that level set's smallest slope where another can cut the part, over the
+/// margin of a certified box.) @p two receives, per entry of
 /// Analysis::funcs, whether it does. False if the box does not qualify. With
 /// @p only >= 0 no other axis is taken (Options::height_axis).
 template <std::floating_point T, typename Margin>
@@ -2282,6 +2284,86 @@ bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysi
                 }
             }
     }
+    // An axis along which the level set of an interface part is monotone on the box
+    // takes no silhouette of it, and nothing then splits the base where the interface
+    // runs nearly along the lines: next to a face beyond which it turns back, say. A
+    // piece of the part that another level set cuts off there is as thin in the base as
+    // the slope is small, and too thin a piece is not found: the rim of a cap that clips
+    // a corner of the cell was lost that way. So such an axis counts no more than the
+    // smallest slope |d_k f| / |grad f| of the interface where another level set can cut
+    // the part, over the margin that a certified box has (a slope near that margin is as
+    // good as any, one a tenth of it is not): the smallest over the M^3 sub-boxes that
+    // meet the clipped region and in which, by bounds, the interface and another level
+    // set of the part's terms may vanish and the other level sets may take the signs of
+    // one term. 1 where no sub-box counts or no bound holds: an interface that no other
+    // level set cuts loses nothing this way.
+    std::size_t surface = n;
+    for (std::size_t c = 0; c < n; ++c)
+        if (an.funcs[static_cast<std::size_t>(an.curved[c])].ls == an.surface)
+            surface = c;
+    VecD<T, 3> slope{T(1), T(1), T(1)};
+    if (surface < n && an.decided == 0 && !an.terms.empty())
+    {
+        constexpr int M = 4;
+        thread_local BoxBernstein<T> form, deriv;
+        thread_local std::vector<T> work;
+        std::vector<Ranges<T, 3>> ranges(n);
+        for (int cell = 0; cell < M * M * M; ++cell)
+        {
+            VecD<T, 3> lo, hi;
+            int m = cell;
+            for (std::size_t j = 0; j < 3; ++j, m /= M)
+            {
+                lo[j] = p.lo[j] + (p.hi[j] - p.lo[j]) * T(m % M) / T(M);
+                hi[j] = p.lo[j] + (p.hi[j] - p.lo[j]) * T(m % M + 1) / T(M);
+            }
+            bool meets = true;
+            for (const Half<T, 3>& h : p.clips)
+            {
+                T least = T(0);
+                for (std::size_t j = 0; j < 3; ++j)
+                    least += h.c[j] * (h.c[j] >= T(0) ? lo[j] : hi[j]);
+                meets = meets && least <= h.d;
+            }
+            if (!meets)
+                continue;
+            for (std::size_t c = 0; c < n; ++c)
+                ranges[c] = curved_ranges<T, 3>(ctx, an.funcs[static_cast<std::size_t>(an.curved[c])], lo, hi, form,
+                                                deriv, work);
+            const Ranges<T, 3>& r = ranges[surface];
+            if (!r.valid || r.sign != 0 || !r.has_derivatives)
+                continue;
+            // may another level set cut the part here: one of a term vanish, the others
+            // take that term's signs?
+            bool cut = false;
+            for (std::size_t t = 0; t < an.terms.size() && !cut; ++t)
+            {
+                const Requirement& term = an.terms[t];
+                bool holds = true, vanishes = false;
+                for (std::size_t o = 0; o < n && holds; ++o)
+                {
+                    const std::uint64_t bit = std::uint64_t(1) << an.funcs[static_cast<std::size_t>(an.curved[o])].ls;
+                    if (o == surface || !((term.negative | term.positive) & bit))
+                        continue;
+                    const int sign = ranges[o].valid ? ranges[o].sign : 0;
+                    holds = (term.negative & bit) ? sign <= 0 : sign >= 0;
+                    vanishes = vanishes || sign == 0;
+                }
+                cut = holds && vanishes;
+            }
+            if (!cut)
+                continue;
+            VecD<T, 3> largest_derivative;
+            for (std::size_t j = 0; j < 3; ++j)
+                largest_derivative[j] = std::max(std::abs(r.dmin[j]), std::abs(r.dmax[j]));
+            const T norm = scaled_norm(std::span<const T>(largest_derivative));
+            for (std::size_t j = 0; j < 3; ++j)
+            {
+                const T least = r.dmin[j] > T(0) ? r.dmin[j] : (r.dmax[j] < T(0) ? -r.dmax[j] : T(0));
+                slope[j] = std::min(slope[j], norm > T(0) && norm < infinity<T> ? least / norm : T(0));
+            }
+        }
+    }
     T best = -infinity<T>;
     bool found = false;
     for (int a = 0; a < n_axes; ++a)
@@ -2290,8 +2372,12 @@ bool silhouette_direction(Context<T>& ctx, const Problem<T, 3>& p, const Analysi
         const std::size_t K = static_cast<std::size_t>(kk);
         T score = T(1);
         for (std::size_t c = 0; c < n; ++c)
+        {
             if (count[c] > 0 && !constant(c, kk))
                 score = std::min(score, mean[c][K] / T(count[c]));
+            if (c == surface && an.ratios[c][K] > T(0))
+                score = std::min(score, slope[K] / level_margin<T, 3>(ctx));
+        }
         if (pair_count[K] > 0)
             score *= pair_sum[K] / T(pair_count[K]);
         score -= T(0.1) * T(needed[K]);
