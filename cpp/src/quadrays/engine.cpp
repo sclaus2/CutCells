@@ -6379,6 +6379,14 @@ void run_top(Context<T>& ctx, const ClippedBox<T>& cell, CellPoints<T>& out, boo
     top.hi.fill(T(1));
     for (int i = 0; i < Top; ++i)
         top.frame.A[i][i] = T(1);
+    // Flat level sets become linear functions (below) where corners of two or
+    // more of them can lie in the cell; one plane among curved level sets keeps
+    // the curved treatment, which integrates it as accurately and, where its
+    // zero set crosses curved ones, often with fewer points.
+    int flat_used = 0;
+    for (int l = 0; l < static_cast<int>(ctx.phis.size()); ++l)
+        if (((ctx.used >> l) & 1) && ctx.flat[static_cast<std::size_t>(l)])
+            ++flat_used;
     for (int l = 0; l < static_cast<int>(ctx.phis.size()); ++l)
     {
         if (!((ctx.used >> l) & 1))
@@ -6387,6 +6395,25 @@ void run_top(Context<T>& ctx, const ClippedBox<T>& cell, CellPoints<T>& out, boo
         f.ls = l;
         for (int i = 0; i < Top; ++i)
             f.A[i][i] = T(1);
+        // In a volume part, a level set affine on the cell (a plane, a line) is a
+        // linear function, as the cell's clip planes are: its roots on the
+        // height lines are linear bounds, and where two such roots or a root and
+        // a box face meet, the base splits exactly. As a curved function it
+        // would go through margins and fold searches, which find the corners
+        // where several planes meet only approximately. Interface and curve
+        // parts keep it curved: where it crosses the zero set, only a surface
+        // function of the two splits the interface's base.
+        if (ctx.flat[static_cast<std::size_t>(l)] && ctx.surface < 0 && flat_used >= 2)
+        {
+            const BoxBernstein<T>& b = *ctx.phis[static_cast<std::size_t>(l)].bernstein;
+            const std::array<int, 3> stride = {1, b.degree[0] + 1, (b.degree[0] + 1) * (b.degree[1] + 1)};
+            f.linear = true;
+            f.c = b.coeffs[0];
+            for (int j = 0; j < Top; ++j)
+                f.a[j] = b.degree[static_cast<std::size_t>(j)] > 0
+                             ? b.coeffs[static_cast<std::size_t>(b.degree[static_cast<std::size_t>(j)] * stride[static_cast<std::size_t>(j)])] - f.c
+                             : T(0);
+        }
         top.funcs.push_back(f);
     }
     for (const HalfSpace<T>& h : cell.clips)

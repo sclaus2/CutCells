@@ -169,6 +169,12 @@ struct Options
     /// that the box above does not take (ignored if it takes this one). -1: the
     /// engine chooses.
     int base_axis = -1;
+    /// Triangles, tetrahedra and prisms: reduce the dimension in the cell's
+    /// reference frame (BoxFrame::reference, height lines along its edges)
+    /// instead of an orthonormal frame with the smallest bounding box
+    /// (BoxFrame::orthogonal). For comparing the two; other cells always use
+    /// their reference frame.
+    bool reference_frame = false;
     /// The front end (part::quadrature_rules), for studying cells that take
     /// many points or much time. Not empty: each cell that reaches a limit, debug_points
     /// or debug_seconds is written to this directory as a JSON file (its level sets
